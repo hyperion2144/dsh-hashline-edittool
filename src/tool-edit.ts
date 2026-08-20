@@ -3,6 +3,15 @@
  * built-in `edit` on the agent's own scope layer. Registered through the
  * agent context so the model-facing contract (remove_from/remove_to hashes,
  * served-range verification, reject-and-serve) replaces the built-in one.
+ *
+ * Structured presentation: the canonical value carries `path` / `before` /
+ * `after` / `modelText` / `added` / `removed` / `firstChangedLine` /
+ * `lastChangedLine` / `warnings` / `driftNotice`. `output.render` projects
+ * the model-facing text from `modelText`. `output.presentationMeta` returns
+ * `{ diffs: FileDiff[] }` computed from `before` / `after`. `presentResult`
+ * returns a `DiffResultView` carrying the diffs. `presentCall` is generic
+ * (no IO, pure on `args`) — a call-time presenter has no access to the
+ * file's prior content per the dsh-tools spec.
  * @module dsh-hashline-edittool/tool-edit
  */
 
@@ -28,10 +37,31 @@ import {
 import { buildNoop, buildChanged, type RMeta } from "./mutation.js";
 import { recordServedTruncated } from "./session-view.js";
 import { EDIT_DESCRIPTION } from "./prompts.js";
+import {
+	computeHunkDiffs,
+	diffsFromMeta,
+	parseLineFromHash,
+	type FileDiff,
+} from "./presentation-helpers.js";
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
+
+/** The hashline edit tool's canonical value (returned from `execute`). */
+type EditCanonicalValue = {
+	path: string;
+	before: string;
+	after: string;
+	added: number;
+	removed: number;
+	firstChangedLine?: number;
+	lastChangedLine?: number;
+	warnings: string[];
+	driftNotice?: string;
+	noop: boolean;
+	modelText: string;
+} & { [key: string]: unknown };
 
 /**
  * Register the hash-anchored `edit` tool on the calling agent's scope.
@@ -53,8 +83,60 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
 		output: {
-			schema: { type: "string" },
-			render: (_args, value) => [{ type: "text", text: value }],
+			schema: {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					path: { type: "string", required: true },
+					before: { type: "string", required: true },
+					after: { type: "string", required: true },
+					added: { type: "integer", required: true },
+					removed: { type: "integer", required: true },
+					firstChangedLine: { type: "integer" },
+					lastChangedLine: { type: "integer" },
+					warnings: { type: "array", items: { type: "string" } },
+					driftNotice: { type: "string" },
+					noop: { type: "boolean", required: true },
+					modelText: { type: "string", required: true },
+				},
+			},
+			render: (_args, value) => [
+				{ type: "text", text: (value as EditCanonicalValue).modelText },
+			],
+			presentationMeta: (_args, value) => {
+				const v = value as EditCanonicalValue;
+				if (v.noop) return { diffs: [] } as never;
+				const diffs = computeHunkDiffs(v.path, v.before, v.after);
+				return { diffs } as never;
+			},
+		},
+		presentCall: (args) => {
+			const a = args as { path?: string; remove_from?: string };
+			if (typeof a.path !== "string") return undefined;
+			const line = parseLineFromHash(a.remove_from ?? "");
+			return {
+				card: "generic",
+				title: `Edit ${a.path}`,
+				kind: "edit",
+				locations: [{ path: a.path, ...(line !== undefined ? { line } : {}) }],
+			};
+		},
+		presentResult: (_args, result) => {
+			if (result.isError) return undefined;
+			const diffs: FileDiff[] | undefined = diffsFromMeta(result.meta);
+			if (diffs === undefined) return undefined;
+			// Extract the path from result.content's model text. We don't have
+			// a guaranteed way to reach the canonical `value` here (only
+			// `args` + `result.meta` + `result.content`), so derive the path
+			// from the title embedded in result.content — but cleaner: rely on
+			// args via the soft-validated meta path.
+			const only = result.content.length === 1 ? result.content[0] : undefined;
+			const text = only?.type === "text" ? only.text : undefined;
+			if (text === undefined) return undefined;
+			// Use the first diff's `path` for the title (all diffs in a single
+			// edit share the same path).
+			const path = diffs[0]?.path ?? "";
+			return { card: "diff", title: `Edit ${path}`, diffs };
 		},
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
@@ -81,7 +163,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				);
 
 				const normalizedParams = canonical;
-				const path = normalizedParams.path;
+				const displayPath = normalizedParams.path;
+				const path = displayPath;
 				abortIf(signal);
 
 				const pipeline = await applySingle(io, normalizedParams, cwd, {
@@ -148,7 +231,19 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						warnings,
 						driftNotice,
 					});
-					return noopResult.content[0]!.text;
+					return {
+						path: displayPath,
+						before: originalNormalized,
+						after: result,
+						added: 0,
+						removed: 0,
+						...(firstChangedLine !== undefined ? { firstChangedLine } : {}),
+						...(lastChangedLine !== undefined ? { lastChangedLine } : {}),
+						warnings,
+						...(driftNotice !== undefined ? { driftNotice } : {}),
+						noop: true,
+						modelText: noopResult.content[0]!.text,
+					} satisfies EditCanonicalValue;
 				}
 
 				clearNoopLoop(absolutePath);
@@ -216,7 +311,19 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						range.startLine - 1,
 					);
 				}
-				return changed.content[0]!.text;
+				return {
+					path: displayPath,
+					before: originalNormalized,
+					after: result,
+					added: totalAddedLines,
+					removed: totalRemovedLines,
+					...(firstChangedLine !== undefined ? { firstChangedLine } : {}),
+					...(lastChangedLine !== undefined ? { lastChangedLine } : {}),
+					warnings,
+					...(driftNotice !== undefined ? { driftNotice } : {}),
+					noop: false,
+					modelText: changed.content[0]!.text,
+				} satisfies EditCanonicalValue;
 			});
 		},
 	});

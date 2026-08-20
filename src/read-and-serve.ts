@@ -34,6 +34,16 @@ export interface ReadAndServeResult {
 	served: ServedRow[];
 	hadUtf8DecodeErrors: boolean;
 	absolutePath: string;
+	/**
+	 * Per-line hashes for the WHOLE file (not just the window) — let the
+	 * `read` tool build its structured value (lines / hashlines / totalLines)
+	 * from the same source. Consumers that only need the model text can
+	 * ignore this. Returns `undefined` when the file did not normalize to
+	 * a known number of lines.
+	 */
+	hashes?: string[];
+	/** The LF-normalized full file content (the basis for hashing + lines). */
+	normalized?: string;
 }
 
 /**
@@ -76,5 +86,7 @@ export async function readAndServe(
 		served: view.served,
 		hadUtf8DecodeErrors: view.hadUtf8DecodeErrors,
 		absolutePath: view.absolutePath,
+		hashes: view.hashes,
+		normalized: view.normalized,
 	};
 }

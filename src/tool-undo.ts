@@ -2,6 +2,12 @@
  * The dsh `undo_last_edit` tool: reverts the last hashline edit on a file,
  * only when the file still matches the stored post-edit content — a later
  * external write clears the history instead of being overwritten.
+ *
+ * Structured presentation: the canonical value carries `path` / `before`
+ * (post-edit content) / `after` (pre-edit content, i.e. the revert target).
+ * `output.render` projects the model-facing text. `output.presentationMeta`
+ * returns `{ diffs: FileDiff[] }` — the diff of the revert. `presentResult`
+ * emits a `DiffResultView`. `presentCall` is generic.
  * @module dsh-hashline-edittool/tool-undo
  */
 
@@ -18,10 +24,26 @@ import { changedRange } from "./hashline/anchor-pipeline.js";
 import { getUndo, clearUndo } from "./undo-edit.js";
 import { recordServedTruncated } from "./session-view.js";
 import { UNDO_DESCRIPTION } from "./prompts.js";
+import {
+	computeHunkDiffs,
+	diffsFromMeta,
+	type FileDiff,
+} from "./presentation-helpers.js";
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
+
+/** The hashline undo tool's canonical value (returned from `execute`). */
+type UndoCanonicalValue = {
+	path: string;
+	before: string;
+	after: string;
+	added: number;
+	removed: number;
+	modelText: string;
+	empty: boolean;
+} & { [key: string]: unknown };
 
 /**
  * Register the `undo_last_edit` tool on the calling agent's scope.
@@ -43,8 +65,45 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
 		output: {
-			schema: { type: "string" },
-			render: (_args, value) => [{ type: "text", text: value }],
+			schema: {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					path: { type: "string", required: true },
+					before: { type: "string", required: true },
+					after: { type: "string", required: true },
+					added: { type: "integer", required: true },
+					removed: { type: "integer", required: true },
+					modelText: { type: "string", required: true },
+					empty: { type: "boolean", required: true },
+				},
+			},
+			render: (_args, value) => [
+				{ type: "text", text: (value as UndoCanonicalValue).modelText },
+			],
+			presentationMeta: (_args, value) => {
+				const v = value as UndoCanonicalValue;
+				if (v.empty) return { diffs: [] } as never;
+				const diffs = computeHunkDiffs(v.path, v.before, v.after);
+				return { diffs } as never;
+			},
+		},
+		presentCall: (args) => {
+			const a = args as { path?: string };
+			if (typeof a.path !== "string") return undefined;
+			return {
+				card: "generic",
+				title: `Undo ${a.path}`,
+				kind: "edit",
+				locations: [{ path: a.path }],
+			};
+		},
+		presentResult: (_args, result) => {
+			if (result.isError) return undefined;
+			const diffs: FileDiff[] | undefined = diffsFromMeta(result.meta);
+			if (diffs === undefined) return undefined;
+			const path = diffs[0]?.path ?? "";
+			return { card: "diff", title: `Undo ${path}`, diffs };
 		},
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
@@ -60,7 +119,15 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			const undo = await getUndo(absolutePath);
 			if (!undo) {
-				return `No undo history for ${path}. There is no previous edit to revert.`;
+				return {
+					path: absolutePath,
+					before: "",
+					after: "",
+					added: 0,
+					removed: 0,
+					modelText: `No undo history for ${path}. There is no previous edit to revert.`,
+					empty: true,
+				} satisfies UndoCanonicalValue;
 			}
 
 			let currentRaw: string;
@@ -70,7 +137,15 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (message.includes("[E_NOT_FOUND]")) {
 					await clearUndo(absolutePath);
-					return `[E_UNDO_STALE] Cannot undo last edit on ${path}: the file no longer exists. Call read() to inspect the current state.`;
+					return {
+						path: absolutePath,
+						before: "",
+						after: "",
+						added: 0,
+						removed: 0,
+						modelText: `[E_UNDO_STALE] Cannot undo last edit on ${path}: the file no longer exists. Call read() to inspect the current state.`,
+						empty: true,
+					} satisfies UndoCanonicalValue;
 				}
 				throw error;
 			}
@@ -79,7 +154,15 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)
 			) {
 				await clearUndo(absolutePath);
-				return `[E_UNDO_STALE] Cannot undo last edit on ${path}: the file was modified after the edit, so undoing would overwrite those changes. Call read() to inspect the current state.`;
+				return {
+					path: absolutePath,
+					before: "",
+					after: "",
+					added: 0,
+					removed: 0,
+					modelText: `[E_UNDO_STALE] Cannot undo last edit on ${path}: the file was modified after the edit, so undoing would overwrite those changes. Call read() to inspect the current state.`,
+					empty: true,
+				} satisfies UndoCanonicalValue;
 			}
 
 			const { text: currentStripped } = stripBOM(currentRaw);
@@ -152,9 +235,19 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				);
 			}
 
-			return [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join(
-				"\n",
-			);
+			return {
+				path: absolutePath,
+				// `before` is the post-edit content (what the file had), `after`
+				// is the pre-edit content (the revert target). Naming aligns with
+				// dsh-tool-fs: `before` = pre-change state, `after` = post-change.
+				// For the undo, the "change" is the revert itself.
+				before: currentNormalized,
+				after: undo.content,
+				added: linesAddedByEdit,
+				removed: linesRemovedByEdit,
+				modelText: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join("\n"),
+				empty: false,
+			} satisfies UndoCanonicalValue;
 			})
 		},
 	});

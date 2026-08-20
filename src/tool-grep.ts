@@ -5,6 +5,15 @@
  * `HASH IDENTIFIER │ FILE LINES` header, one section per file. Matches are
  * recorded as served so a follow-up `edit` against a hit does not require a
  * separate `read`.
+ *
+ * Structured presentation: the canonical value carries `files` (per-file
+ * grouped matches) / `truncated` / `total`. `output.render` projects the
+ * model text from those fields. `output.presentationMeta` derives the
+ * `SearchMatchesResultView` projection. `presentResult` reads the
+ * persisted meta and emits a `card: 'search' shape: 'matches'` view.
+ * `grep` has NO `presentCall` — per the dsh-tools spec, a search has no
+ * `card: 'search'` call-time analogue because the pending state has no
+ * matches or paths to show.
  * @module dsh-hashline-edittool/tool-grep
  */
 
@@ -21,8 +30,13 @@ import { lineHashes, HASH_SEP, HASHLINE_HEADER, LINE_HASH_SEP } from "./hashline
 import { HASH_SPACE } from "./hashline/hash-assign.js";
 import { visLines, abortIf, clipLine } from "./utils.js";
 import { GREP_DESCRIPTION } from "./prompts.js";
+import {
+	grepPresentationFromMeta,
+	type GrepFileMatches,
+} from "./presentation-helpers.js";
 
-export interface GrepMatch {
+/** One row in a grep section's context set (with hash + content, used to render the model text). */
+export interface GrepSectionRow {
 	position: number;
 	hash: string;
 	content: string;
@@ -30,9 +44,9 @@ export interface GrepMatch {
 
 export interface GrepFileSection {
 	path: string;
-	matches: GrepMatch[];
+	matches: GrepSectionRow[];
 	/** Context rows around each match (always includes the match position too). */
-	contextRows: GrepMatch[];
+	contextRows: GrepSectionRow[];
 }
 
 export interface GrepToolOptions {
@@ -87,7 +101,7 @@ export async function grepFileContent(
 			contextSet.add(k);
 		}
 	}
-	const contextRows: GrepMatch[] = [...contextSet]
+	const contextRows: GrepSectionRow[] = [...contextSet]
 		.sort((a, b) => a - b)
 		.map((position) => ({
 			position,
@@ -111,6 +125,17 @@ function renderSection(path: string, section: GrepFileSection): string {
 		headerLines.push(`${row.position + 1}${LINE_HASH_SEP}${row.hash}${HASH_SEP}${clipLine(row.content)}`);
 	}
 	return headerLines.join("\n");
+}
+
+/** Build the model-facing text for one file section (reused by `render`). */
+function buildSectionModelText(path: string, section: GrepFileSection): string {
+	return renderSection(path, section);
+}
+
+interface GrepCanonicalValue {
+	files: GrepFileMatches[];
+	truncated: boolean;
+	total: number;
 }
 
 /**
@@ -150,8 +175,68 @@ export function buildGrepTool(io: FileIO) {
 			},
 		},
 		output: {
-			schema: { type: "string" },
-			render: (_args, value) => [{ type: "text", text: value }],
+			schema: {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					files: {
+						type: "array",
+						required: true,
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								path: { type: "string", required: true },
+								matches: {
+									type: "array",
+									required: true,
+									items: {
+										type: "object",
+										additionalProperties: false,
+										properties: {
+											lineNumber: { type: "integer", required: true },
+											line: { type: "string", required: true },
+										},
+									},
+								},
+							},
+						},
+					},
+					truncated: { type: "boolean", required: true },
+					total: { type: "integer", required: true },
+					modelText: { type: "string" },
+				},
+			},
+			render: (_args, value) => [
+				{
+					type: "text",
+					text: (value as GrepCanonicalValue & { modelText: string }).modelText,
+				},
+			],
+			presentationMeta: (_args, value) => {
+				const v = value as GrepCanonicalValue;
+				return {
+					files: v.files,
+					truncated: v.truncated,
+					total: v.total,
+				} as never;
+			},
+		},
+		// grep has no presentCall — per the dsh-tools spec, a search has no
+		// `card: 'search'` call-time analogue because the pending state has no
+		// matches or paths to show. The pending card stays generic with
+		// `kind: 'search'`.
+		presentResult: (_args, result) => {
+			if (result.isError) return undefined;
+			const meta = grepPresentationFromMeta(result.meta);
+			if (meta === undefined) return undefined;
+			return {
+				card: "search",
+				shape: "matches",
+				files: meta.files,
+				truncated: meta.truncated,
+				total: meta.total,
+			};
 		},
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
@@ -191,9 +276,12 @@ export function buildGrepTool(io: FileIO) {
 					);
 				}
 
-				const sections: string[] = [];
+				const fileSections: string[] = [];
+				const cardFiles: GrepFileMatches[] = [];
 				const allServed: Array<{ path: string; rows: { position: number; hash: string }[] }> = [];
 				const allSeen: Array<{ path: string }> = [];
+				let totalMatches = 0;
+				let truncated = false;
 				for (const file of files) {
 					abortIf(signal);
 					let raw: string;
@@ -205,7 +293,21 @@ export function buildGrepTool(io: FileIO) {
 					const hashes = await lineHashes(raw, file);
 					const section = await grepFileContent(file, raw, hashes, params.pattern, opts);
 					if (!section) continue;
-					sections.push(renderSection(file, section));
+					// Truncation = the per-file cap was hit.
+					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
+					totalMatches += section.matches.length;
+					// The model-facing path is the relative path the user passed in,
+					// derived from `file` (absolute) by stripping the directory part.
+					const displayPath = file.slice(file.lastIndexOf("/") + 1) || file;
+					fileSections.push(buildSectionModelText(displayPath, section));
+					cardFiles.push({
+						path: displayPath,
+						matches: section.contextRows.map((row) => ({
+							lineNumber: row.position + 1,
+							// The card's `line` is the pre-rendered `<line>#hash>content` row.
+							line: `${row.position + 1}${LINE_HASH_SEP}${row.hash}${HASH_SEP}${clipLine(row.content)}`,
+						})),
+					});
 					allServed.push({ path: file, rows: section.contextRows });
 					allSeen.push({ path: file });
 				}
@@ -223,10 +325,23 @@ export function buildGrepTool(io: FileIO) {
 					);
 				}
 
-				if (sections.length === 0) {
-					return `No matches for "${params.pattern}" in ${params.path}.`;
+				if (fileSections.length === 0) {
+					const noMatchModelText = `No matches for "${params.pattern}" in ${params.path}.`;
+					return {
+						files: [],
+						truncated: false,
+						total: 0,
+						modelText: noMatchModelText,
+					} satisfies GrepCanonicalValue & { modelText: string };
 				}
-				return sections.join("\n\n");
+
+				const value: GrepCanonicalValue & { modelText: string } = {
+					files: cardFiles,
+					truncated,
+					total: totalMatches,
+					modelText: fileSections.join("\n\n"),
+				};
+				return value;
 			});
 		},
 	});

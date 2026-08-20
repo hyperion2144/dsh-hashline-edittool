@@ -159,13 +159,19 @@ describe("grep — line#hash output", () => {
 					agent: { id: "s", session: { id: "s", header: { cwd } } },
 					arguments: args,
 				}) as never;
-			const text = String(await tool.execute({ path: "g.txt", pattern: "alpha" }, exec(ctx)));
+			const value = (await tool.execute(
+				{ path: "g.txt", pattern: "alpha" },
+				exec(ctx),
+			)) as { modelText: string; files: unknown[]; total: number };
+			const text = value.modelText;
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^--- .*g\.txt ---$/);
 			expect(lines[1]).toBe("HASH IDENTIFIER │ FILE LINES");
 			expect(lines[2]).toMatch(/^1#\w{3}│alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
 			expect(lines.some((l) => l.includes("gamma"))).toBe(false);
+			expect(value.files.length).toBe(1);
+			expect(value.total).toBe(2);
 		});
 	});
 
@@ -181,9 +187,11 @@ describe("grep — line#hash output", () => {
 					agent: { id: "s", session: { id: "s", header: { cwd } } },
 					arguments: args,
 				}) as never;
-			const text = String(
-				await tool.execute({ path: "ctx.txt", pattern: "c", context: 1 }, exec(ctx)),
-			);
+			const value = (await tool.execute(
+				{ path: "ctx.txt", pattern: "c", context: 1 },
+				exec(ctx),
+			)) as { modelText: string };
+			const text = value.modelText;
 			// Should include c (line 3), b (line 2), d (line 4)
 			expect(text).toMatch(/\d+#\w{3}│b/);
 			expect(text).toMatch(/\d+#\w{3}│c/);

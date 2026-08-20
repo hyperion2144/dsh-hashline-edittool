@@ -55,4 +55,4 @@ export type {
 } from "./anchor-pipeline.js";
 
 export { grepFileContent } from "../tool-grep.js";
-export type { GrepMatch, GrepFileSection, GrepToolOptions } from "../tool-grep.js";
+export type { GrepFileSection, GrepToolOptions, GrepSectionRow } from "../tool-grep.js";

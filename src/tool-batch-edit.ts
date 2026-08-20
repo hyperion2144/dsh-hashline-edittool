@@ -32,6 +32,12 @@ import { buildBatchResult, type BatchSection } from "./mutation.js";
 import { recordServedTruncated } from "./session-view.js";
 import { BATCH_EDIT_DESCRIPTION } from "./prompts.js";
 import {
+	computeHunkDiffs,
+	diffsFromMeta,
+	parseLineFromHash,
+	type FileDiff,
+} from "./presentation-helpers.js";
+import {
 	pathSchema,
 	removeFromSchema,
 	removeToSchema,
@@ -93,6 +99,12 @@ async function prepareItems(
 	return items;
 }
 
+type BatchEditCanonicalValue = {
+	results: { path: string; before: string; after: string }[];
+	modelText: string;
+	empty: boolean;
+} & { [key: string]: unknown };
+
 function groupByPath(items: PreparedItem[]): Map<string, PreparedItem[]> {
 	const groups = new Map<string, PreparedItem[]>();
 	for (const item of items) {
@@ -101,9 +113,7 @@ function groupByPath(items: PreparedItem[]): Map<string, PreparedItem[]> {
 		else groups.set(item.absolutePath, [item]);
 	}
 	return groups;
-}
-
-function toSection(file: FileEditResult): BatchSection {
+}function toSection(file: FileEditResult): BatchSection {
 	return {
 		path: file.displayPath,
 		originalNormalized: file.originalNormalized,
@@ -154,8 +164,60 @@ export function buildBatchEditTool(io: FileIO, sandbox: FsSandboxController) {
 			},
 		},
 		output: {
-			schema: { type: "string" },
-			render: (_args, value) => [{ type: "text", text: value }],
+			schema: {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					results: {
+						type: "array",
+						required: true,
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								path: { type: "string", required: true },
+								before: { type: "string", required: true },
+								after: { type: "string", required: true },
+							},
+						},
+					},
+					modelText: { type: "string", required: true },
+					empty: { type: "boolean", required: true },
+				},
+			},
+			render: (_args, value) => [
+				{ type: "text", text: (value as BatchEditCanonicalValue).modelText },
+			],
+			presentationMeta: (_args, value) => {
+				const v = value as BatchEditCanonicalValue;
+				if (v.empty || v.results.length === 0) return { diffs: [] } as never;
+				const diffs: FileDiff[] = [];
+				for (const file of v.results) {
+					const fileDiffs = computeHunkDiffs(file.path, file.before, file.after);
+					diffs.push(...fileDiffs);
+				}
+				return { diffs } as never;
+			},
+		},
+		presentCall: (args) => {
+			const a = args as { edits?: Array<{ path?: string; remove_from?: string }> };
+			if (!Array.isArray(a.edits) || a.edits.length === 0) return undefined;
+			const first = a.edits[0]!;
+			const path = typeof first.path === "string" ? first.path : undefined;
+			if (path === undefined) return undefined;
+			const line = parseLineFromHash(first.remove_from ?? "");
+			return {
+				card: "generic",
+				title: `batch_edit ${path} (${a.edits.length} item${a.edits.length === 1 ? "" : "s"})`,
+				kind: "edit",
+				locations: [{ path, ...(line !== undefined ? { line } : {}) }],
+			};
+		},
+		presentResult: (_args, result) => {
+			if (result.isError) return undefined;
+			const diffs: FileDiff[] | undefined = diffsFromMeta(result.meta);
+			if (diffs === undefined) return undefined;
+			return { card: "diff", title: `batch_edit (${diffs.length} hunk${diffs.length === 1 ? "" : "s"})`, diffs };
 		},
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
@@ -232,7 +294,17 @@ export function buildBatchEditTool(io: FileIO, sandbox: FsSandboxController) {
 						}
 					}
 				}
-				return result.content[0]!.text;
+				return {
+					results: processed
+						.filter((f) => f.appliedCount > 0)
+						.map((f) => ({
+							path: f.displayPath,
+							before: f.originalNormalized,
+							after: f.result,
+						})),
+					modelText: result.content[0]!.text,
+					empty: result.details.classification === "noop",
+				} satisfies BatchEditCanonicalValue;
 			});
 		},
 	});

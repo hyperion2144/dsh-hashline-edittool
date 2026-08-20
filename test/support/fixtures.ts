@@ -194,9 +194,18 @@ function wrapTool(
 } {
 	return {
 		async execute(_callId, params) {
-			const text = await tool.execute(params, makeExecFor(params));
+			const result = await tool.execute(params, makeExecFor(params));
+			// Hashline 0.3+ canonical value: a structured object with a
+			// `modelText` field. Older (and non-hashline) tools still return a
+			// plain string; the wrapper handles both.
+			const text =
+				typeof result === "string"
+					? result
+					: typeof result === "object" && result !== null && "modelText" in result
+						? String((result as { modelText: unknown }).modelText ?? "")
+						: String(result);
 			return {
-				content: [{ type: "text", text: String(text) }],
+				content: [{ type: "text", text }],
 			};
 		},
 	};
