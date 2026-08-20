@@ -20,6 +20,7 @@ export {
  LINE_HASH_RE,
  HASHLINE_HEADER,
  STALE_CONTEXT_LINES,
+ CANON_VERSION,
  canon,
  lineHashesPure,
  mapStableHashes,

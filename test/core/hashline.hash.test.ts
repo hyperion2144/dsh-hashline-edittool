@@ -10,10 +10,10 @@ import { useTestHome } from "../support/fixtures.js";
 const home = useTestHome();
 
 describe("strict hashline contract", () => {
-	it("preserves internal spaces when hashing", async () => {
+	it("strips internal ASCII whitespace when hashing (ADR-0005)", async () => {
 		const hashes = await lineHashes("a b", home.testPath);
 		const hashes2 = await lineHashes("ab", home.testPath);
-		expect(hashes[0]).not.toBe(hashes2[0]);
+		expect(hashes[0]).toBe(hashes2[0]);
 	});
 
 	it("trims trailing spaces when hashing", async () => {
@@ -92,7 +92,7 @@ describe("perfect hashing", () => {
 		}
 		expect(caught).toBeDefined();
 		expect(caught!.message).toMatch(/E_STALE_ANCHOR/);
-		expect(caught!.message).toMatch(/call read\(\) to refresh/);
+		expect(caught!.message).toMatch(/Re-read for fresh anchors/);
 	});
 
 	it("rejects an ambiguous hash with [E_AMBIGUOUS_ANCHOR] (synthetic collision)", async () => {

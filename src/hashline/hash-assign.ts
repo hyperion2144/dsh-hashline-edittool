@@ -96,8 +96,34 @@ export const HL_PREFIX_MINUS_RE = new RegExp(
 export const HL_BARE_PREFIX_RE = new RegExp(
   `^\\s*(?:(\\d+)#)?(${HASH_CLASS})│`,
 );
+
+/**
+ * Snapshot-canon version. Bumped when the canonicalization rule changes so
+ * stale hash-store rows can be invalidated without a separate flag. The
+ * upstream ADR-0005 rule: `canon` strips every run of `[ \t\r\n]`, not
+ * just `\r` and trailing whitespace — a line that differs only by
+ * whitespace is the same line semantically and must keep its hash.
+ */
+export const CANON_VERSION = 2;
+
+const CANON_RE = /[ \t\r\n]+/g;
+
 export function canon(line: string): string {
-  return line.replace(/\r/g, "").trimEnd();
+  return line.replace(CANON_RE, "");
+}
+
+/**
+ * Memoized canon keyed by the raw input string. One cache lives per
+ * `lineHashesPure` / `mapStableHashes` call; entries are discarded when
+ * the call returns. The input set is bounded by the file's line count,
+ * so the cache never grows beyond a few thousand entries.
+ */
+function getCanon(cache: Map<string, string>, line: string): string {
+  const cached = cache.get(line);
+  if (cached !== undefined) return cached;
+  const v = canon(line);
+  cache.set(line, v);
+  return v;
 }
 const BITSET_WORDS = Math.ceil(HASH_SPACE / 32);
 function getBit(bits: Uint32Array, idx: number): boolean {
@@ -132,8 +158,9 @@ export function lineHashesPure(content: string): string[] {
   const hashes = new Array<string>(lines.length);
   const used = new Uint32Array(BITSET_WORDS);
   const hint = { value: 0 };
+  const canonCache = new Map<string, string>();
   for (let i = 0; i < lines.length; i++) {
-    const c = canon(lines[i]!);
+    const c = getCanon(canonCache, lines[i]!);
     const baseIdx = (xxh32(c) >>> 14) % HASH_SPACE;
     hashes[i] = assignHash(used, baseIdx, hint);
   }
@@ -198,9 +225,12 @@ export function mapStableHashes(oldContent: string, oldHashes: string[], newCont
     if (removedIndexes.has(i)) removedEntries.push(entry);
     else survivors.push(entry);
   }
+  // One canon cache shared across all `canon()` calls in this `mapStableHashes`
+  // invocation; entries are discarded when the call returns.
+  const canonCache = new Map<string, string>();
   const newByContent = new Map<string, number[]>();
   for (let i = 0; i < newLines.length; i++) {
-    const key = canon(newLines[i]!);
+    const key = getCanon(canonCache, newLines[i]!);
     const list = newByContent.get(key);
     if (list) list.push(i);
     else newByContent.set(key, [i]);
@@ -213,7 +243,7 @@ export function mapStableHashes(oldContent: string, oldHashes: string[], newCont
     }
   };
   for (const entry of survivors) {
-    const candidates = newByContent.get(canon(oldLines[entry.index]!));
+    const candidates = newByContent.get(getCanon(canonCache, oldLines[entry.index]!));
     if (!candidates || candidates.length === 0) continue;
     const target = entry.index > spanEnd ? entry.index + shiftAfterSpan : entry.index;
     const pos = nearestNew(candidates, target);
@@ -224,7 +254,7 @@ export function mapStableHashes(oldContent: string, oldHashes: string[], newCont
   }
   const removedByContent = new Map<string, { hashes: string[]; pos: number }>();
   for (const entry of removedEntries) {
-    const key = canon(oldLines[entry.index]!);
+    const key = getCanon(canonCache, oldLines[entry.index]!);
     let queue = removedByContent.get(key);
     if (!queue) {
       queue = { hashes: [], pos: 0 };
@@ -234,14 +264,14 @@ export function mapStableHashes(oldContent: string, oldHashes: string[], newCont
   }
   for (let i = 0; i < newLines.length; i++) {
     if (newHashes[i]) continue;
-    const queue = removedByContent.get(canon(newLines[i]!));
+    const queue = removedByContent.get(getCanon(canonCache, newLines[i]!));
     if (!queue || queue.pos >= queue.hashes.length) continue;
     newHashes[i] = queue.hashes[queue.pos]!;
     queue.pos += 1;
   }
   for (let i = 0; i < newLines.length; i++) {
     if (newHashes[i]) continue;
-    const c = canon(newLines[i]!);
+    const c = getCanon(canonCache, newLines[i]!);
     const baseIdx = (xxh32(c) >>> 14) % HASH_SPACE;
     newHashes[i] = assignHash(used, baseIdx, hint);
   }
