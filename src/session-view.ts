@@ -79,6 +79,11 @@ export type ServedEntry = { position: number; hash: string | null };
 /**
  * Merge served rows into a copy of the stored array. This single helper owns
  * the served-merge invariant shared by recordServed and recordServedTruncated.
+ *
+ * Eagerly heals orphaned serves (ADR-0008): if the same hash is written at
+ * a new position, the older position is nulled. This prevents a partial
+ * re-serve from leaving a stale duplicate behind. The heal is O(n) in the
+ * current array length (single pass) and runs before each row is applied.
  */
 export function _mergeServedRows(
   current: (string | null)[],
@@ -92,6 +97,20 @@ export function _mergeServedRows(
   if (options?.clearFrom !== undefined) {
     for (let i = options.clearFrom; i < updated.length; i++) updated[i] = null;
   }
+  // Build the hash→position index for the array as it currently stands.
+  // On collision with an existing entry, the older position is nulled —
+  // the new row is about to overwrite the array at its own position, and
+  // we keep the index in sync.
+  const index = new Map<string, number>();
+  for (let i = 0; i < updated.length; i++) {
+    const h = updated[i];
+    if (h === null) continue;
+    const prev = index.get(h);
+    if (prev !== undefined) {
+      updated[prev] = null;
+    }
+    index.set(h, i);
+  }
   for (const entry of rows) {
     if (!Number.isInteger(entry.position) || entry.position < 0) {
       throw new TypeError(`Invalid served position: ${entry.position}`);
@@ -100,6 +119,21 @@ export function _mergeServedRows(
       throw new TypeError(`Invalid served hash: ${String(entry.hash)}`);
     }
     while (updated.length <= entry.position) updated.push(null);
+    if (entry.hash !== null) {
+      const existing = index.get(entry.hash);
+      if (existing !== undefined && existing !== entry.position) {
+        updated[existing] = null;
+        index.delete(entry.hash);
+      }
+      const oldAtPos = updated[entry.position];
+      if (oldAtPos !== null && oldAtPos !== entry.hash) {
+        index.delete(oldAtPos);
+      }
+      index.set(entry.hash, entry.position);
+    } else {
+      const oldAtPos = updated[entry.position];
+      if (oldAtPos !== null) index.delete(oldAtPos);
+    }
     updated[entry.position] = entry.hash;
   }
   while (updated.length > 0 && updated[updated.length - 1] === null) updated.pop();
@@ -118,6 +152,8 @@ export async function recordServed(sessionKey: string, path: string, rows: Serve
     withStore(() => {
       const current = store.getServed(sessionKey, path);
       const updated = _mergeServedRows(current, rows, lineCount === undefined ? undefined : { truncateTo: lineCount });
+      // Skip no-op writes (O(1) check; no extra I/O beyond current read).
+      if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
       store.upsertServed(sessionKey, path, JSON.stringify(updated));
     });
   } catch (error) {
@@ -132,6 +168,8 @@ export async function recordServedTruncated(sessionKey: string, path: string, ro
     withStore(() => {
       const current = store.getServed(sessionKey, path);
       const updated = _mergeServedRows(current, rows, { truncateTo: lineCount, clearFrom });
+      // Skip no-op writes (O(1) check; no extra I/O beyond current read).
+      if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
       store.upsertServed(sessionKey, path, JSON.stringify(updated));
     });
   } catch (error) {

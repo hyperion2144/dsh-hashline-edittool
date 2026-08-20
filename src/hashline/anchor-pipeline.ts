@@ -180,7 +180,7 @@ function fmtMismatchWithServes(
 	const refList = notFound.map((m) => `"${m.ref.hash}"`).join(", ");
 	if (notFound.length > 0) {
 		out.push(
-			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. The file content has changed since those anchors were read, or the line number shifted. The echo below is rendered in read format; if it is still the line you meant, reuse the fresh marker (e.g. "12${LINE_HASH_SEP}aB3") without calling read. Otherwise call read() to refresh.`,
+			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
 		);
 		for (const m of notFound) {
 			const ctx = m.context;
@@ -202,7 +202,7 @@ function fmtMismatchWithServes(
 	if (ambiguous.length > 0) {
 		if (out.length > 0) out.push("");
 		out.push(
-			`[E_AMBIGUOUS_ANCHOR] ${ambiguous.length} ambiguous anchor${ambiguous.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}. Call read() to get fresh anchors, then copy the <line>${LINE_HASH_SEP}<hash> of the start and end of the range you are editing into remove_from and remove_to of your next edit call.`,
+			`[E_AMBIGUOUS_ANCHOR] ${ambiguous.length} ambiguous anchor${ambiguous.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}. Re-read for fresh anchors.`,
 		);
 		for (const m of ambiguous) {
 			const sample = (m.candidates ?? []).slice(0, 5);
@@ -276,11 +276,11 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 		if (match) {
 			let message: string;
 			if (match[1] === "+") {
-				message = `[E_BAD_REF] Autocorrected: stripped diff-preview marker copied from the diff preview in remove_from/remove_to entry "${trimmed}".`;
+				message = `[E_BAD_REF] stripped diff-preview marker from remove_from/remove_to "${trimmed}".`;
 			} else if (match[1] === "-") {
-				message = `[E_BAD_REF] Autocorrected: stripped leading "-" marker in remove_from/remove_to entry "${trimmed}".`;
+				message = `[E_BAD_REF] stripped leading "-" marker from remove_from/remove_to "${trimmed}".`;
 			} else {
-				message = `[E_BAD_REF] Autocorrected: stripped "HASH│" prefix copied from read output in remove_from/remove_to entry "${trimmed}".`;
+				message = `[E_BAD_REF] stripped "HASH│" prefix from remove_from/remove_to "${trimmed}".`;
 			}
 			warnings?.push(message);
 			return match[2]!;
@@ -322,16 +322,11 @@ function stripBarePrefixes(
 		.map((s) => `replacement_text line ${s.lineIndex + 1}`)
 		.join(", ");
 	const matchedCount = stripped.filter((s) => s.matched).length;
-	const evidence =
-		matchedCount === 0
-			? "none of the stripped hashes match current file lines"
-			: `${matchedCount} of ${stripped.length} stripped hash(es) match current file lines`;
-	const guidance =
-		matchedCount === 0
-			? " Verify that these lines were pasted from read output; literal content starting with 'HASH│' would be altered by this strip."
-			: "";
+	const evidence = matchedCount === 0
+		? "0 matched — verify literal 'HASH│' content"
+		: `${matchedCount}/${stripped.length} matched`;
 	warnings.push(
-		`[E_BARE_HASH_PREFIX] Autocorrected: stripped "HASH│" prefix copied from read output in ${locations} (${evidence}).${guidance}`,
+		`[E_BARE_HASH_PREFIX] stripped "HASH│" prefix from ${locations} (${evidence}).`,
 	);
 	return { ...edit, content_lines: contentLines };
 }
@@ -357,7 +352,7 @@ function stripDiffPrefixes(edit: HEdit, warnings: string[]): HEdit {
 		.map((i) => `replacement_text line ${i + 1}`)
 		.join(", ");
 	warnings.push(
-		`[E_INVALID_PATCH] Autocorrected: stripped diff-preview marker copied from the diff preview in ${locations}.`,
+		`[E_INVALID_PATCH] stripped diff-preview marker from ${locations}.`,
 	);
 	return { ...edit, content_lines: contentLines };
 }
@@ -383,7 +378,7 @@ function swapReversedRanges(
 		return edit;
 	}
 	warnings.push(
-		`[E_BAD_OP] Autocorrected: remove_from and remove_to were reversed (remove_from ${startRef.hash} is after remove_to ${endRef.hash}); swapped the pair.`,
+		`[E_BAD_OP] reversed remove_from/remove_to (${startRef.hash} after ${endRef.hash}); swapped.`,
 	);
 	return { ...edit, hash_bounds: [endRef, startRef] as [Anchor, Anchor] };
 }
@@ -722,7 +717,49 @@ export function verifyServedRange(args: {
 
 	const startPositions = servedPositionsOf(served, startHash);
 	const endPositions = servedPositionsOf(served, endHash);
-	if (startPositions.length !== 1 || endPositions.length !== 1) {
+	const currentLen = endLine - startLine + 1;
+	let from: number | undefined;
+	let to: number | undefined;
+	if (startPositions.length === 1 && endPositions.length === 1) {
+		from = Math.min(startPositions[0]!, endPositions[0]!);
+		to = Math.max(startPositions[0]!, endPositions[0]!);
+	} else {
+		// Candidate-span enumeration (ADR-0008): when either anchor is served
+		// at multiple positions (e.g. a partial re-serve left a stale duplicate),
+		// find the (s, e) pair whose `served[s..e]` matches the current
+		// `fileHashes[startLine-1..endLine-1]` exactly.
+		const candidates: Array<{ from: number; to: number }> = [];
+		for (const s of startPositions) {
+			for (const e of endPositions) {
+				const candFrom = Math.min(s, e);
+				const candTo = Math.max(s, e);
+				if (candTo - candFrom + 1 !== currentLen) continue;
+				let ok = true;
+				for (let k = 0; k < currentLen; k++) {
+					if (served[candFrom + k] !== fileHashes[startLine - 1 + k]) {
+						ok = false;
+						break;
+					}
+				}
+				if (ok) candidates.push({ from: candFrom, to: candTo });
+			}
+		}
+		if (candidates.length === 1) {
+			from = candidates[0]!.from;
+			to = candidates[0]!.to;
+		} else if (candidates.length > 1) {
+			// Pick the span whose start is closest to the model's intended
+			// startLine — disambiguates when the same content was served at
+			// multiple positions in the served mirror.
+			candidates.sort(
+				(a, b) =>
+					Math.abs(a.from - (startLine - 1)) - Math.abs(b.from - (startLine - 1)),
+			);
+			from = candidates[0]!.from;
+			to = candidates[0]!.to;
+		}
+	}
+	if (from === undefined || to === undefined) {
 		const problems: string[] = [];
 		if (startPositions.length === 0) {
 			problems.push(`remove_from "${startHash}" has no served position`);
@@ -741,14 +778,13 @@ export function verifyServedRange(args: {
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
-				`[E_RANGE_UNVERIFIED] Cannot verify the range against served state${where}: ${problems.join("; ")}. ` +
-				`The tool only verifies what it delivered to the model's context; a boundary anchor that cannot be verified is never guessed at. Current range:\n${echo}\n${retryHint()}`,
+				`[E_RANGE_UNVERIFIED] No served span matched the current range (${currentLen} lines)${where}. ` +
+				`A full read will re-sync the served mirror — the echoed range below is current content, ` +
+				`but retrying without re-reading cannot clear a stale duplicate outside the echoed window.\n` +
+				`Current range:\n${echo}`,
 			servedRows: echoRows,
 		});
 	}
-
-	const from = Math.min(startPositions[0]!, endPositions[0]!);
-	const to = Math.max(startPositions[0]!, endPositions[0]!);
 
 	for (let i = from; i <= to; i++) {
 		if (served[i] === null) {
@@ -762,7 +798,6 @@ export function verifyServedRange(args: {
 	}
 
 	const servedLen = to - from + 1;
-	const currentLen = endLine - startLine + 1;
 	if (servedLen !== currentLen) {
 		throw new ServedRejectionError({
 			code: "E_RANGE_STALE",
