@@ -4,7 +4,7 @@
  * Only a leading `---` fence whose lines are empty or `order: <integer>` is
  * accepted. This module has zero IO — exhaustive unit testing without a temp
  * home.
- * @module dsh-better-edit/guidance/parse
+ * @module dsh-hashline-edittool/guidance/parse
  */
 
 /** The parsed content of one override file. */

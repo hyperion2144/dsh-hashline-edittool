@@ -9,7 +9,7 @@ describe("configDir", () => {
 		delete process.env.DSH_HOME;
 		try {
 			expect(configDir()).toBe(
-				join(defaultDshHome(), "plugins", "dsh-better-edit"),
+				join(defaultDshHome(), "plugins", "dsh-hashline-edittool"),
 			);
 		} finally {
 			if (previousDsh === undefined) delete process.env.DSH_HOME;
@@ -21,7 +21,7 @@ describe("configDir", () => {
 		const previousDsh = process.env.DSH_HOME;
 		process.env.DSH_HOME = "/custom/dsh";
 		try {
-			expect(configDir()).toBe(join("/custom/dsh", "plugins", "dsh-better-edit"));
+			expect(configDir()).toBe(join("/custom/dsh", "plugins", "dsh-hashline-edittool"));
 		} finally {
 			if (previousDsh === undefined) delete process.env.DSH_HOME;
 			else process.env.DSH_HOME = previousDsh;
@@ -33,7 +33,7 @@ describe("configDir", () => {
 		process.env.DSH_HOME = "   ";
 		try {
 			expect(configDir()).toBe(
-				join(defaultDshHome(), "plugins", "dsh-better-edit"),
+				join(defaultDshHome(), "plugins", "dsh-hashline-edittool"),
 			);
 		} finally {
 			if (previousDsh === undefined) delete process.env.DSH_HOME;

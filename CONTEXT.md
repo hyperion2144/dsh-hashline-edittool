@@ -1,4 +1,4 @@
-# dsh-better-edit
+# dsh-hashline-edittool
 
 Hash-anchored read/edit/batch_edit/undo_last_edit tools for DeepSeek Harness (dsh). This context covers the plugin's model-facing vocabulary: what its tools are and how the text the model reads is configured.
 

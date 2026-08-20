@@ -1,7 +1,7 @@
 /**
  * Materializer: IO-heavy seam owning per-preset directory seeding, blank-heal,
  * and README generation. Idempotent and concurrent-safe (wx).
- * @module dsh-better-edit/guidance/materialize
+ * @module dsh-hashline-edittool/guidance/materialize
  */
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -22,7 +22,7 @@ export const DEFAULT_PRESETS: readonly string[] = [
  * The root README: the per-preset customization convention users see in the
  * plugin home.
  */
-export const GUIDANCE_HOME_README = `# dsh-better-edit guidance
+export const GUIDANCE_HOME_README = `# dsh-hashline-edittool guidance
 
 Each agent preset has its own guidance directory here: \`<preset>/<section>.md\`.
 On first boot the plugin seeds the shipped presets (\`standard\`, \`code\`,
@@ -35,6 +35,7 @@ Each file is one tool section:
 - \`edit.md\` -> \`tool:edit\`
 - \`batch_edit.md\` -> \`tool:batch_edit\`
 - \`undo_last_edit.md\` -> \`tool:undo_last_edit\`
+- \`grep.md\` -> \`tool:grep\`
 
 ## Customize
 
@@ -62,7 +63,7 @@ compiled defaults in the plugin bundle. To customize a preset that has no
 seeded directory, copy a seeded one to its name.
 `;
 
-export const GUIDANCE_HOME_README_ZH = `# dsh-better-edit 指引
+export const GUIDANCE_HOME_README_ZH = `# dsh-hashline-edittool 指引
 
 每个 agent preset 在这里都有自己的指引目录：\`<preset>/<section>.md\`。首次启动时
 插件会为随附的 preset（\`standard\`、\`code\`、\`minimal\`、\`cordis\`）写入编译内置的
@@ -74,6 +75,7 @@ export const GUIDANCE_HOME_README_ZH = `# dsh-better-edit 指引
 - \`edit.md\` -> \`tool:edit\`
 - \`batch_edit.md\` -> \`tool:batch_edit\`
 - \`undo_last_edit.md\` -> \`tool:undo_last_edit\`
+- \`grep.md\` -> \`tool:grep\`
 
 ## 自定义
 

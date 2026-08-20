@@ -25,7 +25,7 @@
  * computation. Deleting it would scatter the served+drift invariant
  * across 4 files — it concentrates (deep).
  *
- * @module dsh-better-edit/session-view
+ * @module dsh-hashline-edittool/session-view
  */
 
 import { randomUUID } from "node:crypto";

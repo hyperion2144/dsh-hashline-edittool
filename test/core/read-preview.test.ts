@@ -13,7 +13,7 @@ describe("fmtReadPreview", () => {
 
   it("returns empty file marker for content with only newline", async () => {
     const result = await fmtReadPreview("\n", {}, undefined, home.testPath);
-    expect(result.text).toMatch(/^[A-Za-z0-9]{3}│$/);
+    expect(result.text).toMatch(/1#[A-Za-z0-9]{3}│$/);
   });
 
   it("returns all lines when no offset or limit given", async () => {
@@ -28,6 +28,8 @@ describe("fmtReadPreview", () => {
     expect(result.text).toContain("│b");
     expect(result.text).toContain("│c");
     expect(result.text).not.toContain("│a");
+    expect(result.text).toContain("2#");
+    expect(result.text).toContain("3#");
   });
 
   it("respects limit parameter", async () => {
@@ -58,9 +60,9 @@ describe("fmtReadPreview", () => {
   it("uses precomputed hashes when provided", async () => {
     const hashes = ["AAA", "BBB", "CCC"];
     const result = await fmtReadPreview("a\nb\nc\n", {}, hashes, home.testPath);
-    expect(result.text).toContain("AAA│a");
-    expect(result.text).toContain("BBB│b");
-    expect(result.text).toContain("CCC│c");
+    expect(result.text).toContain("1#AAA│a");
+    expect(result.text).toContain("2#BBB│b");
+    expect(result.text).toContain("3#CCC│c");
   });
 
   it("skips an oversized first line and shows the rest with a bash fallback (auto-read budget)", async () => {
@@ -85,7 +87,7 @@ describe("fmtReadPreview", () => {
   it("returns only the warning when every line is oversized (auto-read budget)", async () => {
     const big = "Z".repeat(60_000);
     const result = await fmtReadPreview(`${big}\n`, {}, undefined, home.testPath, DEFAULT_MAX_BYTES);
-    expect(result.text).not.toMatch(/[A-Za-z0-9]{3}│/);
+    expect(result.text).not.toMatch(/\d+#[A-Za-z0-9]{3}│/);
     expect(result.text).toContain("exceeds 50.0KB");
     expect(result.text).toContain("sed -n '1p'");
     expect(result.nextOffset).toBeUndefined();
@@ -106,21 +108,21 @@ describe("fmtReadPreview", () => {
   it("shows a 60KB line in full by default", async () => {
     const big = "V".repeat(60_000);
     const result = await fmtReadPreview(`${big}\nb\n`, {}, undefined, home.testPath);
-    expect(result.text).toMatch(new RegExp(`^[A-Za-z0-9]{3}│V{60000}\n[A-Za-z0-9]{3}│b$`));
+    expect(result.text).toMatch(new RegExp(`^HASH IDENTIFIER │ FILE LINES\n\\d+#[A-Za-z0-9]{3}│V{60000}\n\\d+#[A-Za-z0-9]{3}│b$`));
     expect(result.text).not.toContain("content not shown");
   });
 
   it("shows a line just under 200KB in full by default", async () => {
     const big = "U".repeat(204_700);
     const result = await fmtReadPreview(`${big}\n`, {}, undefined, home.testPath);
-    expect(result.text).toMatch(new RegExp(`^[A-Za-z0-9]{3}│U{204700}$`));
+    expect(result.text).toMatch(new RegExp(`^HASH IDENTIFIER │ FILE LINES\n\\d+#[A-Za-z0-9]{3}│U{204700}$`));
     expect(result.text).not.toContain("content not shown");
   });
 
   it("marks lines over 200KB by default", async () => {
     const big = "T".repeat(210_000);
     const result = await fmtReadPreview(`${big}\n`, {}, undefined, home.testPath);
-    expect(result.text).not.toMatch(/[A-Za-z0-9]{3}│/);
+    expect(result.text).not.toMatch(/\d+#[A-Za-z0-9]{3}│/);
     expect(result.text).toContain("exceeds 200.0KB");
     expect(result.text).toContain("sed -n '1p'");
     expect(result.text).toContain("head -c 204800");

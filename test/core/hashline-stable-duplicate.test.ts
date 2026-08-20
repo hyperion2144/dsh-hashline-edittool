@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { lineHashes, applyEdit, type HEdit } from "../../src/hashline/index.js";
 import { useTestHome, withTempFile, setupIntegrationTest, getText, extractHash } from "../support/fixtures.js";
 
+/** Extract only the 3-char hash portion (the part after `#`); line# may shift across reads. */
+function extractHashOnly(line: string): string {
+	const hashPart = extractHash(line);
+	const hashIdx = hashPart.indexOf("#");
+	return hashIdx >= 0 ? hashPart.slice(hashIdx + 1) : hashPart;
+}
+
 const home = useTestHome();
 
 describe("stable hashing with duplicate content lines", () => {
@@ -91,21 +98,21 @@ describe("stable hashing with duplicate content lines", () => {
       const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 
       const read1 = await readTool.execute("r1", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines1 = getText(read1).split("\n");
+      const lines1 = getText(read1).split("\n").filter((l) => l.includes("│"));
 
-      const firstBraceHash = extractHash(lines1.find((l) => l.includes("│}"))!);
+      const firstBraceMarker = extractHash(lines1.find((l) => l.includes("│}"))!);
       const braceLines = lines1.filter((l) => l.endsWith("│}"));
       expect(braceLines).toHaveLength(2);
-      const secondBraceHash = extractHash(braceLines[1]!);
-      expect(firstBraceHash).not.toBe(secondBraceHash);
+      const secondBraceMarker = extractHash(braceLines[1]!);
+      expect(firstBraceMarker).not.toBe(secondBraceMarker);
 
-      const line1Hash = extractHash(lines1.find((l) => l.includes("│function a()"))!);
+      const line1Marker = extractHash(lines1.find((l) => l.includes("│function a()"))!);
       await editTool.execute(
         "e1",
         {
           path: "sample.ts",
-          remove_from: line1Hash,
-          remove_to: firstBraceHash,
+          remove_from: line1Marker,
+          remove_to: firstBraceMarker,
           replacement_text: "",
         },
         undefined,
@@ -114,11 +121,12 @@ describe("stable hashing with duplicate content lines", () => {
       );
 
       const read2 = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines2 = getText(read2).split("\n");
+      const lines2 = getText(read2).split("\n").filter((l) => l.includes("│"));
       const survivingBrace = lines2.find((l) => l.endsWith("│}"))!;
       expect(survivingBrace).toBeTruthy();
-      const survivingHash = extractHash(survivingBrace);
-      expect(survivingHash).toBe(secondBraceHash);
+      const survivingHash = extractHashOnly(survivingBrace);
+      const expectedHash = extractHashOnly(secondBraceMarker);
+      expect(survivingHash).toBe(expectedHash);
     });
   });
 
@@ -128,12 +136,12 @@ describe("stable hashing with duplicate content lines", () => {
       const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 
       const read1 = await readTool.execute("r1", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines1 = getText(read1).split("\n");
+      const lines1 = getText(read1).split("\n").filter((l) => l.includes("│"));
 
       const bLines = lines1.filter((l) => l.endsWith("│b"));
       expect(bLines).toHaveLength(2);
-      const firstBHash = extractHash(bLines[0]!);
-      const secondBHash = extractHash(bLines[1]!);
+      const firstBHash = extractHashOnly(bLines[0]!);
+      const secondBHash = extractHashOnly(bLines[1]!);
       expect(firstBHash).not.toBe(secondBHash);
 
       const aHash = extractHash(lines1.find((l) => l.endsWith("│a"))!);
@@ -153,10 +161,10 @@ describe("stable hashing with duplicate content lines", () => {
       );
 
       const read2 = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines2 = getText(read2).split("\n");
+      const lines2 = getText(read2).split("\n").filter((l) => l.includes("│"));
       const survivingB = lines2.find((l) => l.endsWith("│b"))!;
       expect(survivingB).toBeTruthy();
-      const survivingHash = extractHash(survivingB);
+      const survivingHash = extractHashOnly(survivingB);
       expect(survivingHash).toBe(secondBHash);
     });
   });
@@ -167,13 +175,13 @@ describe("stable hashing with duplicate content lines", () => {
       const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 
       const read1 = await readTool.execute("r1", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines1 = getText(read1).split("\n");
+      const lines1 = getText(read1).split("\n").filter((l) => l.includes("│"));
 
       const bLines = lines1.filter((l) => l.endsWith("│b"));
       expect(bLines).toHaveLength(3);
-      const firstBHash = extractHash(bLines[0]!);
-      const secondBHash = extractHash(bLines[1]!);
-      const thirdBHash = extractHash(bLines[2]!);
+      const firstBHash = extractHashOnly(bLines[0]!);
+      const secondBHash = extractHashOnly(bLines[1]!);
+      const thirdBHash = extractHashOnly(bLines[2]!);
       expect(new Set([firstBHash, secondBHash, thirdBHash]).size).toBe(3);
 
       const aHash = extractHash(lines1.find((l) => l.endsWith("│a"))!);
@@ -205,11 +213,11 @@ describe("stable hashing with duplicate content lines", () => {
         undefined,
         ctx,
       );
-      const lines1b = getText(read1b).split("\n");
+      const lines1b = getText(read1b).split("\n").filter((l) => l.includes("│"));
       const dHash2 = extractHash(lines1b.find((l) => l.endsWith("│d"))!);
       const eHash2 = extractHash(lines1b.find((l) => l.endsWith("│e"))!);
-      expect(dHash2).toBe(dHash);
-      expect(eHash2).toBe(eHash);
+      expect(extractHashOnly(dHash2)).toBe(extractHashOnly(dHash));
+      expect(extractHashOnly(eHash2)).toBe(extractHashOnly(eHash));
 
       await editTool.execute(
         "e2",
@@ -225,10 +233,10 @@ describe("stable hashing with duplicate content lines", () => {
       );
 
       const read2 = await readTool.execute("r2", { path: "sample.ts" }, undefined, undefined, ctx);
-      const lines2 = getText(read2).split("\n");
+      const lines2 = getText(read2).split("\n").filter((l) => l.includes("│"));
       const survivingBLines = lines2.filter((l) => l.endsWith("│b"));
       expect(survivingBLines).toHaveLength(2);
-      const survivingHashes = survivingBLines.map(extractHash);
+      const survivingHashes = survivingBLines.map(extractHashOnly);
       expect(survivingHashes).toContain(secondBHash);
       expect(survivingHashes).toContain(thirdBHash);
     });

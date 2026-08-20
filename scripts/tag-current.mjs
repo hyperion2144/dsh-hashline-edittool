@@ -53,6 +53,6 @@ if (existing === tag) {
 	process.exit(0);
 }
 
-run(["tag", "-a", tag, "-m", `${tag} — dsh-better-edit ${version}`]);
+run(["tag", "-a", tag, "-m", `${tag} — dsh-hashline-edittool ${version}`]);
 run(["push", "origin", tag]);
 console.log(`[tag-current] tagged and pushed ${tag}`);

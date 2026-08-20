@@ -1,5 +1,5 @@
 /**
- * dsh-better-edit — hash-anchored read/edit/batch_edit/undo_last_edit for
+ * dsh-hashline-edittool — hash-anchored read/edit/batch_edit/undo_last_edit for
  * DeepSeek Harness, a dsh port of pi-hashline-edit-lsz.
  *
  * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). On
@@ -13,7 +13,7 @@
  * The four `tool:*` guidance sections resolve per agent preset from override
  * files in the shared home (see `src/guidance.ts`); deployments without the
  * `agentPresets` service keep the compiled defaults unchanged.
- * @module dsh-better-edit
+ * @module dsh-hashline-edittool
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -25,6 +25,7 @@ import { registerReadTool } from "./tool-read.js";
 import { registerEditTool } from "./tool-edit.js";
 import { registerBatchEditTool } from "./tool-batch-edit.js";
 import { registerUndoTool } from "./tool-undo.js";
+import { registerGrepTool } from "./tool-grep.js";
 import { registerWriteHook } from "./write-hook.js";
 
 import { initHasher } from "./hashline/hash-assign.js";
@@ -37,7 +38,7 @@ import {
 import { configDir } from "./paths.js";
 
 /** Cordis plugin name used by loader diagnostics. */
-export const name = "dsh-better-edit";
+export const name = "dsh-hashline-edittool";
 
 /**
  * Services the plugin's per-agent install touches: `tools` and `systemPrompt`
@@ -94,14 +95,14 @@ async function resolveAgentSections(
 		for (const section of sections) {
 			if (section.malformed) {
 				rootCtx.logger.warn(
-					`dsh-better-edit: ignoring malformed guidance override ${section.malformed.file}: ${section.malformed.reason}; using compiled default`,
+					`dsh-hashline-edittool: ignoring malformed guidance override ${section.malformed.file}: ${section.malformed.reason}; using compiled default`,
 				);
 			}
 		}
 		return sections;
 	} catch (error) {
 		rootCtx.logger.warn(
-			`dsh-better-edit: guidance resolution failed for agent ${agent.id}, using compiled defaults: ${error instanceof Error ? error.message : String(error)}`,
+			`dsh-hashline-edittool: guidance resolution failed for agent ${agent.id}, using compiled defaults: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		return compiledDefaultSections();
 	}
@@ -116,6 +117,7 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		const io = ctxFsIO(rootCtx.fs as FileSystem, rootCtx);
 		const disposers: Array<() => void> = [];
 		disposers.push(registerReadTool(rootCtx, agent.ctx, io));
+		disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
 		const sandbox = new FsSandboxController(rootCtx);
 		disposers.push(registerEditTool(rootCtx, agent.ctx, io, sandbox));
 		disposers.push(registerBatchEditTool(rootCtx, agent.ctx, io, sandbox));
@@ -143,7 +145,7 @@ export function apply(rootCtx: Context): void {
 	// boot anymore).
 	initHasher().catch((error) => {
 		rootCtx.logger.warn(
-			`dsh-better-edit: hasher warm-up failed: ${error instanceof Error ? error.message : String(error)}`,
+			`dsh-hashline-edittool: hasher warm-up failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	});
 
@@ -152,7 +154,7 @@ export function apply(rootCtx: Context): void {
 	// files). A failure must never fail the boot.
 	ensurePresetGuidance(configDir()).catch((error) => {
 		rootCtx.logger.warn(
-			`dsh-better-edit: guidance materialization failed: ${error instanceof Error ? error.message : String(error)}`,
+			`dsh-hashline-edittool: guidance materialization failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	});
 
@@ -164,7 +166,7 @@ export function apply(rootCtx: Context): void {
 			installAgentTools(rootCtx, agent);
 		} catch (error) {
 			rootCtx.logger.warn(
-				`dsh-better-edit: failed to install tools for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
+				`dsh-hashline-edittool: failed to install tools for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	});

@@ -1,9 +1,9 @@
 /**
  * Regression tests for the per-workspace store: every tool call resolves the
- * store at `<workspace>/.dsh_better_edit/` (the workspace being the session
+ * store at `<workspace>/.dsh_hashline_edittool/` (the workspace being the session
  * cwd carried by `withWorkspace`), and parallel workspaces keep separate
  * stores — snapshots, served rows, and undo history never leak between them.
- * @module dsh-better-edit/workspace-store.test
+ * @module dsh-hashline-edittool/workspace-store.test
  */
 
 import { describe, expect, it } from "vitest";
@@ -37,17 +37,17 @@ describe("workspace context", () => {
 		}
 	});
 
-	it("resolves the store file under <workspace>/.dsh_better_edit", async () => {
+	it("resolves the store file under <workspace>/.dsh_hashline_edittool", async () => {
 		const cwd = tempWorkspace("dsh-ws-path-");
 		try {
 			expect(hashStorePath(cwd)).toBe(
-				join(cwd, ".dsh_better_edit", "hash-store.sqlite"),
+				join(cwd, ".dsh_hashline_edittool", "hash-store.sqlite"),
 			);
 			await withWorkspace(cwd, async () => {
 				await loadHashStore();
 			});
 			expect(
-				existsSync(join(cwd, ".dsh_better_edit", "hash-store.sqlite")),
+				existsSync(join(cwd, ".dsh_hashline_edittool", "hash-store.sqlite")),
 			).toBe(true);
 		} finally {
 			shutdownHashStore();

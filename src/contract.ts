@@ -8,7 +8,7 @@
  * no path) — that is the hashline-internal edit-item shape, deliberately
  * decoupled from the tool-layer request contract so the hashline module does
  * not depend on this one.
- * @module dsh-better-edit/contract
+ * @module dsh-hashline-edittool/contract
  */
 
 import { BATCH_EDIT_MAX_ITEMS } from "./constants.js";
@@ -19,14 +19,16 @@ import { isRec, normalizeFilePath, rejectUnknownFields } from "./utils.js";
 export interface EditParams {
 	path: string;
 	remove_from: string;
-	remove_to: string;
+	/** Optional. When omitted, the edit targets only `remove_from`. */
+	remove_to?: string;
 	replacement_text: string;
 }
 
 export interface BatchItemParams {
 	path?: string;
 	remove_from: string;
-	remove_to: string;
+	/** Optional. When omitted, the edit targets only `remove_from`. */
+	remove_to?: string;
 	replacement_text: string;
 }
 
@@ -106,11 +108,18 @@ export function assertEditRequest(
 
 	if (
 		typeof request.remove_from !== "string" ||
-		typeof request.remove_to !== "string" ||
 		typeof request.replacement_text !== "string"
 	) {
 		throw new Error(
-			'[E_BAD_SHAPE] Edit request requires "remove_from", "remove_to", and "replacement_text" at the top level.',
+			'[E_BAD_SHAPE] Edit request requires "remove_from" and "replacement_text" strings at the top level (remove_to is optional).',
+		);
+	}
+	if (
+		request.remove_to !== undefined &&
+		typeof request.remove_to !== "string"
+	) {
+		throw new Error(
+			'[E_BAD_SHAPE] Edit request "remove_to" must be a string when provided (omit to edit only remove_from).',
 		);
 	}
 }
@@ -143,11 +152,18 @@ export function assertBatchEditRequest(
 		rejectUnknownFields(item, BATCH_ITEM_KS, `edits[${index}]`);
 		if (
 			typeof item.remove_from !== "string" ||
-			typeof item.remove_to !== "string" ||
 			typeof item.replacement_text !== "string"
 		) {
 			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}] requires "remove_from", "remove_to", and "replacement_text" strings.`,
+				`[E_BAD_SHAPE] edits[${index}] requires "remove_from" and "replacement_text" strings (remove_to is optional).`,
+			);
+		}
+		if (
+			item.remove_to !== undefined &&
+			typeof item.remove_to !== "string"
+		) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].remove_to must be a string when provided (omit to edit only remove_from).`,
 			);
 		}
 		if (
@@ -208,13 +224,13 @@ export const replacementTextSchema = {
 export const removeFromSchema = {
 	type: 'string',
 	description:
-		'Bare 3-char HASH only (e.g. "aB3") — copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the FIRST line to remove (inclusive)',
+		'Anchor of the FIRST line to remove (inclusive). Prefer the full `<line>#<hash>` form copied from a read/grep/diff row (e.g. "12#aB3" → `12#aB3│content`); a bare 3-char hash (e.g. "aB3") is accepted when you are sure the file has not shifted above. Never pass the line content.',
 } as const
 
 export const removeToSchema = {
 	type: 'string',
 	description:
-		'Bare 3-char HASH only (e.g. "aB3") — copy just the hash from the leftmost column of a read row like `aB3│content`; never the line content. Marks the LAST line to remove (inclusive)',
+		'Optional. Anchor of the LAST line to remove (inclusive). Same form as `remove_from`. Omit to edit only the `remove_from` line.',
 } as const
 
 export const pathSchema = {

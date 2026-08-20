@@ -1,8 +1,8 @@
 {
-  "name": "dsh-better-edit",
+  "name": "dsh-hashline-edittool",
   "version": "0.2.2",
   "type": "module",
-  "description": "Hash-anchored read/edit/batch_edit/undo_last_edit tools for DeepSeek Harness (dsh). Every line gets a unique 3-char hash (A-Za-z0-9) that stays stable across edits; stale or ambiguous anchors are rejected, never fuzzy-matched. Undo persists across restarts.",
+  "description": "Line-anchored read/edit/batch_edit/grep/undo_last_edit tools for DeepSeek Harness (dsh). Every line is addressed by `<line>#<hash>` so chained edits skip a re-read; stale or ambiguous anchors are rejected and a fresh `<line>#<hash>` is served back. Undo persists across restarts.",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -23,13 +23,13 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Rianico/dsh-better-edit.git"
+    "url": "git+https://github.com/hyperion2144/dsh-hashline-edittool.git"
   },
-  "homepage": "https://github.com/Rianico/dsh-better-edit",
+  "homepage": "https://github.com/hyperion2144/dsh-hashline-edittool",
   "bugs": {
-    "url": "https://github.com/Rianico/dsh-better-edit/issues"
+    "url": "https://github.com/hyperion2144/dsh-hashline-edittool/issues"
   },
-  "author": "dsh-better-edit contributors",
+  "author": "dsh-hashline-edittool contributors",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -37,12 +37,14 @@
     "coding-agent",
     "oh-my-pi",
     "hashline",
-    "hash-anchored",
+    "line-anchored",
+    "line-hash",
     "hash",
     "anchors",
     "read",
     "edit",
     "batch-edit",
+    "grep",
     "undo",
     "file-editing",
     "stable"

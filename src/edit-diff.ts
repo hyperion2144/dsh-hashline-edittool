@@ -1,5 +1,5 @@
 import * as Diff from "diff";
-import { lineHashesPure, ANCHOR_LEN, HASH_SEP } from "./hashline/index.js";
+import { lineHashesPure, ANCHOR_LEN, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
 import type { ServedRow } from "./hashline/served.js";
 
 export type LineEnding = "\r\n" | "\n" | "\r";
@@ -30,15 +30,29 @@ export function stripBOM(content: string): { bom: string; text: string } {
 		: { bom: "", text: content };
 }
 
+/**
+ * Render one diff row. `prefix` is the diff marker (`+`/`-`/space); the second
+ * column is the absolute 1-indexed line number; the third column is the 3-char
+ * content hash (or a space-filled placeholder when the hash is unknown, e.g.
+ * for a line removed in the OLD file that no longer has a hash in the NEW
+ * hashes array — the original hash is preferred via `oldContentHashes`).
+ * `lineNumber` is required for new-file rows; old-file rows default to the
+ * same line number (when both old and new hashes happen to be present).
+ */
 function fmtDiffLine(
 	prefix: " " | "+" | "-",
 	line: string,
 	hash: string | undefined,
+	lineNumber: number,
+	oldHash: string | undefined = undefined,
 ): string {
-	if (hash === undefined) {
-		return `${prefix}${" ".repeat(ANCHOR_LEN)}${HASH_SEP}${line}`;
+	if (prefix === "-" && oldHash !== undefined) {
+		return `${prefix}${lineNumber}${LINE_HASH_SEP}${oldHash}${HASH_SEP}${line}`;
 	}
-	return `${prefix}${hash}${HASH_SEP}${line}`;
+	if (hash === undefined) {
+		return `${prefix}${lineNumber}${LINE_HASH_SEP}${" ".repeat(ANCHOR_LEN)}${HASH_SEP}${line}`;
+	}
+	return `${prefix}${lineNumber}${LINE_HASH_SEP}${hash}${HASH_SEP}${line}`;
 }
 
 const ELLIPSIS_MARKER: unique symbol = Symbol("ellipsis");
@@ -77,14 +91,14 @@ export function genDiff(
 			for (let k = 0; k < displayLines.length; k++) {
 				if (part.added) {
 					const hash = effectiveNewHashes[newLineNum - 1];
-					output.push(fmtDiffLine("+", displayLines[k]!, hash));
+					output.push(fmtDiffLine("+", displayLines[k]!, hash, newLineNum));
 					if (hash !== undefined) {
 						servedRows.push({ position: newLineNum - 1, hash });
 					}
 					newLineNum++;
 				} else {
-					const hash = oldContentHashes?.[oldLineNum - 1];
-					output.push(fmtDiffLine("-", displayLines[k]!, hash));
+					const oldHash = oldContentHashes?.[oldLineNum - 1];
+					output.push(fmtDiffLine("-", displayLines[k]!, undefined, oldLineNum, oldHash));
 					oldLineNum++;
 				}
 			}
@@ -127,7 +141,7 @@ export function genDiff(
 					continue;
 				}
 				const hash = effectiveNewHashes[newLineNum - 1];
-				output.push(fmtDiffLine(" ", line, hash));
+				output.push(fmtDiffLine(" ", line, hash, newLineNum));
 				if (hash !== undefined) {
 					servedRows.push({ position: newLineNum - 1, hash });
 				}

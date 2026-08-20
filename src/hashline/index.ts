@@ -1,7 +1,7 @@
 /**
  * Hashline barrel — thin re-export via deep seams.
  * Deep seams: hash-assign (allocation), anchor-pipeline (ordering), hash (persistence).
- * @module dsh-better-edit/hashline
+ * @module dsh-hashline-edittool/hashline
  */
 export {
  ANCHOR_LEN,
@@ -16,6 +16,10 @@ export {
  HL_PREFIX_PLUS_RE,
  HL_PREFIX_MINUS_RE,
  HL_BARE_PREFIX_RE,
+ LINE_HASH_SEP,
+ LINE_HASH_RE,
+ HASHLINE_HEADER,
+ STALE_CONTEXT_LINES,
  canon,
  lineHashesPure,
  mapStableHashes,
@@ -49,3 +53,6 @@ export type {
  ResolvedRange,
  ServedCode,
 } from "./anchor-pipeline.js";
+
+export { grepFileContent } from "../tool-grep.js";
+export type { GrepMatch, GrepFileSection, GrepToolOptions } from "../tool-grep.js";

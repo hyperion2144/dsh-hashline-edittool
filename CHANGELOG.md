@@ -1,10 +1,32 @@
 # Changelog
 
-All notable changes to the `dsh-better-edit` plugin will be documented in this file.
+All notable changes to the `dsh-hashline-edittool` plugin will be documented in this file.
 
 Entries link to the originating spec issue in [pi-hashline-edit-lsz](https://github.com/Rianico/pi-hashline-edit-lsz) where one exists.
 
 ## [Unreleased]
+
+### Added
+
+- `line#hash` anchor (issue: line-anchored hashline upgrade). Every read / grep / edit row now carries the absolute 1-indexed line number alongside the 3-char content hash, e.g. `12#ve7│function hello() {`. The model passes the full `line#hash` (or a bare 3-char hash when it knows the file has not shifted above) as `remove_from` / `remove_to`.
+- `HASH IDENTIFIER │ FILE LINES` header line at the top of every hashline response, visually separating the marker column from the verbatim file content.
+- Post-edit response carries a `Shift:` block describing how absolute line numbers below the edited range have moved: `Shift: lines > N shift by +K (original line X now at line Y, …). Use newLine=<N>#<oldHash> to edit the row immediately below without re-reading — copy the hash from the next "unchanged" diff row if one was rendered.` The model chains edits by reading the Shift block instead of re-reading.
+- `[E_STALE_ANCHOR]` rejection echoes the target line in read format (`HASH IDENTIFIER │ FILE LINES` + ±3 context rows). The echo rows are recorded as served, so a retry carrying the fresh `line#hash` marker passes served-state verification without a re-`read`.
+- New `grep` tool. Hashline-aware substring (default) or regex (`regex: true`) search. Output mirrors `read`: each match is a `<line>#<hash>│content` row under a `HASH IDENTIFIER │ FILE LINES` header, one section per file. Context rows (`-C N`) carry markers too. Every file read by grep is emitted as `fs/observed` and recorded as served, so a grep hit can be edited directly without a separate `read`.
+- New `tool:grep` prompt section (default order `134`), overridable per agent preset via `<preset>/grep.md`.
+
+### Changed
+
+- `edit.remove_to` is now **optional**: omitting it (or passing `""`) defaults to `remove_from` — a single-line edit. The same defaulting applies to `batch_edit` items.
+- Anchor parsing accepts both `line#hash` and a bare 3-char hash. Bare-hash form is the pre-existing hash-only fallback for cases where the model is confident the file has not shifted above.
+- Post-edit response reorganised into a three-block layout: `HASH IDENTIFIER │ FILE LINES` header, the `+- line#hash │ content` diff rows, the `Shift:` block, and the unchanged trailing warnings / drift notice. `batch_edit` now emits one diff section + one `Shift:` block per hunk; the cumulative Shift (added − removed through each hunk) lets the model compose `newLine#oldHash` markers between hunks without a re-read.
+- Output column position is no longer fixed across line-number widths (the column moves with the line-number digit count). The marker structure (`<prefix><line>#<hash>│<content>`) is invariant and is what the model parses.
+
+### Tests
+
+- 11 new tests in `test/core/line-hashline.test.ts` covering: `parseRef` accepting `line#hash`, the read header line, single-line edit via omitted `remove_to`, single-hunk `Shift:` block, cumulative per-hunk `Shift:` blocks in batch, stale-anchor echo in read format with ±3 context, grep output format, grep context rows, and `grepFileContent` no-match path.
+- Existing test suite adjusted to the new `line#hash` left-column format: read-preview, read-and-serve, edit-diff-preview, edit-diff-utils, edit-engine-e2e, hashline-stable-duplicate, hashline-hash, hashline-recovery, hashline-strict-input, hashline-parse, and guidance. The pre-existing hash-store / served-store / served-state / snapshot-store / reject-and-serve-seam failures are sqlite-environment issues unrelated to this change (verified on `main`).
+- Test count: 651 passing (35 pre-existing sqlite-env failures excluded; was 615 pre-change).
 
 ## [0.2.2] - 2026-08-19
 
@@ -16,12 +38,12 @@ Entries link to the originating spec issue in [pi-hashline-edit-lsz](https://git
 
 ### Added
 
-- Configurable per-preset tool guidance (issues #7, #8; tickets #9–#13): the four `tool:*` prompt sections resolve from plain-markdown override files keyed by agent preset — `$DSH_HOME/plugins/dsh-better-edit/<preset>/<section>.md` — with an optional `order` front-matter. On first boot the plugin seeds each shipped preset (`standard`, `code`, `minimal`, `cordis`) with its guidance as editable files plus a root README documenting the scheme. Per section the chain is `<preset>/<section>.md` → compiled default; files are read once per agent at session-start, so edits apply to new sessions. Deployments without the `agentPresets` service keep the compiled defaults untouched.
+- Configurable per-preset tool guidance (issues #7, #8; tickets #9–#13): the four `tool:*` prompt sections resolve from plain-markdown override files keyed by agent preset — `$DSH_HOME/plugins/dsh-hashline-edittool/<preset>/<section>.md` — with an optional `order` front-matter. On first boot the plugin seeds each shipped preset (`standard`, `code`, `minimal`, `cordis`) with its guidance as editable files plus a root README documenting the scheme. Per section the chain is `<preset>/<section>.md` → compiled default; files are read once per agent at session-start, so edits apply to new sessions. Deployments without the `agentPresets` service keep the compiled defaults untouched.
 Default orders sit at 130–133, above the built-in tool-guidance band (100–116 in the shipped
 dsh), so a same-order section merge with unrelated tool guidance cannot occur out of the box; the
 seeded preset files expose that `order` as editable front-matter.
 - Default guidance text simplified per the writing-for-agents principles; the `*_GUIDELINES` constants unified on `*_GUIDANCE`.
-- Thanks to [@R-LEI2536](https://github.com/R-LEI2536) for requesting configurable per-preset prompts and for the design input that shaped this release (issue [#7](https://github.com/Rianico/dsh-better-edit/issues/7)).
+- Thanks to [@R-LEI2536](https://github.com/R-LEI2536) for requesting configurable per-preset prompts and for the design input that shaped this release (issue [#7](https://github.com/hyperion2144/dsh-hashline-edittool/issues/7)).
 
 ### Changed
 
@@ -98,7 +120,7 @@ seeded preset files expose that `order` as editable front-matter.
 
 ### Changed
 
-- The hash store moved from `$DSH_HOME/plugins/dsh-better-edit` to a per-workspace location: `<workspace>/.dsh_better_edit/hash-store.sqlite`, carried per tool call via an AsyncLocalStorage workspace context (`src/workspace.ts`). Parallel sessions in different workspaces no longer share anchors or undo history. The shared home path remains the fallback for tests/previews.
+- The hash store moved from `$DSH_HOME/plugins/dsh-hashline-edittool` to a per-workspace location: `<workspace>/.dsh_hashline_edittool/hash-store.sqlite`, carried per tool call via an AsyncLocalStorage workspace context (`src/workspace.ts`). Parallel sessions in different workspaces no longer share anchors or undo history. The shared home path remains the fallback for tests/previews.
 - Undo history from before 0.1.2 is not migrated to the new layout.
 
 ## [0.1.1] - 2026-08-15

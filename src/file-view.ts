@@ -15,7 +15,7 @@
  *  - `preview` (pure, no IO) — tested without filesystem
  *  - `readView` (IO) — read + normalize + render + truncate + hashes
  *
- * @module dsh-better-edit/file-view
+ * @module dsh-hashline-edittool/file-view
  */
 
 import { constants } from "node:fs";
@@ -24,7 +24,7 @@ import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "./constants.js";
 import { lineHashes, fmtRegion, HASH_SEP } from "./hashline/index.js";
-import { HASH_SPACE } from "./hashline/hash-assign.js";
+import { HASH_SPACE, HASHLINE_HEADER, ANCHOR_LEN } from "./hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "./utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "./edit-diff.js";
 import { resolveTarget, toCwd } from "./paths.js";
@@ -446,6 +446,23 @@ export async function readNormFile(
 
 // --- Read render (from read-render.ts, private) ---
 
+/**
+ * Split a hashline block into its header line and the row body. Returns the
+ * header text unchanged and the rows without it (so callers can pass the rows
+ * to a line-budget truncation without the header counting against the cap).
+ */
+function splitHashlineBlock(formatted: string): {
+  headerLine: string;
+  rowsOnly: string;
+} {
+  const newline = formatted.indexOf("\n");
+  if (newline < 0) {
+    return { headerLine: formatted, rowsOnly: "" };
+  }
+  const headerLine = formatted.slice(0, newline);
+  return { headerLine, rowsOnly: formatted.slice(newline + 1) };
+}
+
 function normPosInt(
   value: number | undefined,
   name: 'offset' | 'limit',
@@ -494,7 +511,7 @@ export async function fmtReadPreview(
         (await (path ? lineHashes(text, path) : lineHashes(text)));
       const emptyLineHash = allHashes[0]!;
       return {
-        text: `${emptyLineHash}${HASH_SEP}\n[File is empty. Use edit to insert content.]`,
+        text: `${HASHLINE_HEADER}\n1${HASH_SEP}${emptyLineHash}${HASH_SEP}\n[File is empty. Use edit to insert content.]`,
         served: [{ position: 0, hash: emptyLineHash }],
       };
     }
@@ -518,12 +535,12 @@ export async function fmtReadPreview(
     precomputedHashes ??
     (await (path ? lineHashes(text, path) : lineHashes(text)));
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
-  const formatted = fmtRegion(selectedHashes, selected);
+  const formatted = `${HASHLINE_HEADER}\n${fmtRegion(selectedHashes, selected, startLine)}`;
   const maxBytes = maxLineBytes;
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
     bytes: Buffer.byteLength(
-      `${selectedHashes[index]}${HASH_SEP}${line}`,
+      `${startLine + index}${HASH_SEP}${selectedHashes[index]}${HASH_SEP}${line}`,
       'utf-8',
     ),
   }));
@@ -532,7 +549,7 @@ export async function fmtReadPreview(
     const rows = rowSizes.map((row, index) =>
       row.bytes > maxBytes
         ? `[Line ${row.lineNumber} is ${formatSize(row.bytes)}, exceeds ${formatSize(maxBytes)}; content not shown. Use bash: sed -n '${row.lineNumber}p' <path> | head -c ${maxBytes}]`
-        : fmtRegion([selectedHashes[index]!], [selected[index]!]),
+        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber),
     );
     const skippedTruncation = truncateHead(rows.join('\n'), {
       maxBytes,
@@ -558,9 +575,9 @@ export async function fmtReadPreview(
       (skippedTruncation.truncated || lastShownLine < totalLines)
     ) {
       nextOffset = lastShownLine + 1;
-      preview += `\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
+      preview = `${HASHLINE_HEADER}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
     } else {
-      preview += `\n\n${warning}`;
+      preview = `${HASHLINE_HEADER}\n${preview}\n\n${warning}`;
     }
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {
@@ -578,11 +595,14 @@ export async function fmtReadPreview(
       served,
     };
   }
-  const truncation = truncateHead(formatted, {
+  // Strip the hashline header before byte/line truncation so it doesn't count
+  // against the line budget; re-attach it afterwards.
+  const { headerLine, rowsOnly } = splitHashlineBlock(formatted);
+  const truncation = truncateHead(rowsOnly, {
     maxBytes,
     maxLines: maxTruncLines,
   });
-  let preview = truncation.content;
+  let preview = `${headerLine}\n${truncation.content}`;
   let nextOffset: number | undefined;
   if (truncation.truncated) {
     const endLineDisplay = startLine + truncation.outputLines - 1;

@@ -27,10 +27,12 @@ describe("readAndServe", () => {
 			expect(absolutePath).toBe(path);
 			expect(served).toHaveLength(3);
 
+			expect(text).toMatch(/^HASH IDENTIFIER │ FILE LINES\n/);
 			const lines = text.split("\n");
-			expect(lines[0]).toMatch(/^[A-Za-z0-9]{3}│one$/);
-			expect(lines[1]).toMatch(/^[A-Za-z0-9]{3}│two$/);
-			expect(lines[2]).toMatch(/^[A-Za-z0-9]{3}│three$/);
+			expect(lines[0]).toBe("HASH IDENTIFIER │ FILE LINES");
+			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}│one$/);
+			expect(lines[2]).toMatch(/^2#[A-Za-z0-9]{3}│two$/);
+			expect(lines[3]).toMatch(/^3#[A-Za-z0-9]{3}│three$/);
 
 			const stored = await loadServed(sessionKey, path);
 			expect(stored).toHaveLength(3);
@@ -50,8 +52,9 @@ describe("readAndServe", () => {
 			});
 
 			const lines = text.split("\n");
-			expect(lines[0]).toMatch(/^[A-Za-z0-9]{3}│two$/);
-			expect(lines[1]).toMatch(/^[A-Za-z0-9]{3}│three$/);
+			expect(lines[0]).toBe("HASH IDENTIFIER │ FILE LINES");
+			expect(lines[1]).toMatch(/^2#[A-Za-z0-9]{3}│two$/);
+			expect(lines[2]).toMatch(/^3#[A-Za-z0-9]{3}│three$/);
 			expect(text).toContain("[Showing lines 2-3 of 4");
 
 			const stored = await loadServed(sessionKey, path);

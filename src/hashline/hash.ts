@@ -3,7 +3,7 @@
  * Private to HashAssign seam; use `from "./hash-assign.js"` for pure APIs
  * and `from "./hash.js"` only for persistence-aware lineHashes.
  * Now imports pure APIs from hash-assign (no circular).
- * @module dsh-better-edit/hashline/hash
+ * @module dsh-hashline-edittool/hashline/hash
  */
 import { splitLines } from "../utils.js";
 import { loadHashStore, type HashStore } from "../hash-store.js";

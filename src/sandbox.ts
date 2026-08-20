@@ -7,7 +7,7 @@
  * workspace root. Without the policy the sandbox backend falls back to the
  * deployment default root, so an edit inside the session workspace is denied
  * under `workspace-write` even though the built-in `write` succeeds there.
- * @module dsh-better-edit/sandbox
+ * @module dsh-hashline-edittool/sandbox
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -62,7 +62,7 @@ export class FsSandboxController {
 				: (ctx.get("sandboxPolicy") as SandboxPolicyLike);
 		if (defaultMode !== undefined && this.policy === undefined) {
 			throw new Error(
-				"dsh-better-edit: the mounted filesystem confines but ctx.sandboxPolicy is missing",
+				"dsh-hashline-edittool: the mounted filesystem confines but ctx.sandboxPolicy is missing",
 			);
 		}
 	}

@@ -8,7 +8,7 @@
  * The model-facing contract lives here unchanged: [E_BATCH_ABORT],
  * [E_NOOP_LOOP], [E_UNDO_UNAVAILABLE] carry byte-identical messages, and
  * reject-and-serve records the same echo serves.
- * @module dsh-better-edit/edit-engine
+ * @module dsh-hashline-edittool/edit-engine
  */
 
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
@@ -62,6 +62,32 @@ export interface PreparedItem {
 	pathWarning?: string;
 }
 
+/**
+ * Per-hunk shift information: `delta` is added-minus-removed for the hunk;
+ * `firstStableLineNew` is the absolute line number in the **new** file of
+ * the first row that did not change (or `originalHashes.length + 1` when the
+ * hunk was the last line).
+ */
+export interface HunkShift {
+	/** Index of the hunk in the batch (0-based). */
+	index: number;
+	/** Added − removed for this hunk. */
+	delta: number;
+	/**
+	 * Absolute line number (1-indexed) in the new file of the first unchanged
+	 * row after this hunk. Used to compose the Shift: lines > N shift by +K
+	 * block the model reads.
+	 */
+	firstStableLineNew: number;
+	/**
+	 * Absolute line number (1-indexed) in the new file of the LAST line of
+	 * this hunk (the first replacement row), or the original last-removed line
+	 * when the hunk produced no rows. Lets the response label each hunk with
+	 * the line range it touched.
+	 */
+	lastChangedLine: number;
+}
+
 export interface FileEditResult {
 	displayPath: string;
 	absolutePath: string;
@@ -79,6 +105,8 @@ export interface FileEditResult {
 	totalRemovedLines: number;
 	driftNotice: string | undefined;
 	range: ResolvedRange;
+	/** Per-hunk shift info for batch output. */
+	hunkShifts: HunkShift[];
 }
 
 // ---------------------------------------------------------------------------
@@ -454,6 +482,8 @@ export async function runFileEdits(
 	let lastApplied:
 		| { content: string; hashes: string[]; removedHashes: Set<string> }
 		| undefined;
+	const hunkShifts: HunkShift[] = [];
+	let cumulativeShift = 0;
 
 	for (const item of items) {
 		abortIf(opts.signal);
@@ -555,6 +585,23 @@ export async function runFileEdits(
 		const removedHashes = applied.removedHashes!;
 		totalAddedLines += applied.totalAddedLines;
 		totalRemovedLines += applied.totalRemovedLines;
+		const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
+		cumulativeShift += hunkDelta;
+		const lastChangedLine = applied.lastChangedLine ?? range.endLine;
+		// `firstStableLineNew` is the first absolute line in the new file that
+		// was not part of this hunk. For a non-empty replacement it is the line
+		// right after the replacement; for an empty replacement it equals the
+		// line of the next untouched row.
+		const replacedRows = applied.totalAddedLines;
+		const lastReplacementLineNew =
+			range.startLine + Math.max(0, replacedRows) - 1;
+		const firstStableLineNew = lastReplacementLineNew + 1;
+		hunkShifts.push({
+			index: item.index,
+			delta: cumulativeShift,
+			firstStableLineNew,
+			lastChangedLine,
+		});
 		lastApplied = {
 			content: currentContent,
 			hashes: currentHashes,
@@ -637,6 +684,7 @@ export async function runFileEdits(
 			endHash: unionEndHash,
 			delta: splitLines(result).length - splitLines(originalNormalized).length,
 		},
+		hunkShifts,
 	};
 }
 

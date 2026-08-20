@@ -46,8 +46,8 @@ describe("applyEdit — recovery scenarios", () => {
     }
     expect(caught).toBeDefined();
     expect(caught!.message).toMatch(/E_STALE_ANCHOR/);
-    expect(caught!.message).toMatch(/Current context around resolved anchor/);
-    expect(caught!.message).toContain(` 3: ${hashes[2]}│c`);
+    expect(caught!.message).toMatch(/Echo of the line you tried/);
+    expect(caught!.message).toContain(`3#${hashes[2]}│c`);
   });
 
   it("shows context anchored on the start when only the end is stale", async () => {
@@ -64,8 +64,8 @@ describe("applyEdit — recovery scenarios", () => {
       caught = error as Error;
     }
     expect(caught).toBeDefined();
-    expect(caught!.message).toMatch(/Current context around resolved anchor/);
-    expect(caught!.message).toContain(` 1: ${hashes[0]}│a`);
+    expect(caught!.message).toMatch(/Echo of the line you tried/);
+    expect(caught!.message).toContain(`1#${hashes[0]}│a`);
   });
 
   it("omits context when both anchors are stale", async () => {
@@ -80,7 +80,7 @@ describe("applyEdit — recovery scenarios", () => {
       caught = error as Error;
     }
     expect(caught).toBeDefined();
-    expect(caught!.message).not.toMatch(/Current context around resolved anchor/);
+    expect(caught!.message).not.toMatch(/Echo of the line you tried/);
   });
 
   it("rejects ambiguous anchor", async () => {

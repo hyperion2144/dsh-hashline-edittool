@@ -4,7 +4,7 @@
  * `fs/observed` after reads/writes, exactly like the built-in tools — a
  * hashline tool that skipped them would leave the observation policy's version
  * stale and the next built-in write on the file would fail.
- * @module dsh-better-edit/fs-bridge.policy.test
+ * @module dsh-hashline-edittool/fs-bridge.policy.test
  */
 
 import { describe, expect, it, vi } from "vitest";

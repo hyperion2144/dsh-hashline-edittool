@@ -19,7 +19,7 @@
  * Internals (private): verifyServedRange, resToSpan, assemble, scanDrift,
  * boundaryDups, noopGuard. Tested via PipelineResult/FileEditResult, not via split e2e.
  *
- * @module dsh-better-edit/mutation
+ * @module dsh-hashline-edittool/mutation
  */
 
 import type { FileIO } from "./fs-bridge.js";
@@ -77,6 +77,12 @@ export interface PipelineResult {
 	totalRemovedLines: number
 	driftNotice?: string
 	range: ResolvedRange
+	/**
+	 * One synthetic shift entry for a single edit (delta = added − removed).
+	 * Empty when the edit is a no-op. Lets `buildChanged` reuse the same
+	 * Shift-block formatter as the batch path.
+	 */
+	hunkShifts: import("./edit-engine.js").HunkShift[]
 }
 
 export interface ExecPipelineOptions {
@@ -96,11 +102,15 @@ export async function execPipeline(
 
 	const editWarnings: string[] = []
 	// Resolve the edit up front (before IO) so malformed anchors fail before
-	// any filesystem work, exactly as the tool always did.
+	// any filesystem work, exactly as the tool always did. `remove_to` is
+	// optional at the contract layer; default it to `remove_from` here so the
+	// anchor pipeline always sees a fully populated pair.
+	const removeFrom = params.remove_from
+	const removeTo = params.remove_to ?? removeFrom
 	const edit = resEdit(
 		{
-			remove_from: params.remove_from,
-			remove_to: params.remove_to,
+			remove_from: removeFrom,
+			remove_to: removeTo,
 			replacement_text: params.replacement_text,
 		},
 		editWarnings,
@@ -138,8 +148,8 @@ export async function execPipeline(
 			content: originalNormalized,
 			hashes: originalHashes,
 			served,
-			removeFrom: params.remove_from,
-			removeTo: params.remove_to,
+			removeFrom: removeFrom,
+			removeTo: removeTo,
 			replacementText: params.replacement_text,
 			absolutePath,
 			displayPath: path,
@@ -185,6 +195,21 @@ export async function execPipeline(
 		}
 	}
 
+	// Synthetic single-hunk shift entry — the batch path builds the same shape
+	// per hunk, and the response renderer formats them uniformly.
+	const hunkShifts: import("./edit-engine.js").HunkShift[] = [];
+	if (!isNoop) {
+		const delta = applied.totalAddedLines - applied.totalRemovedLines;
+		const replacedRows = Math.max(0, applied.totalAddedLines);
+		const lastReplacementLineNew = applied.range.startLine + replacedRows - 1;
+		hunkShifts.push({
+			index: 0,
+			delta,
+			firstStableLineNew: lastReplacementLineNew + 1,
+			lastChangedLine: applied.lastChangedLine ?? applied.range.endLine,
+		});
+	}
+
 	return {
 		path,
 		absolutePath,
@@ -203,6 +228,7 @@ export async function execPipeline(
 		totalRemovedLines: applied.totalRemovedLines,
 		driftNotice,
 		range: applied.range,
+		hunkShifts,
 	}
 }
 

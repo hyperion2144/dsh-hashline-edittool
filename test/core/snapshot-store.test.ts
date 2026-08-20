@@ -35,7 +35,7 @@ async function withTempHome(
 }
 
 function configHome(home: string): string {
-	return join(home, ".dsh", "plugins", "dsh-better-edit");
+	return join(home, ".dsh", "plugins", "dsh-hashline-edittool");
 }
 
 function sqlitePath(home: string): string {

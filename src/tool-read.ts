@@ -3,7 +3,7 @@
  * the built-in `read` on the agent's own scope layer. Every shown row is
  * recorded as served, so a later `edit` can verify the model was actually
  * shown the lines it targets.
- * @module dsh-better-edit/tool-read
+ * @module dsh-hashline-edittool/tool-read
  */
 
 import type { Context } from "@deepseek-ai/cordis";

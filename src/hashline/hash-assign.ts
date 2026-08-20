@@ -11,7 +11,7 @@
  * lineHashes, canon, HASH_SEP, etc. Deleting this module would scatter the
  * allocation invariant across 4 files — it concentrates.
  *
- * @module dsh-better-edit/hashline/hash-assign
+ * @module dsh-hashline-edittool/hashline/hash-assign
  */
 import xxhash from "xxhash-wasm";
 import { splitLines } from "../utils.js";
@@ -54,6 +54,18 @@ export const HASH_RE = new RegExp(`^${HASH_CLASS}$`);
 // --- pure (allocation invariant) ---
 export const ANCHOR_LEN = HASH_LEN;
 export const HASH_SEP = "│";
+/** Separator inside an anchor between the absolute 1-indexed line number and the 3-char hash. */
+export const LINE_HASH_SEP = "#";
+/** Regex for the `line#hash` anchor form (group 1 = line, group 2 = hash). */
+export const LINE_HASH_RE = /^(\d+)#([A-Za-z0-9]{3})$/;
+/** Number of context rows to echo around a stale or ambiguous anchor (read format). */
+export const STALE_CONTEXT_LINES = 3;
+/**
+ * Header line that opens every hashline-producing tool response (read, grep,
+ * post-edit diff, stale echo). Marks the boundary between model-facing marker
+ * columns and verbatim file content.
+ */
+export const HASHLINE_HEADER = `HASH IDENTIFIER ${HASH_SEP} FILE LINES`;
 export const HASH_SPACE = ALPH.length ** HASH_LEN;
 export const MAX_HASH_LINES = HASH_SPACE;
 export const HASH_PROBE_STRIDE = ALPH.length ** 2 + ALPH.length + 1;
@@ -75,9 +87,15 @@ function hashAt(idx: number): string {
   }
   return hash;
 }
-export const HL_PREFIX_PLUS_RE = new RegExp(`^\\+${HASH_CLASS}│`);
-export const HL_PREFIX_MINUS_RE = new RegExp(`^-(?:${HASH_CLASS}│| {${ANCHOR_LEN}}│)`);
-export const HL_BARE_PREFIX_RE = new RegExp(`^\\s*(${HASH_CLASS})│`);
+// Prefix regexes accept an optional `line#` in front of the hash (the v1
+// format `hash│content` is still tolerated on input for backwards compat).
+export const HL_PREFIX_PLUS_RE = new RegExp(`^\\+(?:(?:\\d+)#)?${HASH_CLASS}│`);
+export const HL_PREFIX_MINUS_RE = new RegExp(
+  `^-(?:(?:(?:\\d+)#)?${HASH_CLASS}│| {${ANCHOR_LEN}}│)`,
+);
+export const HL_BARE_PREFIX_RE = new RegExp(
+  `^\\s*(?:(\\d+)#)?(${HASH_CLASS})│`,
+);
 export function canon(line: string): string {
   return line.replace(/\r/g, "").trimEnd();
 }

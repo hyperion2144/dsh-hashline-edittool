@@ -5,7 +5,7 @@
  * This module only adds the persistence seam: recordServed + clearDriftReported
  * + UTF-8 rewrite note. Used by the `read` tool and by the write auto-read
  * hook, so the model is always shown fresh anchors the same way.
- * @module dsh-better-edit/read-and-serve
+ * @module dsh-hashline-edittool/read-and-serve
  */
 
 import { abortIf } from "./utils.js";

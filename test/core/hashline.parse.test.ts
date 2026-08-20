@@ -7,15 +7,20 @@ describe("parseHashRef", () => {
 		expect(ref).toEqual({ hash: "aB3" });
 	});
 
+	it("parses a line#hash anchor", () => {
+		const ref = parseHashRef("12#aB3");
+		expect(ref).toEqual({ hash: "aB3" });
+	});
+
 	it("rejects trailing content after the anchor", () => {
 		expect(() => parseHashRef("aB3:const x = 1;")).toThrow(
-			/Expected a 3-char alphanumeric anchor/,
+			/Expected.*line.*hash.*hash.*e\.g\./,
 		);
 	});
 
 	it("rejects a full HASH│content line copied into remove_from/remove_to", () => {
 		expect(() => parseHashRef("aB3│const x = 1;")).toThrow(
-			/remove_from and remove_to must contain the 3-char hash only/,
+			/remove_from and remove_to must contain only the marker/,
 		);
 	});
 	it("rejects leading >>> markers (strict mode: no marker stripping)", () => {
@@ -45,10 +50,8 @@ describe("parseHashRef", () => {
 		expect(() => parseHashRef("invalid")).toThrow(/^\[E_BAD_REF\]/);
 	});
 
-	it("rejects legacy LINE#HASH format", () => {
-		expect(() => parseHashRef("5aB3")).toThrow(
-			/Use the hash alone/,
-		);
+	it("accepts line#hash (legacy LINE#HASH form is now the canonical anchor)", () => {
+		expect(parseHashRef("5#aB3")).toEqual({ hash: "aB3" });
 	});
 
 	it("rejects wrong-length anchors", () => {

@@ -5,7 +5,7 @@
  * store. `undo_last_edit` reverts only when the file still matches the stored
  * result — a later external write clears the history instead of being
  * overwritten. Undo survives restarts (the store is on disk).
- * @module dsh-better-edit/undo-edit
+ * @module dsh-hashline-edittool/undo-edit
  */
 
 import type { LineEnding } from './edit-diff.js'

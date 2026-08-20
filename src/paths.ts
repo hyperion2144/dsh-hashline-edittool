@@ -12,19 +12,21 @@ import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { errCode } from "./utils.js";
 
 /**
- * On-disk home for dsh-better-edit state. Inside a tool call the store lives
- * co-located with the files being edited: `<workspace>/.dsh_better_edit/` (the
- * workspace is the session cwd, carried through the execution by
- * `withWorkspace`). Outside a tool call — tests, previews, startup — the store
- * falls back to the shared DeepSeek Harness home
- * (`$DSH_HOME/plugins/dsh-better-edit`, default `~/.dsh/plugins/dsh-better-edit`),
+ * On-disk home for dsh-hashline-edittool state. Inside a tool call the store
+ * lives co-located with the files being edited:
+ * `<workspace>/.dsh_hashline_edittool/` (the workspace is the session cwd,
+ * carried through the execution by `withWorkspace`). Outside a tool call —
+ * tests, previews, startup — the store falls back to the shared DeepSeek
+ * Harness home
+ * (`$DSH_HOME/plugins/dsh-hashline-edittool`,
+ * default `~/.dsh/plugins/dsh-hashline-edittool`),
  * so a caller without a workspace never writes into an arbitrary cwd.
  * @param cwd - the workspace root, or undefined for the shared-home fallback.
  */
 export function configDir(cwd?: string): string {
 	return cwd !== undefined
-		? join(resolvePath(cwd), ".dsh_better_edit")
-		: join(resolveDshHome(), "plugins", "dsh-better-edit");
+		? join(resolvePath(cwd), ".dsh_hashline_edittool")
+		: join(resolveDshHome(), "plugins", "dsh-hashline-edittool");
 }
 
 export function hashStorePath(cwd?: string): string {

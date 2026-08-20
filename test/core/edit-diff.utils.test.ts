@@ -140,6 +140,6 @@ describe("genDiff", () => {
     const hashes = lineHashesPure(newContent);
     const { diff } = genDiff(oldContent, newContent, 2, hashes);
     const cLine = diff.split("\n").find((line) => line.endsWith("│c"))!;
-    expect(cLine.startsWith(` ${hashes[2]}`)).toBe(true);
+    expect(cLine.startsWith(` 3#${hashes[2]}`)).toBe(true);
   });
 });

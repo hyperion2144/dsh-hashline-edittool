@@ -3,7 +3,7 @@
  * malformed=fallback+report" policy for guidance override files.
  *
  * Tested via temp-home FS; materializer stubs this module.
- * @module dsh-better-edit/guidance/resolve
+ * @module dsh-hashline-edittool/guidance/resolve
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
 	BATCH_EDIT_GUIDANCE,
 	EDIT_GUIDANCE,
+	GREP_GUIDANCE,
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
 	type ToolGuidance,
@@ -43,7 +44,7 @@ export interface GuidanceSection {
 	renderDefault(): string;
 }
 
-/** The four sections, in default-order sequence. */
+/** The five sections, in default-order sequence. */
 export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 	{
 		name: "tool:read",
@@ -69,6 +70,12 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		defaultOrder: 133,
 		renderDefault: () => guidanceText(UNDO_GUIDANCE),
 	},
+	{
+		name: "tool:grep",
+		file: "grep.md",
+		defaultOrder: 134,
+		renderDefault: () => guidanceText(GREP_GUIDANCE),
+	},
 ];
 
 const SECTION_BY_NAME = new Map(
@@ -86,7 +93,7 @@ export function renderSectionDefault(name: string): string {
 export interface ResolveGuidanceOptions {
 	/** Agent preset id, or undefined to skip the preset layer. */
 	presetId?: string;
-	/** Plugin shared home directory (`$DSH_HOME/plugins/dsh-better-edit`). */
+	/** Plugin shared home directory (`$DSH_HOME/plugins/dsh-hashline-edittool`). */
 	homeDir: string;
 }
 

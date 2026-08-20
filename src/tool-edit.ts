@@ -3,7 +3,7 @@
  * built-in `edit` on the agent's own scope layer. Registered through the
  * agent context so the model-facing contract (remove_from/remove_to hashes,
  * served-range verification, reject-and-serve) replaces the built-in one.
- * @module dsh-better-edit/tool-edit
+ * @module dsh-hashline-edittool/tool-edit
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -70,6 +70,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					canonical.path = resolution.path;
 				}
 				assertEditRequest(canonical);
+				// Default missing `remove_to` to `remove_from` — a single-line edit.
+				if (canonical.remove_to === undefined || canonical.remove_to === "") {
+					canonical.remove_to = canonical.remove_from;
+				}
 				const sandboxPolicy = await sandbox.resolvePolicy(
 					"edit",
 					canonical as unknown as FsEscalationArgs,

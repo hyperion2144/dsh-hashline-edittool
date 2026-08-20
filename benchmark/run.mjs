@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-better-edit — reproducible token-cost benchmark
+ * dsh-hashline-edittool — reproducible token-cost benchmark
  * ---------------------------------------------------
  * Compares the model-side request tokens of three edit patterns applied to
  * the SAME file with the SAME replacement text:
@@ -441,7 +441,7 @@ function render(r) {
 
 	const out = [];
 	out.push(
-		"dsh-better-edit — token-cost benchmark (hashline vs str_replace vs @oh-my-pi/hashline)",
+		"dsh-hashline-edittool — token-cost benchmark (hashline vs str_replace vs @oh-my-pi/hashline)",
 	);
 	out.push(`corpus   : ${corpusPath}`);
 	out.push(`size     : ${r.lineCount} lines`);

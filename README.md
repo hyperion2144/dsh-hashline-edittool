@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="dsh-better-edit" width="200">
+  <img src="assets/logo.svg" alt="dsh-hashline-edittool" width="200">
 </p>
 
-<h1 align="center">dsh-better-edit</h1>
+<h1 align="center">dsh-hashline-edittool</h1>
 
 <p align="center">
-  <strong>A better edit tool for DeepSeek Harness<br>
-  Powered by hash‑anchored positioning — not by line numbers, not by string replacement, fewer tokens, more context space for real work.</strong>
+  <strong>Line-anchored edit tool for DeepSeek Harness<br>
+  Powered by <code>&lt;line&gt;#&lt;hash&gt;</code> positioning — chained edits skip the re-read, fewer tokens, more context space for real work.</strong>
 </p>
 
 <p align="center">
@@ -26,9 +26,9 @@
   <img src="https://img.shields.io/badge/version-0.1.9-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-blueviolet.svg" alt="DeepSeek Harness Plugin">
-  <img src="https://img.shields.io/npm/v/dsh-better-edit" alt="npm version">
-  <img src="https://img.shields.io/npm/dm/dsh-better-edit" alt="npm downloads">
-  <img src="https://img.shields.io/github/stars/Rianico/dsh-better-edit?style=social" alt="GitHub Stars">
+  <img src="https://img.shields.io/npm/v/dsh-hashline-edittool" alt="npm version">
+  <img src="https://img.shields.io/npm/dm/dsh-hashline-edittool" alt="npm downloads">
+  <img src="https://img.shields.io/github/stars/hyperion2144/dsh-hashline-edittool?style=social" alt="GitHub Stars">
 </p>
 
 <p align="center">
@@ -42,7 +42,7 @@
 
 Most edit tools ask the model to echo the old code **token-for-token** before it can change anything
 — and that's exactly where agents fail: 46–51% patch-format failure rates for several models with
-replace-style edits. **dsh-better-edit** goes deeper. Every line of a file gets a unique 3-character
+replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a unique 3-character
 content hash, and edits target hashes. The old text is never echoed, anchors survive edits, and every
 resolved range is verified against exactly what the model saw — wrong-line edits cannot silently land.
 
@@ -59,15 +59,15 @@ Not for one-line touch-ups (near parity) or new files (`write`). It pays off in 
 ### Install
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add github:Rianico/dsh-better-edit   # from github
-npx @deepseek-ai/dsh plugin --profile web add dsh-better-edit   # from npm
-npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-better-edit   # from a local checkout
+npx @deepseek-ai/dsh plugin --profile web add github:hyperion2144/dsh-hashline-edittool   # from github
+npx @deepseek-ai/dsh plugin --profile web add dsh-hashline-edittool   # from npm
+npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-hashline-edittool   # from a local checkout
 ```
 
 The profile's next session runs with the hashline tools installed. To verify the layer is active:
 
 ```sh
-dsh --profile <name> --dump-config   # shows a "# == dsh-better-edit" layer
+dsh --profile <name> --dump-config   # shows a "# == dsh-hashline-edittool" layer
 ```
 
 | Requirement | |
@@ -76,31 +76,33 @@ dsh --profile <name> --dump-config   # shows a "# == dsh-better-edit" layer
 | Profile | a dsh profile (`dsh plugin` initializes one on first use) |
 | Backends | sandboxed / remote filesystems supported (writes go through `ctx.fs`) |
 
-`read` returns every line prefixed by its hash — the hash *is* the line's address:
+`read` returns every line as `<line>#<hash>│<content>` — the absolute line number (1-indexed) plus a 3-char content-derived hash. The response opens with a `HASH IDENTIFIER │ FILE LINES` header that separates the marker column from the verbatim file content:
 
 ```text
-ve7│function hello() {
-szJ│  console.log("world");
-kQm│}
+HASH IDENTIFIER │ FILE LINES
+ 3#ve7│function hello() {
+ 4#szJ│  console.log("world");
+ 5#kQm│}
 ```
 
-`edit` targets a range of hashes, so edits always land on the lines you meant:
+`edit` targets a range of `line#hash` anchors, so edits always land on the lines you meant. `remove_to` is optional — omit it to edit only the `remove_from` line:
 
 ```json
 {
   "path": "src/main.ts",
-  "remove_from": "szJ",
-  "remove_to": "szJ",
+  "remove_from": "4#szJ",
   "replacement_text": "  console.log('hi');"
 }
 ```
 
-and produces a diff with fresh anchors, so the next edit verifies cleanly with no re-read:
+and produces a diff with fresh anchors **plus** a `Shift:` block that describes how absolute line numbers below the edit moved — the next edit chains from there without a re-read:
 
 ```text
-− szJ │   console.log("world");
-+ a3m │   console.log('hi');
-  kQm │ }
+HASH IDENTIFIER │ FILE LINES
++ 4#a3m│  console.log('hi');
+- 4#szJ│  console.log("world");
+
+Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
 ```
 
 ## Configuring Guidance per Preset
@@ -110,10 +112,10 @@ plain-markdown files, overridable per agent preset. Override files live in the p
 home — never the workspace store:
 
 ```
-$DSH_HOME/plugins/dsh-better-edit/<preset>/<section>.md
+$DSH_HOME/plugins/dsh-hashline-edittool/<preset>/<section>.md
 ```
 
-(default home `~/.dsh`, so `~/.dsh/plugins/dsh-better-edit/`). The section table:
+(default home `~/.dsh`, so `~/.dsh/plugins/dsh-hashline-edittool/`). The section table:
 
 | File | Section | Default order |
 | --- | --- | --- |
@@ -181,20 +183,22 @@ call: no re-typing old code, and nothing for the model to track except two stabl
 A stale, never-served, or ambiguous range is hard-rejected **before anything is written**, and the
 current range is echoed back as fresh anchors (reject-and-serve) — the retry needs no `read`.
 
-**A modern edit pattern for agents.** Content-addressed anchors are line-number-agnostic: edit one
-part of a file and the hashes of the rest stay put, so chained edits need no re-reads. The model
-pins a line by what it *is*, not by where it used to sit.
+**A modern edit pattern for agents.** Content-addressed anchors (the 3-char hash) survive edits
+above; the `line#hash` form additionally pins the line's absolute position. Edit one part of a
+file and the rest of the line#hash markers shift predictably — the post-edit response carries a
+`Shift:` block (`lines > N shift by +K`) that lets the model chain the next edit via
+`newLine#oldHash` without a re-read.
 
 ### How It Compares
 
 | | hashline `edit` | `str_replace` (Claude Code / Codex) | @oh-my-pi/hashline patch |
 | --- | :---: | :---: | :---: |
 | Replaced text never echoed in the call | ✅ 2 hashes only | ❌ verbatim | ✅ `+` rows only |
-| Lines addressed by | content hash | text match | number + file-content tag |
+| Lines addressed by | line number + content hash | text match | number + file-content tag |
 | Verified against what the model saw | ✅ every line | ❌ first match wins | ~ file version only |
 | Stale file detected | ✅ rejects, fresh anchors | ❌ may match wrong spot | ✅ tag mismatch → refuse or 3-way merge |
-| Anchors survive edits above | ✅ content-addressed | ✅ content-based | ❌ renumber + new tag |
-| Chained edits without re-reads | ✅ diff serves fresh anchors | ~ | ~ via edit-response numbers |
+| Anchors survive edits above | ✅ content-addressed (hash) + Shift block (line) | ✅ content-based | ❌ renumber + new tag |
+| Chained edits without re-reads | ✅ Shift block + newLine#oldHash | ~ | ~ via edit-response numbers |
 | Unambiguous when text repeats | ✅ boundary anchors verified | ❌ first occurrence | ~ position, unverified per line |
 | Wrong-line edit never lands silently | ✅ every line verified | ❌ first match wins | ~ possible in principle (tag checks version, not lines) |
 | Block ops / registers / `MV` / `REM` | ❌ | ❌ | ✅ |
@@ -294,9 +298,10 @@ this README are a snapshot of that run; regenerate, don't trust.
 
 | Tool | What it does |
 | ------ | -------------- |
-| `read` | Returns a file with every line as `HASH│content`. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
-| `edit` | Replaces a range of lines by hash. `path` · `remove_from` · `remove_to` · `replacement_text` (`""` deletes). Verifies **every line** of the resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. |
-| `batch_edit` | Up to 32 edits in one atomic call: `{ edits: [{ path?, remove_from, remove_to, replacement_text }, …] }`. All-or-nothing; the failing item's range is echoed as fresh serves. |
+| `read` | Returns a file as `HASH IDENTIFIER │ FILE LINES` header + `<line>#<hash>│<content>` rows. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
+| `edit` | Replaces a range of lines by `line#hash`. `path` · `remove_from` · `remove_to?` (omit to edit only `remove_from`) · `replacement_text` (`""` deletes). Verifies **every line** of the resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block describing how absolute line numbers below the edit moved. |
+| `batch_edit` | Up to 32 edits in one atomic call: `{ edits: [{ path?, remove_from, remove_to?, replacement_text }, …] }`. All-or-nothing; the failing item's range is echoed as fresh serves; each hunk's response carries its own cumulative `Shift:` block. |
+| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<line>#<hash>│<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
 ### Error codes
@@ -306,7 +311,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_ACCESS]` | File exists but is not readable/writable by the tool. |
 | `[E_AMBIGUOUS_ANCHOR]` | A hash matches more than one current line; call `read` for fresh anchors. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
-| `[E_BAD_REF]` | `remove_from`/`remove_to` is not a bare 3-char hash. |
+| `[E_BAD_REF]` | `remove_from`/`remove_to` is not a `<line>#<hash>` or 3-char hash. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `HASH│` prefix pasted into `replacement_text` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
@@ -343,13 +348,13 @@ Hash snapshots, served-state rows, and undo history live in one SQLite store **c
 workspace being edited** — one store per session cwd:
 
 ```
-<workspace>/.dsh_better_edit/hash-store.sqlite
+<workspace>/.dsh_hashline_edittool/hash-store.sqlite
 ```
 
 Parallel sessions in different workspaces keep separate stores (the session cwd is carried through
 each tool call), so one project's anchors and undo history never leak into another's. Outside a tool
 call (tests, previews) the store falls back to the shared DeepSeek Harness home
-(`$DSH_HOME/plugins/dsh-better-edit/hash-store.sqlite`).
+(`$DSH_HOME/plugins/dsh-hashline-edittool/hash-store.sqlite`).
 
 A 7-day TTL prunes served rows; missing-file snapshots are pruned at startup. Corrupt stores are
 quarantined and rebuilt automatically. Moving to the per-workspace layout does not migrate earlier
@@ -358,12 +363,13 @@ undo history from the shared home — treat any pre-0.1.2 undo entries as gone.
 ## Project Structure
 
 ```
-dsh-better-edit/
+dsh-hashline-edittool/
 ├── src/
 │   ├── hashline/        # hash + served-state core (ported byte-for-byte from pi-hashline-edit-lsz)
-│   ├── tool-read.ts     # read  — HASH│content, offset/limit paging
-│   ├── tool-edit.ts     # edit  — range-by-hash, reject-and-serve
+│   ├── tool-read.ts     # read  — line#hash│content, offset/limit paging
+│   ├── tool-edit.ts     # edit  — range-by-line#hash, reject-and-serve, Shift block
 │   ├── tool-batch-edit.ts
+│   ├── tool-grep.ts     # grep  — line#hash│content under header per file
 │   ├── tool-undo.ts     # undo_last_edit
 │   ├── sandbox.ts       # FsSandboxController mirror (sandbox_permissions/justification)
 │   ├── write-hook.ts    # auto-read appended to write results
@@ -404,8 +410,10 @@ local filesystem bridge.
 
 ## Roadmap
 
-**Current state (0.1.6):** 615 tests, per-workspace store, sandbox policy participation, the
-served-tail truncation fix, reproducible benchmark, EN + 中文 READMEs, published on npm.
+**Current state:** line-anchored `line#hash` markers with chainable Shift blocks, `grep` tool,
+per-workspace store, sandbox policy participation, the served-tail truncation fix, reproducible
+benchmark, EN + 中文 READMEs, published on npm. Test count: 651 passing (35 pre-existing
+sqlite-environment failures excluded).
 
 <details><summary>Next</summary>
 
@@ -420,7 +428,7 @@ served-tail truncation fix, reproducible benchmark, EN + 中文 READMEs, publish
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) (or just open an [issue](https://github.com/Rianico/dsh-better-edit/issues)).
+See [CONTRIBUTING.md](CONTRIBUTING.md) (or just open an [issue](https://github.com/hyperion2144/dsh-hashline-edittool/issues)).
 The most valuable contributions right now are more benchmark scenarios and edge-case tests for the
 served-state verification.
 
@@ -453,7 +461,7 @@ O(S+R) → O(R) edit-call saving) and an independent
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Rianico/dsh-better-edit&type=Date)](https://star-history.com/#Rianico/dsh-better-edit&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=hyperion2144/dsh-hashline-edittool&type=Date)](https://star-history.com/#hyperion2144/dsh-hashline-edittool&Date)
 
 ---
 

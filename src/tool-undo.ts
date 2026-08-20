@@ -2,7 +2,7 @@
  * The dsh `undo_last_edit` tool: reverts the last hashline edit on a file,
  * only when the file still matches the stored post-edit content — a later
  * external write clears the history instead of being overwritten.
- * @module dsh-better-edit/tool-undo
+ * @module dsh-hashline-edittool/tool-undo
  */
 
 import type { Context } from "@deepseek-ai/cordis";

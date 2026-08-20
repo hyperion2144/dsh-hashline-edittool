@@ -6,13 +6,13 @@ beforeAll(async () => {
   await initHasher();
 });
 describe("genDiff", () => {
-	it("adds hash hints for context and addition lines and pads deletion lines to align the '│' column", () => {
+	it("adds hash hints for context and addition lines and pads deletion lines", () => {
 		const result = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
 		const diff = result.diff;
-		expect(diff).toMatch(/^ [A-Za-z0-9]{3}│alpha$/m);
-		expect(diff).toMatch(/^\+[A-Za-z0-9]{3}│BETA$/m);
-		expect(diff).toMatch(/^- {3}│beta$/m);
-		expect(diff).toMatch(/^ [A-Za-z0-9]{3}│gamma$/m);
+		expect(diff).toMatch(/^ \d+#[A-Za-z0-9]{3}│alpha$/m);
+		expect(diff).toMatch(/^\+\d+#[A-Za-z0-9]{3}│BETA$/m);
+		expect(diff).toMatch(/^-\d+#[ ]{3}│beta$/m);
+		expect(diff).toMatch(/^ \d+#[A-Za-z0-9]{3}│gamma$/m);
 	});
 
 	it("carries the old hashes on deletion rows when oldContentHashes are provided", () => {
@@ -23,8 +23,8 @@ describe("genDiff", () => {
 			undefined,
 			["AAA", "BBB", "CCC"],
 		);
-		expect(diff).toMatch(/^-BBB│beta$/m);
-		expect(diff).toMatch(/^\+[A-Za-z0-9]{3}│BETA$/m);
+		expect(diff).toMatch(/^-\d+#BBB│beta$/m);
+		expect(diff).toMatch(/^\+\d+#[A-Za-z0-9]{3}│BETA$/m);
 	});
 
 	it("tracks old line numbers across skipped context and multi-line deletions", () => {
@@ -35,11 +35,11 @@ describe("genDiff", () => {
 			undefined,
 			["H1", "H2", "H3", "H4"],
 		);
-		expect(diff).toContain("-H2│b");
-		expect(diff).toContain("-H3│c");
+		expect(diff).toMatch(/-\d+#H2│b/);
+		expect(diff).toMatch(/-\d+#H3│c/);
 	});
 
-	it("keeps the '│' column aligned across context, addition, and deletion lines", () => {
+	it("marks every diff row with the line#hash marker prefix", () => {
 
 		const before = [
 			"function greet(name) {",
@@ -56,17 +56,17 @@ describe("genDiff", () => {
 		const { diff } = genDiff(before, after);
 
 		const lines = diff.split("\n");
+		for (const line of lines) {
+			if (!line.includes("│")) continue;
+			// diff prefix + line# + hash + │ — column position varies with
+			// line-number width but the marker structure is invariant.
+			expect(line).toMatch(/^[ +-]\d+#[A-Za-z0-9 ]{3}│/);
+		}
 
-		const colonColumns = lines.map((line) => line.indexOf("│"));
-		expect(colonColumns).toEqual(lines.map(() => 4));
-
-		expect(lines).toContainEqual(expect.stringMatching(/^ [A-Za-z0-9]{3}│function greet\(name\) \{$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^- {3}│ {2}console\.log\('old'\)$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^\+[A-Za-z0-9]{3}│ {2}return `Hello, \$\{name\}`$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^ [A-Za-z0-9]{3}│\}$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^- {3}│ {2}console\.log\('old'\)$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^\+[A-Za-z0-9]{3}│ {2}return `Hello, \$\{name\}`$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^ [A-Za-z0-9]{3}│\}$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}│function greet\(name\) \{$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^-\d+#[ ]{3}│ {2}console\.log\('old'\)$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^\+\d+#[A-Za-z0-9]{3}│ {2}return `Hello, \$\{name\}`$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}│\}$/));
 	});
 	it("truncates context between two distant changes", () => {
 		const lines = [];
@@ -122,7 +122,7 @@ describe("genDiff — property: column alignment", () => {
     "  const y = 2;",
   ];
 
-  it("keeps the │ separator at column 4 for every diff row across random content", () => {
+  it("keeps every diff row carrying the line#hash marker prefix across random content", () => {
     for (let iter = 0; iter < 200; iter++) {
       const rnd = mulberry32(iter * 2654435761 + 17);
       const oldContent = Array.from(
@@ -138,18 +138,18 @@ describe("genDiff — property: column alignment", () => {
       for (const line of diff.split("\n")) {
         if (line.includes("│")) {
           expect(
-            line.indexOf("│"),
-            `column drift for iter ${iter}: ${JSON.stringify(line)}`,
-          ).toBe(4);
+            line,
+            `unmarked diff row for iter ${iter}: ${JSON.stringify(line)}`,
+          ).toMatch(/^[ +-]\d+#[A-Za-z0-9 ]{3}│/);
         }
       }
     }
   });
 
-  it("keeps the │ separator aligned with single-line diffs too", () => {
+  it("keeps the marker structure correct for single-line diffs too", () => {
     const { diff } = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
     for (const line of diff.split("\n")) {
-      if (line.includes("│")) expect(line.indexOf("│")).toBe(4);
+      if (line.includes("│")) expect(line).toMatch(/^[ +-]\d+#[A-Za-z0-9 ]{3}│/);
     }
   });
 });

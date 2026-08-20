@@ -5,7 +5,7 @@
  * the failing item's current range is echoed as fresh serves. The per-file
  * sequencing and the persist-undo → write → restore transaction live in the
  * edit engine; this module owns request preparation and result rendering.
- * @module dsh-better-edit/tool-batch-edit
+ * @module dsh-hashline-edittool/tool-batch-edit
  */
 
 import type { Context } from "@deepseek-ai/cordis";
@@ -77,12 +77,15 @@ async function prepareItems(
 			);
 		}
 
+		const removeFrom = record.remove_from as string;
+		const removeToRaw = record.remove_to as string | undefined;
+		const removeTo = removeToRaw === undefined || removeToRaw === "" ? removeFrom : removeToRaw;
 		items.push({
 			index,
 			path,
 			absolutePath: await io.resolve(path, cwd, signal),
-			remove_from: record.remove_from as string,
-			remove_to: record.remove_to as string,
+			remove_from: removeFrom,
+			remove_to: removeTo,
 			replacement_text: record.replacement_text as string,
 			pathWarning,
 		});
@@ -113,6 +116,7 @@ function toSection(file: FileEditResult): BatchSection {
 		noopCount: file.noopCount,
 		totalAddedLines: file.totalAddedLines,
 		totalRemovedLines: file.totalRemovedLines,
+		hunkShifts: file.hunkShifts,
 	};
 }
 

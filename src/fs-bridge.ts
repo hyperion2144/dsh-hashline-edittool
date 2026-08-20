@@ -12,7 +12,7 @@
  * fail with `FS_NOT_OBSERVED` / `FS_STALE_VERSION`.
  *
  * The local implementation exists for tests and pure-pipeline verification.
- * @module dsh-better-edit/fs-bridge
+ * @module dsh-hashline-edittool/fs-bridge
  */
 
 import { readFile } from "node:fs/promises";
@@ -183,7 +183,7 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 			} catch (error) {
 				// A failed observation must not fail the read that preceded it.
 				console.error(
-					`dsh-better-edit: fs/observed emission failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
+					`dsh-hashline-edittool: fs/observed emission failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 		},

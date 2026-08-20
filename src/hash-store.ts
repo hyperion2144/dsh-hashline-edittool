@@ -11,7 +11,7 @@
  * alphabet → delete the corrupt row) lives here, once, for every row family.
  * Cross-table cleanup (pruneMissing) lives here too — a sibling module never
  * reaches into another family's rows.
- * @module dsh-better-edit/hash-store
+ * @module dsh-hashline-edittool/hash-store
  */
 
 import { existsSync } from "node:fs";

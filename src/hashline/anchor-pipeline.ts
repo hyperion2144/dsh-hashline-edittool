@@ -16,11 +16,25 @@
  * for backwards compat but are marked @internal and should be imported via this
  * module only.
  *
- * @module dsh-better-edit/hashline/anchor-pipeline
+ * @module dsh-hashline-edittool/hashline/anchor-pipeline
  */
 
 import { abortIf, splitLines, rejectUnknownFields, firstNonEmptyIndex, lastNonEmptyIndex, clipLine } from "../utils.js";
-import { HASH_CLASS, HL_BARE_PREFIX_RE, HL_PREFIX_PLUS_RE, HL_PREFIX_MINUS_RE, HASH_SEP, ANCHOR_LEN, ALPH_RE, canon, lineHashesPure } from "./hash-assign.js";
+import {
+  HASH_CLASS,
+  HL_BARE_PREFIX_RE,
+  HL_PREFIX_PLUS_RE,
+  HL_PREFIX_MINUS_RE,
+  HASH_SEP,
+  ANCHOR_LEN,
+  ALPH_RE,
+  LINE_HASH_SEP,
+  LINE_HASH_RE,
+  HASHLINE_HEADER,
+  STALE_CONTEXT_LINES,
+  canon,
+  lineHashesPure,
+} from "./hash-assign.js";
 import { recordServed, servedPositionsOf } from "../served-store.js";
 import { SERVED_ECHO_CAP } from "../constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../constants.js";
@@ -31,23 +45,23 @@ function diagRef(ref: string): string {
 	const trimmed = ref.trim();
 
 	if (!trimmed.length) {
-		return `[E_BAD_REF] Invalid anchor. Expected a 3-char alphanumeric anchor (e.g. "aB3").`;
-	}
-
-	if (/^\d+/.test(trimmed)) {
-		return `[E_BAD_REF] Invalid anchor. Use the hash alone (e.g. "aB3") — no line numbers or trailing content.`;
+		return `[E_BAD_REF] Invalid anchor. Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3") or a 3-char hash (e.g. "aB3").`;
 	}
 
 	if (trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${trimmed}". remove_from and remove_to must contain the 3-char hash only — remove everything from "│" onward.`;
+		return `[E_BAD_REF] Invalid anchor "${trimmed}". remove_from and remove_to must contain only the marker — remove everything from "${HASH_SEP}" onward.`;
 	}
 
-	return `[E_BAD_REF] Invalid anchor "${trimmed}". Expected a 3-char alphanumeric anchor (e.g. "aB3").`;
+	return `[E_BAD_REF] Invalid anchor "${trimmed}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3") or a 3-char hash (e.g. "aB3").`;
 }
 
 function parseRef(ref: string): Anchor {
 	const trimmed = ref.trim();
 
+	const lineMatch = LINE_HASH_RE.exec(trimmed);
+	if (lineMatch) {
+		return { hash: lineMatch[2]! };
+	}
 	if (
 		trimmed.length === ANCHOR_LEN &&
 		ALPH_RE.test(trimmed)
@@ -166,30 +180,29 @@ function fmtMismatchWithServes(
 	const refList = notFound.map((m) => `"${m.ref.hash}"`).join(", ");
 	if (notFound.length > 0) {
 		out.push(
-			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. The file content has changed since those anchors were read. Call read() to get fresh anchors, then copy the 3-char HASH of the start and end of the range you are editing into remove_from and remove_to of your next edit call.`,
+			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. The file content has changed since those anchors were read, or the line number shifted. The echo below is rendered in read format; if it is still the line you meant, reuse the fresh marker (e.g. "12${LINE_HASH_SEP}aB3") without calling read. Otherwise call read() to refresh.`,
 		);
 		for (const m of notFound) {
 			const ctx = m.context;
 			if (!ctx) continue;
-			const from = Math.max(1, ctx.line - 1);
-			const to = Math.min(fileLines.length, ctx.line + 1);
-			const rows: string[] = [];
+			const from = Math.max(1, ctx.line - STALE_CONTEXT_LINES);
+			const to = Math.min(fileLines.length, ctx.line + STALE_CONTEXT_LINES);
+			const echoLines: string[] = [];
 			for (let ln = from; ln <= to; ln++) {
-				rows.push(
-					`    ${ln}: ${fileHashes[ln - 1]}│${clipLine(fileLines[ln - 1] ?? "")}`,
-				);
+				const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
+				echoLines.push(`  ${marker}${HASH_SEP}${clipLine(fileLines[ln - 1] ?? "")}`);
 				pushRow(ln);
 			}
 			out.push("");
 			out.push(
-				`  Current context around resolved anchor "${ctx.hash}" (line ${ctx.line}):\n${rows.join("\n")}`,
+				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${HASHLINE_HEADER}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, reuse the fresh marker ${ctx.line}${LINE_HASH_SEP}${ctx.hash} without calling read.\n  If not, call read() to find the correct line.`,
 			);
 		}
 	}
 	if (ambiguous.length > 0) {
 		if (out.length > 0) out.push("");
 		out.push(
-			`[E_AMBIGUOUS_ANCHOR] ${ambiguous.length} ambiguous anchor${ambiguous.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}. Call read() to get fresh anchors, then copy the 3-char HASH of the start and end of the range you are editing into remove_from and remove_to of your next edit call.`,
+			`[E_AMBIGUOUS_ANCHOR] ${ambiguous.length} ambiguous anchor${ambiguous.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}. Call read() to get fresh anchors, then copy the <line>${LINE_HASH_SEP}<hash> of the start and end of the range you are editing into remove_from and remove_to of your next edit call.`,
 		);
 		for (const m of ambiguous) {
 			const sample = (m.candidates ?? []).slice(0, 5);
@@ -201,7 +214,7 @@ function fmtMismatchWithServes(
 				.map((line) => {
 					const content = clipLine(fileLines[line - 1] ?? "");
 					pushRow(line);
-					return `    ${line}: ${fileHashes[line - 1]}│${content}`;
+					return `    ${line}${LINE_HASH_SEP}${fileHashes[line - 1]}${HASH_SEP}${content}`;
 				})
 				.join("\n");
 			out.push(
@@ -251,7 +264,7 @@ function assertItem(edit: Record<string, unknown>): void {
 	}
 }
 
-const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(${HASH_CLASS})│`);
+const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(?:\\d+)#)?(${HASH_CLASS})│`);
 
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
@@ -299,7 +312,9 @@ function stripBarePrefixes(
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
 		const match = line.match(HL_BARE_PREFIX_RE);
 		if (!match) return line;
-		stripped.push({ lineIndex, matched: fileHashSet.has(match[1]!) });
+		// `HL_BARE_PREFIX_RE` captures `line` in group 1 (optional) and `hash` in
+		// group 2 — only the hash should be checked against the file's hash set.
+		stripped.push({ lineIndex, matched: fileHashSet.has(match[2]!) });
 		return line.slice(match[0].length);
 	});
 	if (stripped.length === 0) return edit;
@@ -664,7 +679,7 @@ export function buildRangeEcho(
 
 export function fmtServedRows(rows: ServedRow[], fileLines: string[]): string {
 	return rows
-		.map((row) => `${row.hash}${HASH_SEP}${fileLines[row.position] ?? ""}`)
+		.map((row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}${HASH_SEP}${fileLines[row.position] ?? ""}`)
 		.join("\n");
 }
 
@@ -1065,14 +1080,26 @@ function resolvedRange(resolved: RHEdit): ResolvedRange {
 	};
 }
 
-export function fmtRegion(hashes: string[], lines: string[]): string {
+/**
+ * Render `line#hash│content` rows for a slice of the file. `startLine` is the
+ * 1-indexed absolute line number of `lines[0]`. Defaults to 1 — the common case
+ * when the whole file is being formatted.
+ */
+export function fmtRegion(
+	hashes: string[],
+	lines: string[],
+	startLine: number = 1,
+): string {
 	if (hashes.length !== lines.length) {
 		throw new Error(
 			`fmtRegion: hashes.length (${hashes.length}) must match lines.length (${lines.length}).`,
 		);
 	}
+	if (!Number.isInteger(startLine) || startLine < 1) {
+		throw new Error(`fmtRegion: startLine (${startLine}) must be a positive integer.`);
+	}
 	return lines
-		.map((line, index) => `${hashes[index]}${HASH_SEP}${line}`)
+		.map((line, index) => `${startLine + index}${LINE_HASH_SEP}${hashes[index]}${HASH_SEP}${line}`)
 		.join("\n");
 }
 

@@ -3,7 +3,7 @@
  * `tools/post-execute` listener re-reads the written file and appends a fresh
  * hashline-anchored preview to the model-facing content, so the model gets new
  * anchors without an explicit read call (mirroring pi-hashline-edit-lsz).
- * @module dsh-better-edit/write-hook
+ * @module dsh-hashline-edittool/write-hook
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -68,7 +68,7 @@ export function registerWriteHook(
 				}
 			} catch (error) {
 				rootCtx.logger.warn(
-					`dsh-better-edit: auto-read after write failed: ${error instanceof Error ? error.message : String(error)}`,
+					`dsh-hashline-edittool: auto-read after write failed: ${error instanceof Error ? error.message : String(error)}`,
 				)
 				return decision
 			}

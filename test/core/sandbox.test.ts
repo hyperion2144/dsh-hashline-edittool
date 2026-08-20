@@ -5,7 +5,7 @@
  * every edit while the built-in write succeeded), advertise the escalation
  * fields under a confining backend, and map denials to the shared `[sandbox: …]`
  * vocabulary.
- * @module dsh-better-edit/sandbox.test
+ * @module dsh-hashline-edittool/sandbox.test
  */
 
 import { describe, expect, it, vi } from "vitest";

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="dsh-better-edit" width="200">
+  <img src="assets/logo.svg" alt="dsh-hashline-edittool" width="200">
 </p>
 
-<h1 align="center">dsh-better-edit</h1>
+<h1 align="center">dsh-hashline-edittool</h1>
 
 <p align="center">
   <strong>一个专为 DeepSeek Harness 而生的更好的编辑工具。<br>
@@ -26,9 +26,9 @@
   <img src="https://img.shields.io/badge/version-0.1.9-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-blueviolet.svg" alt="DeepSeek Harness Plugin">
-  <img src="https://img.shields.io/npm/v/dsh-better-edit" alt="npm version">
-  <img src="https://img.shields.io/npm/dm/dsh-better-edit" alt="npm downloads">
-  <img src="https://img.shields.io/github/stars/Rianico/dsh-better-edit?style=social" alt="GitHub Stars">
+  <img src="https://img.shields.io/npm/v/dsh-hashline-edittool" alt="npm version">
+  <img src="https://img.shields.io/npm/dm/dsh-hashline-edittool" alt="npm downloads">
+  <img src="https://img.shields.io/github/stars/hyperion2144/dsh-hashline-edittool?style=social" alt="GitHub Stars">
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 > *"瓶颈在于 harness——而不是模型。"*
 > —— Can Bölük，[*The Harness Problem*](https://stencil.so/blog/the-harness-problem)
 
-大多数编辑工具要求模型在改动任何东西之前，先**逐 token** 复述旧代码——而这正是 Agent 最容易出错的地方：多个模型在 replace 式编辑下的补丁格式失败率高达 46–51%。**dsh-better-edit** 走得更远。文件的每一行都分配一个唯一的 3 字符内容哈希，编辑时按哈希定位。旧文本从不回显，锚点在编辑后依然有效，每个解析出的范围都会与模型实际看到的内容逐一核对——错行编辑不可能悄悄落盘。
+大多数编辑工具要求模型在改动任何东西之前，先**逐 token** 复述旧代码——而这正是 Agent 最容易出错的地方：多个模型在 replace 式编辑下的补丁格式失败率高达 46–51%。**dsh-hashline-edittool** 走得更远。文件的每一行都分配一个唯一的 3 字符内容哈希，编辑时按哈希定位。旧文本从不回显，锚点在编辑后依然有效，每个解析出的范围都会与模型实际看到的内容逐一核对——错行编辑不可能悄悄落盘。
 
 ## 为什么需要它
 
@@ -55,15 +55,15 @@ Hashline 用两个哈希代替旧文本——**编辑 token 减少 31%**（多�
 ### 安装
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add github:Rianico/dsh-better-edit   # 从 github
-npx @deepseek-ai/dsh plugin --profile web add dsh-better-edit   # 从 npm
-npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-better-edit   # 从本地源码
+npx @deepseek-ai/dsh plugin --profile web add github:hyperion2144/dsh-hashline-edittool   # 从 github
+npx @deepseek-ai/dsh plugin --profile web add dsh-hashline-edittool   # 从 npm
+npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-hashline-edittool   # 从本地源码
 ```
 
 该 profile 的下一个会话将带着 hashline 工具运行。验证该层是否生效：
 
 ```sh
-dsh --profile <name> --dump-config   # 会显示 "# == dsh-better-edit" 层
+dsh --profile <name> --dump-config   # 会显示 "# == dsh-hashline-edittool" 层
 ```
 
 | 要求 | |
@@ -105,10 +105,10 @@ kQm│}
 纯 Markdown 文件，可以按 agent preset 覆盖。覆盖文件位于插件的共享主目录——绝不放在工作区存储中：
 
 ```
-$DSH_HOME/plugins/dsh-better-edit/<preset>/<section>.md
+$DSH_HOME/plugins/dsh-hashline-edittool/<preset>/<section>.md
 ```
 
-（默认主目录为 `~/.dsh`，即 `~/.dsh/plugins/dsh-better-edit/`）。片段对照表：
+（默认主目录为 `~/.dsh`，即 `~/.dsh/plugins/dsh-hashline-edittool/`）。片段对照表：
 
 | 文件 | 提示词片段 | 默认 order |
 | --- | --- | --- |
@@ -280,17 +280,17 @@ dsh 的工具注册表按作用域解析：agent 看到的是 `agent → preset 
 哈希快照、已提供状态行与撤销历史存放在一个 SQLite 库中，**与被编辑的工作区放在一起**——每个会话 cwd 一个库：
 
 ```
-<workspace>/.dsh_better_edit/hash-store.sqlite
+<workspace>/.dsh_hashline_edittool/hash-store.sqlite
 ```
 
-不同工作区中的并行会话各自持有独立的库（会话 cwd 会随每次工具调用传递），因此一个项目的锚点与撤销历史不会泄漏到另一个项目。在工具调用之外（测试、预览）会回退到共享的 DeepSeek Harness 主目录（`$DSH_HOME/plugins/dsh-better-edit/hash-store.sqlite`）。
+不同工作区中的并行会话各自持有独立的库（会话 cwd 会随每次工具调用传递），因此一个项目的锚点与撤销历史不会泄漏到另一个项目。在工具调用之外（测试、预览）会回退到共享的 DeepSeek Harness 主目录（`$DSH_HOME/plugins/dsh-hashline-edittool/hash-store.sqlite`）。
 
 7 天 TTL 会清理已提供的行；启动时清理缺失文件的快照。损坏的库会被隔离并自动重建。迁移到按工作区布局**不会**迁移共享主目录中的早期撤销历史——把 0.1.2 之前的撤销记录视为已丢失。
 
 ## 项目结构
 
 ```
-dsh-better-edit/
+dsh-hashline-edittool/
 ├── src/
 │   ├── hashline/        # 哈希 + 已提供状态核心（从 pi-hashline-edit-lsz 逐字节移植）
 │   ├── tool-read.ts     # read  — HASH│内容、offset/limit 分页
@@ -345,7 +345,7 @@ npm publish --registry https://registry.npmjs.org   # 版本未打 tag 前会被
 
 ## 贡献
 
-见 [CONTRIBUTING.md](CONTRIBUTING.md)（或者直接开 [issue](https://github.com/Rianico/dsh-better-edit/issues)）。当前最有价值的贡献是更多基准场景和针对已提供状态校验的边界测试。
+见 [CONTRIBUTING.md](CONTRIBUTING.md)（或者直接开 [issue](https://github.com/hyperion2144/dsh-hashline-edittool/issues)）。当前最有价值的贡献是更多基准场景和针对已提供状态校验的边界测试。
 
 ## 许可证
 
@@ -365,7 +365,7 @@ MIT License——详见 [LICENSE](LICENSE)。移植自 pi-hashline-edit-lsz（MI
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Rianico/dsh-better-edit&type=Date)](https://star-history.com/#Rianico/dsh-better-edit&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=hyperion2144/dsh-hashline-edittool&type=Date)](https://star-history.com/#hyperion2144/dsh-hashline-edittool&Date)
 
 ---
 

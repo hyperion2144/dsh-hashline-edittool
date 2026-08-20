@@ -1,6 +1,8 @@
 import type { ServedRow } from "./hashline/served.js";
 import { genDiff } from "./edit-diff.js";
 import { visLines, clipLine } from "./utils.js";
+import { HASHLINE_HEADER, LINE_HASH_SEP, HASH_SEP, ANCHOR_LEN } from "./hashline/index.js";
+import type { HunkShift } from "./edit-engine.js";
 
 
 export type EditDetails = {
@@ -128,6 +130,39 @@ function driftBlock(driftNotice: string | undefined): string {
 	return driftNotice ? `\n\n${driftNotice}` : "";
 }
 
+/**
+ * Render the "Shift: lines > N shift by +K" block that tells the model how the
+ * edit shifted absolute line numbers below the changed range. The block is
+ * omitted when there is no shift (delta = 0) or when the hunk reached the end
+ * of the file (no rows below to shift). `startLine` is the absolute line number
+ * of the FIRST replacement row (in the new file); `firstStableLineNew` is the
+ * line number of the first unchanged row after the hunk; `delta` is the
+ * cumulative shift through this hunk; `originalLineCount` is the total file
+ * length at edit-time.
+ */
+function shiftBlockForHunk(args: {
+	startLine: number;
+	firstStableLineNew: number;
+	delta: number;
+	originalLineCount: number;
+	resultLineCount: number;
+}): string {
+	const { firstStableLineNew, delta, originalLineCount, resultLineCount } = args;
+	if (delta === 0) return "";
+	if (firstStableLineNew > resultLineCount) return "";
+	if (firstStableLineNew > originalLineCount && delta > 0) return "";
+	// The first unchanged row sits at line `firstStableLineNew` in the new file;
+	// its old-line = firstStableLineNew − delta (clamped to ≥ 1).
+	const oldFirstStable = Math.max(1, firstStableLineNew - delta);
+	const sign = delta > 0 ? "+" : "";
+	const verb = delta > 0 ? "shift" : "shift";
+	const tail =
+		oldFirstStable > 1
+			? ` (original line ${oldFirstStable} now at line ${firstStableLineNew}, original line ${originalLineCount} now at line ${resultLineCount}).`
+			: ` (the entire tail below moved by ${delta}).`;
+	return `\n\nShift: lines > ${firstStableLineNew - 1} ${verb} by ${sign}${delta}.${tail}\nUse newLine=${firstStableLineNew}${LINE_HASH_SEP}<oldHash> to edit the row immediately below without re-reading — copy the hash from the next "unchanged" diff row if one was rendered.`;
+}
+
 export function buildNoop(input: NoopInput): TResult {
 	const { path, noopEdit, snapshotId, editMeta, warnings, driftNotice } = input;
 
@@ -187,12 +222,23 @@ export function buildChanged(input: SuccessInput): TResult {
 			? ` Added ${addedLines} line(s), removed ${removedLines} line(s).`
 			: "";
 	const noticeBlock = driftBlock(driftNotice);
+	// Single-edit path: build a synthetic shift entry from the diff range.
+	const startLine =
+		editMeta.firstChangedLine ?? diffResult.firstChangedLine ?? 1;
+	const replacedRows = Math.max(0, addedLines);
+	const firstStableLineNew = startLine + replacedRows;
+	const shiftBlock = shiftBlockForHunk({
+		startLine,
+		firstStableLineNew,
+		delta: addedLines - removedLines,
+		originalLineCount: visLines(originalNormalized).length,
+		resultLineCount: resultLines.length,
+	});
+	const diffBody = diffResult.diff ? `${HASHLINE_HEADER}\n${diffResult.diff}` : "";
 	const text =
 		resultLines.length === 0
 			? "File is empty. Use edit to insert content." + noticeBlock
-			: warningsBlock
-				? `${successPrefix}${lineSummary}${warningsBlock}${noticeBlock}`
-				: `${successPrefix}${lineSummary}${noticeBlock}`;
+			: `${diffBody}${shiftBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${noticeBlock}`;
 
 	const metrics = buildMetrics({
 		classification: "applied",
@@ -232,6 +278,7 @@ export type BatchSection = {
 	noopCount: number;
 	totalAddedLines: number;
 	totalRemovedLines: number;
+	hunkShifts: HunkShift[];
 };
 
 export type BatchDetails = EditDetails;
@@ -281,8 +328,27 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			1,
 			s.resultHashes,
 			s.originalHashes,
-			);
-		diffParts.push(`--- ${s.path} ---\n${diffResult.diff}`);
+		);
+		const originalLineCount = visLines(s.originalNormalized).length;
+		const resultLineCount = visLines(s.result).length;
+		// Per-hunk shift blocks — each hunk in this file gets its own
+		// "Shift: lines > N shift by +K" line whose K is cumulative through
+		// that hunk (matches runFileEdits semantics).
+		const hunkShiftBlocks = (s.hunkShifts ?? [])
+			.map((hunk) =>
+				shiftBlockForHunk({
+					startLine: 0,
+					firstStableLineNew: hunk.firstStableLineNew,
+					delta: hunk.delta,
+					originalLineCount,
+					resultLineCount,
+				}),
+			)
+			.filter((block) => block.length > 0)
+			.join("");
+		diffParts.push(
+			`--- ${s.path} ---\n${HASHLINE_HEADER}\n${diffResult.diff}${hunkShiftBlocks}`,
+		);
 		if (diffResult.servedRows.length > 0) {
 			servedByPath.push({ path: s.path, servedRows: diffResult.servedRows });
 		}
@@ -294,7 +360,7 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			? ` Added ${addedLines} line(s), removed ${removedLines} line(s).`
 			: "";
 	const summary = `Successfully edited ${appliedFiles.length} file(s) — ${appliedTotal} of ${totalEdits} edit(s) applied${noopTotal > 0 ? ` (${noopTotal} noop)` : ""}.${lineSummary}`;
-	const text = `${summary}${warnBlock(warnings)}${driftBlock(driftNotice)}`;
+	const text = `${diff}\n\n${summary}${warnBlock(warnings)}${driftBlock(driftNotice)}`;
 
 	return {
 		content: [{ type: "text", text }],

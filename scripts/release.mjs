@@ -116,7 +116,7 @@ console.log(`CHANGELOG: [Unreleased] → [${next}] - ${today}`);
 // --- 4. commit + tag -------------------------------------------------------
 run(["add", "package.json", "package-lock.json", "CHANGELOG.md"]);
 run(["commit", "-m", `chore: release v${next}`]);
-run(["tag", "-a", `v${next}`, "-m", `v${next} — dsh-better-edit ${next}`]);
+run(["tag", "-a", `v${next}`, "-m", `v${next} — dsh-hashline-edittool ${next}`]);
 
 // --- 5. push (tag push triggers the GitHub release workflow) ---------------
 const branch = run(["branch", "--show-current"]) || "main";

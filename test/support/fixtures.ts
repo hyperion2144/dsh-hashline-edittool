@@ -1,11 +1,11 @@
 /**
- * Test fixtures for dsh-better-edit. The tools are driven through the same
+ * Test fixtures for dsh-hashline-edittool. The tools are driven through the same
  * builders the plugin registers, over a local-filesystem IO bridge, with a
  * fake dsh {@link ToolExecution} carrying the session cwd and a stable test
  * session key. `withTempFile`/`withTempDir` isolate the hash store (and undo
  * history) under a temp home so tests never touch the developer's real
  * `~/.dsh`.
- * @module dsh-better-edit/test-fixtures
+ * @module dsh-hashline-edittool/test-fixtures
  */
 
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -233,6 +233,7 @@ export function setupIntegrationTest(cwd: string) {
 		getTool: (name: string) => (tools as Record<string, unknown>)[name],
 		readTool: tools.read,
 		editTool: tools.edit,
+		batchEditTool: tools.batch_edit,
 	};
 }
 
