@@ -295,11 +295,14 @@ function run() {
 			old_string: rangeText,
 			new_string: replacementText,
 		});
-		// hashline carries only the two boundary anchors + the replacement
+		// hashline carries only the two boundary line#hash anchors + the replacement.
+		// Both anchors use the FULL `<line>#<hash>` form — the canonical post-rename
+		// contract. (The bare-hash fallback for "file unchanged above" exists but
+		// is the optimistic case; the worst-case token cost is the full form.)
 		const hlReq = JSON.stringify({
 			path: PATH,
-			remove_from: hashes[start],
-			remove_to: hashes[end],
+			remove_from: `${start + 1}#${hashes[start]}`,
+			remove_to: `${end + 1}#${hashes[end]}`,
 			replacement_text: replacementText,
 		});
 

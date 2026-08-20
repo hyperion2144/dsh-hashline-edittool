@@ -42,15 +42,17 @@
 
 Most edit tools ask the model to echo the old code **token-for-token** before it can change anything
 — and that's exactly where agents fail: 46–51% patch-format failure rates for several models with
-replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a unique 3-character
-content hash, and edits target hashes. The old text is never echoed, anchors survive edits, and every
-resolved range is verified against exactly what the model saw — wrong-line edits cannot silently land.
+replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a
+unique `<line>#<hash>` marker (absolute line number + 3-char content hash), and edits target
+those markers. The old text is never echoed, the hash half survives edits above, and every
+resolved range is verified against exactly what the model saw — wrong-line edits cannot silently
+land, and the post-edit `Shift:` block lets the model chain the next edit without a re-read.
 
 ## Why you need this
 
 `str_replace` makes the model re-type the code it's replacing — pure transcription cost (output tokens, billed ~5-6× input), and where agents fail most: 46–51% patch failures on real models, worse on bigger blocks, each failure costing a re-read and a retry.
 
-Hashline sends two hashes instead of the old text — **31% fewer edit tokens** (43% on multi-line ranges) — and verifies every range against what the model saw: an edit lands where you meant, or fails loudly with fresh anchors. Anchors are content addresses that survive edits above, so chained edits skip re-reads — and a leaner context keeps the model's attention on the code, not on re-transcribing it.
+Hashline sends two `<line>#<hash>` anchors instead of the old text — **26% fewer edit tokens** (24–45% on multi-line ranges) — and verifies every range against what the model saw: an edit lands where you meant, or fails loudly with fresh anchors. Anchors are content addresses that survive edits above; chained edits skip the re-read by reading the post-edit `Shift:` block — and a leaner context keeps the model's attention on the code, not on re-transcribing it.
 
 Not for one-line touch-ups (near parity) or new files (`write`). It pays off in long sessions and structural edits — anywhere an edit must not land on the wrong line.
 
@@ -168,16 +170,18 @@ Re-seeding happens at boot, never mid-session.
 
 ## Why Hashline
 
-**Token-saving.** An edit call carries `remove_from` / `remove_to` (two 3-char hashes) plus the
-replacement text — it never echoes the text being replaced. A `str_replace` call must reproduce that
-text verbatim. On a 12-edit session over a realistic file this is **31% fewer output tokens** (43%
-on multi-line ranges) — and these are *output* tokens, billed at ~5-6× the input rate. See the
-[benchmark](#benchmark).
+**Token-saving.** An edit call carries `remove_from` / `remove_to` (two `<line>#<hash>` markers)
+plus the replacement text — it never echoes the text being replaced. A `str_replace` call must
+reproduce that text verbatim. On a 12-edit session over a realistic file this is **26% fewer output
+tokens** (24–45% on multi-line ranges) — and these are *output* tokens, billed at ~5-6× the input
+rate. See the [benchmark](#benchmark).
 
-**But this was never about “fewest tokens.”** Savings scale with the replaced text — near parity on
-one-line touch-ups — and a compact patch language like [@oh-my-pi/hashline](#how-it-compares) can
-emit a lighter payload still (42–53% on the same session). The point is the *right* kind of edit
-call: no re-typing old code, and nothing for the model to track except two stable content addresses.
+**But this was never about “fewest tokens.”** Savings scale with the replaced text — near parity
+on the shortest one-line touch-ups — and a compact patch language like
+[@oh-my-pi/hashline](#how-it-compares) can emit a lighter payload still (42–53% on the same
+session). The point is the *right* kind of edit call: no re-typing old code, and nothing for the
+model to track except two stable content addresses (the hash half stays the same across edits;
+the line half shifts in the `Shift:` block, with `newLine#oldHash` for the next anchor).
 
 **Correctness.** Every resolved edit range is verified against the exact lines the model was shown.
 A stale, never-served, or ambiguous range is hard-rejected **before anything is written**, and the
@@ -244,21 +248,22 @@ repeated text), and what each tool does when they hit:
 > The 42–53% oh-my-pi payload saving is a lighter wire format; the table above is what that
 > format asks the model to hold in its head instead — renumbering, tag-chasing, node choice —
 > the exact component that fails most (46–51% patch-failure rates on replace-style edits). This
-> plugin's 31% is the price of a contract where a wrong edit cannot land, and any rejection
+> plugin's 26% is the price of a contract where a wrong edit cannot land, and any rejection
 > needs no re-read.
 
 ## Benchmark
 
 Measured on the same 103-line file with the same 12 replacements (8 single-line, 4 multi-line of
 3/6/10/15 lines), tokenized with the pinned `js-tiktoken` `cl100k_base`. Three arms emit the same
-replacements: this plugin's `edit` (two 3-char anchors), a `str_replace` tool (old text echoed
-verbatim), and [`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline) in both of
-its modes — one `[path#tag]` section per edit (`seq`) and one multi-hunk batch document (`batch`):
+replacements: this plugin's `edit` (two `<line>#<hash>` anchors), a `str_replace` tool (old
+text echoed verbatim), and [`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline)
+in both of its modes — one `[path#tag]` section per edit (`seq`) and one multi-hunk batch
+document (`batch`):
 
 | Criterion | hashline | str_replace | oh-my-pi seq / batch |
 | ----------- | :---: | :---: | :---: |
 | Replaced text sent over the wire | ✅ never | ❌ every edit | ✅ never |
-| Output tokens saved (12-edit session) | ✅ **31%** | ❌ 0% | ✅ **42% / 53%** |
+| Output tokens saved (12-edit session) | ✅ **26%** | ❌ 0% | ✅ **42% / 53%** |
 | Multi-line range savings (3–15 lines) | ✅ **29–47%** | ❌ 0% | ✅ **40–53%** |
 | Effective cost at 5× output pricing | ✅ **~1.4× less** | ❌ 1× | ✅ **~1.7× / ~2.1× less** |
 | Ranges verified against served state | ✅ 100% | ❌ none | ~ file version only |
@@ -271,11 +276,18 @@ The numbers above are **deterministic and you can reproduce them locally** — `
 
 | Scenario | Lines | hashline | str_replace | oh-my-pi seq | oh-my-pi batch |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| single-line ×8 | 1 | 309 | 324 | 241 | — |
-| multi-line ×4 | 3–15 | 393 | 691 | 349 | — |
-| **TOTAL ×12** | | **702** | **1015** | **590** | **480** |
+| single-line ×8 | 1 | 341 | 324 | 241 | — |
+| multi-line ×4 | 3–15 | 408 | 691 | 349 | — |
+| **TOTAL ×12** | | **749** | **1015** | **590** | **480** |
 
-Saved vs `str_replace`: hashline **313 (31%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch **535 (53%)**.
+Saved vs `str_replace`: hashline **266 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch **535 (53%)**.
+
+> The `line#hash` contract trades ~3 chars per anchor × 2 anchors × 12 edits (~+47 tokens total,
+> ~7%) vs the pre-`line#hash` numbers — 702 → 749. The qualitative conclusion holds: hashline wins
+> comfortably on multi-line ranges (24–45%) and is comparable to `str_replace` on the shortest
+> single-line edits, while remaining the only arm that verifies every resolved line against the
+> served state and never lands a wrong-line edit silently. See [`benchmark/README.md`](benchmark/README.md)
+> for the per-scenario breakdown and methodology.
 
 The script is deterministic by construction: a frozen corpus, a content-addressed edit script that
 self-checks (a reformatted corpus throws instead of silently changing what's measured), a pinned
@@ -313,7 +325,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
 | `[E_BAD_REF]` | `remove_from`/`remove_to` is not a `<line>#<hash>` or 3-char hash. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
-| `[E_BARE_HASH_PREFIX]` | `HASH│` prefix pasted into `replacement_text` (autocorrected). |
+| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `replacement_text` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_FILE_TOO_LARGE]` | File exceeds the hashline line ceiling; use `write` or another approach. |
 | `[E_INVALID_PATCH]` | Diff-preview markers pasted into `replacement_text` (autocorrected). |
@@ -417,7 +429,7 @@ sqlite-environment failures excluded).
 
 <details><summary>Next</summary>
 
-- **Close or justify the gap vs @oh-my-pi/hashline** (reference: [`../oh-my-pi.md`](../oh-my-pi.md)). The sibling patch language is payload-lighter — 42%/53% vs our 31% vs `str_replace` on the benchmark, because a bare patch document skips the JSON envelope we pay per call — and offers four abilities we do not support: syntactic block ops (`PUT N*:`), registers + `REM`/`MV`, one multi-hunk document per change, and a pluggable filesystem. The counterweight is correctness: its line numbers are unverified (a wrong number on a current tag lands silently), every edit renumbers, stale tags trigger best-effort 3-way merge instead of verification, and the grammar raises the model skill floor. Decide each ability reject-or-adopt on its own merits — the payload gap alone is not a reason to switch formats.
+- **Close or justify the gap vs @oh-my-pi/hashline** (reference: [`../oh-my-pi.md`](../oh-my-pi.md)). The sibling patch language is payload-lighter — 42%/53% vs our 26% vs `str_replace` on the benchmark, because a bare patch document skips the JSON envelope we pay per call — and offers four abilities we do not support: syntactic block ops (`PUT N*:`), registers + `REM`/`MV`, one multi-hunk document per change, and a pluggable filesystem. The counterweight is correctness: its line numbers are unverified (a wrong number on a current tag lands silently), every edit renumbers, stale tags trigger best-effort 3-way merge instead of verification, and the grammar raises the model skill floor. Decide each ability reject-or-adopt on its own merits — the payload gap alone is not a reason to switch formats.
 - Verify 0.1.6 live in a dsh session after the served-tail fix.
 - Upstream the served-tail truncation fix to pi-hashline-edit-lsz / upstream (their `upsertServed`
   never truncates either).

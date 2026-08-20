@@ -1,6 +1,6 @@
 # ADR-0001 — Per-preset guidance via override files in the plugin home
 
-The four `tool:*` guidance sections are configured with plain-markdown override files in the plugin's shared home, keyed by agent preset id — not through the plugin's Cordis row `config`, and not through preset-composition rows. Override files win by content, not by scope layering: the plugin reads them itself at `agent/session-start`.
+The five `tool:*` guidance sections are configured with plain-markdown override files in the plugin's shared home, keyed by agent preset id — not through the plugin's Cordis row `config`, and not through preset-composition rows. Override files win by content, not by scope layering: the plugin reads them itself at `agent/session-start`.
 
 ## Status
 
@@ -28,7 +28,7 @@ Two exceptions to "override files win by content":
 Reset semantics:
 
 - Emptying or deleting an override file — or deleting its whole `<preset>/` directory — restores the compiled default at render time; the physical re-seed happens only at boot, never mid-session.
-- Granularity is per file, per preset directory (a deleted directory re-seeds all four section files), or per preset.
+- Granularity is per file, per preset directory (a deleted directory re-seeds all five section files), or per preset.
 - Shipped presets are re-seeded at boot; a deleted custom-preset override stays absent — absence is no override, and custom files are never fabricated.
 - Reset restores the **current** bundle defaults; a plugin upgrade yields new defaults.
 - Read-once is preserved: resolution stays pure and read-only — it renders defaults, it never writes — and the physical re-seed happens only at boot.
