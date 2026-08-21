@@ -101,17 +101,29 @@ export async function execPipeline(
 	const path = params.path
 
 	const editWarnings: string[] = []
-	// Resolve the edit up front (before IO) so malformed anchors fail before
-	// any filesystem work, exactly as the tool always did. `remove_to` is
-	// optional at the contract layer; default it to `remove_from` here so the
-	// anchor pipeline always sees a fully populated pair.
-	const removeFrom = params.remove_from
-	const removeTo = params.remove_to ?? removeFrom
+	// 0.4 contract: `params` now carries `{ path, edits: [...] }`. The single
+	// edit path constructs a single-item batch (the tool always routes through
+	// `runFileEdits`); this function is kept for backward compat with callers
+	// that still use the old `{ path, remove_from, remove_to, replacement_text }`
+	// spelling. We normalize the first item (default `op: "replace"`).
+	const firstItem = params.edits?.[0]
+	const removeFromRaw = (params as { remove_from?: string }).remove_from ?? firstItem?.from
+	const removeToRaw =
+		(params as { remove_to?: string }).remove_to ??
+		firstItem?.to ??
+		firstItem?.from ??
+		removeFromRaw
+	const replTextRaw =
+		(params as { replacement_text?: string }).replacement_text ??
+		(firstItem?.lines ?? []).join("\n")
+	const op = (firstItem?.op ?? (params as { op?: "ins" | "del" | "replace" }).op ?? "replace")
+	const removeFrom = removeFromRaw ?? ""
+	const removeTo = removeToRaw ?? removeFrom
 	const edit = resEdit(
 		{
 			remove_from: removeFrom,
 			remove_to: removeTo,
-			replacement_text: params.replacement_text,
+			replacement_text: op === "del" ? "" : replTextRaw,
 		},
 		editWarnings,
 	)
@@ -150,7 +162,8 @@ export async function execPipeline(
 			served,
 			removeFrom: removeFrom,
 			removeTo: removeTo,
-			replacementText: params.replacement_text,
+			replacementText: op === "del" ? "" : replTextRaw,
+			op,
 			absolutePath,
 			displayPath: path,
 			signal,

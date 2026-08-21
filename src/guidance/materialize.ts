@@ -33,7 +33,6 @@ Each file is one tool section:
 
 - \`read.md\` -> \`tool:read\`
 - \`edit.md\` -> \`tool:edit\`
-- \`batch_edit.md\` -> \`tool:batch_edit\`
 - \`undo_last_edit.md\` -> \`tool:undo_last_edit\`
 - \`grep.md\` -> \`tool:grep\`
 
@@ -73,7 +72,6 @@ export const GUIDANCE_HOME_README_ZH = `# dsh-hashline-edittool 指引
 
 - \`read.md\` -> \`tool:read\`
 - \`edit.md\` -> \`tool:edit\`
-- \`batch_edit.md\` -> \`tool:batch_edit\`
 - \`undo_last_edit.md\` -> \`tool:undo_last_edit\`
 - \`grep.md\` -> \`tool:grep\`
 
@@ -131,8 +129,8 @@ async function healBlankOverride(
 /**
  * Materialize per-preset guidance directories in the plugin home.
  *
- * For each of `DEFAULT_PRESETS` creates `<preset>/{read,edit,batch_edit,
- * undo_last_edit}.md` rendered from the compiled defaults (with order
+ * For each of `DEFAULT_PRESETS` creates `<preset>/{read,edit,undo_last_edit,
+ * grep}.md` rendered from the compiled defaults (with order
  * front-matter), plus a root `README.md` documenting the convention.
  * Idempotent: a user-edited file survives repeated calls. A blank override file
  * (whitespace-only body, no fence) is re-seeded with the current compiled

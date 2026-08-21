@@ -13,10 +13,10 @@ type Tool = {
 	) => Promise<{ content: Array<{ text?: string }> }>;
 };
 
-function batchTool(
+function editTool(
 	harness: ReturnType<typeof setupIntegrationTest>,
 ): Tool {
-	return harness.getTool("batch_edit") as unknown as Tool;
+	return harness.editTool;
 }
 
 function undoTool(
@@ -43,38 +43,39 @@ async function servedRows(
 }
 
 describe("edit-sequence engine — end-to-end through the tool builders", () => {
-	it("batch_edit applies multiple edits to one file in order", async () => {
+	it("edit applies multiple edits to one file in order", async () => {
 		await withTempFile("t.txt", CONTENT, async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
 			const one = served.find((r) => r.content === "line one")!;
 			const three = served.find((r) => r.content === "line three")!;
 
-			const res = await batchTool(harness).execute("batch_edit", {
+			const res = await editTool(harness).execute("edit", {
+				path: "t.txt",
 				edits: [
-					{ path: "t.txt", remove_from: one.hash, remove_to: one.hash, replacement_text: "ONE" },
-					{ path: "t.txt", remove_from: three.hash, remove_to: three.hash, replacement_text: "THREE" },
+					{ op: "replace", from: one.hash, lines: ["ONE"] },
+					{ op: "replace", from: three.hash, lines: ["THREE"] },
 				],
 			});
 
 			const text = getText(res);
-			expect(text).toContain("Successfully edited 1 file(s)");
-			expect(text).toContain("2 of 2 edit(s) applied");
+			expect(text).toContain("Successfully edited in t.txt");
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nTHREE\n");
 		});
 	});
 
-	it("batch_edit with a failing edit aborts atomically — nothing written, earlier items unapplied", async () => {
+	it("edit with a failing edit aborts atomically — nothing written, earlier items unapplied", async () => {
 		await withTempFile("t.txt", CONTENT, async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
 			const one = served.find((r) => r.content === "line one")!;
 
 			await expect(
-				batchTool(harness).execute("batch_edit", {
+				editTool(harness).execute("edit", {
+					path: "t.txt",
 					edits: [
-						{ path: "t.txt", remove_from: one.hash, remove_to: one.hash, replacement_text: "ONE" },
-						{ path: "t.txt", remove_from: "zzz", remove_to: "zzz", replacement_text: "NOPE" },
+						{ op: "replace", from: one.hash, lines: ["ONE"] },
+						{ op: "replace", from: "zzz", lines: ["NOPE"] },
 					],
 				}),
 			).rejects.toThrow(/E_BATCH_ABORT/);
@@ -91,9 +92,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 
 			await harness.editTool.execute("edit", {
 				path: "t.txt",
-				remove_from: one.hash,
-				remove_to: one.hash,
-				replacement_text: "ONE",
+				edits: [{ op: "replace", from: one.hash, lines: ["ONE"] }],
 			});
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nline three\n");
 
@@ -110,10 +109,11 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			const one = served.find((r) => r.content === "line one")!;
 			const three = served.find((r) => r.content === "line three")!;
 
-			await batchTool(harness).execute("batch_edit", {
+			await editTool(harness).execute("edit", {
+				path: "t.txt",
 				edits: [
-					{ path: "t.txt", remove_from: one.hash, remove_to: one.hash, replacement_text: "ONE" },
-					{ path: "t.txt", remove_from: three.hash, remove_to: three.hash, replacement_text: "THREE" },
+					{ op: "replace", from: one.hash, lines: ["ONE"] },
+					{ op: "replace", from: three.hash, lines: ["THREE"] },
 				],
 			});
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nTHREE\n");
@@ -124,26 +124,24 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 		});
 	});
 
-	it("batch_edit rejects repeated noop edits at the loop threshold", async () => {
+	it("edit rejects repeated noop edits at the loop threshold", async () => {
 		await withTempFile("t.txt", "line one\n", async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
 			const one = served.find((r) => r.content === "line one")!;
 			const edit = {
 				path: "t.txt",
-				remove_from: one.hash,
-				remove_to: one.hash,
-				replacement_text: "line one",
+				edits: [{ op: "replace", from: one.hash, lines: ["line one"] }],
 			};
 
-			const first = await batchTool(harness).execute("batch_edit", { edits: [edit] });
+			const first = await editTool(harness).execute("edit", edit);
 			expect(getText(first)).toContain("Classification: noop");
 
-			const second = await batchTool(harness).execute("batch_edit", { edits: [edit] });
+			const second = await editTool(harness).execute("edit", edit);
 			expect(getText(second)).toContain("no-op'd twice");
 
 			await expect(
-				batchTool(harness).execute("batch_edit", { edits: [edit] }),
+				editTool(harness).execute("edit", edit),
 			).rejects.toThrow(/E_NOOP_LOOP/);
 
 			expect(await readFile(path, "utf-8")).toBe("line one\n");

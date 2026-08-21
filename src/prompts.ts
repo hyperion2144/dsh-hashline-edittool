@@ -20,24 +20,23 @@ export interface ToolGuidance {
 }
 
 export const EDIT_DESCRIPTION =
-	"Edit a range of lines in a text file, targeted by `<line>#<hash>` anchors from read / grep / diff output. " +
-	"`remove_from` is required and marks the FIRST line to remove (inclusive); `remove_to` is optional and marks the LAST line to remove (omit to edit only `remove_from`). " +
-	"Copy the anchor EXACTLY from the leftmost column of a row — e.g. `12#ve7│function hello() {` means `\"remove_from\": \"12#ve7\"`. " +
-	"A bare 3-char hash is accepted only when you are sure the file has not shifted above; otherwise use the full `<line>#<hash>` form to guard against stale line numbers. " +
-	"Never pass the line content, a code line, or a paragraph into these fields. " +
-	"The post-edit response includes a `Shift:` block describing how absolute line numbers below the edit have moved; use that block to chain the next edit without a fresh read.";
+	"Apply one or more edits to a text file in a single atomic call. Each item in `edits` carries an `op` (`ins` / `del` / `replace`), a `from` anchor (and optionally a `to` anchor for ranges), and the `lines` to insert or replace with. " +
+	"`ins` inserts `lines` AFTER the `from` line (the `from` line itself is preserved); `del` removes the from..to range; `replace` swaps the from..to range with `lines`. " +
+	"Pass `<line>#<hash>` (e.g. `12#ve7`) for `from` / `to`, copied EXACTLY from the leftmost column of a read/grep/diff row; a bare 3-char hash is accepted only when you are sure the file has not shifted above. " +
+	"Never pass the line content into these anchor fields. " +
+	"Edits apply in order against evolving content. The post-edit response includes a `Shift:` block per hunk describing how absolute line numbers below that edit moved; use the block to chain the next edit (`newLine=<N>#<oldHash>` from the next unchanged diff row, or read for fresh anchors).";
 
 export const EDIT_GUIDANCE: ToolGuidance = {
 	intro:
-		"Edit a range of lines via a `<line>#<hash>` anchor from read / grep / diff output — never by line content.",
+		"Edit one or more ranges via `edits:[{op, from, to?, lines?}]` — never by line content.",
 	lines: [
-		"`edit`: anchor the exact first and last lines that change by their `<line>#<hash>` markers (e.g. `12#ve7`, not `ve7│function…`). A single line omits `remove_to`. Never anchor a whole function or import block when part of it changes.",
+		"`edit`: each item is `{ op, from, to?, lines? }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`).",
+		"`edit`: `from` is required and anchors the FIRST line of the range (`12#ve7`); `to` is optional and anchors the LAST line (omit = single-line edit). `op:\"ins\"` accepts ONLY `from` — the insert lands AFTER that line; `to` is rejected.",
+		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 		"`edit`: prefer the full `line#hash` form; a bare hash is accepted only when you are sure the file has not shifted above.",
-		"`edit`: replacement_text is byte-exact for the whole range — every line inside it you do not reproduce byte-exact is deleted, and leading whitespace is preserved exactly.",
-		"`edit`: `\\n` is a line break, so a range ending on a blank line must end replacement_text with `\\n` and a non-blank last line must not; a blank-line run is one `\\n` per blank line.",
 		"`edit`: the post-edit diff rows carry fresh `+line#hash` / `-line#hash` markers plus a `Shift:` block. Read the Shift block before chaining — it tells you that lines below the edit moved by `+K` so you can use `newLine#oldHash` on the next edit instead of calling read.",
 		"`edit`: a stale or never-served range is hard-rejected (`[E_STALE_ANCHOR]` / `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±3 context) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
-		"`edit`: for multiple edits to one file, use batch_edit — it validates every item before writing and applies them all-or-nothing, emitting a Shift block per hunk.",
+		"`edit`: for multiple edits to one file (or across files with per-item `path`), list them in ONE `edits` array — the tool validates every item before writing and applies them all-or-nothing, emitting a Shift block per hunk. Do not issue several `edit` calls in one message.",
 	],
 };
 
@@ -54,24 +53,6 @@ export const READ_GUIDANCE: ToolGuidance = {
 		"`read`: each row is `<line>#<hash>│content`; the marker is the anchor (line number + 3-char hash). The header `HASH IDENTIFIER │ FILE LINES` separates marker columns from file content.",
 		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
 		"`read`: binary/directory rejects; page large files with offset/limit.",
-	],
-};
-
-export const BATCH_EDIT_DESCRIPTION =
-	"Apply several edits in one atomic call. Each item is exactly like the edit tool: " +
-	"{ path?, remove_from, remove_to?, replacement_text }, where anchors are `<line>#<hash>` or bare 3-char hash, and remove_to is optional (omit to edit only remove_from). " +
-	"Items targeting the same file are applied in order. Every item is verified against what the tool served you before ANYTHING is written: if any item " +
-	"fails — stale or ambiguous anchor, changed range interior, never-served line — the whole batch is rejected and no file changes. The failing item's current range is served back as fresh read-format rows so you can retry without a read. " +
-	"The response carries one diff section per hunk and a `Shift:` block after each hunk whose `K` is the cumulative added-minus-removed through that hunk — chain the next edit by reading the Shift block, no re-read required. " +
-	"Use batch_edit whenever you have multiple edits; do not issue several edit calls in one message.";
-
-export const BATCH_EDIT_GUIDANCE: ToolGuidance = {
-	intro: "Apply several edits in one atomic call.",
-	lines: [
-		"`batch_edit`: each item is edit's shape — { path?, remove_from, remove_to?, replacement_text } — with `<line>#<hash>` anchors; items apply in order, and same-file ranges must not overlap.",
-		"`batch_edit`: all-or-nothing — any failing item writes nothing anywhere and echoes its current range as fresh read-format rows that count as serves.",
-		"`batch_edit`: each applied hunk emits its own diff plus a `Shift:` block whose `K` is the cumulative added-minus-removed through that hunk; read the Shift block to chain the next edit without re-reading.",
-		"`batch_edit`: a no-op item is reported without failing; the result is one combined diff per file with fresh anchors.",
 	],
 };
 

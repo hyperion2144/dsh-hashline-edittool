@@ -46,7 +46,7 @@ describe("read — header line", () => {
 });
 
 describe("edit — remove_to optional", () => {
-	it("edits just the remove_from line when remove_to is omitted", async () => {
+	it("edits just the from line when to is omitted", async () => {
 		await withTempFile("single.ts", "one\ntwo\nthree\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "single.ts" }, undefined, undefined, ctx);
@@ -56,7 +56,7 @@ describe("edit — remove_to optional", () => {
 
 			await editTool.execute(
 				"e",
-				{ path: "single.ts", remove_from: lineMarker, replacement_text: "TWO!" },
+				{ path: "single.ts", edits: [{ op: "replace", from: lineMarker, lines: ["TWO!"] }] },
 				undefined,
 				undefined,
 				ctx,
@@ -83,9 +83,7 @@ describe("edit — Shift block", () => {
 				"e",
 				{
 					path: "shift.ts",
-					remove_from: lineMarker,
-					remove_to: lineMarker,
-					replacement_text: "B\nB2",
+					edits: [{ op: "replace", from: lineMarker, lines: ["B", "B2"] }],
 				},
 				undefined,
 				undefined,
@@ -98,17 +96,18 @@ describe("edit — Shift block", () => {
 
 	it("emits cumulative Shift blocks per hunk in a batch", async () => {
 		await withTempFile("two.ts", "a\nb\nc\nd\ne\nf\ng\nh\n", async ({ cwd }) => {
-			const { ctx, readTool, batchEditTool } = setupIntegrationTest(cwd);
+			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "two.ts" }, undefined, undefined, ctx);
 			const lines = getText(read).split("\n").filter((l) => l.includes("│") && !l.startsWith("HASH IDENTIFIER"));
 			const line2 = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
 			const line5 = lines[4]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
-			const res = await batchEditTool.execute(
+			const res = await editTool.execute(
 				"be",
 				{
+					path: "two.ts",
 					edits: [
-						{ path: "two.ts", remove_from: line2, remove_to: line2, replacement_text: "B\nB2" },
-						{ path: "two.ts", remove_from: line5, remove_to: line5, replacement_text: "E\nE2" },
+						{ op: "replace", from: line2, lines: ["B", "B2"] },
+						{ op: "replace", from: line5, lines: ["E", "E2"] },
 					],
 				},
 				undefined,

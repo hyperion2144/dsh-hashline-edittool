@@ -80,28 +80,30 @@ szJ│  console.log("world");
 kQm│}
 ```
 
-`edit` 按哈希范围定位，因此编辑总能落在你想要的行的位置：
+`edit` 通过 `edits:[]` 数组按 `line#hash` 锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。单行替换：
 
 ```json
 {
   "path": "src/main.ts",
-  "remove_from": "szJ",
-  "remove_to": "szJ",
-  "replacement_text": "  console.log('hi');"
+  "edits": [
+    { "op": "replace", "from": "4#szJ", "lines": ["  console.log('hi');"] }
+  ]
 }
 ```
 
 并产生带全新锚点的 diff，让下一次编辑无需重新读取即可通过校验：
 
 ```text
-− szJ │   console.log("world");
-+ a3m │   console.log('hi');
-  kQm │ }
+HASH IDENTIFIER │ FILE LINES
++ 4#a3m│  console.log('hi');
+- 4#szJ│  console.log("world");
+
+Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
 ```
 
 ## 按 preset 配置指引
 
-`tool:read` / `tool:edit` / `tool:batch_edit` / `tool:undo_last_edit` 四个提示词片段的指引是
+`tool:read` / `tool:edit` / `tool:undo_last_edit` / `tool:grep` 四个提示词片段的指引是
 纯 Markdown 文件，可以按 agent preset 覆盖。覆盖文件位于插件的共享主目录——绝不放在工作区存储中：
 
 ```
@@ -114,7 +116,7 @@ $DSH_HOME/plugins/dsh-hashline-edittool/<preset>/<section>.md
 | --- | --- | --- |
 | `read.md` | `tool:read` | 130 |
 | `edit.md` | `tool:edit` | 131 |
-| `batch_edit.md` | `tool:batch_edit` | 132 |
+
 | `undo_last_edit.md` | `tool:undo_last_edit` | 133 |
 
 首次启动时插件会为四个随附 preset——`standard/`、`code/`、`minimal/`、`cordis/`——各自写入编译内置的
@@ -185,7 +187,7 @@ preset 从来不是必需的。
 
 > `~` = 偶尔/不稳定。`@oh-my-pi/hashline` 是一种紧凑的行锚定补丁语言（[npm](https://www.npmjs.com/package/@oh-my-pi/hashline)、[仓库](https://github.com/can1357/oh-my-pi/tree/main/packages/hashline)）：`[path#tag]` 头把每个 hunk 绑定到全文件内容哈希，`PUT N.=M:` 按行号定位；每次编辑都会重新编号——下一次的行号与标签取自编辑响应或重新 `read`。
 
-**不同的工作，同一条血脉。** 两者都源于 [harness-problem](https://stencil.so/blog/the-harness-problem) 的洞见：模型绝不该复述旧代码。`@oh-my-pi/hashline` 是**补丁语言库**——负载更轻（每次编辑省 42%，单个批量文档省 53%，见[基准测试](#基准测试)），支持语法块操作（`PUT N*:`）、寄存器、`REM`/`MV`、多 hunk 文档、可插拔文件系统（任何后端），以及标签过期时的会话感知三方合并恢复。本插件则是一对 **dsh 工具**：`read` 把 `<line>#<hash>` 锚点交给模型，`edit` / `batch_edit` 取其中两个，并对解析出的每一行对照已提供状态校验——post-edit `Shift:` 块让模型链式编辑无需重新读取，`undo_last_edit` 重启后依然有效。代价：每次编辑的 JSON 外壳会多一点负载、没有块操作，并且它活在 dsh（Node）内部，而不是独立补丁器（Bun）。要跨后端的补丁格式选 hashline 库；要在 Agent 里做可校验、内容寻址的编辑，选 hashline 工具。
+**不同的工作，同一条血脉。** 两者都源于 [harness-problem](https://stencil.so/blog/the-harness-problem) 的洞见：模型绝不该复述旧代码。`@oh-my-pi/hashline` 是**补丁语言库**——负载更轻（每次编辑省 42%，单个批量文档省 53%，见[基准测试](#基准测试)），支持语法块操作（`PUT N*:`）、寄存器、`REM`/`MV`、多 hunk 文档、可插拔文件系统（任何后端），以及标签过期时的会话感知三方合并恢复。本插件则是一对 **dsh 工具**：`read` 把 `<line>#<hash>` 锚点交给模型，`edit` / `edit`（含 `edits` 数组）取其中两个，并对解析出的每一行对照已提供状态校验——post-edit `Shift:` 块让模型链式编辑无需重新读取，`undo_last_edit` 重启后依然有效。代价：每次编辑的 JSON 外壳会多一点负载、没有块操作，并且它活在 dsh（Node）内部，而不是独立补丁器（Bun）。要跨后端的补丁格式选 hashline 库；要在 Agent 里做可校验、内容寻址的编辑，选 hashline 工具。
 
 ### 边界情况下的正确性
 
@@ -199,7 +201,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | 重复/相同文本 | 每行哈希唯一（冲突已消解）；歧义 → `[E_AMBIGUOUS_ANCHOR]` | 基于位置，重复不会混淆——但位置本身未被校验 |
 | 从未展示给模型的行 | `[E_RANGE_UNSERVED]`——硬拒绝并回传新锚点 | 未展示的 hunk 被拒绝——同样依赖模型知道自己看过什么 |
 | 表达式中间 / 错误的块节点 | 无关——任何已校验的行范围都合法 | 语法规则 + `PUT N*:` 节点选择；点错（锚在 `def` 会让装饰器变成孤儿）会悄悄落错；无语法检查 |
-| 多编辑批量中途失败 | `batch_edit`——原子、全有或全无；失败项以新锚点回显 | 多段补丁先预检——同样原子 |
+| 多编辑批量中途失败 | `edit` 的 `edits` 数组——原子、全有或全无；失败项以新锚点回显 | 多段补丁先预检——同样原子 |
 
 > oh-my-pi 42–53% 的负载节省来自更轻的线格式；上表才是该格式反过来要求模型记在脑中的东西——重新编号、追标签、选节点——而这恰恰是最容易出错的组件（替换式编辑的补丁失败率 46–51%）。本插件 26% 的代价买来的是一个“错编辑落不了地、任何拒绝都不需要重读”的契约。
 
@@ -238,8 +240,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | 工具 | 作用 |
 | ------ | ------ |
 | `read` | 以 `HASH IDENTIFIER │ FILE LINES` 头部 + `<line>#<hash>│<content>` 行形式返回文件。参数：`offset`（1 起始）、`limit`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——哈希锚点需要完整行。 |
-| `edit` | 按哈希替换行范围。`path` · `remove_from` · `remove_to` · `replacement_text`（`""` 表示删除）。对解析出的范围内**每一行**对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。 |
-| `batch_edit` | 单次原子调用最多 32 项编辑：`{ edits: [{ path?, remove_from, remove_to, replacement_text }, …] }`。全有或全无；失败项的范围会以新锚点的形式回显。 |
+| `edit` | 通过 `{ path, edits: [{ op, from, to?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `from` 之后插入）、`del`（删除 from..to 范围）或 `replace`（用 `lines` 替换 from..to 范围）。对解析出的范围内**每一行**对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。响应为每个 hunk 携带 `Shift:` 块描述编辑后下方绝对行号如何移动。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。 |
 
 ### 错误码
@@ -249,9 +250,9 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | `[E_ACCESS]` | 文件存在但工具不可读/不可写。 |
 | `[E_AMBIGUOUS_ANCHOR]` | 一个哈希匹配当前多行；调用 `read` 获取新锚点。 |
 | `[E_BAD_OP]` | 范围结束先于范围开始（首尾颠倒时会自动纠正）。 |
-| `[E_BAD_REF]` | `remove_from`/`remove_to` 不是裸 3 字符哈希。 |
+| `[E_BAD_REF]` | `from`/`to` 不是 `<line>#<hash>` 或 3 字符哈希。 |
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
-| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` 前缀被粘贴进 `replacement_text`（自动纠正）。 |
+| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` 前缀被粘贴进 `lines`（自动纠正）。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
 | `[E_FILE_TOO_LARGE]` | 文件超过 hashline 行数上限；请改用 `write` 或其他方式。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘贴进 `replacement_text`（自动纠正）。 |

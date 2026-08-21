@@ -87,13 +87,14 @@ HASH IDENTIFIER │ FILE LINES
  5#kQm│}
 ```
 
-`edit` targets a range of `line#hash` anchors, so edits always land on the lines you meant. `remove_to` is optional — omit it to edit only the `remove_from` line:
+`edit` targets one or more ranges of `line#hash` anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). A single-line replace:
 
 ```json
 {
   "path": "src/main.ts",
-  "remove_from": "4#szJ",
-  "replacement_text": "  console.log('hi');"
+  "edits": [
+    { "op": "replace", "from": "4#szJ", "lines": ["  console.log('hi');"] }
+  ]
 }
 ```
 
@@ -107,9 +108,10 @@ HASH IDENTIFIER │ FILE LINES
 Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
 ```
 
+
 ## Configuring Guidance per Preset
 
-The `tool:read` / `tool:edit` / `tool:batch_edit` / `tool:undo_last_edit` guidance sections are
+The `tool:read` / `tool:edit` / `tool:undo_last_edit` / `tool:grep` guidance sections are
 plain-markdown files, overridable per agent preset. Override files live in the plugin's shared
 home — never the workspace store:
 
@@ -123,8 +125,8 @@ $DSH_HOME/plugins/dsh-hashline-edittool/<preset>/<section>.md
 | --- | --- | --- |
 | `read.md` | `tool:read` | 130 |
 | `edit.md` | `tool:edit` | 131 |
-| `batch_edit.md` | `tool:batch_edit` | 132 |
-| `undo_last_edit.md` | `tool:undo_last_edit` | 133 |
+
+| `undo_last_edit.md` | `tool:undo_last_edit` | 132 |
 
 On first boot the plugin seeds the four shipped presets — `standard/`, `code/`,
 `minimal/`, `cordis/` — each with the compiled guidance as editable files (plus
@@ -243,7 +245,7 @@ repeated text), and what each tool does when they hit:
 | Repeated / identical text | Per-line hashes are unique (collision-resolved); ambiguity → `[E_AMBIGUOUS_ANCHOR]` | Position-based, so repeats don't confuse it — but the position itself is unverified |
 | Lines never shown to the model | `[E_RANGE_UNSERVED]` — hard reject with fresh anchors | Undisplayed hunks rejected — same reliance on the model knowing what it saw |
 | Mid-expression / wrong block node | Irrelevant — any verified line range is valid | Grammar rules + `PUT N*:` node choice; mispointing (anchoring `def` orphans its decorator) silently lands wrong; no syntax check |
-| Multi-edit batch fails mid-way | `batch_edit` — atomic, all-or-nothing; the failing item is echoed as fresh serves | Multi-section patches preflighted up front — also atomic |
+| Multi-edit batch fails mid-way | `edit`'s `edits` array — atomic, all-or-nothing; the failing item is echoed as fresh serves | Multi-section patches preflighted up front — also atomic |
 
 > The 42–53% oh-my-pi payload saving is a lighter wire format; the table above is what that
 > format asks the model to hold in its head instead — renumbering, tag-chasing, node choice —
@@ -311,8 +313,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | Tool | What it does |
 | ------ | -------------- |
 | `read` | Returns a file as `HASH IDENTIFIER │ FILE LINES` header + `<line>#<hash>│<content>` rows. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
-| `edit` | Replaces a range of lines by `line#hash`. `path` · `remove_from` · `remove_to?` (omit to edit only `remove_from`) · `replacement_text` (`""` deletes). Verifies **every line** of the resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block describing how absolute line numbers below the edit moved. |
-| `batch_edit` | Up to 32 edits in one atomic call: `{ edits: [{ path?, remove_from, remove_to?, replacement_text }, …] }`. All-or-nothing; the failing item's range is echoed as fresh serves; each hunk's response carries its own cumulative `Shift:` block. |
+| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, from, to?, lines? }, …] }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`). Verifies **every line** of each resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block per hunk describing how absolute line numbers below the edit moved. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
 | `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<line>#<hash>│<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
@@ -323,13 +324,14 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_ACCESS]` | File exists but is not readable/writable by the tool. |
 | `[E_AMBIGUOUS_ANCHOR]` | A hash matches more than one current line; call `read` for fresh anchors. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
-| `[E_BAD_REF]` | `remove_from`/`remove_to` is not a `<line>#<hash>` or 3-char hash. |
+| `[E_BAD_REF]` | `from`/`to` is not a `<line>#<hash>` or 3-char hash. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
-| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `replacement_text` (autocorrected). |
+| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_FILE_TOO_LARGE]` | File exceeds the hashline line ceiling; use `write` or another approach. |
-| `[E_INVALID_PATCH]` | Diff-preview markers pasted into `replacement_text` (autocorrected). |
+| `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |
+| `[E_OP_INS]` | `op:"ins"` — inserted lines placed after the anchor; informational. |
 | `[E_NOT_FOUND]` | File does not exist. |
 | `[E_NOT_OBSERVED]` | The file has not been observed in this session (read-before-write policy); call `read` first. |
 | `[E_NOT_TEXT]` | Path is a directory, binary, or non-UTF-8 file; hashline edits only text. |

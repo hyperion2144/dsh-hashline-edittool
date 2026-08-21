@@ -4,7 +4,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 Entries link to the originating spec issue in [pi-hashline-edit-lsz](https://github.com/Rianico/pi-hashline-edit-lsz) where one exists.
 
-## [Unreleased]
+## [0.4.0] - 2026-08-21
 
 ### Added
 
@@ -22,18 +22,25 @@ Entries link to the originating spec issue in [pi-hashline-edit-lsz](https://git
 
 ### Changed
 
-- `edit.remove_to` is now **optional**: omitting it (or passing `""`) defaults to `remove_from` — a single-line edit. The same defaulting applies to `batch_edit` items.
+- **Yet-evolving edit contract → `op` semantics.** Following the upstream `absorb/t3-payload` merge (which bundled `batch_edit` into `edit({path, edits})`), this release goes further and adds an explicit `op` field to each `edits[i]`:
+  - `remove_from` → `from`; `remove_to` → `to` (optional, single-line when omitted); `replacement_text` → `lines` (string array).
+  - `op: "ins"` — insert `lines` AFTER the `from` line (the anchor line's content is preserved). `to` is forbidden.
+  - `op: "del"` — delete the `from` line, or the `from..to` range. `lines` is forbidden.
+  - `op: "replace"` — replace the `from` line, or the `from..to` range, with `lines` (required and non-empty). Use `lines: [""]` to clear a line to empty (not `del`).
+  - `batch_edit` is **removed** — one `edit` with `edits:[]` handles single and multi-edit calls; the per-item optional `path` preserves multi-file edits in one call.
+  - Errors: `edits[i].op` must be `ins`/`del`/`replace`; `ins` rejects `to`; `del` rejects `lines`; `replace`/`ins` require non-empty `lines`. An `[E_OP_INS]` notice records the moved anchor line for an `ins` (the "insert after line N" expands to a single-line replace that preserves N).
 - Anchor parsing accepts both `line#hash` and a bare 3-char hash. Bare-hash form is the pre-existing hash-only fallback for cases where the model is confident the file has not shifted above.
-- Post-edit response reorganised into a three-block layout: `HASH IDENTIFIER │ FILE LINES` header, the `+- line#hash │ content` diff rows, the `Shift:` block, and the unchanged trailing warnings / drift notice. `batch_edit` now emits one diff section + one `Shift:` block per hunk; the cumulative Shift (added − removed through each hunk) lets the model compose `newLine#oldHash` markers between hunks without a re-read.
+- Post-edit response reorganised into a three-block layout: `HASH IDENTIFIER │ FILE LINES` header, the `+- line#hash │ content` diff rows, the `Shift:` block, and the unchanged trailing warnings / drift notice. Each hunk in the `edits` array emits its own `Shift:` block; the cumulative Shift (added − removed through each hunk) lets the model compose `newLine#oldHash` markers between hunks without a re-read.
 - Output column position is no longer fixed across line-number widths (the column moves with the line-number digit count). The marker structure (`<prefix><line>#<hash>│<content>`) is invariant and is what the model parses.
-- All five tools' `output.schema` upgraded from `{ type: 'string' }` to structured objects (`read` → `{ path, offset, totalLines, lines, hashlines, truncatedByBytes }`; `edit` / `batch_edit` / `undo_last_edit` → `{ path, before, after, modelText, … }`; `grep` → `{ files, truncated, total, modelText }`). The model still gets a `text` content block (the same string as before) — the schema change is observable only to consumers that read `tool/result.value` (none in the model path).
+- All five tools' `output.schema` upgraded from `{ type: 'string' }` to structured objects (`read` → `{ path, offset, totalLines, lines, hashlines, truncatedByBytes }`; `edit` → `{ path, before, after, modelText, … }`; `grep` → `{ files, truncated, total, modelText }`; `undo_last_edit` → `{ path, before, after, modelText }`). The model still gets a `text` content block (the same string as before) — the schema change is observable only to consumers that read `tool/result.value` (none in the model path).
 
 ### Tests
 
-- 11 new tests in `test/core/line-hashline.test.ts` covering: `parseRef` accepting `line#hash`, the read header line, single-line edit via omitted `remove_to`, single-hunk `Shift:` block, cumulative per-hunk `Shift:` blocks in batch, stale-anchor echo in read format with ±3 context, grep output format, grep context rows, and `grepFileContent` no-match path.
-- 10 new tests in `test/core/presentation.test.ts` covering: `read` returns a structured value with `lines` + `hashlines`; model text starts with header + ends with pagination footer; `grep` returns `files` + `truncated` + `total`; `grep` sets `truncated` when the per-file cap is hit; `edit` returns `{ path, before, after, modelText }`; `batch_edit` aggregates per-file entries; `computeHunkDiffs` produces a 3-line-context hunk (mirroring `dsh-tool-fs`); `computeHunkDiffs` returns `oldText: null` for noop/create; `langFromPath` derives syntax-highlighting language from file extension.
-- Existing test suite adjusted to the new `line#hash` left-column format: read-preview, read-and-serve, edit-diff-preview, edit-diff-utils, edit-engine-e2e, hashline-stable-duplicate, hashline-hash, hashline-recovery, hashline-strict-input, hashline-parse, and guidance. The pre-existing hash-store / served-store / served-state / snapshot-store / reject-and-serve-seam failures are sqlite-environment issues unrelated to this change (verified on `main`).
-- Test count: 662 passing (34 pre-existing sqlite-env failures excluded; was 615 pre-change).
+- 11 new tests in `test/core/line-hashline.test.ts` covering: `parseRef` accepting `line#hash`, the read header line, single-line edit (`op:"replace"` with only `from`), single-hunk `Shift:` block, cumulative per-hunk `Shift:` blocks in a merged `edits` array, stale-anchor echo in read format with ±3 context, grep output format, grep context rows, and `grepFileContent` no-match path.
+- 10 new tests in `test/core/presentation.test.ts` covering: `read` returns a structured value with `lines` + `hashlines`; model text starts with header + ends with pagination footer; `grep` returns `files` + `truncated` + `total`; `grep` sets `truncated` when the per-file cap is hit; `edit` returns `{ path, before, after, modelText }`; multi-edit aggregation; `computeHunkDiffs` produces a 3-line-context hunk (mirroring `dsh-tool-fs`); `computeHunkDiffs` returns `oldText: null` for noop/create; `langFromPath` derives syntax-highlighting language from file extension.
+- New `op`-semantics tests: `ins` inserts after `from` and rejects `to`; `del` deletes and rejects `lines`; `replace` requires non-empty `lines` and rejects empty; `replace` with `lines: [""]` clears a line (still exists).
+- Existing test suite adjusted to the new `line#hash` / `op` contract: read-preview, read-and-serve, edit-diff-preview, edit-diff-utils, edit-engine-e2e, hashline-stable-duplicate, hashline-hash, hashline-recovery, hashline-strict-input, hashline-parse, guidance (tool:batch_edit section removed), presentation, line-hashline. The pre-existing hash-store / served-store / served-state / snapshot-store / reject-and-serve-seam failures are sqlite-environment issues unrelated to this change (verified on `main`).
+- Test count: 664 passing (32 pre-existing sqlite-env failures excluded; was 615 pre-change).
 
 ## [0.2.2] - 2026-08-19
 

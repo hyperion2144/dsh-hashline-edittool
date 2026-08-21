@@ -1,5 +1,5 @@
 /**
- * dsh-hashline-edittool — hash-anchored read/edit/batch_edit/undo_last_edit for
+ * dsh-hashline-edittool — hash-anchored read/edit/undo_last_edit/grep for
  * DeepSeek Harness, a dsh port of pi-hashline-edit-lsz.
  *
  * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). On
@@ -23,7 +23,6 @@ import { ctxFsIO } from "./fs-bridge.js";
 import { FsSandboxController } from "./sandbox.js";
 import { registerReadTool } from "./tool-read.js";
 import { registerEditTool } from "./tool-edit.js";
-import { registerBatchEditTool } from "./tool-batch-edit.js";
 import { registerUndoTool } from "./tool-undo.js";
 import { registerGrepTool } from "./tool-grep.js";
 import { registerWriteHook } from "./write-hook.js";
@@ -120,7 +119,6 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
 		const sandbox = new FsSandboxController(rootCtx);
 		disposers.push(registerEditTool(rootCtx, agent.ctx, io, sandbox));
-		disposers.push(registerBatchEditTool(rootCtx, agent.ctx, io, sandbox));
 		disposers.push(registerUndoTool(rootCtx, agent.ctx, io, sandbox));
 		disposers.push(registerWriteHook(rootCtx, agent.ctx, io));
 

@@ -17,7 +17,6 @@ import { shutdownHashStore } from "../../src/hash-store.js";
 import { localIO, type FileIO } from "../../src/fs-bridge.js";
 import { buildEditTool } from "../../src/tool-edit.js";
 import { buildReadTool } from "../../src/tool-read.js";
-import { buildBatchEditTool } from "../../src/tool-batch-edit.js";
 import { buildUndoTool } from "../../src/tool-undo.js";
 import { FsSandboxController } from "../../src/sandbox.js";
 
@@ -231,7 +230,6 @@ export function setupIntegrationTest(cwd: string) {
 	const tools = {
 		read: wrapTool(buildReadTool(io), makeExecFor),
 		edit: wrapTool(buildEditTool(io, sandbox), makeExecFor),
-		batch_edit: wrapTool(buildBatchEditTool(io, sandbox), makeExecFor),
 		undo_last_edit: wrapTool(buildUndoTool(io, sandbox), makeExecFor),
 	};
 	return {
@@ -242,7 +240,6 @@ export function setupIntegrationTest(cwd: string) {
 		getTool: (name: string) => (tools as Record<string, unknown>)[name],
 		readTool: tools.read,
 		editTool: tools.edit,
-		batchEditTool: tools.batch_edit,
 	};
 }
 

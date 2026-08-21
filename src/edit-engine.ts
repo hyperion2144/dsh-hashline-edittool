@@ -1,5 +1,5 @@
 /**
- * The edit-sequence engine shared by `edit`, `batch_edit`, and previews:
+ * The edit-sequence engine shared by `edit` (single-and-multi-edit) and previews:
  * apply-one-edit against in-memory content with served verification, the
  * multi-edit sequencer that drives a whole file's item list against evolving
  * content, the noop-loop guard, and the persist-undo → write → restore
@@ -23,6 +23,7 @@ import {
 	applyEdit,
 	resEdit,
 	parseHashRef,
+	parseText,
 	type HEdit,
 	type NEdit,
 } from "./hashline/anchor-pipeline.js";
@@ -60,6 +61,8 @@ export interface PreparedItem {
 	remove_to: string;
 	replacement_text: string;
 	pathWarning?: string;
+	/** Edit semantic (0.3+): "ins" | "del" | "replace". Defaults to "replace". */
+	op?: "ins" | "del" | "replace";
 }
 
 /**
@@ -107,6 +110,14 @@ export interface FileEditResult {
 	range: ResolvedRange;
 	/** Per-hunk shift info for batch output. */
 	hunkShifts: HunkShift[];
+	/** Lines around the union range that should be marked as served (echo rows
+	 *  for the post-edit serve mirror). Synthesized from the diff hunks by
+	 *  `runFileEdits`. */
+	servedRows: { position: number; hash: string }[];
+	/** First / last changed line in the union range (for `firstChangedLine` /
+	 *  `lastChangedLine` in the canonical value). Synthesized by `runFileEdits`. */
+	firstChangedLine?: number;
+	lastChangedLine?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +228,14 @@ export interface ApplyOneInput {
 	persist: boolean;
 	/** Pre-resolved edit (single path keeps resEdit before IO for error order). */
 	edit?: HEdit;
+	/**
+	 * Edit semantic (0.3+). `"ins"` inserts `replacementText` AFTER the
+	 * `removeFrom` line (the line's own content is preserved and the
+	 * replacement is prefixed with it); `"del"` deletes the range;
+	 * `"replace"` substitutes the range with `replacementText`
+	 * (the pre-0.3 default). Defaults to `"replace"`.
+	 */
+	op?: "ins" | "del" | "replace";
 }
 
 export interface ApplyOneResult {
@@ -236,6 +255,46 @@ export interface ApplyOneResult {
 }
 
 /**
+ * Resolve an `op: "ins"` edit into the range + replacement it really means.
+ * `ins` inserts the given lines AFTER the `from` line while preserving the
+ * `from` line itself — so the effective edit is a single-line replace of the
+ * `from` line with `[<fromLineContent>, ...insertedLines]`. `to` is never
+ * accepted for `ins` (validated at the contract layer); `removeTo` here is
+ * the `from` again. The `from` line's content is read from `content` via the
+ * hash's position.
+ */
+export function resolveIns(
+	content: string,
+	hashes: string[],
+	removeFrom: string,
+	replacementText: string,
+	warnings: string[],
+): { removeTo: string; replacementText: string } {
+	// Resolve removeFrom to its absolute line via the hash.
+	let fromLine = -1;
+	try {
+		const hash = parseHashRef(removeFrom).hash;
+		fromLine = hashes.indexOf(hash);
+	} catch {
+		// Let resEdit surface the anchor error with the right code.
+		return { removeTo: removeFrom, replacementText };
+	}
+	if (fromLine < 0) {
+		// Stale anchor — let resEdit/applyEdit surface [E_STALE_ANCHOR].
+		return { removeTo: removeFrom, replacementText };
+	}
+	const lines = splitLines(content);
+	const fromContent = lines[fromLine] ?? "";
+	const insertedLines = parseText(replacementText);
+	const effectiveReplacement =
+		[fromContent, ...insertedLines].join("\n");
+	warnings.push(
+		`[E_OP_INS] op:"ins" after line ${fromLine + 1}: preserved the anchor line and inserted ${insertedLines.length} line(s) below it.`,
+	);
+	return { removeTo: removeFrom, replacementText: effectiveReplacement };
+}
+
+/**
  * One edit against in-memory content: resolve (unless a pre-resolved edit was
  * given) → apply with served verification → stable re-hash → line counts.
  *
@@ -252,12 +311,30 @@ export async function applyOne(
 	if (input.edit) {
 		edit = input.edit;
 	} else {
+		// `op: "ins"` expands to a single-line replace that preserves the
+		// anchor line and appends the inserted lines below it.
+		let removeTo = input.removeTo;
+		let replacementText = input.replacementText;
+		if (input.op === "ins") {
+			const resolved = resolveIns(
+				input.content,
+				input.hashes,
+				input.removeFrom,
+				input.replacementText,
+				input.warnings,
+			);
+			removeTo = resolved.removeTo;
+			replacementText = resolved.replacementText;
+		} else if (input.op === "del") {
+			// `del` is just a replace-with-empty; replacementText should be "".
+			replacementText = "";
+		}
 		try {
 			edit = resEdit(
 				{
 					remove_from: input.removeFrom,
-					remove_to: input.removeTo,
-					replacement_text: input.replacementText,
+					remove_to: removeTo,
+					replacement_text: replacementText,
 				},
 				input.warnings,
 			);
@@ -479,6 +556,8 @@ export async function runFileEdits(
 	let unionEndLine = -Infinity;
 	let unionStartHash = "";
 	let unionEndHash = "";
+	let unionFirstChangedLine: number | undefined;
+	let unionLastChangedLine: number | undefined;
 	let lastApplied:
 		| { content: string; hashes: string[]; removedHashes: Set<string> }
 		| undefined;
@@ -495,6 +574,7 @@ export async function runFileEdits(
 				removeFrom: item.remove_from,
 				removeTo: item.remove_to,
 				replacementText: item.replacement_text,
+				op: item.op,
 				absolutePath,
 				displayPath: item.path,
 				signal: opts.signal,
@@ -548,6 +628,10 @@ export async function runFileEdits(
 		if (range.endLine > unionEndLine) {
 			unionEndLine = range.endLine;
 			unionEndHash = range.endHash;
+		}
+		if (!applied.noop) {
+			if (unionFirstChangedLine === undefined) unionFirstChangedLine = range.startLine;
+			unionLastChangedLine = range.endLine;
 		}
 
 		if (applied.noop) {
@@ -685,7 +769,64 @@ export async function runFileEdits(
 			delta: splitLines(result).length - splitLines(originalNormalized).length,
 		},
 		hunkShifts,
+		// Synthesize the served mirror for the post-edit diff window: the
+		// diff hunks' new-file rows (position, hash) plus context. This is
+		// what `recordServedTruncated` later records so the model's view of
+		// the change region is marked served for the next edit.
+		servedRows: appliedCount > 0 ? buildServedRowsFromDiff(
+			originalNormalized,
+			result,
+			resultHashes,
+		) : [],
+		...(unionFirstChangedLine !== undefined ? { firstChangedLine: unionFirstChangedLine } : {}),
+		...(unionLastChangedLine !== undefined ? { lastChangedLine: unionLastChangedLine } : {}),
 	};
+}
+
+/**
+ * Build served rows (position, hash) from the diff hunks between `before`
+ * and `after`. The new-file rows that participate in a diff hunk (added,
+ * removed, or context) are marked served. This is the batch/merge analogue
+ * of the single-edit `genDiff().servedRows`.
+ */
+function buildServedRowsFromDiff(
+	before: string,
+	after: string,
+	resultHashes: string[],
+): { position: number; hash: string }[] {
+	const rows: { position: number; hash: string }[] = [];
+	const seen = new Set<number>();
+	const resultLines = splitLines(after);
+	const beforeLines = splitLines(before);
+	// Simple LCS-free diff-window: a coarse but safe approximation that marks
+	// the region around the first and last differing line as served, plus the
+	// unchanged lines actually shown in the diff (which the model sees).
+	const minLen = Math.min(beforeLines.length, resultLines.length);
+	let firstDiff = -1;
+	for (let k = 0; k < minLen; k++) {
+		if (beforeLines[k] !== resultLines[k]) { firstDiff = k; break; }
+	}
+	if (firstDiff === -1 && beforeLines.length !== resultLines.length) {
+		firstDiff = minLen;
+	}
+	const push = (pos: number) => {
+		if (pos < 0 || pos >= resultHashes.length || seen.has(pos)) return;
+		seen.add(pos);
+		rows.push({ position: pos, hash: resultHashes[pos]! });
+	};
+	if (firstDiff === -1) return rows;
+	const lastDiff = (() => {
+		let k = 0;
+		while (
+			k < minLen - firstDiff &&
+			beforeLines[beforeLines.length - 1 - k] === resultLines[resultLines.length - 1 - k]
+		) k++;
+		return Math.max(firstDiff, resultLines.length - 1 - k);
+	})();
+	for (let p = Math.max(0, firstDiff - 2); p <= Math.min(resultHashes.length - 1, lastDiff + 2); p++) {
+		push(p);
+	}
+	return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -720,7 +861,7 @@ export interface PersistWriteOptions {
 
 /**
  * The persist-undo → write-all → restore-on-failure transaction shared by
- * `edit` (one file) and `batch_edit` (many files). Every file's undo entry is
+ * `edit` (one or more files via the `edits` array). Every file's undo entry is
  * persisted before anything is written; if a write fails, already-written
  * files are restored (original content written back, undo entry restored) and
  * the sandbox-mapped error rethrown.

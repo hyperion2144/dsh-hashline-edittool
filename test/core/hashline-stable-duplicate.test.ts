@@ -111,9 +111,7 @@ describe("stable hashing with duplicate content lines", () => {
         "e1",
         {
           path: "sample.ts",
-          remove_from: line1Marker,
-          remove_to: firstBraceMarker,
-          replacement_text: "",
+          edits: [{ op: "del", from: line1Marker, to: firstBraceMarker }],
         },
         undefined,
         undefined,
@@ -151,9 +149,7 @@ describe("stable hashing with duplicate content lines", () => {
         "e1",
         {
           path: "sample.ts",
-          remove_from: aHash,
-          remove_to: cHash,
-          replacement_text: "",
+          edits: [{ op: "del", from: aHash, to: cHash }],
         },
         undefined,
         undefined,
@@ -193,9 +189,7 @@ describe("stable hashing with duplicate content lines", () => {
         "e1",
         {
           path: "sample.ts",
-          remove_from: aHash,
-          remove_to: cHash,
-          replacement_text: "",
+          edits: [{ op: "del", from: aHash, to: cHash }],
         },
         undefined,
         undefined,
@@ -223,9 +217,7 @@ describe("stable hashing with duplicate content lines", () => {
         "e2",
         {
           path: "sample.ts",
-          remove_from: dHash2,
-          remove_to: eHash2,
-          replacement_text: "",
+          edits: [{ op: "del", from: dHash2, to: eHash2 }],
         },
         undefined,
         undefined,

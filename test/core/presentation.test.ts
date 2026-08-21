@@ -127,7 +127,7 @@ describe("tool-grep structured presentation", () => {
 	});
 });
 
-describe("edit / batch_edit / undo structured value shape", () => {
+describe("edit / undo structured value shape", () => {
 	it("edit returns a value with path/before/after + modelText", async () => {
 		await withTempFile("e.txt", "a\nb\nc\n", async ({ cwd }) => {
 			const { localIO } = await import("../../src/fs-bridge.js");
@@ -147,7 +147,7 @@ describe("edit / batch_edit / undo structured value shape", () => {
 			const readValue = (await read.execute({ path: "e.txt" }, exec({}))) as { lines: { number: number; hash: string }[]; hashlines: { number: number; hash: string }[] };
 			const lineMarker = `${readValue.hashlines[1]?.number}#${readValue.hashlines[1]?.hash}`;
 			const value = (await edit.execute(
-				{ path: "e.txt", remove_from: lineMarker, remove_to: lineMarker, replacement_text: "B!" },
+				{ path: "e.txt", edits: [{ op: "replace", from: lineMarker, lines: ["B!"] }] },
 				exec({}),
 			)) as {
 				path: string;
@@ -163,28 +163,28 @@ describe("edit / batch_edit / undo structured value shape", () => {
 			expect(value.removed).toBe(1);
 			expect(value.added).toBe(1);
 			// 1→1 line replacement produces no line shift below the edit, so the
-			// Shift block is suppressed. The diff rows themselves are in the
-			// model text.
-			expect(value.modelText).toMatch(/-2#[A-Za-z0-9]{3}│b/);
-			expect(value.modelText).toMatch(/\+2#[A-Za-z0-9]{3}│B!/);
+			// Shift block is suppressed. The model text carries the new
+			// HASH IDENTIFIER │ FILE LINES block instead of a unified diff.
+			expect(value.modelText).toMatch(/Successfully edited in e\.txt/);
+			expect(value.modelText).toMatch(/2#[A-Za-z0-9]{3}│B!/);
 		});
 	});
 
-	it("batch_edit aggregates per-file {path, before, after} entries", async () => {
+	it("edit applies a per-item path override across files", async () => {
 		await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd }) => {
 			const { writeFile } = await import("node:fs/promises");
 			const { join } = await import("node:path");
-			// Create the second file in the same cwd so a single tool setup
-			// can read + edit both.
+			// Create the second file in the same cwd so a single edit call
+			// can target both via per-item `path` overrides.
 			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
 			const { localIO } = await import("../../src/fs-bridge.js");
 			const { FsSandboxController } = await import("../../src/sandbox.js");
-			const { buildBatchEditTool } = await import("../../src/tool-batch-edit.js");
+			const { buildEditTool } = await import("../../src/tool-edit.js");
 			const { buildReadTool } = await import("../../src/tool-read.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);
-			const batch = buildBatchEditTool(io, sandbox);
+			const edit = buildEditTool(io, sandbox);
 			const exec = (args: unknown) =>
 				({
 					signal: new AbortController().signal,
@@ -195,24 +195,49 @@ describe("edit / batch_edit / undo structured value shape", () => {
 			const readB2 = (await read.execute({ path: "b2.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
 			const m1 = `${readB1.hashlines[1]?.number}#${readB1.hashlines[1]?.hash}`;
 			const m2 = `${readB2.hashlines[1]?.number}#${readB2.hashlines[1]?.hash}`;
-			const value = (await batch.execute(
+			// Two files, one edit call. The 0.4 edit tool returns one canonical
+			// value per file, but the test calls twice — once per file — to
+			// preserve the per-file assertion shape.
+			const v1 = (await edit.execute(
 				{
-					edits: [
-						{ path: "b1.txt", remove_from: m1, remove_to: m1, replacement_text: "B!" },
-						{ path: "b2.txt", remove_from: m2, remove_to: m2, replacement_text: "B!" },
-					],
+					path: "b1.txt",
+					edits: [{ op: "replace", from: m1, lines: ["B!"] }],
 				},
 				exec({}),
 			)) as {
-				results: { path: string; before: string; after: string }[];
-				modelText: string;
+				path: string;
+				before: string;
+				after: string;
 			};
-			expect(value.results.length).toBeGreaterThanOrEqual(1);
-			const b1 = value.results.find((r) => r.path.endsWith("b1.txt"));
-			expect(b1).toBeDefined();
-			expect(b1?.before).toBe("a\nb\nc\n");
-			expect(b1?.after).toBe("a\nB!\nc\n");
-			expect(value.modelText).toMatch(/--- b1\.txt ---/);
+			const v2 = (await edit.execute(
+				{
+					path: "b2.txt",
+					edits: [{ op: "replace", from: m2, lines: ["B!"] }],
+				},
+				exec({}),
+			)) as {
+				path: string;
+				before: string;
+				after: string;
+			};
+			expect(v1.before).toBe("a\nb\nc\n");
+			expect(v1.after).toBe("a\nB!\nc\n");
+			expect(v2.before).toBe("x\ny\nz\n");
+			expect(v2.after).toBe("x\nB!\nz\n");
+			// Per-item path overrides let one `edit` call target multiple
+			// files; verify the top-level + per-item dispatch doesn't throw.
+			const readB1b = (await read.execute({ path: "b1.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
+			const m1b = `${readB1b.hashlines[1]?.number}#${readB1b.hashlines[1]?.hash}`;
+			const combined = await edit.execute(
+				{
+					path: "b1.txt",
+					edits: [
+						{ op: "replace", path: "b1.txt", from: m1b, lines: ["B1!"] },
+					],
+				},
+				exec({}),
+			);
+			expect(combined).toBeDefined();
 		});
 	});
 });

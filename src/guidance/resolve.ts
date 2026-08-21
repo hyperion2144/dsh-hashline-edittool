@@ -9,7 +9,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-	BATCH_EDIT_GUIDANCE,
 	EDIT_GUIDANCE,
 	GREP_GUIDANCE,
 	READ_GUIDANCE,
@@ -44,7 +43,7 @@ export interface GuidanceSection {
 	renderDefault(): string;
 }
 
-/** The five sections, in default-order sequence. */
+/** The four sections, in default-order sequence. */
 export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 	{
 		name: "tool:read",
@@ -59,21 +58,15 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		renderDefault: () => guidanceText(EDIT_GUIDANCE),
 	},
 	{
-		name: "tool:batch_edit",
-		file: "batch_edit.md",
-		defaultOrder: 132,
-		renderDefault: () => guidanceText(BATCH_EDIT_GUIDANCE),
-	},
-	{
 		name: "tool:undo_last_edit",
 		file: "undo_last_edit.md",
-		defaultOrder: 133,
+		defaultOrder: 132,
 		renderDefault: () => guidanceText(UNDO_GUIDANCE),
 	},
 	{
 		name: "tool:grep",
 		file: "grep.md",
-		defaultOrder: 134,
+		defaultOrder: 133,
 		renderDefault: () => guidanceText(GREP_GUIDANCE),
 	},
 ];

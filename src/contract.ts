@@ -1,39 +1,52 @@
 /**
  * One module owns the request shapes for the hashline tools — edit,
- * batch_edit, read, undo_last_edit — plus their validation. Field sets are
- * declared once here; every tool validates through these asserts, and the
+ * read, undo_last_edit — plus their validation. Field sets are declared
+ * once here; every tool validates through these asserts, and the
  * [E_BAD_SHAPE] vocabulary is shared instead of re-implemented per tool.
  *
  * Note: `resolve.ts` keeps its own internal item check (content-only fields,
  * no path) — that is the hashline-internal edit-item shape, deliberately
  * decoupled from the tool-layer request contract so the hashline module does
  * not depend on this one.
+ *
+ * **0.4.0 contract change.** The `edit` tool now takes an `edits:[]` array
+ * with named fields (`op` / `from` / `to?` / `lines?`) and an `op` semantic
+ * distinguishing `ins` / `del` / `replace`. The legacy `batch_edit` tool
+ * is removed; its multi-file capability is preserved as a per-item
+ * optional `path` that overrides the top-level `path`. `remove_from` /
+ * `remove_to` / `replacement_text` are gone — use `from` / `to` / `lines`
+ * inside each `edits[i]` instead. See `docs/edit-payload-spec.md` for the
+ * full design and the rationale.
  * @module dsh-hashline-edittool/contract
  */
 
-import { BATCH_EDIT_MAX_ITEMS } from "./constants.js";
+import { EDITS_MAX_ITEMS } from "./constants.js";
 import { isRec, normalizeFilePath, rejectUnknownFields } from "./utils.js";
 
 // ---- request shapes --------------------------------------------------------
 
+/**
+ * One edit within the `edits:[]` array. The `op` field disambiguates
+ * insert / delete / replace semantics so the model can state its
+ * intent unambiguously; the runtime never has to guess between
+ * "replace with empty" and "delete this range".
+ */
+export interface EditItemParams {
+	/** Required. Insert / delete / replace semantic. */
+	op: "ins" | "del" | "replace";
+	/** Required. Anchor of the FIRST line of the affected range. */
+	from: string;
+	/** Optional. Anchor of the LAST line. If omitted, the edit targets only `from`. Forbidden for `op: "ins"`. */
+	to?: string;
+	/** Required for `ins` and `replace`; forbidden for `del`. New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
+	lines?: string[];
+	/** Optional per-item path override (multi-file edits in one call). */
+	path?: string;
+}
+
 export interface EditParams {
 	path: string;
-	remove_from: string;
-	/** Optional. When omitted, the edit targets only `remove_from`. */
-	remove_to?: string;
-	replacement_text: string;
-}
-
-export interface BatchItemParams {
-	path?: string;
-	remove_from: string;
-	/** Optional. When omitted, the edit targets only `remove_from`. */
-	remove_to?: string;
-	replacement_text: string;
-}
-
-export interface BatchEditParams {
-	edits: BatchItemParams[];
+	edits: EditItemParams[];
 }
 
 export interface ReadParams {
@@ -50,24 +63,17 @@ export interface UndoParams {
 
 const EDIT_KS = new Set([
 	"path",
-	"remove_from",
-	"remove_to",
-	"replacement_text",
-	"sandbox_permissions",
-	"justification",
-]);
-
-const BATCH_ROOT_KS = new Set([
 	"edits",
 	"sandbox_permissions",
 	"justification",
 ]);
 
-const BATCH_ITEM_KS = new Set([
+const EDIT_ITEM_KS = new Set([
+	"op",
+	"from",
+	"to",
+	"lines",
 	"path",
-	"remove_from",
-	"remove_to",
-	"replacement_text",
 ]);
 
 const READ_KS = new Set(["path", "offset", "limit"]);
@@ -91,6 +97,79 @@ export const normReq = normalizeRequest;
 
 // ---- assertions ---------------------------------------------------------------
 
+/**
+ * Validate one edit item. Throws `[E_BAD_SHAPE]` with a path-qualified
+ * message on the first violation. Validation rules:
+ *   - `op` is required and one of `ins` / `del` / `replace`
+ *   - `from` is required and a non-empty string (the anchor)
+ *   - `to` is forbidden for `op: "ins"`, optional otherwise
+ *   - `lines` is required and must be a non-empty string array for `ins` /
+ *     `replace`, and forbidden for `del`
+ *   - per-item `path`, if set, must be a non-empty string
+ */
+export function assertEditItem(
+	item: unknown,
+	index: number,
+	hasTopLevelPath: boolean,
+): asserts item is EditItemParams {
+	if (!isRec(item)) {
+		throw new Error(
+			`[E_BAD_SHAPE] edits[${index}] must be an object with op, from, and (when applicable) to / lines.`,
+		);
+	}
+	rejectUnknownFields(item, EDIT_ITEM_KS, `edits[${index}]`);
+	if (item.op !== "ins" && item.op !== "del" && item.op !== "replace") {
+		throw new Error(
+			`[E_BAD_SHAPE] edits[${index}].op must be "ins", "del", or "replace".`,
+		);
+	}
+	if (typeof item.from !== "string" || item.from.length === 0) {
+		throw new Error(
+			`[E_BAD_SHAPE] edits[${index}].from must be a non-empty anchor string (e.g. "12#aB3" or "aB3").`,
+		);
+	}
+	if (item.to !== undefined) {
+		if (typeof item.to !== "string" || item.to.length === 0) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].to must be a non-empty anchor string when provided.`,
+			);
+		}
+		if (item.op === "ins") {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"ins" does not accept "to"; ins inserts immediately after "from".`,
+			);
+		}
+	}
+	if (item.op === "ins" || item.op === "replace") {
+		if (
+			!Array.isArray(item.lines) ||
+			!(item.lines as unknown[]).every((l) => typeof l === "string") ||
+			(item.lines as unknown[]).length === 0
+		) {
+			throw new Error(
+				item.op === "ins"
+					? `[E_BAD_SHAPE] edits[${index}].op:"ins" requires a non-empty "lines" array of strings to insert.`
+					: `[E_BAD_SHAPE] edits[${index}].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`,
+			);
+		}
+	} else if (item.lines !== undefined) {
+		throw new Error(
+			`[E_BAD_SHAPE] edits[${index}].op:"del" does not accept "lines"; use op:"replace" with lines:[""] to clear a single line.`,
+		);
+	}
+	if (item.path !== undefined) {
+		if (typeof item.path !== "string" || item.path.length === 0) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].path must be a non-empty string.`,
+			);
+		}
+	} else if (!hasTopLevelPath) {
+		throw new Error(
+			`[E_BAD_SHAPE] edits[${index}] requires a "path" string (top-level or per-item).`,
+		);
+	}
+}
+
 export function assertEditRequest(
 	request: unknown,
 ): asserts request is EditParams {
@@ -106,74 +185,20 @@ export function assertEditRequest(
 		);
 	}
 
-	if (
-		typeof request.remove_from !== "string" ||
-		typeof request.replacement_text !== "string"
-	) {
-		throw new Error(
-			'[E_BAD_SHAPE] Edit request requires "remove_from" and "replacement_text" strings at the top level (remove_to is optional).',
-		);
-	}
-	if (
-		request.remove_to !== undefined &&
-		typeof request.remove_to !== "string"
-	) {
-		throw new Error(
-			'[E_BAD_SHAPE] Edit request "remove_to" must be a string when provided (omit to edit only remove_from).',
-		);
-	}
-}
-
-export function assertBatchEditRequest(
-	request: unknown,
-): asserts request is BatchEditParams {
-	if (!isRec(request)) {
-		throw new Error(
-			'[E_BAD_SHAPE] batch_edit request must be an object with an "edits" array.',
-		);
-	}
-	rejectUnknownFields(request, BATCH_ROOT_KS, "batch_edit request");
 	if (!Array.isArray(request.edits) || request.edits.length === 0) {
 		throw new Error(
-			'[E_BAD_SHAPE] batch_edit request requires a non-empty "edits" array.',
+			'[E_BAD_SHAPE] Edit request requires a non-empty "edits" array.',
 		);
 	}
-	if (request.edits.length > BATCH_EDIT_MAX_ITEMS) {
+	if (request.edits.length > EDITS_MAX_ITEMS) {
 		throw new Error(
-			`[E_BAD_SHAPE] batch_edit accepts at most ${BATCH_EDIT_MAX_ITEMS} edits; got ${request.edits.length}. Split the batch.`,
+			`[E_BAD_SHAPE] Edit accepts at most ${EDITS_MAX_ITEMS} edits; got ${request.edits.length}. Split the batch.`,
 		);
 	}
+
+	const hasTopLevelPath = true;
 	request.edits.forEach((item, index) => {
-		if (!isRec(item)) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}] must be an object with remove_from, remove_to, and replacement_text.`,
-			);
-		}
-		rejectUnknownFields(item, BATCH_ITEM_KS, `edits[${index}]`);
-		if (
-			typeof item.remove_from !== "string" ||
-			typeof item.replacement_text !== "string"
-		) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}] requires "remove_from" and "replacement_text" strings (remove_to is optional).`,
-			);
-		}
-		if (
-			item.remove_to !== undefined &&
-			typeof item.remove_to !== "string"
-		) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].remove_to must be a string when provided (omit to edit only remove_from).`,
-			);
-		}
-		if (
-			item.path !== undefined &&
-			(typeof item.path !== "string" || item.path.length === 0)
-		) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].path must be a non-empty string.`,
-			);
-		}
+		assertEditItem(item, index, hasTopLevelPath);
 	});
 }
 
@@ -215,26 +240,72 @@ export function assertUndoRequest(
  * `assertEditRequest` after `normalizeFilePath` aliasing.
  */
 
-export const replacementTextSchema = {
-	type: 'string',
-	description:
-		'Replacement text as a single string with \\n line separators; every \\n separates lines, so a trailing \\n adds a final empty line. Mirror the removed lines exactly, blank lines included. A replacement that is only blank lines is written as one \\n per blank line. Use "" to delete the range.',
-} as const
+export const editItemSchema = {
+	type: "object",
+	additionalProperties: false,
+	properties: {
+		op: {
+			type: "string",
+			enum: ["ins", "del", "replace"],
+			required: true,
+			description:
+				'Edit semantic. "ins" inserts `lines` AFTER the `from` line; "del" removes the from..to range; "replace" swaps the from..to range with `lines`.',
+		},
+		from: {
+			type: "string",
+			required: true,
+			description:
+				'Required. Anchor of the FIRST line of the range. `<line>#<hash>` (e.g. "12#aB3") or a bare 3-char hash when the file is unchanged above. For `op:"ins"`, the inserted lines land AFTER this line; for `del`/`replace`, this is the first line of the affected range.',
+		},
+		to: {
+			type: "string",
+			description:
+				'Anchor of the LAST line of the range. If omitted, the edit targets just the `from` line. Forbidden for `op:"ins"`.',
+		},
+		lines: {
+			type: "array",
+			items: { type: "string" },
+			description:
+				'Required and must be non-empty for `op:"ins"` and `op:"replace"`. Forbidden for `op:"del"`. For `ins`: lines to insert after `from`. For `replace`: lines to substitute the from..to range with. Pass `[""]` to clear a single line (still a replace, not a del).',
+		},
+		path: {
+			type: "string",
+			description:
+				"Optional per-item path override (multi-file edits in one call). Overrides the top-level `path` for this edit only.",
+		},
+	},
+} as const;
 
-export const removeFromSchema = {
-	type: 'string',
+export const editsSchema = {
+	type: "array",
 	description:
-		'Anchor of the FIRST line to remove (inclusive). Prefer the full `<line>#<hash>` form copied from a read/grep/diff row (e.g. "12#aB3" → `12#aB3│content`); a bare 3-char hash (e.g. "aB3") is accepted when you are sure the file has not shifted above. Never pass the line content.',
-} as const
-
-export const removeToSchema = {
-	type: 'string',
-	description:
-		'Optional. Anchor of the LAST line to remove (inclusive). Same form as `remove_from`. Omit to edit only the `remove_from` line.',
-} as const
+		"Ordered list of edits to apply atomically in one file (or across files when per-item `path` overrides). Edits apply in order against evolving content; each one sees the file state after the previous edit in the same call. After the call, a per-hunk `Shift:` block tells the model how the absolute line numbers below the edits moved, so the next edit can chain via `newLine=<N>#<oldHash>` from the next unchanged diff row (if rendered), or read for fresh anchors.",
+	items: editItemSchema,
+} as const;
 
 export const pathSchema = {
-	type: 'string',
+	type: "string",
 	description:
-		'Path to edit. Required — always provide it explicitly; it is only auto-resolved from the anchors as a fallback when omitted by mistake.',
-} as const
+		"Default path for the edits. Required unless every item carries its own `path`. Accepts the built-in `file_path` spelling too.",
+} as const;
+
+/** @deprecated — kept for backward compat with the pre-0.4 contract. */
+export const replacementTextSchema = {
+	type: "string",
+	description:
+		"DEPRECATED: use the new `edits[].lines` shape. Kept for compatibility only; the model should never use this directly.",
+} as const;
+
+/** @deprecated — kept for backward compat with the pre-0.4 contract. */
+export const removeFromSchema = {
+	type: "string",
+	description:
+		"DEPRECATED: use the new `edits[].from` shape. Kept for compatibility only.",
+} as const;
+
+/** @deprecated — kept for backward compat with the pre-0.4 contract. */
+export const removeToSchema = {
+	type: "string",
+	description:
+		"DEPRECATED: use the new `edits[].to` shape. Kept for compatibility only.",
+} as const;
