@@ -44,7 +44,7 @@ Two distinct tracks in one commit-set:
 edit({ path, edits: Array<[fromHash, toHash, text]> })
 ```
 
-`absorb/t3-payload` in upstream `dsh-better-edit@0.3.0` adopted the same.
+`absorb/t3-payload` in the upstream project adopted the same.
 Our fork base (`dcc5fb6`) predates this. We will cherry-pick + improve.
 
 The upstream contract loses:

@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="dsh-hashline-edittool" width="200">
-</p>
-
 <h1 align="center">dsh-hashline-edittool</h1>
 
 <p align="center">
@@ -32,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/banner.svg" alt="file.ts → read → hashed lines → edit by hash → diff" width="900">
+  本项目 fork 自 <a href="https://github.com/Rianico/dsh-better-edit">Rianico/dsh-better-edit</a>，后续独立维护。
 </p>
 
 ---
@@ -293,7 +289,7 @@ dsh 的工具注册表按作用域解析：agent 看到的是 `agent → preset 
 ```
 dsh-hashline-edittool/
 ├── src/
-│   ├── hashline/        # 哈希 + 已提供状态核心（从 pi-hashline-edit-lsz 逐字节移植）
+│   ├── hashline/        # 哈希 + 已提供状态核心
 │   ├── tool-read.ts     # read  — line#hash│内容，offset/limit 分页
 │   ├── tool-edit.ts     # edit  — 按哈希范围、reject-and-serve
 │   ├── tool-batch-edit.ts
@@ -304,8 +300,7 @@ dsh-hashline-edittool/
 │   └── workspace.ts     # 会话 cwd 的 AsyncLocalStorage 载体
 ├── benchmark/           # 可复现的 hashline、str_replace 与 oh-my-pi token 基准测试
 │   └── corpus/          # 固定的 103 行语料
-├── test/                # 615 个测试（移植 + 回归）
-├── assets/              # logo 与 banner
+├── test/                # 615 个测试
 ├── cordis.patch.yml     # bundle 补丁
 └── package.json         # dsh.bundle manifest
 ```
@@ -329,7 +324,7 @@ npm publish --registry https://registry.npmjs.org   # 版本未打 tag 前会被
 
 `npm run release` 会更新 `package.json`/lockfile、把 CHANGELOG 的 `[Unreleased]` 段落迁移到版本号下、提交、打 `vX.Y.Z` tag 并推送——tag 推送会基于 changelog 自动创建 GitHub release。`npm publish` 在该 tag 存在之前会拒绝运行（prepublishOnly 门禁），因此每个 npm 版本都一定已经打好 tag 并发布过 release。
 
-测试套件移植自 pi-hashline-edit-lsz，通过本地文件系统桥接直接驱动 dsh 工具构建器。
+测试套件通过本地文件系统桥接直接驱动 dsh 工具构建器。
 
 ## 路线图
 
@@ -339,7 +334,6 @@ npm publish --registry https://registry.npmjs.org   # 版本未打 tag 前会被
 
 - **缩小或证明与 @oh-my-pi/hashline 的差距**（参考：[`../oh-my-pi.md`](../oh-my-pi.md)）。这个兄弟补丁语言负载更轻——基准测试中相对 `str_replace` 省 42%/53%，而我们省 26%，因为它裸文本式的补丁文档跳过了我们每次调用都要付的 JSON 外壳——还提供了我们不支持的四种能力：语法块操作（`PUT N*:`）、寄存器 + `REM`/`MV`、一次变更一个多 hunk 文档、可插拔文件系统。代价在正确性一侧：它的行号未经验证（当前标签下的错行号会静默落盘）、每次编辑都要重新编号、过期标签触发尽力而为的三方合并而非校验、语法也抬高了模型的技能门槛。逐项决定是拒绝还是采纳——负载差距本身不足以成为切换格式的理由。
 - 在 dsh 会话中实测 0.1.7（served-tail 修复之后）。
-- 把 served-tail 截断修复回馈给 pi-hashline-edit-lsz / 上游（他们的 `upsertServed` 同样从不截断）。
 - 对照下一个 dsh 版本重新核对插件接线（当前固定在 `0.1.0-rc.6`；dsh 处于开发者预览阶段，承诺会有破坏性变更）。
 
 </details>
@@ -350,7 +344,7 @@ npm publish --registry https://registry.npmjs.org   # 版本未打 tag 前会被
 
 ## 许可证
 
-MIT License——详见 [LICENSE](LICENSE)。移植自 pi-hashline-edit-lsz（MIT），其本身带有 RimuruW 与 YuGiMob 的上游版权声明。
+MIT License——详见 [LICENSE](LICENSE)。
 
 ## 致谢
 
@@ -358,7 +352,6 @@ MIT License——详见 [LICENSE](LICENSE)。移植自 pi-hashline-edit-lsz（MI
 
 - [**pi-hashline-edit**](https://github.com/RimuruW/pi-hashline-edit)（RimuruW）——引入 3 字符哈希与冲突消解的原创 pi-coding-agent 扩展。
 - [**pi-hashline-edit-pro**](https://github.com/YuGiMob/pi-hashline-edit-pro)（YuGiMob）——本仓库 hashline 核心所移植自的加固版 fork。
-- [**pi-hashline-edit-lsz**](https://github.com/Rianico/pi-hashline-edit-lsz)——本项目所跟随的自维护 fork。hashline 核心逐字节移植；工具层基于 dsh 的插件 API 重写。
 
 延伸阅读：[Hash anchors + Myers diff + single-token anchors（dirac.run）](https://dirac.run/posts/hash-anchors-myers-diff-single-token)（关于编辑调用 O(S+R) → O(R) 节省的设计评论）以及一个独立的 [hashline 与 replace 对比基准测试](https://nwyin.com/blogs/hashline-vs-replace-edit-bench.html)。
 

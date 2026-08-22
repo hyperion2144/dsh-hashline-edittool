@@ -1,6 +1,6 @@
 /**
  * dsh-hashline-edittool — hash-anchored read/edit/undo_last_edit/grep for
- * DeepSeek Harness, a dsh port of pi-hashline-edit-lsz.
+ * DeepSeek Harness — a dsh port of the hashline editor.
  *
  * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). On
  * `agent/session-start` it registers the hashline tools and prompt sections on

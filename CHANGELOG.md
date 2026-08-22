@@ -2,8 +2,6 @@
 
 All notable changes to the `dsh-hashline-edittool` plugin will be documented in this file.
 
-Entries link to the originating spec issue in [pi-hashline-edit-lsz](https://github.com/Rianico/pi-hashline-edit-lsz) where one exists.
-
 ## [0.4.0] - 2026-08-21
 
 ### Added
@@ -15,14 +13,17 @@ Entries link to the originating spec issue in [pi-hashline-edit-lsz](https://git
 - New `grep` tool. Hashline-aware substring (default) or regex (`regex: true`) search. Output mirrors `read`: each match is a `<line>#<hash>│content` row under a `HASH IDENTIFIER │ FILE LINES` header, one section per file. Context rows (`-C N`) carry markers too. Every file read by grep is emitted as `fs/observed` and recorded as served, so a grep hit can be edited directly without a separate `read`.
 - New `tool:grep` prompt section (default order `134`), overridable per agent preset via `<preset>/grep.md`.
 - **Structured web-UI views.** Each tool now emits the typed `presentationMeta` + `presentResult` / `presentCall` projections from the `@deepseek-ai/dsh-tools` contract, so dsh-web (and any future UI that consumes the same contract) renders the read as a line-numbered code view (`card: 'read'`), each edit / batch_edit / undo as an inline diff card (`card: 'diff'`), and grep as a grouped-by-file search card (`card: 'search' shape: 'matches'`). The model-facing text contract is byte-identical to the pre-change version — the structured metadata rides alongside the existing `modelText`. The pattern is mirrored from `@deepseek-ai/dsh-tool-fs` (the official built-in fs tools, the authoritative reference for the contract). Pure helpers live in `src/presentation-helpers.ts` (`buildReadPresentation`, `buildDiffPresentation`, `buildSearchPresentation`, `computeHunkDiffs`, `langFromPath`, soft-validators). See `docs/web-ui-structured-views-spec.md` for the full design.
-- **Upstream cherry-picks (non-breaking).** Three non-breaking ticket-bundles cherry-picked from upstream `Rianico/dsh-better-edit@0.3.0`:
+- **Cherry-picks (non-breaking).** Three non-breaking ticket-bundles cherry-picked from the upstream
+  at `0.3.0`:
   - **T1 (ADR-0005) — whitespace-insensitive canon.** `canon()` now strips every run of `[ \t\r\n]+` instead of just `\r` and `trimEnd()`. A line that differs only by whitespace keeps its hash, so a reformat cannot rotate anchors. `CANON_VERSION = 2` is exported; the hash-store cache invalidates on version change. `getCanon(cache, line)` memoizes per call (input set bounded by file line count).
   - **T2 (ADR-0008) — orphaned serve healing.** `_mergeServedRows` builds an internal `Map<hash, position>` as it scans the existing array; when the same hash appears at a second position, the older position is nulled. This prevents a partial re-serve from leaving a stale duplicate behind. Both `recordServed` / `recordServedTruncated` short-circuit on no-op writes. `verifyServedRange` now uses **candidate-span enumeration** when `startPositions.length` or `endPositions.length` is not exactly 1: for each `s ∈ startPositions × e ∈ endPositions`, it checks `served[s..e] === fileHashes[startLine-1..endLine-1]`. If exactly one candidate matches, it's accepted. If multiple match, the closest to `startLine-1` wins. The new `[E_RANGE_UNVERIFIED]` message says "A full read will re-sync the served mirror" instead of the old "is never guessed at" boilerplate.
   - **T5 — terse notices + lean prompts.** All `[E_NOOP_LOOP]` / `[E_STALE_ANCHOR]` / `[E_AMBIGUOUS_ANCHOR]` / `[E_BAD_REF]` / `[E_BAD_OP]` / `[E_INVALID_PATCH]` / `[E_BARE_HASH_PREFIX]` messages shortened; the "Autocorrected: " prefix dropped from autocorrection notices. Model-facing output is shorter per rejection so the next edit prompt has more room for actual code context. Schema description one-liners land here too.
 
 ### Changed
 
-- **Yet-evolving edit contract → `op` semantics.** Following the upstream `absorb/t3-payload` merge (which bundled `batch_edit` into `edit({path, edits})`), this release goes further and adds an explicit `op` field to each `edits[i]`:
+- **Yet-evolving edit contract → `op` semantics.** Following the `absorb/t3-payload` merge (which
+  bundled `batch_edit` into `edit({path, edits})`), this release goes further and adds an explicit
+  `op` field to each `edits[i]`:
   - `remove_from` → `from`; `remove_to` → `to` (optional, single-line when omitted); `replacement_text` → `lines` (string array).
   - `op: "ins"` — insert `lines` AFTER the `from` line (the anchor line's content is preserved). `to` is forbidden.
   - `op: "del"` — delete the `from` line, or the `from..to` range. `lines` is forbidden.
@@ -115,14 +116,13 @@ seeded preset files expose that `order` as editable front-matter.
 ### Added
 
 - Reproducible token-cost benchmark (`benchmark/run.mjs` + frozen 103-line corpus + methodology): hashline vs `str_replace` on the same file with the same 12 replacements — 31% fewer output tokens over the session (43% on multi-line ranges), ~1.4× cheaper on effective cost at the 5× output-token rate. Deterministic: content-addressed self-checking edit script, pinned `js-tiktoken` `cl100k_base` devDependency. Run with `npm run benchmark`.
-- README rewritten around the three pillars — token-saving, correctness, and the modern content-addressed edit pattern — with Mermaid diagrams, a `str_replace` comparison table, and an inspiration/lineage section (The Harness Problem, pi-hashline-edit, pi-hashline-edit-pro, pi-hashline-edit-lsz).
+- README rewritten around the three pillars — token-saving, correctness, and the modern content-addressed edit pattern — with Mermaid diagrams, a `str_replace` comparison table, and an inspiration/lineage section (The Harness Problem, pi-hashline-edit, pi-hashline-edit-pro).
 
 ## [0.1.4] - 2026-08-15
 
 ### Fixed
 
-- `E_RANGE_UNVERIFIED` ("served at N positions") on edits after a shrinking write: the served-state array was upserted by position but never truncated to the file's current line count, so a stale tail kept a surviving line's hash at its OLD position while the current serve held it at its new one. `recordServed`/`recordServes` now take the current line count and truncate before upserting, threaded from every whole-file serve — read, write auto-read, drift rows, and all rejection-echo sites. Regression test covers the 8-line→2-line write case ([Rianico/pi-hashline-edit-lsz#27](https://github.com/Rianico/pi-hashline-edit-lsz/issues/27)).
-- The fix is a candidate to upstream into pi-hashline-edit-lsz / upstream, whose `upsertServed` has the same never-truncate behavior (tracked in [Rianico/pi-hashline-edit-lsz#27](https://github.com/Rianico/pi-hashline-edit-lsz/issues/27)).
+- `E_RANGE_UNVERIFIED` ("served at N positions") on edits after a shrinking write: the served-state array was upserted by position but never truncated to the file's current line count, so a stale tail kept a surviving line's hash at its OLD position while the current serve held it at its new one. `recordServed`/`recordServes` now take the current line count and truncate before upserting, threaded from every whole-file serve — read, write auto-read, drift rows, and all rejection-echo sites. Regression test covers the 8-line→2-line write case (issue #27).
 
 ## [0.1.3] - 2026-08-15
 
@@ -147,9 +147,9 @@ seeded preset files expose that `order` as editable front-matter.
 
 ### Added
 
-- Initial dsh port of pi-hashline-edit-lsz: hash-anchored `read` / `edit` / `batch_edit` / `undo_last_edit` tools for DeepSeek Harness. Every line gets a unique 3-character content hash; edits target `remove_from`/`remove_to` hashes. The hashline core is ported byte-for-byte; the tool layer is rewritten on dsh's plugin API ([batch_edit spec: Rianico/pi-hashline-edit-lsz#19](https://github.com/Rianico/pi-hashline-edit-lsz/issues/19)).
+- Initial dsh port of the hashline editor: hash-anchored `read` / `edit` / `batch_edit` / `undo_last_edit` tools for DeepSeek Harness. Every line gets a unique 3-character content hash; edits target `remove_from`/`remove_to` hashes. The hashline core is ported byte-for-byte; the tool layer is rewritten on dsh's plugin API (batch_edit spec #19).
 - Built-in replacement via scope-layered registry shadowing: on `agent/session-start` the tools and the `tool:read`/`tool:edit` prompt sections are registered on the agent's own layer (own-layer-wins), unwinding automatically on disposal; a `tools/post-execute` listener appends the auto-read to built-in `write` results.
-- Served-state range verification with reject-and-serve: every line of the resolved range is checked against what the model was shown; stale/never-served/unverified ranges are hard-rejected with the current `HASH│content` rows echoed back (retry needs no `read`). Drift notices report served territory changed outside the edit range ([reject-and-serve spec: Rianico/pi-hashline-edit-lsz#13](https://github.com/Rianico/pi-hashline-edit-lsz/issues/13)).
+- Served-state range verification with reject-and-serve: every line of the resolved range is checked against what the model was shown; stale/never-served/unverified ranges are hard-rejected with the current `HASH│content` rows echoed back (retry needs no `read`). Drift notices report served territory changed outside the edit range (reject-and-serve spec #13).
 - Chained edits without re-reading: post-edit diff rows and rejection echoes count as serves, so follow-up edits verify cleanly.
-- Error-code contract (`[E_*]` codes, README-documented and test-enforced) including the noop-loop guard ([Rianico/pi-hashline-edit-lsz#18](https://github.com/Rianico/pi-hashline-edit-lsz/issues/18)); `undo_last_edit` surviving restarts; and safe writes preserving permissions, line endings, BOMs, symlinks, and hard links via `ctx.fs`.
-- Test suite ported from pi-hashline-edit-lsz (614 tests at release), driving the dsh tool builders directly over a local filesystem bridge.
+- Error-code contract (`[E_*]` codes, README-documented and test-enforced) including the noop-loop guard (issue #18); `undo_last_edit` surviving restarts; and safe writes preserving permissions, line endings, BOMs, symlinks, and hard links via `ctx.fs`.
+- Test suite ported from the original project (614 tests at release), driving the dsh tool builders directly over a local filesystem bridge.

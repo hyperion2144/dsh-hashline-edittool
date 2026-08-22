@@ -2,7 +2,7 @@
  * Auto-read after `write`: when the built-in `write` tool succeeds, this scoped
  * `tools/post-execute` listener re-reads the written file and appends a fresh
  * hashline-anchored preview to the model-facing content, so the model gets new
- * anchors without an explicit read call (mirroring pi-hashline-edit-lsz).
+ * anchors without an explicit read call.
  * @module dsh-hashline-edittool/write-hook
  */
 

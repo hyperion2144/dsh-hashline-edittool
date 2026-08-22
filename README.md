@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="dsh-hashline-edittool" width="200">
-</p>
-
 <h1 align="center">dsh-hashline-edittool</h1>
 
 <p align="center">
@@ -32,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/banner.svg" alt="file.ts → read → hashed lines → edit by hash → diff" width="900">
+  Forked from <a href="https://github.com/Rianico/dsh-better-edit">Rianico/dsh-better-edit</a> — maintained independently from here on.
 </p>
 
 ---
@@ -379,7 +375,7 @@ undo history from the shared home — treat any pre-0.1.2 undo entries as gone.
 ```
 dsh-hashline-edittool/
 ├── src/
-│   ├── hashline/        # hash + served-state core (ported byte-for-byte from pi-hashline-edit-lsz)
+│   ├── hashline/        # hash + served-state core
 │   ├── tool-read.ts     # read  — line#hash│content, offset/limit paging
 │   ├── tool-edit.ts     # edit  — range-by-line#hash, reject-and-serve, Shift block
 │   ├── tool-batch-edit.ts
@@ -391,8 +387,7 @@ dsh-hashline-edittool/
 │   └── workspace.ts     # session-cwd AsyncLocalStorage carrier
 ├── benchmark/           # reproducible hashline-vs-str_replace-vs-oh-my-pi token benchmark
 │   └── corpus/          # frozen 103-line fixture
-├── test/                # 615 tests (ported + regression)
-├── assets/              # logo + banner
+├── test/                # 615 tests
 ├── cordis.patch.yml     # bundle patch
 └── package.json         # dsh.bundle manifest
 ```
@@ -419,8 +414,7 @@ version, commits, tags `vX.Y.Z`, and pushes — the tag push creates the GitHub 
 changelog. `npm publish` refuses to run until that tag exists (prepublishOnly gate), so every npm
 version is always already tagged and released.
 
-The test suite is ported from pi-hashline-edit-lsz and drives the dsh tool builders directly over a
-local filesystem bridge.
+The test suite drives the dsh tool builders directly over a local filesystem bridge.
 
 ## Roadmap
 
@@ -433,8 +427,6 @@ sqlite-environment failures excluded).
 
 - **Close or justify the gap vs @oh-my-pi/hashline** (reference: [`../oh-my-pi.md`](../oh-my-pi.md)). The sibling patch language is payload-lighter — 42%/53% vs our 26% vs `str_replace` on the benchmark, because a bare patch document skips the JSON envelope we pay per call — and offers four abilities we do not support: syntactic block ops (`PUT N*:`), registers + `REM`/`MV`, one multi-hunk document per change, and a pluggable filesystem. The counterweight is correctness: its line numbers are unverified (a wrong number on a current tag lands silently), every edit renumbers, stale tags trigger best-effort 3-way merge instead of verification, and the grammar raises the model skill floor. Decide each ability reject-or-adopt on its own merits — the payload gap alone is not a reason to switch formats.
 - Verify 0.1.6 live in a dsh session after the served-tail fix.
-- Upstream the served-tail truncation fix to pi-hashline-edit-lsz / upstream (their `upsertServed`
-  never truncates either).
 - Re-check plugin wiring against the next dsh release (pinned to `0.1.0-rc.6`; dsh is in developer
   preview and promises breaking changes).
 
@@ -448,8 +440,7 @@ served-state verification.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details. Ported from pi-hashline-edit-lsz (MIT), which
-itself carries the upstream copyrights of RimuruW and YuGiMob.
+MIT License — see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
@@ -462,9 +453,6 @@ project stands on the shoulders of:
   pi-coding-agent extension that introduced 3-character hashes and collision resolution.
 - [**pi-hashline-edit-pro**](https://github.com/YuGiMob/pi-hashline-edit-pro) by YuGiMob — the
   hardened fork the hashline core here is ported from.
-- [**pi-hashline-edit-lsz**](https://github.com/Rianico/pi-hashline-edit-lsz) — the self-maintained
-  fork this project tracks. The hashline core is ported byte-for-byte; the tool layer is rewritten
-  on dsh's plugin API.
 
 Related reading: [Hash anchors + Myers diff + single-token anchors
 (dirac.run)](https://dirac.run/posts/hash-anchors-myers-diff-single-token) (a design review of the
