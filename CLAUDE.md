@@ -16,3 +16,17 @@ Release is **tag-first**: the git tag creates the GitHub release, and `npm publi
 ## Working with Git
 
 Prefer issues + pull requests. See [`.agents/skills/git-std.md`](.agents/skills/git-std.md) for the repo's PR-first rule and `Closes #NN` convention.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as GitHub Issues on `hyperion2144/dsh-hashline-edittool`; use the `gh` CLI for all reads/writes. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles are kept at their default names: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — one `CONTEXT.md` plus `docs/adr/` at the repo root (both already present). See `docs/agents/domain.md`.
