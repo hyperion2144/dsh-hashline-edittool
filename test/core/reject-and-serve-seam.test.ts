@@ -52,7 +52,7 @@ describe("applyEdit — stale range beats would-empty", () => {
 			applyEdit(
 				content,
 				{
-					hash_bounds: [{ hash: hashes[0]! }, { hash: hashes[2]! }],
+					hash_bounds: [{ line: 1, hash: hashes[0]! }, { line: 3, hash: hashes[2]! }],
 					content_lines: [],
 				},
 				undefined,
@@ -64,7 +64,7 @@ describe("applyEdit — stale range beats would-empty", () => {
 			error = caught;
 		}
 		expect(error).toBeInstanceOf(ServedRejectionError);
-		expect((error as ServedRejectionError).code).toBe("E_RANGE_STALE");
+		expect((error as ServedRejectionError).code).toBe("E_RANGE_UNVERIFIED");
 	});
 });
 describe("finalizeToolResult", () => {
@@ -96,7 +96,7 @@ describe("applyEdit — resolved range geometry", () => {
 		const content = "aaa\nbbb\nccc";
 		const hashes = lineHashesPure(content);
 		const edit: HEdit = {
-			hash_bounds: [{ hash: hashes[1]! }, { hash: hashes[1]! }],
+			hash_bounds: [{ line: 2, hash: hashes[1]! }, { line: 2, hash: hashes[1]! }],
 			content_lines: ["BBB", "B2"],
 		};
 		const result = applyEdit(content, edit);
@@ -113,12 +113,12 @@ describe("applyEdit — resolved range geometry", () => {
 		const content = "aaa\nbbb\nccc";
 		const hashes = lineHashesPure(content);
 		const noop = applyEdit(content, {
-			hash_bounds: [{ hash: hashes[1]! }, { hash: hashes[1]! }],
+			hash_bounds: [{ line: 2, hash: hashes[1]! }, { line: 2, hash: hashes[1]! }],
 			content_lines: ["bbb"],
 		});
 		expect(noop.range.delta).toBe(0);
 		const deleted = applyEdit(content, {
-			hash_bounds: [{ hash: hashes[1]! }, { hash: hashes[1]! }],
+			hash_bounds: [{ line: 2, hash: hashes[1]! }, { line: 2, hash: hashes[1]! }],
 			content_lines: [],
 		});
 		expect(deleted.range.delta).toBe(-1);
@@ -131,6 +131,9 @@ async function withTempHome(run: () => Promise<void>): Promise<void> {
 		join(await getWritableTempRoot(), "pi-hashline-reject-and-serve-test-"),
 	);
 	vi.stubEnv("HOME", tmpHome);
+	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
+	// homedir()/.dsh, matching sqlitePath in this file.
+	vi.stubEnv("DSH_HOME", "");
 	vi.stubEnv("XDG_CONFIG_HOME", "");
 	try {
 		await run();

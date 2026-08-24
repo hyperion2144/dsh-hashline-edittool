@@ -18,7 +18,7 @@ import type { HashStore } from "./hash-store.js";
 import type { LineEnding } from "./edit-diff.js";
 import { restoreEndings } from "./edit-diff.js";
 import { normFromText } from "./file-reader.js";
-import { scanDrift, loadServed } from "./session-view.js";
+import { scanDrift, loadServed, migrateServedAfterEdit } from "./session-view.js";
 import {
 	applyEdit,
 	resEdit,
@@ -543,7 +543,7 @@ export async function runFileEdits(
 		maxLines: MAX_HASH_LINES,
 	});
 
-	const served = await loadServed(opts.sessionKey, absolutePath);
+	let served = await loadServed(opts.sessionKey, absolutePath);
 	const warnings: string[] = [];
 
 	let currentContent = originalNormalized;
@@ -693,6 +693,12 @@ export async function runFileEdits(
 		};
 		currentContent = applied.result;
 		currentHashes = applied.hashes;
+		// Migrate the in-memory served mirror as we go so the next item in
+		// the same batch (with post-shift line numbers) sees the post-edit
+		// state — otherwise batch edits where the second hunk's anchor is
+		// below the first would fail with [E_RANGE_UNVERIFIED] on the
+		// unchanged lines that just shifted.
+		served = migrateServedAfterEdit(served, currentHashes, applied.hashes);
 		clearNoopLoop(absolutePath);
 		if (applied.anchorWarnings?.length)
 			warnings.push(...applied.anchorWarnings);

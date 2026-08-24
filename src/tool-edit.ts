@@ -34,7 +34,7 @@ import {
 	pathSchema,
 	editsSchema,
 } from "./contract.js";
-import { abortIf, isRec } from "./utils.js";
+import { abortIf, isRec, visLines } from "./utils.js";
 
 import { enforceNoopLoop } from "./mutation.js";
 import { runFileEdits, type PreparedItem, type FileEditResult } from "./edit-engine.js";
@@ -44,7 +44,7 @@ import {
 	trackNoopPayload,
 } from "./noop-guard.js";
 import { commit, resolveMissingPath, snapshotIdFor } from "./mutation.js";
-import { recordServedTruncated } from "./session-view.js";
+import { recordServedTruncated, recordServedAfterEdit } from "./session-view.js";
 import { EDIT_DESCRIPTION } from "./prompts.js";
 import {
 	computeHunkDiffs,
@@ -56,6 +56,8 @@ import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
+import { genDiff } from "./edit-diff.js";
+import { HASHLINE_HEADER } from "./hashline/index.js";
 
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
@@ -319,12 +321,17 @@ async function applyFileResultTo(
 		file.warnings.unshift(ctx.resolutionWarning);
 	}
 	if (file.servedRows && file.servedRows.length > 0) {
-		void recordServedTruncated(
+		// Awaited so the next edit in the same batch (or the model's next
+		// tool call) sees the migrated served mirror — otherwise the
+		// post-edit follow-up would race and hit [E_RANGE_UNVERIFIED] on
+		// the unchanged lines below the diff region.
+		await recordServedAfterEdit(
 			ctx.sessionKey,
 			ctx.absolutePath,
 			file.servedRows,
 			(file.result.match(/\n/g) ?? []).length + 1,
-			file.range.startLine - 1,
+			file.originalHashes,
+			file.resultHashes,
 		);
 	}
 }
@@ -377,9 +384,15 @@ function buildCanonicalFromFileResult(
 	return result;
 }
 
-/** Project the FileEditResult into the model-facing text the same way
- *  `buildChanged` in `edit-response.ts` used to. Kept inline so this tool
- *  file owns the projection end-to-end. */
+/** Project the FileEditResult into the model-facing text. Mirrors the layout
+ *  of `buildChanged` in `edit-response.ts` so the 0.4 contract holds:
+ *    1. `HASH IDENTIFIER │ FILE LINES` header
+ *    2. `+- line#hash │ content` diff rows (only the changed hunks, with 3
+ *       lines of context on each side)
+ *    3. One `Shift:` block per hunk
+ *    4. Trailing success prefix + line summary
+ *    5. Trailing warnings / drift notice
+ *  Kept inline so this tool file owns the projection end-to-end. */
 function buildChangedModelText(file: FileEditResult, displayPath: string): string {
 	if (file.appliedCount === 0) {
 		const warningsBlock =
@@ -391,15 +404,14 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	const linesRemoved = file.totalRemovedLines;
 	const originalLineCount = visLines(file.originalNormalized).length;
 	const resultLineCount = visLines(file.result).length;
-	const summary =
-		linesAdded > 0 || linesRemoved > 0
-			? ` Added ${linesAdded} line(s), removed ${linesRemoved} line(s).`
-			: "";
-	const header = `Successfully edited in ${displayPath}.`;
-	const body = `${header}${summary}\n\nHASH IDENTIFIER │ FILE LINES\n${file.result
-		.split("\n")
-		.map((line, i) => `${i + 1}#${file.resultHashes[i] ?? "?"}│${line}`)
-		.join("\n")}`;
+	const diffResult = genDiff(
+		file.originalNormalized,
+		file.result,
+		3,
+		file.resultHashes,
+		file.originalHashes,
+	);
+	const diffBody = diffResult.diff ? `${HASHLINE_HEADER}\n${diffResult.diff}` : "";
 	const shiftBlocks = (file.hunkShifts ?? [])
 		.map((hunk) =>
 			shiftBlockForHunk({
@@ -411,15 +423,15 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 		)
 		.filter((b) => b.length > 0)
 		.join("");
+	const successPrefix = `Successfully edited in ${displayPath}.`;
+	const lineSummary =
+		linesAdded > 0 || linesRemoved > 0
+			? ` Added ${linesAdded} line(s), removed ${linesRemoved} line(s).`
+			: "";
 	const warningsBlock =
 		file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
 	const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
-	return `${body}${shiftBlocks}${warningsBlock}${driftBlock}`;
-}
-
-function visLines(s: string): string[] {
-	if (s === "") return [];
-	return s.endsWith("\n") ? s.slice(0, -1).split("\n") : s.split("\n");
+	return `${diffBody}${shiftBlocks}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 }
 
 function shiftBlockForHunk(args: {

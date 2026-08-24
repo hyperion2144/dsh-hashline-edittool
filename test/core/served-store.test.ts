@@ -581,6 +581,9 @@ async function withTempHome(
 		join(await getWritableTempRoot(), "pi-hashline-served-test-"),
 	);
 	vi.stubEnv("HOME", tmpHome);
+	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
+	// homedir()/.dsh, matching sqlitePath(home) below (home/.dsh/...).
+	vi.stubEnv("DSH_HOME", "");
 	vi.stubEnv("XDG_CONFIG_HOME", "");
 	try {
 		await run(tmpHome);

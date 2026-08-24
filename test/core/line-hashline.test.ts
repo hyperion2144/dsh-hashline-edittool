@@ -19,15 +19,15 @@ beforeAll(async () => {
 
 describe("parseRef — line#hash form", () => {
 	it("parses line#hash", () => {
-		expect(parseHashRef("12#aB3")).toEqual({ hash: "aB3" });
+		expect(parseHashRef("12#aB3")).toEqual({ line: 12, hash: "aB3" });
 	});
 
 	it("parses line#hash with multi-digit line", () => {
-		expect(parseHashRef("123#xyz")).toEqual({ hash: "xyz" });
+		expect(parseHashRef("123#xyz")).toEqual({ line: 123, hash: "xyz" });
 	});
 
-	it("still parses bare hash for hash-only fallback", () => {
-		expect(parseHashRef("aB3")).toEqual({ hash: "aB3" });
+	it("rejects bare hash (line#hash is the only valid anchor)", () => {
+		expect(() => parseHashRef("aB3")).toThrow(/Invalid anchor/);
 	});
 });
 
@@ -106,8 +106,12 @@ describe("edit — Shift block", () => {
 				{
 					path: "two.ts",
 					edits: [
+						// First hunk replaces line 2 with [B, B2]; the Shift block
+						// tells the model line 5 is now at line 6, so the second
+						// hunk must use the post-shift line (6#EaX), not the
+						// pre-shift one (5#EaX).
 						{ op: "replace", from: line2, lines: ["B", "B2"] },
-						{ op: "replace", from: line5, lines: ["E", "E2"] },
+						{ op: "replace", from: `6#${line5.split("#")[1]}`, lines: ["E", "E2"] },
 					],
 				},
 				undefined,
@@ -133,7 +137,23 @@ describe("stale anchor echo — read format", () => {
 		try {
 			applyEdit(
 				content,
-				resEdit({ remove_from: hashes[2]!, remove_to: "ZZZ", replacement_text: "X" }),
+				resEdit({
+					remove_from: `3#${hashes[2]!}`,
+					remove_to: `3#${hashes[2]!}`,
+					replacement_text: "X",
+				}),
+				undefined,
+				[
+					hashes[0]!,
+					hashes[1]!,
+					"ZZZ", // stale hash at line 3
+					hashes[3]!,
+					hashes[4]!,
+					hashes[5]!,
+					hashes[6]!,
+					hashes[7]!,
+					hashes[8]!,
+				],
 			);
 		} catch (error) {
 			caught = error as Error;

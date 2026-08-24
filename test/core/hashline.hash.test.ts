@@ -30,7 +30,7 @@ describe("strict hashline contract", () => {
 	it("rejects stale anchors instead of relocating by hash", () => {
 		const content = ["a", "INSERTED", "b", "target", "c"].join("\n");
 		const stale = {
-      hash_bounds: [{ hash: "ZZZZ" }, { hash: "ZZZZ" }], content_lines: ["updated"],
+      hash_bounds: [{ line: 1, hash: "ZZZZ" }, { line: 1, hash: "ZZZZ" }], content_lines: ["updated"],
     } as any;
 		expect(() => applyEdit(content, stale)).toThrow(/stale anchor/);
 	});
@@ -77,7 +77,7 @@ describe("perfect hashing", () => {
 			"const x = 1;",
 		].join("\n");
 		const hashes = await lineHashes(file, home.testPath);
-		const result = applyEdit(file, { hash_bounds: [{ hash: hashes[2]! }, { hash: hashes[2]! }], content_lines: ["const x = 999;"] });
+		const result = applyEdit(file, { hash_bounds: [{ line: 3, hash: hashes[2]! }, { line: 3, hash: hashes[2]! }], content_lines: ["const x = 999;"] });
     expect(result.content).toBe("const x = 1;\nconst y = 2;\nconst x = 999;");
 	});
 
@@ -86,7 +86,7 @@ describe("perfect hashing", () => {
 		const staleHash = "ZZZZ";
 		let caught: Error | undefined;
 		try {
-			applyEdit(file, { hash_bounds: [{ hash: staleHash }, { hash: staleHash }], content_lines: ["X"] });
+			applyEdit(file, { hash_bounds: [{ line: 1, hash: staleHash }, { line: 1, hash: staleHash }], content_lines: ["X"] });
     } catch (e) {
 			caught = e as Error;
 		}
@@ -95,30 +95,34 @@ describe("perfect hashing", () => {
 		expect(caught!.message).toMatch(/Re-read for fresh anchors/);
 	});
 
-	it("rejects an ambiguous hash with [E_AMBIGUOUS_ANCHOR] (synthetic collision)", async () => {
+	it("rejects out-of-range line anchors with hard read-required message", async () => {
+		// line#hash disambiguates positions with identical content. With
+		// line=5 against a 4-line file, validation must reject — the agent
+		// must call read() to learn the current line count.
 		const file = "alpha\nbeta\ngamma\ndelta";
 		const realHashes = await lineHashes(file, home.testPath);
-		const forgedHashes = [...realHashes];
-		forgedHashes[2] = realHashes[0]!;
-
-		const sharedHash = realHashes[0]!;
 
 		let caught: Error | undefined;
 		try {
 			applyEdit(
 				file,
-				{ hash_bounds: [{ hash: sharedHash }, { hash: sharedHash }], content_lines: ["X"] },
+				{
+					hash_bounds: [
+						{ line: 5, hash: realHashes[0]! },
+						{ line: 5, hash: realHashes[0]! },
+					],
+					content_lines: ["X"],
+				},
 				undefined,
-				forgedHashes,
+				realHashes,
 			);
-    } catch (error) {
+		} catch (error) {
 			caught = error as Error;
 		}
 		expect(caught).toBeDefined();
-		expect(caught!.message).toMatch(/E_AMBIGUOUS_ANCHOR/);
-		expect(caught!.message).toMatch(/matches lines 1, 3/);
-		expect(caught!.message).toContain(`${realHashes[0]!}│alpha`);
-		expect(caught!.message).toContain(`${realHashes[0]!}│gamma`);
+		expect(caught!.message).toMatch(/E_RANGE_UNVERIFIED/);
+		expect(caught!.message).toMatch(/out of range/);
+		expect(caught!.message).toMatch(/Call read/);
 	});
 
 	it("all hashes are unique for any file shape", async () => {

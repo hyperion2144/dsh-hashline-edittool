@@ -91,6 +91,7 @@ export function buildReadTool(io: FileIO) {
 						},
 					},
 					truncatedByBytes: { type: "boolean" },
+					modelText: { type: "string", required: true },
 				},
 			},
 			render: (_args, value) => [

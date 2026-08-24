@@ -39,7 +39,7 @@ import { recordServed, servedPositionsOf } from "../served-store.js";
 import { SERVED_ECHO_CAP } from "../constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../constants.js";
 
-export type Anchor = { hash: string };
+export type Anchor = { line: number; hash: string };
 
 function diagRef(ref: string): string {
 	const trimmed = ref.trim();
@@ -60,15 +60,17 @@ function parseRef(ref: string): Anchor {
 
 	const lineMatch = LINE_HASH_RE.exec(trimmed);
 	if (lineMatch) {
-		return { hash: lineMatch[2]! };
+		const lineStr = lineMatch[1]!;
+		const line = Number.parseInt(lineStr, 10);
+		if (!Number.isInteger(line) || line < 1) {
+			throw new Error(diagRef(ref));
+		}
+		return { line, hash: lineMatch[2]! };
 	}
-	if (
-		trimmed.length === ANCHOR_LEN &&
-		ALPH_RE.test(trimmed)
-	) {
-		return { hash: trimmed };
-	}
-
+	// Bare-hash form is rejected: line#hash is the only valid anchor because
+	// the line number is what disambiguates positions with identical content
+	// (e.g. several blank lines), and the hash alone can't tell us whether
+	// the file drifted since the read.
 	throw new Error(diagRef(ref));
 }
 
@@ -128,20 +130,31 @@ export type HTEdit = {
 
 function resAnchorFromMap(
 	ref: Anchor,
-	hashIndex: Map<string, number[]>,
+	fileHashes: string[],
 ): RAnchor | HMismatch {
-	const hashMatches = hashIndex.get(ref.hash);
-	if (!hashMatches || hashMatches.length === 0) {
+	// The anchor carries both the agent's claimed line AND the hash. The line
+	// is what identifies the position; the hash is the drift detector. We
+	// resolve at exactly the claimed line, never by hash lookup — even when
+	// the same hash appears elsewhere, only the line#hash pair uniquely
+	// identifies a row. (See parseRef: bare-hash anchors are rejected.)
+	const claimed = ref.line;
+	if (!Number.isInteger(claimed) || claimed < 1 || claimed > fileHashes.length) {
 		return { ref, kind: "not_found" };
 	}
-	if (hashMatches.length === 1) {
-		return {
-			line: hashMatches[0]!,
-			hash: ref.hash,
-			hashMatched: true,
-		};
+	const actualHash = fileHashes[claimed - 1]!;
+	if (actualHash !== ref.hash) {
+		// The hash at the claimed line is different. Surface both: the agent's
+		// hash and the actual hash at that line. `fmtMismatchWithServes`
+		// uses `actualHash` (the resolved `RAnchor.hash`) to echo the fresh
+		// marker; we carry the original ref so the agent can see what they
+		// sent vs. what's actually there.
+		return { ref, kind: "not_found" };
 	}
-	return { ref, kind: "ambiguous", candidates: hashMatches };
+	return {
+		line: claimed,
+		hash: ref.hash,
+		hashMatched: true,
+	};
 }
 
 function assertAligned(
@@ -182,20 +195,37 @@ function fmtMismatchWithServes(
 		out.push(
 			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
 		);
+		// Dedupe the ±N echo: single-line edits carry the same anchor in both
+		// remove_from and remove_to, so the two not_found mismatches share one
+		// line — echoing the same window twice is noise. Echo once per distinct
+		// echo center (the resolved/claimed line); the header above still
+		// reports both stale anchors.
+		const echoed = new Set<number>();
 		for (const m of notFound) {
-			const ctx = m.context;
-			if (!ctx) continue;
-			const from = Math.max(1, ctx.line - STALE_CONTEXT_LINES);
-			const to = Math.min(fileLines.length, ctx.line + STALE_CONTEXT_LINES);
+			// Echo center: prefer the OTHER anchor's resolved position (when one
+			// anchor resolved and the other didn't), fall back to the agent's
+			// claimed line. Every not_found mismatch gets the ±3 read-format
+			// echo, matching [E_RANGE_UNVERIFIED]'s UX.
+			const ctx = m.context ?? {
+				line: m.ref.line,
+				hash: fileHashes[m.ref.line - 1] ?? "?",
+				hashMatched: false,
+			};
+			const echoCenter = Math.max(1, Math.min(fileLines.length, ctx.line));
+			if (echoed.has(echoCenter)) continue;
+			echoed.add(echoCenter);
+			const from = Math.max(1, echoCenter - STALE_CONTEXT_LINES);
+			const to = Math.min(fileLines.length, echoCenter + STALE_CONTEXT_LINES);
 			const echoLines: string[] = [];
 			for (let ln = from; ln <= to; ln++) {
 				const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
 				echoLines.push(`  ${marker}${HASH_SEP}${clipLine(fileLines[ln - 1] ?? "")}`);
 				pushRow(ln);
 			}
+			const freshMarker = `${echoCenter}${LINE_HASH_SEP}${ctx.hash}`;
 			out.push("");
 			out.push(
-				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${HASHLINE_HEADER}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, reuse the fresh marker ${ctx.line}${LINE_HASH_SEP}${ctx.hash} without calling read.\n  If not, call read() to find the correct line.`,
+				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${HASHLINE_HEADER}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, reuse the fresh marker ${freshMarker} without calling read.\n  If not, call read() to find the correct line.`,
 			);
 		}
 	}
@@ -540,16 +570,8 @@ function valEdit(
 	const mismatches: HMismatch[] = [];
 	const boundaryDups: BDup[] = [];
 
-	const hashIndex = new Map<string, number[]>();
-	for (let i = 0; i < fileHashes.length; i++) {
-		const h = fileHashes[i]!;
-		const list = hashIndex.get(h) ?? [];
-		list.push(i + 1);
-		hashIndex.set(h, list);
-	}
-
 	const tryResolve = (ref: Anchor): RAnchor | undefined => {
-		const result = resAnchorFromMap(ref, hashIndex);
+		const result = resAnchorFromMap(ref, fileHashes);
 		if ("kind" in result) {
 			mismatches.push(result);
 			return undefined;
@@ -558,9 +580,33 @@ function valEdit(
 	};
 
 	abortIf(signal);
+	// Out-of-range check first: if either anchor points past EOF, we want
+	// the hard "[E_RANGE_UNVERIFIED] ... out of range ... call read()" UX
+	// rather than [E_STALE_ANCHOR]. The hash is irrelevant when the line
+	// doesn't exist; the model must re-read to learn the file's size.
+	const startRef = edit.hash_bounds[0];
+	const endRef = edit.hash_bounds[1];
+	const startOOB =
+		startRef.line < 1 || startRef.line > fileLines.length;
+	const endOOB = endRef.line < 1 || endRef.line > fileLines.length;
+	const backwards = startRef.line > endRef.line;
+	if (startOOB || endOOB || backwards) {
+		throw new ServedRejectionError({
+			code: "E_RANGE_UNVERIFIED",
+			message:
+				`[E_RANGE_UNVERIFIED] — line ${startRef.line}..${endRef.line} is out of range ` +
+				`(file has ${fileLines.length} line${fileLines.length === 1 ? "" : "s"}). ` +
+				`Call read() to get the current line count and fresh anchors.`,
+			servedRows: [],
+		});
+	}
 	const startResolved = tryResolve(edit.hash_bounds[0]);
 	const endResolved = tryResolve(edit.hash_bounds[1]);
 	if (!startResolved || !endResolved) {
+		// Single-anchor fail: the OTHER resolved anchor gives us a "context"
+		// (a real line in the file) so the error UX can echo ±N around it.
+		// We carry the resolved RAnchor so fmtMismatchWithServes can use its
+		// line + hash to render the fresh marker.
 		if (!startResolved && endResolved) {
 			const startMismatch = mismatches.findLast(
 				(m) => m.ref === edit.hash_bounds[0],
@@ -578,7 +624,7 @@ function valEdit(
 	}
 	if (startResolved.line > endResolved.line) {
 		throw new Error(
-			`[E_BAD_OP] Range start line ${startResolved.line} must be <= end line ${endResolved.line} (anchors ${edit.hash_bounds[0].hash} and ${edit.hash_bounds[1].hash}).`,
+			`[E_BAD_OP] Range start line ${startResolved.line} must be <= end line ${endResolved.line} (anchors ${edit.hash_bounds[0].line}#${edit.hash_bounds[0].hash} and ${edit.hash_bounds[1].line}#${edit.hash_bounds[1].hash}).`,
 		);
 	}
 	const endLine = endResolved.line;
@@ -707,115 +753,81 @@ export function verifyServedRange(args: {
 		filePath,
 	} = args;
 	const where = filePath ? ` in ${filePath}` : "";
-	const echoRows = buildRangeEcho(startLine, endLine, fileHashes);
-	const totalLen = endLine - startLine + 1;
-	const tail =
-		echoRows.length < totalLen
-			? `\n${paginationHint(startLine + echoRows.length, totalLen - echoRows.length)}`
-			: "";
-	const echo = fmtServedRows(echoRows, fileLines) + tail;
 
-	const startPositions = servedPositionsOf(served, startHash);
-	const endPositions = servedPositionsOf(served, endHash);
-	const currentLen = endLine - startLine + 1;
-	let from: number | undefined;
-	let to: number | undefined;
-	if (startPositions.length === 1 && endPositions.length === 1) {
-		from = Math.min(startPositions[0]!, endPositions[0]!);
-		to = Math.max(startPositions[0]!, endPositions[0]!);
-	} else {
-		// Candidate-span enumeration (ADR-0008): when either anchor is served
-		// at multiple positions (e.g. a partial re-serve left a stale duplicate),
-		// find the (s, e) pair whose `served[s..e]` matches the current
-		// `fileHashes[startLine-1..endLine-1]` exactly.
-		const candidates: Array<{ from: number; to: number }> = [];
-		for (const s of startPositions) {
-			for (const e of endPositions) {
-				const candFrom = Math.min(s, e);
-				const candTo = Math.max(s, e);
-				if (candTo - candFrom + 1 !== currentLen) continue;
-				let ok = true;
-				for (let k = 0; k < currentLen; k++) {
-					if (served[candFrom + k] !== fileHashes[startLine - 1 + k]) {
-						ok = false;
-						break;
-					}
-				}
-				if (ok) candidates.push({ from: candFrom, to: candTo });
-			}
-		}
-		if (candidates.length === 1) {
-			from = candidates[0]!.from;
-			to = candidates[0]!.to;
-		} else if (candidates.length > 1) {
-			// Pick the span whose start is closest to the model's intended
-			// startLine — disambiguates when the same content was served at
-			// multiple positions in the served mirror.
-			candidates.sort(
-				(a, b) =>
-					Math.abs(a.from - (startLine - 1)) - Math.abs(b.from - (startLine - 1)),
-			);
-			from = candidates[0]!.from;
-			to = candidates[0]!.to;
-		}
-	}
-	if (from === undefined || to === undefined) {
-		const problems: string[] = [];
-		if (startPositions.length === 0) {
-			problems.push(`remove_from "${startHash}" has no served position`);
-		} else if (startPositions.length > 1) {
-			problems.push(
-				`remove_from "${startHash}" was served at ${startPositions.length} positions`,
-			);
-		}
-		if (endPositions.length === 0) {
-			problems.push(`remove_to "${endHash}" has no served position`);
-		} else if (endPositions.length > 1) {
-			problems.push(
-				`remove_to "${endHash}" was served at ${endPositions.length} positions`,
-			);
-		}
+	// Hard out-of-range check: the agent's line is past EOF — there's no
+	// meaningful "fresh marker" to reuse. Force a read.
+	if (
+		startLine < 1 ||
+		startLine > fileLines.length ||
+		endLine < 1 ||
+		endLine > fileLines.length ||
+		startLine > endLine
+	) {
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
-				`[E_RANGE_UNVERIFIED] No served span matched the current range (${currentLen} lines)${where}. ` +
-				`A full read will re-sync the served mirror — the echoed range below is current content, ` +
-				`but retrying without re-reading cannot clear a stale duplicate outside the echoed window.\n` +
-				`Current range:\n${echo}`,
-			servedRows: echoRows,
+				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — line ${startLine}..${endLine} is out of range ` +
+				`(file has ${fileLines.length} line${fileLines.length === 1 ? "" : "s"}). ` +
+				`Call read() to get the current line count and fresh anchors.`,
+			servedRows: [],
 		});
 	}
 
-	for (let i = from; i <= to; i++) {
-		if (served[i] === null) {
-			throw new ServedRejectionError({
-				code: "E_RANGE_UNSERVED",
-				message: `[E_RANGE_UNSERVED] Line ${i + 1}${where} was never served to the model — the range includes lines the model has not seen. Current range:\n${echo}\n${retryHint()}`,
-				firstOffendingLine: i + 1,
-				servedRows: echoRows,
-			});
+	// Strict line-by-line check at the agent's claimed positions. The hash's
+	// only role here is to verify the line content hasn't drifted since the
+	// read — we never fall back to "find any position with this hash", which
+	// would silently override the agent's stated line. Each position in
+	// served[] independently tracks its hash (line#hash is unique per row,
+	// even when hashes repeat across rows).
+	const currentLen = endLine - startLine + 1;
+	const firstMismatch: number | undefined = (() => {
+		for (let k = 0; k < currentLen; k++) {
+			const position = startLine - 1 + k;
+			const expectedHash =
+				currentLen === 1
+					? startHash
+					: k === 0
+						? startHash
+						: k === currentLen - 1
+							? endHash
+							: fileHashes[position];
+			const servedHash = served[position];
+			if (servedHash === null) return position;
+			if (servedHash !== expectedHash) return position;
 		}
-	}
+		return undefined;
+	})();
 
-	const servedLen = to - from + 1;
-	if (servedLen !== currentLen) {
+	if (firstMismatch !== undefined) {
+		const mismatchLine = firstMismatch + 1;
+		const expectedHash = fileHashes[firstMismatch]!;
+		const ctxFrom = Math.max(1, mismatchLine - STALE_CONTEXT_LINES);
+		const ctxTo = Math.min(fileLines.length, mismatchLine + STALE_CONTEXT_LINES);
+		const ctxEchoLines: string[] = [];
+		const ctxServedRows: ServedRow[] = [];
+		for (let ln = ctxFrom; ln <= ctxTo; ln++) {
+			const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
+			ctxEchoLines.push(`  ${marker}${HASH_SEP}${clipLine(fileLines[ln - 1] ?? "")}`);
+			ctxServedRows.push({ position: ln - 1, hash: fileHashes[ln - 1]! });
+		}
+		const ctxEcho = `${HASHLINE_HEADER}\n${ctxEchoLines.join("\n")}`;
+		const freshMarker = `${mismatchLine}${LINE_HASH_SEP}${expectedHash}`;
+		const servedAtLine = served[firstMismatch];
+		const staleMsg =
+			servedAtLine === null
+				? `line ${mismatchLine} was never served to the model`
+				: `served mirror at line ${mismatchLine} is stale (has hash ${servedAtLine}, file has ${expectedHash})`;
 		throw new ServedRejectionError({
-			code: "E_RANGE_STALE",
-			message: `[E_RANGE_STALE] The served span (${servedLen} lines) no longer matches the current range (${currentLen} lines)${where}. Current range:\n${echo}\n${retryHint()}`,
-			firstOffendingLine: startLine,
-			servedRows: echoRows,
+			code: "E_RANGE_UNVERIFIED",
+			message:
+				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${staleMsg}. ` +
+				`This usually happens after a previous edit shifted lines below your read window. ` +
+				`A full read() will re-sync, but if the line below is what you meant, you can reuse the fresh marker instead.\n` +
+				`Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${ctxEcho}\n\n` +
+				`If this is the line you meant, reuse the fresh marker ${freshMarker} without calling read.\n` +
+				`If not, call read() to find the correct line.`,
+			servedRows: ctxServedRows,
 		});
-	}
-	for (let k = 0; k < servedLen; k++) {
-		if (served[from + k] !== fileHashes[startLine - 1 + k]) {
-			const offendingLine = startLine + k;
-			throw new ServedRejectionError({
-				code: "E_RANGE_STALE",
-				message: `[E_RANGE_STALE] Line ${offendingLine}${where} differs from what you were served — the file changed on disk since it was read. Current range:\n${echo}\n${retryHint()}`,
-				firstOffendingLine: offendingLine,
-				servedRows: echoRows,
-			});
-		}
 	}
 }
 

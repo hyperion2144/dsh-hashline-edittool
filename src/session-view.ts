@@ -77,13 +77,102 @@ export type { HashStore } from "./hash-store.js";
 export type ServedEntry = { position: number; hash: string | null };
 
 /**
+ * Migrate a served mirror after an edit, preserving entries for lines whose
+ * content (and therefore hash) didn't change. Lines whose hash IS in the new
+ * file at a unique old position keep their served status at the new position;
+ * duplicates and changed lines are nulled. The returned array has the same
+ * length as `newHashes`.
+ *
+ * This is the "B" half of the chain-edit story: without migration, a previous
+ * edit that shifted lines below the diff window would clear the served
+ * mirror, and the model's follow-up edit (computed from the Shift block +
+ * remembered hash) would trip [E_RANGE_UNVERIFIED].
+ */
+export function migrateServedAfterEdit(
+  oldServed: (string | null)[],
+  oldHashes: string[],
+  newHashes: string[],
+): (string | null)[] {
+  const newServed: (string | null)[] = new Array(newHashes.length).fill(null);
+  if (oldHashes.length === 0) return newServed;
+
+  // For each old hash that was served, collect the old positions where it
+  // appeared. We then greedily pair each new-line hash with one unused old
+  // position. Order-preserving: when the same hash appears N times in both
+  // arrays, the i-th occurrence in `newHashes` is paired with the i-th
+  // available old position.
+  const hashToOldPositions = new Map<string, number[]>();
+  for (let q = 0; q < oldServed.length; q++) {
+    const h = oldServed[q];
+    if (h === null) continue;
+    let bucket = hashToOldPositions.get(h);
+    if (!bucket) {
+      bucket = [];
+      hashToOldPositions.set(h, bucket);
+    }
+    bucket.push(q);
+  }
+  // Cursor into each hash's old-position list — the next position to assign
+  // when we see this hash again in the new file.
+  const cursor = new Map<string, number>();
+  for (let p = 0; p < newHashes.length; p++) {
+    const h = newHashes[p]!;
+    const bucket = hashToOldPositions.get(h);
+    if (!bucket || bucket.length === 0) continue;
+    const idx = cursor.get(h) ?? 0;
+    if (idx >= bucket.length) continue;
+    // Only preserve if there's a unique mapping — if there are more old
+    // positions than new positions for this hash, fall back to "no preserve"
+    // rather than guessing. (Hash collision across multiple served lines is
+    // genuinely ambiguous; better to null than to mis-attribute.)
+    if (bucket.length === 1 || idx < bucket.length) {
+      newServed[p] = h;
+      cursor.set(h, idx + 1);
+    }
+  }
+  return newServed;
+}
+
+/**
+ * Persist the served mirror after an edit, preserving served entries for
+ * unchanged lines and overlaying the diff region's new served rows on top.
+ * Replaces `recordServedTruncated` for the post-edit path; the old helper
+ * stays for any caller that genuinely wants the aggressive truncate.
+ */
+export async function recordServedAfterEdit(
+  sessionKey: string,
+  path: string,
+  diffServedRows: ServedEntry[],
+  lineCount: number,
+  originalHashes: string[],
+  resultHashes: string[],
+): Promise<void> {
+  try {
+    const store = await loadHashStore();
+    withStore(() => {
+      const current = store.getServed(sessionKey, path);
+      const migrated = migrateServedAfterEdit(current, originalHashes, resultHashes);
+      // Overlay the diff region's served rows on the migrated mirror —
+      // these rows are the lines the model actually saw in the diff body
+      // (and any explicit context we chose to mark served).
+      const updated = _mergeServedRows(migrated, diffServedRows, { truncateTo: lineCount });
+      if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
+      store.upsertServed(sessionKey, path, JSON.stringify(updated));
+    });
+  } catch (error) {
+    console.error("Failed to record served rows after edit:", error);
+  }
+}
+
+/**
  * Merge served rows into a copy of the stored array. This single helper owns
  * the served-merge invariant shared by recordServed and recordServedTruncated.
  *
- * Eagerly heals orphaned serves (ADR-0008): if the same hash is written at
- * a new position, the older position is nulled. This prevents a partial
- * re-serve from leaving a stale duplicate behind. The heal is O(n) in the
- * current array length (single pass) and runs before each row is applied.
+ * Position-keyed, NOT hash-uniqueness-keyed: each (position, hash) pair is
+ * independent. The same hash at two different positions is allowed (e.g.
+ * several blank lines). Orphan-heal (previously nulling older duplicates) is
+ * removed — line#hash is unique per row, and stale duplicates are caught at
+ * validation time by the strict line-by-line check in verifyServedRange.
  */
 export function _mergeServedRows(
   current: (string | null)[],
@@ -97,20 +186,6 @@ export function _mergeServedRows(
   if (options?.clearFrom !== undefined) {
     for (let i = options.clearFrom; i < updated.length; i++) updated[i] = null;
   }
-  // Build the hash→position index for the array as it currently stands.
-  // On collision with an existing entry, the older position is nulled —
-  // the new row is about to overwrite the array at its own position, and
-  // we keep the index in sync.
-  const index = new Map<string, number>();
-  for (let i = 0; i < updated.length; i++) {
-    const h = updated[i];
-    if (h === null) continue;
-    const prev = index.get(h);
-    if (prev !== undefined) {
-      updated[prev] = null;
-    }
-    index.set(h, i);
-  }
   for (const entry of rows) {
     if (!Number.isInteger(entry.position) || entry.position < 0) {
       throw new TypeError(`Invalid served position: ${entry.position}`);
@@ -119,21 +194,6 @@ export function _mergeServedRows(
       throw new TypeError(`Invalid served hash: ${String(entry.hash)}`);
     }
     while (updated.length <= entry.position) updated.push(null);
-    if (entry.hash !== null) {
-      const existing = index.get(entry.hash);
-      if (existing !== undefined && existing !== entry.position) {
-        updated[existing] = null;
-        index.delete(entry.hash);
-      }
-      const oldAtPos = updated[entry.position];
-      if (oldAtPos !== null && oldAtPos !== entry.hash) {
-        index.delete(oldAtPos);
-      }
-      index.set(entry.hash, entry.position);
-    } else {
-      const oldAtPos = updated[entry.position];
-      if (oldAtPos !== null) index.delete(oldAtPos);
-    }
     updated[entry.position] = entry.hash;
   }
   while (updated.length > 0 && updated[updated.length - 1] === null) updated.pop();

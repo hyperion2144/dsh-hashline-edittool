@@ -290,8 +290,8 @@ export async function makeTag(
 	content: string,
 	line: number,
 	path: string,
-): Promise<{ hash: string }> {
+): Promise<{ line: number; hash: string }> {
 	const { lineHashes } = await import("../../src/hashline/index.js");
 	const hashes = await lineHashes(content, path);
-	return { hash: hashes[line - 1]! };
+	return { line, hash: hashes[line - 1]! };
 }

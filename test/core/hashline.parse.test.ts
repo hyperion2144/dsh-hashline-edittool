@@ -2,14 +2,13 @@ import { describe, expect, it } from "vitest";
 import { parseText, parseHashRef } from "../../src/hashline/index.js";
 
 describe("parseHashRef", () => {
-	it("parses a hash anchor without # prefix", () => {
-		const ref = parseHashRef("aB3");
-		expect(ref).toEqual({ hash: "aB3" });
+	it("rejects a bare-hash anchor (line#hash only)", () => {
+		expect(() => parseHashRef("aB3")).toThrow(/Invalid anchor/);
 	});
 
 	it("parses a line#hash anchor", () => {
 		const ref = parseHashRef("12#aB3");
-		expect(ref).toEqual({ hash: "aB3" });
+		expect(ref).toEqual({ line: 12, hash: "aB3" });
 	});
 
 	it("rejects trailing content after the anchor", () => {
@@ -51,7 +50,7 @@ describe("parseHashRef", () => {
 	});
 
 	it("accepts line#hash (legacy LINE#HASH form is now the canonical anchor)", () => {
-		expect(parseHashRef("5#aB3")).toEqual({ hash: "aB3" });
+		expect(parseHashRef("5#aB3")).toEqual({ line: 5, hash: "aB3" });
 	});
 
 	it("rejects wrong-length anchors", () => {

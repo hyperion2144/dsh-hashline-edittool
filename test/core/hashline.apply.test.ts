@@ -595,8 +595,8 @@ describe("applyEdit — trailing blank lines (no trailing-newline special case)"
 	it("preserves a trailing blank line when replacement_text mirrors it with a trailing newline", async () => {
 		const content = "def a():\n    pass\n\ndef b():\n    pass\n";
 		const edit = resEdit({
-			remove_from: (await makeTag(content, 1, home.testPath)).hash,
-			remove_to: (await makeTag(content, 3, home.testPath)).hash,
+			remove_from: `1#${(await makeTag(content, 1, home.testPath)).hash}`,
+			remove_to: `3#${(await makeTag(content, 3, home.testPath)).hash}`,
 			replacement_text: "def a():\n    return 1\n",
 		});
 		const result = applyEdit(content, edit);
@@ -608,8 +608,8 @@ describe("applyEdit — trailing blank lines (no trailing-newline special case)"
 	it("preserves two trailing blank lines when replacement_text mirrors them", async () => {
 		const content = "def a():\n    pass\n\n\ndef b():\n";
 		const edit = resEdit({
-			remove_from: (await makeTag(content, 1, home.testPath)).hash,
-			remove_to: (await makeTag(content, 4, home.testPath)).hash,
+			remove_from: `1#${(await makeTag(content, 1, home.testPath)).hash}`,
+			remove_to: `4#${(await makeTag(content, 4, home.testPath)).hash}`,
 			replacement_text: "def a():\n    return 1\n\n",
 		});
 		const result = applyEdit(content, edit);
@@ -619,8 +619,8 @@ describe("applyEdit — trailing blank lines (no trailing-newline special case)"
 	it("drops a trailing blank line when replacement_text does not mirror it", async () => {
 		const content = "def a():\n    pass\n\ndef b():\n";
 		const edit = resEdit({
-			remove_from: (await makeTag(content, 1, home.testPath)).hash,
-			remove_to: (await makeTag(content, 3, home.testPath)).hash,
+			remove_from: `1#${(await makeTag(content, 1, home.testPath)).hash}`,
+			remove_to: `3#${(await makeTag(content, 3, home.testPath)).hash}`,
 			replacement_text: "def a():\n    return 1",
 		});
 		const result = applyEdit(content, edit);
@@ -630,8 +630,8 @@ describe("applyEdit — trailing blank lines (no trailing-newline special case)"
 	it("adds a trailing blank line for a normal range when replacement_text ends with a newline", async () => {
 		const content = "aaa\nbbb\nccc\n";
 		const edit = resEdit({
-			remove_from: (await makeTag(content, 2, home.testPath)).hash,
-			remove_to: (await makeTag(content, 2, home.testPath)).hash,
+			remove_from: `2#${(await makeTag(content, 2, home.testPath)).hash}`,
+			remove_to: `2#${(await makeTag(content, 2, home.testPath)).hash}`,
 			replacement_text: "X\n",
 		});
 		const result = applyEdit(content, edit);

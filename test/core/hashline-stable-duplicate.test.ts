@@ -21,7 +21,7 @@ describe("stable hashing with duplicate content lines", () => {
     expect(firstBraceHash).not.toBe(secondBraceHash);
 
     const edit: HEdit = {
-      hash_bounds: [{ hash: hashes[0]! }, { hash: firstBraceHash }],
+      hash_bounds: [{ line: 1, hash: hashes[0]! }, { line: 3, hash: firstBraceHash }],
       content_lines: [],
     };
 
@@ -46,7 +46,7 @@ describe("stable hashing with duplicate content lines", () => {
     const secondBraceHash = hashes[6]!;
 
     const edit: HEdit = {
-      hash_bounds: [{ hash: hashes[4]! }, { hash: secondBraceHash }],
+      hash_bounds: [{ line: 5, hash: hashes[4]! }, { line: 7, hash: secondBraceHash }],
       content_lines: [],
     };
 
@@ -73,7 +73,7 @@ describe("stable hashing with duplicate content lines", () => {
     expect(new Set([brace1, brace2, brace3]).size).toBe(3);
 
     const edit: HEdit = {
-      hash_bounds: [{ hash: hashes[2]! }, { hash: hashes[2]! }],
+      hash_bounds: [{ line: 3, hash: hashes[2]! }, { line: 3, hash: hashes[2]! }],
       content_lines: [],
     };
 

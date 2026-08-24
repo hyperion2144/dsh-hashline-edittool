@@ -5,3 +5,5 @@ coverage/
 .DS_Store
 .tmp/
 .scratch/
+.dsh_hashline_edittool/
+.test/
