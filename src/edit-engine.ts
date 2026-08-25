@@ -27,6 +27,11 @@ import {
 	type HEdit,
 	type NEdit,
 } from "./hashline/anchor-pipeline.js";
+import {
+	detectRangeConflicts,
+	describeEdge,
+	type RangeEdge,
+} from "./range-conflicts.js";
 import { lineHashes } from "./hashline/hash.js";
 import { MAX_HASH_LINES } from "./hashline/hash-assign.js";
 import {
@@ -89,6 +94,14 @@ export interface HunkShift {
 	 * the line range it touched.
 	 */
 	lastChangedLine: number;
+	/** 1-indexed first line of this hunk's range in the ORIGINAL snapshot. */
+	originalStartLine: number;
+	/** 1-indexed last line of this hunk's range in the ORIGINAL snapshot. */
+	originalEndLine: number;
+	/** 1-indexed first line of this hunk's replacement in the FINAL file. */
+	finalStartLine: number;
+	/** 1-indexed last line of this hunk's replacement in the FINAL file. */
+	finalEndLine: number;
 }
 
 export interface FileEditResult {
@@ -546,6 +559,106 @@ export async function runFileEdits(
 	let served = await loadServed(opts.sessionKey, absolutePath);
 	const warnings: string[] = [];
 
+	// --- Phase 1: pre-resolve every hunk against the ORIGINAL snapshot. ---
+	// op: "ins" expands to a single-line replace that preserves the anchor
+	// line and appends the inserted lines below it; "del" is a replace with
+	// empty text. All coordinates below are original-file coordinates.
+	const resolvedEdits: { item: PreparedItem; edit: HEdit; isIns: boolean }[] = [];
+	for (const item of items) {
+		abortIf(opts.signal);
+		let removeTo = item.remove_to;
+		let replacementText = item.replacement_text;
+		if (item.op === "ins") {
+			const resolved = resolveIns(
+				originalNormalized,
+				originalHashes,
+				item.remove_from,
+				item.replacement_text,
+				warnings,
+			);
+			removeTo = resolved.removeTo;
+			replacementText = resolved.replacementText;
+		} else if (item.op === "del") {
+			replacementText = "";
+		}
+		let edit: HEdit;
+		try {
+			edit = resEdit(
+				{
+					remove_from: item.remove_from,
+					remove_to: removeTo,
+					replacement_text: replacementText,
+				},
+				warnings,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`[E_BATCH_ABORT] edits[${item.index}] (${item.path}) failed: ${message}\n` +
+					"The whole batch was rejected and NOTHING was written — no file changed and earlier items in the batch were NOT applied.",
+			);
+		}
+		resolvedEdits.push({ item, edit, isIns: item.op === "ins" });
+	}
+
+	// --- Phase 2: conflict detection on original coordinates. ---
+	// Hunks whose anchors do not match the original snapshot are excluded:
+	// their true positions are unknown, and applyOne reports them as stale
+	// (with the ±3 echo + fresh marker) instead of a misleading overlap.
+	const anchorMatchesSnapshot = (edit: HEdit): boolean =>
+		edit.hash_bounds.every(
+			(b) =>
+				b.line >= 1 &&
+				b.line <= originalHashes.length &&
+				originalHashes[b.line - 1] === b.hash,
+		);
+	const edges: RangeEdge[] = resolvedEdits
+		.filter(({ edit }) => anchorMatchesSnapshot(edit))
+		.map(({ item, edit, isIns }) => ({
+			index: item.index,
+			startLine: edit.hash_bounds[0].line,
+			endLine: edit.hash_bounds[1].line,
+			isIns,
+		}));
+	const conflicting = detectRangeConflicts(edges);
+	if (conflicting.length > 0) {
+		const detail = conflicting
+			.map(([a, b]) => `${describeEdge(a)} and ${describeEdge(b)} overlap`)
+			.join("; ");
+		throw new Error(
+			`[E_BATCH_CONFLICT] in ${first.path}: ${detail} — every hunk is resolved against the same original snapshot, so row ranges must not overlap in one batch. Split into separate edits or merge the ranges. Nothing was written.`
+		);
+	}
+
+	// Final positions: every hunk's replacement in the FINAL file, computed by
+	// walking hunks in ascending original order with an accumulating offset.
+	const finalPositions = new Map<number, { finalStart: number; finalEnd: number }>();
+	{
+		const asc = [...resolvedEdits].sort(
+			(a, b) => a.edit.hash_bounds[0].line - b.edit.hash_bounds[0].line,
+		);
+		let offset = 0;
+		for (const entry of asc) {
+			const startLine = entry.edit.hash_bounds[0].line;
+			const endLine = entry.edit.hash_bounds[1].line;
+			const rows = entry.edit.content_lines.length;
+			const finalStart = startLine + offset;
+			finalPositions.set(entry.item.index, {
+				finalStart,
+				finalEnd: finalStart + rows - 1,
+			});
+			offset += rows - (endLine - startLine + 1);
+		}
+	}
+
+	// --- Phase 3: apply, from the back down (descending original start line). ---
+	// Disjoint ranges keep every hunk's original anchors valid: applying a
+	// later hunk never moves rows above its start. This is the concurrent
+	// (snapshot) semantics — a batch behaves as one atomic edit.
+	const ordered = [...resolvedEdits].sort(
+		(a, b) => b.edit.hash_bounds[0].line - a.edit.hash_bounds[0].line,
+	);
+
 	let currentContent = originalNormalized;
 	let currentHashes = originalHashes;
 	let appliedCount = 0;
@@ -562,9 +675,8 @@ export async function runFileEdits(
 		| { content: string; hashes: string[]; removedHashes: Set<string> }
 		| undefined;
 	const hunkShifts: HunkShift[] = [];
-	let cumulativeShift = 0;
 
-	for (const item of items) {
+	for (const { item, edit } of ordered) {
 		abortIf(opts.signal);
 		const applied = await applyOne(
 			{
@@ -581,33 +693,29 @@ export async function runFileEdits(
 				warnings,
 				countHashes: originalHashes,
 				persist: false,
+				edit,
 			},
-			async (error, edit) => {
+			async (error) => {
 				if (
 					error instanceof AnchorMismatchError ||
 					error instanceof ServedRejectionError
 				) {
-					const originalLines = splitLines(originalNormalized);
-					const echoRows =
-						error.servedRows.length > 0
-							? error.servedRows
-							: edit
-								? echoRowsForItem(edit, originalHashes)
-								: undefined;
-					if (echoRows) {
+					// Reject-and-serve: record the error's own echo rows so the fresh
+					// marker is directly reusable — but do NOT re-render a second file
+					// block. The error message already carries the single ±3 echo;
+					// duplicating it produced two file echoes plus an "on-disk" block
+					// that was not the disk state.
+					if (error.servedRows.length > 0) {
 						await recordEchoServes(
 							opts.sessionKey,
 							absolutePath,
-							echoRows,
+							error.servedRows,
 							"live",
 							originalHashes.length,
 						);
 					}
-					const echoBlock = echoRows
-						? ` Current on-disk range for edits[${item.index}] (unchanged — nothing was written):\n${fmtServedRows(echoRows, originalLines)}`
-						: " Call read() to get fresh anchors.";
 					throw new Error(
-						`[E_BATCH_ABORT] edits[${item.index}] (${item.path}) failed: ${error.message}${echoBlock}\n` +
+						`[E_BATCH_ABORT] edits[${item.index}] (${item.path}) failed: ${error.message}\n` +
 							"The whole batch was rejected and NOTHING was written — no file changed and earlier items in the batch were NOT applied. Fix the failing edit (and any later edit that depends on it), then resubmit the batch.",
 					);
 				}
@@ -658,7 +766,7 @@ export async function runFileEdits(
 			});
 			if (notice) warnings.push(notice);
 			warnings.push(
-				`edits[${item.index}] (${item.path}) was a noop: the range already contains the replacement text.`,
+				`edits[${item.index}] (${item.path}) was a noop: the range already contains the replacement text.`
 			);
 			if (applied.anchorWarnings?.length)
 				warnings.push(...applied.anchorWarnings);
@@ -670,21 +778,16 @@ export async function runFileEdits(
 		totalAddedLines += applied.totalAddedLines;
 		totalRemovedLines += applied.totalRemovedLines;
 		const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
-		cumulativeShift += hunkDelta;
-		const lastChangedLine = applied.lastChangedLine ?? range.endLine;
-		// `firstStableLineNew` is the first absolute line in the new file that
-		// was not part of this hunk. For a non-empty replacement it is the line
-		// right after the replacement; for an empty replacement it equals the
-		// line of the next untouched row.
-		const replacedRows = applied.totalAddedLines;
-		const lastReplacementLineNew =
-			range.startLine + Math.max(0, replacedRows) - 1;
-		const firstStableLineNew = lastReplacementLineNew + 1;
+		const fp = finalPositions.get(item.index)!;
 		hunkShifts.push({
 			index: item.index,
-			delta: cumulativeShift,
-			firstStableLineNew,
-			lastChangedLine,
+			delta: hunkDelta,
+			firstStableLineNew: fp.finalEnd + 1,
+			lastChangedLine: fp.finalEnd,
+			originalStartLine: edit.hash_bounds[0].line,
+			originalEndLine: edit.hash_bounds[1].line,
+			finalStartLine: fp.finalStart,
+			finalEndLine: fp.finalEnd,
 		});
 		lastApplied = {
 			content: currentContent,
@@ -693,11 +796,8 @@ export async function runFileEdits(
 		};
 		currentContent = applied.result;
 		currentHashes = applied.hashes;
-		// Migrate the in-memory served mirror as we go so the next item in
-		// the same batch (with post-shift line numbers) sees the post-edit
-		// state — otherwise batch edits where the second hunk's anchor is
-		// below the first would fail with [E_RANGE_UNVERIFIED] on the
-		// unchanged lines that just shifted.
+		// Migrate the in-memory served mirror: applying from the back keeps
+		// earlier rows' positions stable, but rows below this hunk shifted.
 		served = migrateServedAfterEdit(served, currentHashes, applied.hashes);
 		clearNoopLoop(absolutePath);
 		if (applied.anchorWarnings?.length)

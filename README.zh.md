@@ -250,6 +250,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` 前缀被粘贴进 `lines`（自动纠正）。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
+| `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠；请拆分或合并，未写入任何内容。 |
 | `[E_FILE_TOO_LARGE]` | 文件超过 hashline 行数上限；请改用 `write` 或其他方式。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘贴进 `replacement_text`（自动纠正）。 |
 | `[E_NOOP_LOOP]` | 完全相同的编辑反复不产生任何变化；再次提交会被拒绝。 |

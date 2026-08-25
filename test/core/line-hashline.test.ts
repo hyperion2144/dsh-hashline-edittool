@@ -72,7 +72,7 @@ describe("edit — remove_to optional", () => {
 });
 
 describe("edit — Shift block", () => {
-	it("emits a Shift: lines > N shift by +K block when the edit shifts lines below", async () => {
+	it("emits a Shift block naming the hunk's original and final range", async () => {
 		await withTempFile("shift.ts", "a\nb\nc\nd\ne\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "shift.ts" }, undefined, undefined, ctx);
@@ -90,7 +90,7 @@ describe("edit — Shift block", () => {
 				ctx,
 			);
 			const out = getText(res);
-			expect(out).toMatch(/Shift: lines > 3 shift by \+1/);
+			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
 		});
 	});
 
@@ -106,12 +106,11 @@ describe("edit — Shift block", () => {
 				{
 					path: "two.ts",
 					edits: [
-						// First hunk replaces line 2 with [B, B2]; the Shift block
-						// tells the model line 5 is now at line 6, so the second
-						// hunk must use the post-shift line (6#EaX), not the
-						// pre-shift one (5#EaX).
+						// Snapshot semantics: BOTH hunks use ORIGINAL anchors; the
+						// engine resolves them against the same snapshot and rejects
+						// overlaps, then emits per-hunk original→final Shift blocks.
 						{ op: "replace", from: line2, lines: ["B", "B2"] },
-						{ op: "replace", from: `6#${line5.split("#")[1]}`, lines: ["E", "E2"] },
+						{ op: "replace", from: line5, lines: ["E", "E2"] },
 					],
 				},
 				undefined,
@@ -119,9 +118,10 @@ describe("edit — Shift block", () => {
 				ctx,
 			);
 			const out = getText(res);
-			// Two hunks, each +1 → first hunk emits +1, second hunk emits cumulative +2.
-			expect(out).toMatch(/Shift: lines > 3 shift by \+1/);
-			expect(out).toMatch(/Shift: lines > \d+ shift by \+2/);
+			// Both hunks replace one line with two (+1 each); Shift blocks name
+			// each hunk's original → final range.
+			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
+			expect(out).toMatch(/Shift: edits\[1\] line 5 moved to lines 6\.\.7 \(\+1\)/);
 		});
 	});
 });

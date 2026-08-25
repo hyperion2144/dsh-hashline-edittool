@@ -37,7 +37,7 @@ import {
 import { abortIf, isRec, visLines } from "./utils.js";
 
 import { enforceNoopLoop } from "./mutation.js";
-import { runFileEdits, type PreparedItem, type FileEditResult } from "./edit-engine.js";
+import { runFileEdits, type PreparedItem, type FileEditResult, type HunkShift } from "./edit-engine.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -402,8 +402,6 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	}
 	const linesAdded = file.totalAddedLines;
 	const linesRemoved = file.totalRemovedLines;
-	const originalLineCount = visLines(file.originalNormalized).length;
-	const resultLineCount = visLines(file.result).length;
 	const diffResult = genDiff(
 		file.originalNormalized,
 		file.result,
@@ -413,14 +411,7 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	);
 	const diffBody = diffResult.diff ? `${HASHLINE_HEADER}\n${diffResult.diff}` : "";
 	const shiftBlocks = (file.hunkShifts ?? [])
-		.map((hunk) =>
-			shiftBlockForHunk({
-				firstStableLineNew: hunk.firstStableLineNew,
-				delta: hunk.delta,
-				originalLineCount,
-				resultLineCount,
-			}),
-		)
+		.map((hunk) => shiftBlockForHunk(hunk))
 		.filter((b) => b.length > 0)
 		.join("");
 	const successPrefix = `Successfully edited in ${displayPath}.`;
@@ -434,24 +425,28 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	return `${diffBody}${shiftBlocks}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 }
 
-function shiftBlockForHunk(args: {
-	firstStableLineNew: number;
-	delta: number;
-	originalLineCount: number;
-	resultLineCount: number;
-}): string {
-	const { firstStableLineNew, delta, originalLineCount, resultLineCount } = args;
-	if (delta === 0) return "";
-	if (firstStableLineNew > resultLineCount) return "";
-	if (firstStableLineNew > originalLineCount && delta > 0) return "";
-	const oldFirstStable = Math.max(1, firstStableLineNew - delta);
+function shiftBlockForHunk(hunk: HunkShift): string {
+	const {
+		index,
+		originalStartLine,
+		originalEndLine,
+		finalStartLine,
+		finalEndLine,
+		delta,
+	} = hunk;
+	// No movement at all (neither this hunk's own delta nor drift from
+	// earlier hunks) — nothing to tell the model.
+	if (delta === 0 && finalStartLine === originalStartLine) return "";
+	const origRange =
+		originalStartLine === originalEndLine
+			? `line ${originalStartLine}`
+			: `lines ${originalStartLine}..${originalEndLine}`;
+	const finalRange =
+		finalStartLine === finalEndLine
+			? `line ${finalStartLine}`
+			: `lines ${finalStartLine}..${finalEndLine}`;
 	const sign = delta > 0 ? "+" : "";
-	const verb = "shift";
-	const tail =
-		oldFirstStable > 1
-			? ` (original line ${oldFirstStable} now at line ${firstStableLineNew}, original line ${originalLineCount} now at line ${resultLineCount}).`
-			: ` (the entire tail below moved by ${delta}).`;
-	return `\n\nShift: lines > ${firstStableLineNew - 1} ${verb} by ${sign}${delta}.${tail}\nUse newLine=${firstStableLineNew}#<oldHash> to edit the row immediately below without re-reading — copy the hash from the next "unchanged" diff row if one was rendered.`;
+	return `\n\nShift: edits[${index}] ${origRange} moved to ${finalRange} (${sign}${delta}). Rows below this hunk shifted by ${sign}${delta}; use the final line#hash markers from the diff rows above for follow-up edits.`;
 }
 
 /**

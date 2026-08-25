@@ -220,6 +220,10 @@ export async function execPipeline(
 			delta,
 			firstStableLineNew: lastReplacementLineNew + 1,
 			lastChangedLine: applied.lastChangedLine ?? applied.range.endLine,
+			originalStartLine: applied.range.startLine,
+			originalEndLine: applied.range.endLine,
+			finalStartLine: applied.range.startLine,
+			finalEndLine: lastReplacementLineNew,
 		});
 	}
 

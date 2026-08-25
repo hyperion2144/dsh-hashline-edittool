@@ -11,6 +11,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - Anchor contract sync: prompts, schema descriptions, and README error tables no longer advertise a "bare 3-char hash" as accepted — `line#hash` copied from the leftmost column is stated as the only valid anchor form (the code already rejected bare hashes).
 - Fixed empty-file read rendering: the marker row was emitted as `1│<hash>│` (missing the `#` separator) instead of `1#<hash>│`; the byte-size computation in `fmtReadPreview` used the same wrong separator.
 
+### Changed
+
+- **Batch edits use snapshot-concurrency semantics.** Every hunk in one `edit` call resolves its `<line>#<hash>` anchor against the same original file snapshot, so all hunks may use ORIGINAL anchors — no more manual `newLine#oldHash` chaining. Hunks with overlapping row ranges are rejected up front with the new `[E_BATCH_CONFLICT]` code (replace/del × replace/del overlap; two `ins` at the same anchor line; `ins` whose anchor line lies inside a replace/del range). Non-overlapping hunks apply atomically, in one pass from the back, and remain all-or-nothing. New pure module `src/range-conflicts.ts` owns the conflict rules.
+- Post-edit `Shift:` blocks now map each hunk's original range to its final position (e.g. `Shift: edits[1] lines 5..6 moved to lines 7..9 (+2)`), and the diff rows carry final line numbers + hashes throughout. The old `newLine#oldHash` chaining guidance is gone from prompts.
+- `[E_BATCH_ABORT]` no longer duplicates the file echo: the failing hunk's anchored error (stale / unverified) is the single ±3 echo, recorded as served for direct fresh-marker reuse. The old appended "on-disk range" block (which rendered a virtual in-batch state, mislabeled as on-disk, with mismatched hashes vs content) was removed.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added

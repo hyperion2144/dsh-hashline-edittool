@@ -324,6 +324,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
+| `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written. |
 | `[E_FILE_TOO_LARGE]` | File exceeds the hashline line ceiling; use `write` or another approach. |
 | `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |
