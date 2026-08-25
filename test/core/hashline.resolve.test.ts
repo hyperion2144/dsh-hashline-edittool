@@ -98,4 +98,35 @@ describe("resEdit", () => {
 		const edit: HTEdit = { remove_from: "│const x = 1;", remove_to: "1#MQX", replacement_text: "new" };
 		expect(() => resEdit(edit)).toThrow(/^\[E_BAD_REF\]/);
 	});
+	it("extracts line#hash from a full read row and drops trailing content", () => {
+		const edit: HTEdit = { remove_from: "12#MQX│const x = 1;", remove_to: "12#MQX│const x = 1;", replacement_text: "new" };
+		const warnings: string[] = [];
+		const resolved = resEdit(edit, warnings);
+		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
+		expect(resolved.hash_bounds[1]).toEqual({ line: 12, hash: "MQX" });
+		expect(warnings[0]).toMatch(/stripped trailing content/);
+		expect(warnings[0]).toMatch(/using "12#MQX"/);
+	});
+
+	it("strips + and - diff markers from pasted rows, keeping the anchor", () => {
+		const edit: HTEdit = { remove_from: "+12#MQX│const x = 1;", remove_to: "-12#MQX│const x = 1;", replacement_text: "new" };
+		const warnings: string[] = [];
+		const resolved = resEdit(edit, warnings);
+		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
+		expect(resolved.hash_bounds[1]).toEqual({ line: 12, hash: "MQX" });
+		expect(warnings[0]).toMatch(/stripped diff-preview "\+" marker/);
+		expect(warnings[1]).toMatch(/stripped leading "-" marker/);
+	});
+
+	it("trims surrounding whitespace around a pasted row", () => {
+		const edit: HTEdit = { remove_from: "  12#MQX│const x = 1;  ", remove_to: "  12#MQX│const x = 1;  ", replacement_text: "new" };
+		const resolved = resEdit(edit);
+		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
+	});
+
+	it("rejects a pasted row without a line number", () => {
+		const edit: HTEdit = { remove_from: "MQX│const x = 1;", remove_to: "1#MQX", replacement_text: "new" };
+		expect(() => resEdit(edit)).toThrow(/lacks a line number/);
+	});
+
 });
