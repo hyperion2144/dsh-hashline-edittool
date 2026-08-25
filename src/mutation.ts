@@ -33,7 +33,6 @@ import { normFromText, fileSnap } from "./file-reader.js";
 import type { LineEnding } from "./edit-diff.js";
 import { toCwd } from "./paths.js";
 import { resEdit, type NEdit } from "./hashline/anchor-pipeline.js";
-import { MAX_HASH_LINES } from "./hashline/hash-assign.js";
 import type { ResolvedRange } from "./hashline/anchor-pipeline.js";
 import {
   AnchorMismatchError,
@@ -49,7 +48,6 @@ import {
   resolveMissingPath,
   persistUndoAndWrite,
   enforceNoopLoop,
-  collectRemovedHashes,
   countLineChanges,
 } from "./edit-engine.js";
 import type { FileEditResult, PreparedItem } from "./edit-engine.js";
@@ -145,7 +143,6 @@ export async function execPipeline(
 		rawText,
 		displayPath: path,
 		signal,
-		maxLines: MAX_HASH_LINES,
 		store: hashStore,
 		noPersist: options?.noPersist,
 	})
@@ -220,6 +217,10 @@ export async function execPipeline(
 			delta,
 			firstStableLineNew: lastReplacementLineNew + 1,
 			lastChangedLine: applied.lastChangedLine ?? applied.range.endLine,
+			originalStartLine: applied.range.startLine,
+			originalEndLine: applied.range.endLine,
+			finalStartLine: applied.range.startLine,
+			finalEndLine: lastReplacementLineNew,
 		});
 	}
 
@@ -273,7 +274,6 @@ export {
  resolveMissingPath,
  persistUndoAndWrite,
  enforceNoopLoop,
- collectRemovedHashes,
  countLineChanges,
 };
 export type { FileEditResult, PreparedItem };

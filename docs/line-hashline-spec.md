@@ -149,11 +149,15 @@ Block rules:
   Shift block re-includes the first row below `N` so the model always
   has a concrete `newLine#hash` to extend the chain.
 
-For `batch_edit` (multiple hunks in the same file): each hunk emits its
-own diff block followed by its own Shift block, with the Shift's `K`
-equal to the **cumulative** added-minus-removed through that hunk.
-Files with one or more hunks in a batch end with one final Shift block
-that describes the cumulative shift at the end of the file.
+For `edit` with multiple hunks in the same file (snapshot-concurrency semantics):
+every hunk resolves its `<line>#<hash>` anchor against the same original file snapshot,
+so all hunks use ORIGINAL anchors — no `newLine#oldHash` chaining. Each hunk emits its
+own diff block and its own Shift block; the Shift's `K` is that hunk's own
+added-minus-removed (`delta`), displayed as an original-range → final-range mapping
+(e.g. `Shift: edits[1] lines 5..6 moved to lines 7..9 (+2)`). Hunks whose row ranges
+overlap are rejected up front with `[E_BATCH_CONFLICT]` (§4 error table). Files with
+two or more moved hunks end with one final Shift block describing the total
+end-of-file shift (`Shift: end of file moved from N lines to M lines (K total)`).
 
 ### 3.5 `grep` — new tool
 
@@ -280,13 +284,16 @@ diff + Shift response shape, (4) describe how to extend the chain
 with `newLine#oldHash` from the Shift block, (5) point at
 batch_edit for multi-edit.
 
-**`BATCH_EDIT_DESCRIPTION`**: extends the current text with "Each
-hunk's diff is followed by a `Shift:` block whose `K` is the
-cumulative added-minus-removed through that hunk; the file's last
-block describes the end-of-file cumulative shift."
+**`EDIT_DESCRIPTION`**: extends the current text with "All items resolve
+against the same file snapshot (concurrent semantics): pass ORIGINAL
+anchors for every hunk; overlapping ranges are rejected with
+`[E_BATCH_CONFLICT]`. The diff rows carry final line#hash markers; each
+hunk emits a `Shift:` block mapping its original range to its final
+position, and multi-hunk batches end with an end-of-file total block."
 
-**`BATCH_EDIT_GUIDANCE`**: same bullets + (4) chain via cumulative
-Shift.
+**`EDIT_GUIDANCE`**: same bullets + (4) pass ORIGINAL anchors for every
+hunk; expect `[E_BATCH_CONFLICT]` on overlapping ranges, per-hunk
+original-to-final Shift blocks, and an end-of-file total block.
 
 **`GREP_DESCRIPTION`**: "Search for a pattern in one or more files.
 Output mirrors `read`: each match is a `line#hash│content` row under
@@ -334,7 +341,7 @@ matches can be edited directly without a separate `read`."
 | `edit.shift-block single hunk` | 1 → 2 line replacement emits `Shift: lines > N shift by +1` with `N` = first stable line new |
 | `edit.shift-block deletes to empty` | replacement `""` of last row → `Shift: lines > N shift by -1` and end-of-file message |
 | `edit.no-shift noop` | equal content → no Shift block |
-| `batch.two-hunks.shift cumulative` | hunk A +1 line, hunk B +2 lines → A emits `+1`, B emits `+3` (cumulative), file end emits `+3` |
+| `batch.two-hunks.shift` | hunk A +1 line, hunk B +2 lines → both use ORIGINAL anchors; A emits `+1`, B emits `+2`, file end emits `+3` total |
 | `stale-echo.read-format` | not-found echo is `HASH IDENTIFIER │ FILE LINES` ±3 rows in read format |
 | `stale-echo.served-rows` | echo rows appear in `servedRows` so a retry with the fresh hash passes |
 | `grep.single-file` | literal match produces `line#hash│content` rows under header; file section header present |

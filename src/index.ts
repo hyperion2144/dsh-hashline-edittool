@@ -27,7 +27,6 @@ import { registerUndoTool } from "./tool-undo.js";
 import { registerGrepTool } from "./tool-grep.js";
 import { registerWriteHook } from "./write-hook.js";
 
-import { initHasher } from "./hashline/hash-assign.js";
 import {
 	composeSections,
 	ensurePresetGuidance,
@@ -138,14 +137,9 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 
 /** Mount the bundle: initialize the store, then install tools per agent. */
 export function apply(rootCtx: Context): void {
-	// Warm the hasher once; the per-workspace stores are opened lazily on the
-	// first tool call in each workspace (there is no shared store to prune at
-	// boot anymore).
-	initHasher().catch((error) => {
-		rootCtx.logger.warn(
-			`dsh-hashline-edittool: hasher warm-up failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	});
+	// The per-workspace stores are opened lazily on the first tool call in
+	// each workspace (there is no shared store to prune at boot anymore);
+	// hashing is synchronous and dependency-free, so no warm-up is needed.
 
 	// Seed each shipped preset's guidance directory once, so users have
 	// editable per-preset overrides (idempotent: never rewrites existing

@@ -155,5 +155,19 @@ export function genDiff(
 		lastWasChange = false;
 	}
 
-	return { diff: output.join("\n"), firstChangedLine, servedRows };
+	// Right-align the anchor column across the whole diff block so the left
+	// marker is a stable visual column (copy boundary for the model).
+	let anchorWidth = 0;
+	for (const row of output) {
+		const m = /^([+ -])((?:\d+#[A-Za-z0-9]{3})|(?:\d+# {3}))(│.*)$/.exec(row);
+		if (m && m[2]!.length > anchorWidth) anchorWidth = m[2]!.length;
+	}
+	const aligned = anchorWidth > 0
+		? output.map((row) => {
+				const m = /^([+ -])((?:\d+#[A-Za-z0-9]{3})|(?:\d+# {3}))(│.*)$/.exec(row);
+				if (!m) return row; // " ..." ellipsis rows etc.
+				return `${m[1]}${m[2]!.padStart(anchorWidth)}${m[3]}`;
+			})
+		: output;
+	return { diff: aligned.join("\n"), firstChangedLine, servedRows };
 }

@@ -34,10 +34,10 @@ import {
 	pathSchema,
 	editsSchema,
 } from "./contract.js";
-import { abortIf, isRec, visLines } from "./utils.js";
+import { abortIf, isRec, visLines, formatLineRange } from "./utils.js";
 
 import { enforceNoopLoop } from "./mutation.js";
-import { runFileEdits, type PreparedItem, type FileEditResult } from "./edit-engine.js";
+import { runFileEdits, type PreparedItem, type FileEditResult, type HunkShift } from "./edit-engine.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -402,8 +402,6 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	}
 	const linesAdded = file.totalAddedLines;
 	const linesRemoved = file.totalRemovedLines;
-	const originalLineCount = visLines(file.originalNormalized).length;
-	const resultLineCount = visLines(file.result).length;
 	const diffResult = genDiff(
 		file.originalNormalized,
 		file.result,
@@ -413,16 +411,17 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	);
 	const diffBody = diffResult.diff ? `${HASHLINE_HEADER}\n${diffResult.diff}` : "";
 	const shiftBlocks = (file.hunkShifts ?? [])
-		.map((hunk) =>
-			shiftBlockForHunk({
-				firstStableLineNew: hunk.firstStableLineNew,
-				delta: hunk.delta,
-				originalLineCount,
-				resultLineCount,
-			}),
-		)
+		.map((hunk) => shiftBlockForHunk(hunk))
 		.filter((b) => b.length > 0)
 		.join("");
+	// End-of-file cumulative Shift block for multi-hunk batches: tells the
+	// model how the file's total length moved (spec §3.4). Omitted when only
+	// one hunk produced a block — the per-hunk block already covers it.
+	const totalDelta = linesAdded - linesRemoved;
+	const totalShiftBlock =
+		shiftBlocks.length > 1 && totalDelta !== 0
+			? `\n\nShift: end of file moved from ${visLines(file.originalNormalized).length} lines to ${visLines(file.result).length} lines (${totalDelta > 0 ? "+" : ""}${totalDelta} total).`
+			: "";
 	const successPrefix = `Successfully edited in ${displayPath}.`;
 	const lineSummary =
 		linesAdded > 0 || linesRemoved > 0
@@ -431,27 +430,23 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	const warningsBlock =
 		file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
 	const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
-	return `${diffBody}${shiftBlocks}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
+	return `${diffBody}${shiftBlocks}${totalShiftBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 }
 
-function shiftBlockForHunk(args: {
-	firstStableLineNew: number;
-	delta: number;
-	originalLineCount: number;
-	resultLineCount: number;
-}): string {
-	const { firstStableLineNew, delta, originalLineCount, resultLineCount } = args;
-	if (delta === 0) return "";
-	if (firstStableLineNew > resultLineCount) return "";
-	if (firstStableLineNew > originalLineCount && delta > 0) return "";
-	const oldFirstStable = Math.max(1, firstStableLineNew - delta);
+function shiftBlockForHunk(hunk: HunkShift): string {
+	const {
+		index,
+		originalStartLine,
+		originalEndLine,
+		finalStartLine,
+		finalEndLine,
+		delta,
+	} = hunk;
+	// No movement at all (neither this hunk's own delta nor drift from
+	// earlier hunks) — nothing to tell the model.
+	if (delta === 0 && finalStartLine === originalStartLine) return "";
 	const sign = delta > 0 ? "+" : "";
-	const verb = "shift";
-	const tail =
-		oldFirstStable > 1
-			? ` (original line ${oldFirstStable} now at line ${firstStableLineNew}, original line ${originalLineCount} now at line ${resultLineCount}).`
-			: ` (the entire tail below moved by ${delta}).`;
-	return `\n\nShift: lines > ${firstStableLineNew - 1} ${verb} by ${sign}${delta}.${tail}\nUse newLine=${firstStableLineNew}#<oldHash> to edit the row immediately below without re-reading — copy the hash from the next "unchanged" diff row if one was rendered.`;
+	return `\n\nShift: edits[${index}] ${formatLineRange(originalStartLine, originalEndLine)} moved to ${formatLineRange(finalStartLine, finalEndLine)} (${sign}${delta}). Rows below this hunk shifted by ${sign}${delta}; use the final line#hash markers from the diff rows above for follow-up edits.`;
 }
 
 /**

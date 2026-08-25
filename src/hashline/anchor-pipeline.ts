@@ -36,6 +36,7 @@ import {
   lineHashesPure,
 } from "./hash-assign.js";
 import { recordServed, servedPositionsOf } from "../served-store.js";
+import { fmtHashlineRow, anchorWidth } from "./hash-assign.js";
 import { SERVED_ECHO_CAP } from "../constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../constants.js";
 
@@ -195,37 +196,58 @@ function fmtMismatchWithServes(
 		out.push(
 			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
 		);
-		// Dedupe the ±N echo: single-line edits carry the same anchor in both
-		// remove_from and remove_to, so the two not_found mismatches share one
-		// line — echoing the same window twice is noise. Echo once per distinct
-		// echo center (the resolved/claimed line); the header above still
-		// reports both stale anchors.
-		const echoed = new Set<number>();
-		for (const m of notFound) {
+		// Echo windows: single-line edits carry the same anchor in both
+		// remove_from and remove_to, and from/to that are BOTH stale and
+		// adjacent produce nearly identical ±3 windows. Merge windows whose
+		// centers are within 2*STALE_CONTEXT_LINES+1 of each other so the file
+		// region is echoed once; the header above still reports every stale
+		// anchor and the merged block lists every fresh marker.
+		const centers = notFound.map((m) => {
 			// Echo center: prefer the OTHER anchor's resolved position (when one
 			// anchor resolved and the other didn't), fall back to the agent's
-			// claimed line. Every not_found mismatch gets the ±3 read-format
-			// echo, matching [E_RANGE_UNVERIFIED]'s UX.
+			// claimed line.
 			const ctx = m.context ?? {
 				line: m.ref.line,
 				hash: fileHashes[m.ref.line - 1] ?? "?",
 				hashMatched: false,
 			};
-			const echoCenter = Math.max(1, Math.min(fileLines.length, ctx.line));
-			if (echoed.has(echoCenter)) continue;
-			echoed.add(echoCenter);
-			const from = Math.max(1, echoCenter - STALE_CONTEXT_LINES);
-			const to = Math.min(fileLines.length, echoCenter + STALE_CONTEXT_LINES);
+			return { m, center: Math.max(1, Math.min(fileLines.length, ctx.line)) };
+		});
+		centers.sort((a, b) => a.center - b.center);
+		const groups: typeof centers[] = [];
+		for (const c of centers) {
+			const last = groups[groups.length - 1];
+			if (
+				last &&
+				c.center - last[last.length - 1]!.center <= 2 * STALE_CONTEXT_LINES + 1
+			) {
+				last.push(c);
+			} else {
+				groups.push([c]);
+			}
+		}
+		for (const group of groups) {
+			const from = Math.max(1, group[0]!.center - STALE_CONTEXT_LINES);
+			const to = Math.min(
+				fileLines.length,
+				group[group.length - 1]!.center + STALE_CONTEXT_LINES,
+			);
 			const echoLines: string[] = [];
 			for (let ln = from; ln <= to; ln++) {
 				const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
 				echoLines.push(`  ${marker}${HASH_SEP}${clipLine(fileLines[ln - 1] ?? "")}`);
 				pushRow(ln);
 			}
-			const freshMarker = `${echoCenter}${LINE_HASH_SEP}${ctx.hash}`;
+			const markers = group.map(
+				(c) => `${c.m.ref.line}${LINE_HASH_SEP}${fileHashes[c.m.ref.line - 1] ?? "?"}`,
+			);
+			const hint =
+				markers.length === 1
+					? `reuse the fresh marker ${markers[0]}`
+					: `reuse a fresh marker from: ${markers.join(", ")}`;
 			out.push("");
 			out.push(
-				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${HASHLINE_HEADER}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, reuse the fresh marker ${freshMarker} without calling read.\n  If not, call read() to find the correct line.`,
+				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${HASHLINE_HEADER}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
 			);
 		}
 	}
@@ -407,25 +429,17 @@ function stripDiffPrefixes(edit: HEdit, warnings: string[]): HEdit {
 /** @internal — private to anchor-pipeline seam */
 function swapReversedRanges(
 	edit: HEdit,
-	fileHashes: string[],
 	warnings: string[],
 ): HEdit {
-	const lineByHash = new Map<string, number>();
-	for (let i = 0; i < fileHashes.length; i++) {
-		lineByHash.set(fileHashes[i]!, i + 1);
-	}
+	// The line is the locator (deterministic hashes may repeat), so reversed
+	// detection compares LINES directly — a hash-to-line lookup would be
+	// ambiguous for duplicate content.
 	const [startRef, endRef] = edit.hash_bounds;
-	const startLine = lineByHash.get(startRef.hash);
-	const endLine = lineByHash.get(endRef.hash);
-	if (
-		startLine === undefined ||
-		endLine === undefined ||
-		startLine <= endLine
-	) {
+	if (startRef.line <= endRef.line) {
 		return edit;
 	}
 	warnings.push(
-		`[E_BAD_OP] reversed remove_from/remove_to (${startRef.hash} after ${endRef.hash}); swapped.`,
+		`[E_BAD_OP] reversed remove_from/remove_to (${startRef.hash} after ${endRef.hash}); swapped.`
 	);
 	return { ...edit, hash_bounds: [endRef, startRef] as [Anchor, Anchor] };
 }
@@ -1018,7 +1032,7 @@ export function applyEdit(
 	const fileHashes = precomputedHashes ?? lineHashesPure(content);
 	const warnings: string[] = [];
 
-	const rangeFixed = swapReversedRanges(edit, fileHashes, warnings);
+	const rangeFixed = swapReversedRanges(edit, warnings);
 	const prefixFixed = stripDiffPrefixes(
 		stripBarePrefixes(rangeFixed, fileHashes, warnings),
 		warnings,
@@ -1162,8 +1176,10 @@ export function fmtRegion(
 	if (!Number.isInteger(startLine) || startLine < 1) {
 		throw new Error(`fmtRegion: startLine (${startLine}) must be a positive integer.`);
 	}
+	const anchors = lines.map((_, index) => `${startLine + index}${LINE_HASH_SEP}${hashes[index]}`);
+	const width = anchorWidth(anchors);
 	return lines
-		.map((line, index) => `${startLine + index}${LINE_HASH_SEP}${hashes[index]}${HASH_SEP}${line}`)
+		.map((line, index) => fmtHashlineRow("", anchors[index]!, line, width))
 		.join("\n");
 }
 

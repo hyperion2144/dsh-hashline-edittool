@@ -10,11 +10,15 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
-import { initHasher, parseHashRef, grepFileContent, lineHashesPure } from "../../src/hashline/index.js";
 import { genDiff } from "../../src/edit-diff.js";
+import {
+	parseHashRef,
+	grepFileContent,
+	lineHashesPure,
+	lineHashes,
+} from "../../src/hashline/index.js";
 
 beforeAll(async () => {
-	await initHasher();
 });
 
 describe("parseRef — line#hash form", () => {
@@ -38,8 +42,8 @@ describe("read — header line", () => {
 			const res = await readTool.execute("r", { path: "h.txt" }, undefined, undefined, ctx);
 			const text = getText(res);
 			const lines = text.split("\n");
-			expect(lines[0]).toBe("HASH IDENTIFIER │ FILE LINES");
-			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}│alpha$/);
+			expect(lines[0]).toMatch(/^HASH IDENTIFIER │ FILE LINES/);
+			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}│\s*alpha$/);
 			expect(lines[2]).toMatch(/^2#[A-Za-z0-9]{3}│beta$/);
 		});
 	});
@@ -72,7 +76,7 @@ describe("edit — remove_to optional", () => {
 });
 
 describe("edit — Shift block", () => {
-	it("emits a Shift: lines > N shift by +K block when the edit shifts lines below", async () => {
+	it("emits a Shift block naming the hunk's original and final range", async () => {
 		await withTempFile("shift.ts", "a\nb\nc\nd\ne\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "shift.ts" }, undefined, undefined, ctx);
@@ -90,7 +94,7 @@ describe("edit — Shift block", () => {
 				ctx,
 			);
 			const out = getText(res);
-			expect(out).toMatch(/Shift: lines > 3 shift by \+1/);
+			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
 		});
 	});
 
@@ -106,12 +110,11 @@ describe("edit — Shift block", () => {
 				{
 					path: "two.ts",
 					edits: [
-						// First hunk replaces line 2 with [B, B2]; the Shift block
-						// tells the model line 5 is now at line 6, so the second
-						// hunk must use the post-shift line (6#EaX), not the
-						// pre-shift one (5#EaX).
+						// Snapshot semantics: BOTH hunks use ORIGINAL anchors; the
+						// engine resolves them against the same snapshot and rejects
+						// overlaps, then emits per-hunk original→final Shift blocks.
 						{ op: "replace", from: line2, lines: ["B", "B2"] },
-						{ op: "replace", from: `6#${line5.split("#")[1]}`, lines: ["E", "E2"] },
+						{ op: "replace", from: line5, lines: ["E", "E2"] },
 					],
 				},
 				undefined,
@@ -119,9 +122,12 @@ describe("edit — Shift block", () => {
 				ctx,
 			);
 			const out = getText(res);
-			// Two hunks, each +1 → first hunk emits +1, second hunk emits cumulative +2.
-			expect(out).toMatch(/Shift: lines > 3 shift by \+1/);
-			expect(out).toMatch(/Shift: lines > \d+ shift by \+2/);
+			// Both hunks replace one line with two (+1 each); Shift blocks name
+			// each hunk's original → final range.
+			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
+			expect(out).toMatch(/Shift: edits\[1\] line 5 moved to lines 6\.\.7 \(\+1\)/);
+			// Multi-hunk batches end with one end-of-file cumulative Shift block.
+			expect(out).toMatch(/Shift: end of file moved from 8 lines to 10 lines \(\+2 total\)\./);
 		});
 	});
 });
@@ -185,8 +191,8 @@ describe("grep — line#hash output", () => {
 			const text = value.modelText;
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^--- .*g\.txt ---$/);
-			expect(lines[1]).toBe("HASH IDENTIFIER │ FILE LINES");
-			expect(lines[2]).toMatch(/^1#\w{3}│alpha$/);
+			expect(lines[1]).toMatch(/^HASH IDENTIFIER │ FILE LINES/);
+			expect(lines[2]).toMatch(/^1#\w{3}│\s*alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
 			expect(lines.some((l) => l.includes("gamma"))).toBe(false);
 			expect(value.files.length).toBe(1);
@@ -212,9 +218,9 @@ describe("grep — line#hash output", () => {
 			)) as { modelText: string };
 			const text = value.modelText;
 			// Should include c (line 3), b (line 2), d (line 4)
-			expect(text).toMatch(/\d+#\w{3}│b/);
-			expect(text).toMatch(/\d+#\w{3}│c/);
-			expect(text).toMatch(/\d+#\w{3}│d/);
+			expect(text).toMatch(/\d+#\w{3}│\s*b/);
+			expect(text).toMatch(/\d+#\w{3}│\s*c/);
+			expect(text).toMatch(/\d+#\w{3}│\s*d/);
 			// Should not include a (line 1) or e (line 5)
 			expect(text).not.toMatch(/\d+#\w{3}│a/);
 			expect(text).not.toMatch(/\d+#\w{3}│e/);

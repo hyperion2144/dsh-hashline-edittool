@@ -147,4 +147,120 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			expect(await readFile(path, "utf-8")).toBe("line one\n");
 		});
 	});
+
+	describe("snapshot-concurrency semantics", () => {
+		const MULTI = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"]
+			.map((l) => `${l}\n`)
+			.join("");
+
+		it("applies non-overlapping edits with original anchors in one batch", async () => {
+			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
+				const harness = setupIntegrationTest(cwd);
+				const served = await servedRows(harness, "t.txt");
+				const by = (c: string) => served.find((r) => r.content === c)!;
+				// replace 2-3, delete 5, insert after 7 in ONE batch — all with
+				// ORIGINAL anchors (old semantics required shifted newLine#oldHash)
+				const res = await editTool(harness).execute("edit", {
+					path: "t.txt",
+					edits: [
+						{ op: "replace", from: by("l2").hash, to: by("l3").hash, lines: ["R2", "R3"] },
+						{ op: "del", from: by("l5").hash },
+						{ op: "ins", from: by("l7").hash, lines: ["I7"] },
+					],
+				});
+				const text = getText(res);
+				expect(text).toContain("Successfully edited in t.txt");
+				// diff rows carry FINAL line numbers + hashes (unchanged rows keep
+				// their hash; their positions reflect the fully applied batch)
+				expect(text).toContain(` 4#${by("l4").hash.split("#")[1]}│l4`);
+				expect(text).toContain(` 5#${by("l6").hash.split("#")[1]}│l6`);
+				expect(text).toContain(` 6#${by("l7").hash.split("#")[1]}│l7`);
+				expect(text).toContain(` 8#${by("l8").hash.split("#")[1]}│l8`);
+				expect(text).toMatch(/\+7#[A-Za-z0-9]{3}│I7/); // inserted row at its FINAL line
+				expect(await readFile(path, "utf-8")).toBe(
+					"l1\nR2\nR3\nl4\nl6\nl7\nI7\nl8\n",
+				);
+			});
+		});
+
+		it("rejects overlapping ranges with E_BATCH_CONFLICT and writes nothing", async () => {
+			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
+				const harness = setupIntegrationTest(cwd);
+				const served = await servedRows(harness, "t.txt");
+				const by = (c: string) => served.find((r) => r.content === c)!;
+				await expect(
+					editTool(harness).execute("edit", {
+						path: "t.txt",
+						edits: [
+							{ op: "replace", from: by("l4").hash, to: by("l6").hash, lines: ["X"] },
+							{ op: "del", from: by("l6").hash },
+						],
+					}),
+				).rejects.toThrow(/E_BATCH_CONFLICT/);
+				expect(await readFile(path, "utf-8")).toBe(MULTI);
+			});
+		});
+
+		it("rejects two inserts at the same anchor line", async () => {
+			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
+				const harness = setupIntegrationTest(cwd);
+				const served = await servedRows(harness, "t.txt");
+				const by = (c: string) => served.find((r) => r.content === c)!;
+				await expect(
+					editTool(harness).execute("edit", {
+						path: "t.txt",
+						edits: [
+							{ op: "ins", from: by("l3").hash, lines: ["A"] },
+							{ op: "ins", from: by("l3").hash, lines: ["B"] },
+						],
+					}),
+				).rejects.toThrow(/E_BATCH_CONFLICT/);
+				expect(await readFile(path, "utf-8")).toBe(MULTI);
+			});
+		});
+
+		it("rejects ins whose anchor line is inside a replaced range", async () => {
+			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
+				const harness = setupIntegrationTest(cwd);
+				const served = await servedRows(harness, "t.txt");
+				const by = (c: string) => served.find((r) => r.content === c)!;
+				await expect(
+					editTool(harness).execute("edit", {
+						path: "t.txt",
+						edits: [
+							{ op: "replace", from: by("l4").hash, to: by("l6").hash, lines: ["X"] },
+							{ op: "ins", from: by("l4").hash, lines: ["Y"] },
+						],
+					}),
+				).rejects.toThrow(/E_BATCH_CONFLICT/);
+				expect(await readFile(path, "utf-8")).toBe(MULTI);
+			});
+		});
+
+		it("failure message echoes file rows exactly once", async () => {
+			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
+				const harness = setupIntegrationTest(cwd);
+				const served = await servedRows(harness, "t.txt");
+				const by = (c: string) => served.find((r) => r.content === c)!;
+				let message = "";
+				try {
+					await editTool(harness).execute("edit", {
+						path: "t.txt",
+						edits: [
+							{ op: "replace", from: by("l1").hash, lines: ["A"] },
+							{ op: "replace", from: "2#zzz", lines: ["B"] },
+						],
+					});
+					expect.unreachable("edit should have rejected");
+				} catch (e) {
+					message = e instanceof Error ? e.message : String(e);
+				}
+				expect(message).toMatch(/E_BATCH_ABORT/);
+				// stale-anchor echo must appear exactly once — no duplicated on-disk block
+				expect(message.split("HASH IDENTIFIER │ FILE LINES").length - 1).toBe(1);
+				expect(await readFile(path, "utf-8")).toBe(MULTI);
+			});
+		});
+	});
+
 });
