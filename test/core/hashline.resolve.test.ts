@@ -129,4 +129,31 @@ describe("resEdit", () => {
 		expect(() => resEdit(edit)).toThrow(/lacks a line number/);
 	});
 
+	it("takes only the first row of a multi-line block pasted into an anchor", () => {
+		const edit: HTEdit = { remove_from: "12#MQX│line1\n34#cD4│line2", remove_to: "12#MQX│line1\n34#cD4│line2", replacement_text: "new" };
+		const warnings: string[] = [];
+		const resolved = resEdit(edit, warnings);
+		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
+		expect(resolved.hash_bounds[1]).toEqual({ line: 12, hash: "MQX" });
+		expect(warnings[0]).toMatch(/multi-line block/);
+		expect(warnings[0]).toMatch(/only the first row's anchor "12#MQX" was used/);
+	});
+
+	it("does not warn when a pasted row has empty content after the separator", () => {
+		const edit: HTEdit = { remove_from: "12#MQX│", remove_to: "12#MQX│", replacement_text: "new" };
+		const warnings: string[] = [];
+		resEdit(edit, warnings);
+		expect(warnings).toHaveLength(0);
+	});
+
+	it("clips long pasted content in the rejection message", () => {
+		const longContent = "y".repeat(500);
+		const edit: HTEdit = { remove_from: `MQX│${longContent}`, remove_to: "1#MQX", replacement_text: "new" };
+		const error = () => resEdit(edit);
+		expect(error).toThrow(/lacks a line number/);
+		expect(error).toThrow(/MQX│y{50,59}\.\.\./);
+		expect(error).not.toThrow(longContent.slice(60));
+	});
+
+
 });

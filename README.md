@@ -320,7 +320,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_ACCESS]` | File exists but is not readable/writable by the tool. |
 | `[E_AMBIGUOUS_ANCHOR]` | A hash matches more than one current line; call `read` for fresh anchors. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
-| `[E_BAD_REF]` | `from`/`to` is not a `<line>#<hash>` or 3-char hash. |
+| `[E_BAD_REF]` | `from`/`to` is not a `<line>#<hash>` copied from the leftmost column of a read/grep/diff row. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
