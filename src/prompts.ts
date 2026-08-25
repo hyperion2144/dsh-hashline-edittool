@@ -22,7 +22,7 @@ export interface ToolGuidance {
 export const EDIT_DESCRIPTION =
 	"Apply one or more edits to a text file in a single atomic call. Each item in `edits` carries an `op` (`ins` / `del` / `replace`), a `from` anchor (and optionally a `to` anchor for ranges), and the `lines` to insert or replace with. " +
 	"`ins` inserts `lines` AFTER the `from` line (the `from` line itself is preserved); `del` removes the from..to range; `replace` swaps the from..to range with `lines`. " +
-	"Pass `<line>#<hash>` (e.g. `12#ve7`) for `from` / `to`, copied EXACTLY from the leftmost column of a read/grep/diff row; a bare 3-char hash is accepted only when you are sure the file has not shifted above. " +
+	"Pass `<line>#<hash>` (e.g. `12#ve7`) for `from` / `to`, copied EXACTLY from the leftmost column of a read/grep/diff row (this is the only accepted anchor form). " +
 	"Never pass the line content into these anchor fields. " +
 	"Edits apply in order against evolving content. The post-edit response includes a `Shift:` block per hunk describing how absolute line numbers below that edit moved; use the block to chain the next edit (`newLine=<N>#<oldHash>` from the next unchanged diff row, or read for fresh anchors).";
 
@@ -33,7 +33,7 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 		"`edit`: each item is `{ op, from, to?, lines? }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`).",
 		"`edit`: `from` is required and anchors the FIRST line of the range (`12#ve7`); `to` is optional and anchors the LAST line (omit = single-line edit). `op:\"ins\"` accepts ONLY `from` — the insert lands AFTER that line; `to` is rejected.",
 		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
-		"`edit`: prefer the full `line#hash` form; a bare hash is accepted only when you are sure the file has not shifted above.",
+		"`edit`: anchors must be `<line>#<hash>` copied from the leftmost column of a read/grep/diff row — never hand-write or paste bare hashes or line content.",
 		"`edit`: the post-edit diff rows carry fresh `+line#hash` / `-line#hash` markers plus a `Shift:` block. Read the Shift block before chaining — it tells you that lines below the edit moved by `+K` so you can use `newLine#oldHash` on the next edit instead of calling read.",
 		"`edit`: a stale or never-served range is hard-rejected (`[E_STALE_ANCHOR]` / `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±3 context) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
 		"`edit`: for multiple edits to one file (or across files with per-item `path`), list them in ONE `edits` array — the tool validates every item before writing and applies them all-or-nothing, emitting a Shift block per hunk. Do not issue several `edit` calls in one message.",
@@ -43,7 +43,7 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 export const READ_DESCRIPTION =
 	"Read a text file; each line is returned as `<line>#<hash>│content` (`line` = absolute 1-indexed line number, `hash` = 3-char content-derived). " +
 	"The response opens with a `HASH IDENTIFIER │ FILE LINES` header; everything below the header is the verbatim file line content. " +
-	"Use the `line#hash` (or bare `hash`) as the anchor in `edit` calls. Binary/directory → rejected; empty → header only; pageable with offset/limit; BOM stripped; non-UTF-8 shown as U+FFFD.";
+	"Use the `line#hash` marker as the anchor in `edit` calls. Binary/directory → rejected; empty → header only; pageable with offset/limit; BOM stripped; non-UTF-8 shown as U+FFFD.";
 
 export const READ_GUIDANCE: ToolGuidance = {
 	intro:

@@ -45,14 +45,14 @@ function diagRef(ref: string): string {
 	const trimmed = ref.trim();
 
 	if (!trimmed.length) {
-		return `[E_BAD_REF] Invalid anchor. Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3") or a 3-char hash (e.g. "aB3").`;
+		return `[E_BAD_REF] Invalid anchor. Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
 	}
 
 	if (trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${trimmed}". remove_from and remove_to must contain only the marker — remove everything from "${HASH_SEP}" onward.`;
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${HASH_SEP}" (e.g. "12#aB3│"); or pass just the marker "12#aB3".`;
 	}
 
-	return `[E_BAD_REF] Invalid anchor "${trimmed}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3") or a 3-char hash (e.g. "aB3").`;
+	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
 }
 
 function parseRef(ref: string): Anchor {
@@ -268,12 +268,12 @@ function assertItem(edit: Record<string, unknown>): void {
 
 	if ("remove_from" in edit && typeof edit.remove_from !== "string") {
 		throw new Error(
-			`[E_BAD_SHAPE] Field "remove_from" must be an anchor string (3-char hash).`,
+			`[E_BAD_SHAPE] Field "remove_from" must be a "<line>#<hash>" anchor string (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`,
 		);
 	}
 	if ("remove_to" in edit && typeof edit.remove_to !== "string") {
 		throw new Error(
-			`[E_BAD_SHAPE] Field "remove_to" must be an anchor string (3-char hash).`,
+			`[E_BAD_SHAPE] Field "remove_to" must be a "<line>#<hash>" anchor string (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`,
 		);
 	}
 	if (!("replacement_text" in edit)) {
@@ -289,7 +289,7 @@ function assertItem(edit: Record<string, unknown>): void {
 		typeof edit.remove_to !== "string"
 	) {
 		throw new Error(
-			`[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" anchor strings (3-char hashes from read output).`,
+			`[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" "<line>#<hash>" anchor strings copied from read output.`,
 		);
 	}
 }
@@ -312,20 +312,24 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 		if (!match[2]) {
 			// A bare `hash│content` row cannot be salvaged: the design requires
 			// line#hash (the line disambiguates positions whose content is
-			// identical, e.g. blank lines). Tell the model what to pass instead
-			// of stripping to a hash that parseRef would reject.
+			// identical, e.g. blank lines). Show only a clipped hint, never the
+			// whole pasted line/block (T5: terse notices, lean prompts).
 			throw new Error(
-				`[E_BAD_REF] Invalid anchor "${trimmed}": the row lacks a line number. Pass the full marker like "12${LINE_HASH_SEP}aB3" (line${LINE_HASH_SEP}hash), not just the hash.`,
+				`[E_BAD_REF] anchor row lacks a line number — pass the marker "12${LINE_HASH_SEP}aB3" copied from the leftmost column, not "${clipLine(trimmed, 60)}".`
 			);
 		}
 		const anchor = `${match[2]}${LINE_HASH_SEP}${match[3]!}`;
+		const rest = trimmed.slice(match[0].length);
+		if (!rest) return anchor; // "12#aB3│" → clean full row, nothing to strip
 		let message: string;
-		if (match[1] === "+") {
-			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content from remove_from/remove_to "${trimmed}" — using "${anchor}".`;
+		if (/[\r\n]/.test(rest)) {
+			message = `[E_BAD_REF] remove_from/remove_to got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
+		} else if (match[1] === "+") {
+			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
 		} else if (match[1] === "-") {
-			message = `[E_BAD_REF] stripped leading "-" marker and trailing content from remove_from/remove_to "${trimmed}" — using "${anchor}".`;
+			message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
 		} else {
-			message = `[E_BAD_REF] stripped trailing content from remove_from/remove_to "${trimmed}" — using "${anchor}".`;
+			message = `[E_BAD_REF] stripped trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
 		}
 		warnings?.push(message);
 		return anchor;

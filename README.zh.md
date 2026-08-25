@@ -246,7 +246,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | `[E_ACCESS]` | 文件存在但工具不可读/不可写。 |
 | `[E_AMBIGUOUS_ANCHOR]` | 一个哈希匹配当前多行；调用 `read` 获取新锚点。 |
 | `[E_BAD_OP]` | 范围结束先于范围开始（首尾颠倒时会自动纠正）。 |
-| `[E_BAD_REF]` | `from`/`to` 不是 `<line>#<hash>` 或 3 字符哈希。 |
+| `[E_BAD_REF]` | `from`/`to` 不是从 read/grep/diff 行最左列复制的 `<line>#<hash>`。 |
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` 前缀被粘贴进 `lines`（自动纠正）。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |

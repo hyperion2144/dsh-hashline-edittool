@@ -125,7 +125,7 @@ export function assertEditItem(
 	}
 	if (typeof item.from !== "string" || item.from.length === 0) {
 		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}].from must be a non-empty anchor string (e.g. "12#aB3" or "aB3").`,
+			`[E_BAD_SHAPE] edits[${index}].from must be a non-empty "<line>#<hash>" anchor string (e.g. "12#aB3").`,
 		);
 	}
 	if (item.to !== undefined) {
@@ -255,7 +255,7 @@ export const editItemSchema = {
 			type: "string",
 			required: true,
 			description:
-				'Required. Anchor of the FIRST line of the range. `<line>#<hash>` (e.g. "12#aB3") or a bare 3-char hash when the file is unchanged above. For `op:"ins"`, the inserted lines land AFTER this line; for `del`/`replace`, this is the first line of the affected range.',
+				'Required. Anchor of the FIRST line of the range. `<line>#<hash>` (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row. For `op:"ins"`, the inserted lines land AFTER this line; for `del`/`replace`, this is the first line of the affected range.',
 		},
 		to: {
 			type: "string",
