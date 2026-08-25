@@ -2,6 +2,12 @@
 
 All notable changes to the `dsh-hashline-edittool` plugin will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- `edit` anchors (`remove_from` / `remove_to`) now accept a full read/grep/diff output row pasted verbatim — e.g. `12#aB3│const x = 1;` (optionally with `+`/`-` diff markers or surrounding whitespace) — and automatically extract the `line#hash` anchor while dropping the trailing `│content` noise. A row without a line number (bare `aB3│content`) is still rejected with a clear message, since the line number is what disambiguates identical content.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added
