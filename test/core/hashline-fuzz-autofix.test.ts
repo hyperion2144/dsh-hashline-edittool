@@ -202,7 +202,7 @@ async function runStep(
   expect(result.content).toBe(expected);
   if (expected === content) {
     expect(result.autoFixes).toBeUndefined();
-    const rehashed = await lineHashes(content, path, { content, hashes });
+    const rehashed = await lineHashes(content, path);
     expect(rehashed).toEqual(hashes);
     return { content, hashes, autofixed: fixes.length > 0, noop: true };
   }
@@ -215,10 +215,10 @@ async function runStep(
     expect(result.autoFixes).toBeUndefined();
   }
   const removedHashes = new Set(hashes.slice(s - 1, e));
-  const resultHashes = await lineHashes(expected, path, { content, hashes, removedHashes });
+  const resultHashes = await lineHashes(expected, path);
   const newLines = splitLines(expected);
   expect(resultHashes).toHaveLength(newLines.length);
-  expect(new Set(resultHashes).size).toBe(resultHashes.length);
+  // deterministic signatures: identical lines share a hash
   const shift = newLines.length - lines.length;
   for (let i = 0; i < s - 1; i++) {
     expect(resultHashes[i]).toBe(hashes[i]);

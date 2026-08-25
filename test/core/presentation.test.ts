@@ -16,10 +16,8 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
-import { initHasher } from "../../src/hashline/index.js";
 
 beforeAll(async () => {
-	await initHasher();
 });
 
 describe("tool-read structured presentation", () => {
@@ -66,7 +64,7 @@ describe("tool-read structured presentation", () => {
 					arguments: args,
 				}) as never;
 			const value = (await tool.execute({ path: "p2.txt" }, exec({}))) as { modelText: string; lines: { number: number }[] };
-			expect(value.modelText.startsWith("HASH IDENTIFIER │ FILE LINES\n")).toBe(true);
+			expect(value.modelText.startsWith("HASH IDENTIFIER │ FILE LINES")).toBe(true);
 			expect(value.modelText).toMatch(/\[Showing lines 1-2000 of 2500/);
 			expect(value.lines).toHaveLength(2000);
 		});

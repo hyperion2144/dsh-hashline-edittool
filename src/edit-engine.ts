@@ -33,7 +33,6 @@ import {
 	type RangeEdge,
 } from "./range-conflicts.js";
 import { lineHashes } from "./hashline/hash.js";
-import { MAX_HASH_LINES } from "./hashline/hash-assign.js";
 import {
 	AnchorMismatchError,
 	ServedRejectionError,
@@ -176,25 +175,6 @@ export async function resolveMissingPath(
 	return undefined;
 }
 
-/** The hashes a range edit removes, for stable re-hash bookkeeping. */
-export function collectRemovedHashes(
-	edit: HEdit,
-	originalHashes: string[],
-): Set<string> {
-	const removedHashes = new Set<string>();
-	const startHash = edit.hash_bounds[0].hash;
-	const endHash = edit.hash_bounds[1].hash;
-	const startLine = originalHashes.indexOf(startHash);
-	const endLine = originalHashes.indexOf(endHash);
-	if (startLine >= 0 && endLine >= 0) {
-		const firstLine = Math.min(startLine, endLine);
-		const lastLine = Math.max(startLine, endLine);
-		for (let i = firstLine; i <= lastLine; i++) {
-			removedHashes.add(originalHashes[i]!);
-		}
-	}
-	return removedHashes;
-}
 
 /** Added/removed line counts for one resolved edit against a file's original hashes. */
 export function countLineChanges(
@@ -261,7 +241,6 @@ export interface ApplyOneResult {
 	noopEdit?: NEdit;
 	firstChangedLine?: number;
 	lastChangedLine?: number;
-	removedHashes: Set<string> | undefined;
 	totalAddedLines: number;
 	totalRemovedLines: number;
 	anchorWarnings: string[] | undefined;
@@ -378,22 +357,9 @@ export async function applyOne(
 
 	const result = anchorResult.content;
 	const noop = result === input.content;
-	const removedHashes = noop
-		? undefined
-		: collectRemovedHashes(edit, input.hashes);
 	const resultHashes = noop
 		? input.hashes
-		: await lineHashes(
-				result,
-				input.absolutePath,
-				{
-					content: input.content,
-					hashes: input.hashes,
-					removedHashes,
-				},
-				input.store,
-				input.persist,
-			);
+		: await lineHashes(result, input.absolutePath, input.store, input.persist);
 	const { totalAddedLines, totalRemovedLines } = countLineChanges(
 		edit,
 		input.countHashes ?? input.hashes,
@@ -410,7 +376,6 @@ export async function applyOne(
 		noopEdit: anchorResult.noopEdit,
 		firstChangedLine: anchorResult.firstChangedLine,
 		lastChangedLine: anchorResult.lastChangedLine,
-		removedHashes,
 		totalAddedLines,
 		totalRemovedLines,
 		anchorWarnings: anchorResult.warnings,
@@ -553,7 +518,6 @@ export async function runFileEdits(
 		rawText,
 		displayPath: first.path,
 		signal: opts.signal,
-		maxLines: MAX_HASH_LINES,
 	});
 
 	let served = await loadServed(opts.sessionKey, absolutePath);
@@ -672,7 +636,7 @@ export async function runFileEdits(
 	let unionFirstChangedLine: number | undefined;
 	let unionLastChangedLine: number | undefined;
 	let lastApplied:
-		| { content: string; hashes: string[]; removedHashes: Set<string> }
+		| { content: string; hashes: string[] }
 		| undefined;
 	const hunkShifts: HunkShift[] = [];
 
@@ -774,7 +738,6 @@ export async function runFileEdits(
 		}
 
 		appliedCount += 1;
-		const removedHashes = applied.removedHashes!;
 		totalAddedLines += applied.totalAddedLines;
 		totalRemovedLines += applied.totalRemovedLines;
 		const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
@@ -792,7 +755,6 @@ export async function runFileEdits(
 		lastApplied = {
 			content: currentContent,
 			hashes: currentHashes,
-			removedHashes,
 		};
 		currentContent = applied.result;
 		currentHashes = applied.hashes;
@@ -803,21 +765,10 @@ export async function runFileEdits(
 		if (applied.anchorWarnings?.length)
 			warnings.push(...applied.anchorWarnings);
 	}
-
 	const result = currentContent;
 	let resultHashes = currentHashes;
-	if (appliedCount > 0 && lastApplied) {
-		resultHashes = await lineHashes(
-			result,
-			absolutePath,
-			{
-				content: lastApplied.content,
-				hashes: lastApplied.hashes,
-				removedHashes: lastApplied.removedHashes,
-			},
-			undefined,
-			true,
-		);
+	if (appliedCount > 0) {
+		resultHashes = await lineHashes(result, absolutePath, undefined, true);
 	}
 
 	if (hadUtf8DecodeErrors) {

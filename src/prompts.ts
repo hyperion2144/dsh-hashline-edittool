@@ -31,6 +31,7 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 		"Edit one or more ranges via `edits:[{op, from, to?, lines?}]` — never by line content.",
 	lines: [
 		"`edit`: each item is `{ op, from, to?, lines? }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`).",
+		"`edit`: op memory: `ins` KEEPS the anchor line and inserts after it (using it like replace leaves the old line behind); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means NOTHING was written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
 		"`edit`: `from` is required and anchors the FIRST line of the range (`12#ve7`); `to` is optional and anchors the LAST line (omit = single-line edit). `op:\"ins\"` accepts ONLY `from` — the insert lands AFTER that line; `to` is rejected.",
 		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 		"`edit`: anchors must be `<line>#<hash>` copied from the leftmost column of a read/grep/diff row — never hand-write or paste bare hashes or line content.",

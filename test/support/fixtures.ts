@@ -12,7 +12,6 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeAll, afterAll, vi } from "vitest";
 import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
-import { initHasher } from "../../src/hashline/index.js";
 import { shutdownHashStore } from "../../src/hash-store.js";
 import { localIO, type FileIO } from "../../src/fs-bridge.js";
 import { buildEditTool } from "../../src/tool-edit.js";
@@ -31,8 +30,7 @@ export async function setupTestHome(): Promise<{
 	testPath: string;
 	cleanup: () => Promise<void>;
 }> {
-	await initHasher();
-	const tmpHome = await mkdtemp(join(await getWritableTempRoot(), "testhome-"));
+const tmpHome = await mkdtemp(join(await getWritableTempRoot(), "testhome-"));
 	vi.stubEnv("HOME", tmpHome);
 	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
 	const testPath = join(tmpHome, "test.txt");
