@@ -21,7 +21,7 @@ import { DatabaseSync } from "node:sqlite";
 import { hashStorePath } from "./paths.js";
 import { workspaceCwd } from "./workspace.js";
 import { errCode, splitLines } from "./utils.js";
-import { initHasher, contentChecksum, HASH_RE } from "./hashline/hash-assign.js";
+import { contentChecksum, HASH_RE } from "./hashline/hash-assign.js";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT, SERVED_TTL_MS } from "./constants.js";
 
 // ---- validators (owned here; the store's corruption handling uses them) ----
@@ -611,7 +611,6 @@ async function statMissing(rows: { path: string }[]): Promise<string[]> {
 async function openStore(storePath: string): Promise<HashStore> {
 	// Multi-store: never close another workspace's store when opening this one.
 
-	await initHasher();
 	await mkdir(dirname(storePath), { recursive: true });
 
 	let existed = existsSync(storePath);

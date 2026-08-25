@@ -27,6 +27,7 @@ import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "./session-view.js";
 import { withWorkspace } from "./session-view.js";
 import { lineHashes, HASH_SEP, HASHLINE_HEADER, LINE_HASH_SEP } from "./hashline/index.js";
+import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
 import { HASH_SPACE } from "./hashline/hash-assign.js";
 import { visLines, abortIf, clipLine } from "./utils.js";
 import { GREP_DESCRIPTION } from "./prompts.js";
@@ -121,8 +122,12 @@ export async function grepFileContent(
 
 function renderSection(path: string, section: GrepFileSection): string {
 	const headerLines: string[] = [`--- ${path} ---`, HASHLINE_HEADER];
-	for (const row of section.contextRows) {
-		headerLines.push(`${row.position + 1}${LINE_HASH_SEP}${row.hash}${HASH_SEP}${clipLine(row.content)}`);
+	const anchors = section.contextRows.map(
+		(row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}`,
+	);
+	const width = anchorWidth(anchors);
+	for (const [i, row] of section.contextRows.entries()) {
+		headerLines.push(fmtHashlineRow("", anchors[i]!, clipLine(row.content), width));
 	}
 	return headerLines.join("\n");
 }
@@ -305,7 +310,7 @@ export function buildGrepTool(io: FileIO) {
 						matches: section.contextRows.map((row) => ({
 							lineNumber: row.position + 1,
 							// The card's `line` is the pre-rendered `<line>#hash>content` row.
-							line: `${row.position + 1}${LINE_HASH_SEP}${row.hash}${HASH_SEP}${clipLine(row.content)}`,
+							line: renderSection(displayPath, section).split("\n").slice(2).join("\n"),
 						})),
 					});
 					allServed.push({ path: file, rows: section.contextRows });
@@ -354,3 +359,5 @@ export function registerGrepTool(
 ): () => void {
 	return agentCtx.tools.register(buildGrepTool(io));
 }
+
+

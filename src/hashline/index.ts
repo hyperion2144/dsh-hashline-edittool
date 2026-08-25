@@ -7,8 +7,6 @@ export {
  ANCHOR_LEN,
  HASH_SEP,
  HASH_SPACE,
- HASH_PROBE_STRIDE,
- MAX_HASH_LINES,
  HASH_LEN,
  HASH_CLASS,
  HASH_RE,
@@ -23,8 +21,7 @@ export {
  CANON_VERSION,
  canon,
  lineHashesPure,
- mapStableHashes,
- initHasher,
+ hashOf,
  contentChecksum,
 } from "./hash-assign.js";
 

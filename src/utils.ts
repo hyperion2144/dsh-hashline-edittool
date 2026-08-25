@@ -86,6 +86,11 @@ export function firstNonEmpty(lines: string[]): string | undefined {
 	return idx >= 0 ? lines[idx] : undefined;
 }
 
+/** Human label for an inclusive 1-indexed line range: `line 3` or `lines 4..6`. */
+export function formatLineRange(start: number, end: number): string {
+	return start === end ? `line ${start}` : `lines ${start}..${end}`;
+}
+
 export function clipLine(line: string, maxLen = 200): string {
 	const flat = line.replace(/\n/g, "\\n");
 	return flat.length > maxLen ? `${flat.slice(0, maxLen)}...` : flat;

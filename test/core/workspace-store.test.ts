@@ -15,7 +15,6 @@ import { hashStorePath } from "../../src/paths.js";
 import { loadHashStore, shutdownHashStore } from "../../src/hash-store.js";
 import { recordServed, loadServed } from "../../src/served-store.js";
 import { lineHashes } from "../../src/hashline/index.js";
-import { initHasher } from "../../src/hashline/hasher.js";
 
 function tempWorkspace(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
@@ -58,8 +57,7 @@ describe("workspace context", () => {
 
 describe("workspace isolation", () => {
 	it("keeps snapshots in separate stores per workspace", async () => {
-		await initHasher();
-		const a = tempWorkspace("dsh-ws-a-");
+const a = tempWorkspace("dsh-ws-a-");
 		const b = tempWorkspace("dsh-ws-b-");
 		const content = "one\ntwo\nthree\n";
 		try {
@@ -94,8 +92,7 @@ describe("workspace isolation", () => {
 
 describe("stale served tail (regression)", () => {
 	it("truncates the served array to the current line count on a whole-file serve, so a surviving hash never claims two positions", async () => {
-		await initHasher();
-		const ws = tempWorkspace("dsh-ws-tail-");
+const ws = tempWorkspace("dsh-ws-tail-");
 		const path = join(ws, "f.txt");
 		const session = "sess-tail";
 		try {

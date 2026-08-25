@@ -1,9 +1,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { detectEnding, toLF, restoreEndings, stripBOM, genDiff } from "../../src/edit-diff.js";
-import { lineHashesPure, initHasher } from "../../src/hashline/index.js";
+import { lineHashesPure } from "../../src/hashline/index.js";
 
 beforeAll(async () => {
-  await initHasher();
 });
 
 describe("detectEnding", () => {

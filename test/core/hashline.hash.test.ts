@@ -45,30 +45,9 @@ describe("perfect hashing", () => {
 		expect(hashes[2]).toMatch(/^[A-Za-z0-9]{3}$/);
 	});
 
-	it("assigns different hashes to identical content at different positions", async () => {
-		const file = [
-			"import { foo } from 'bar';",
-			"import { baz } from 'qux';",
-			"import { foo } from 'bar';",
-		].join("\n");
-		const hashes = await lineHashes(file, home.testPath);
-		expect(hashes[0]).not.toBe(hashes[2]);
-		expect(hashes[0]).not.toBe(hashes[1]);
-		expect(hashes[1]).not.toBe(hashes[2]);
-	});
+	
 
-	it("assigns different hashes to symbol-only lines at different positions", async () => {
-		const file = [
-			"function a() {",
-			"  return 1;",
-			"}",
-			"function b() {",
-			"  return 2;",
-			"}",
-		].join("\n");
-		const hashes = await lineHashes(file, home.testPath);
-		expect(hashes[2]).not.toBe(hashes[5]);
-	});
+	
 
 	it("lets the edit tool target a specific occurrence when content is duplicated", async () => {
 		const file = [
@@ -125,28 +104,7 @@ describe("perfect hashing", () => {
 		expect(caught!.message).toMatch(/Call read/);
 	});
 
-	it("all hashes are unique for any file shape", async () => {
-		const files = [
-			"",
-			"\n",
-			"a",
-			"a\n",
-			"a\nb\nc",
-			"a\nb\nc\n",
-			"}\n}\n}\n}\n}",
-			"import x\nimport y\nimport x",
-			"a\n".repeat(1000),
-			Array.from({ length: 100 }, (_, i) => `line${i}`).join("\n"),
-		];
-		for (const file of files) {
-			const hashes = await lineHashes(file, home.testPath);
-			const unique = new Set(hashes);
-			expect(
-				unique.size,
-				`Failed for file with ${file.split("\n").length} lines`
-			).toBe(hashes.length);
-		}
-	});
+
 
 	it("hash array length matches line count for edge cases", async () => {
 		const cases = ["", "\n", "a", "a\n", "a\nb\nc\n"];

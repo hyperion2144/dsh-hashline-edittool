@@ -1,80 +1,63 @@
 import { describe, expect, it } from "vitest";
 import {
-  lineHashesPure,
-  lineHashes,
-  HASH_SPACE,
-  MAX_HASH_LINES,
+	lineHashesPure,
+	lineHashes,
+	hashOf,
+	canon,
+	HASH_SPACE,
 } from "../../src/hashline/index.js";
-import {
-  useTestHome,
-  withTempFile,
-  setupReadTest,
-} from "../support/fixtures.js";
+import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
 
-describe("hashline limits", () => {
-  it("derives the hash space from the alphabet and hash length", () => {
-    expect(HASH_SPACE).toBe(62 ** 3);
-    expect(MAX_HASH_LINES).toBe(HASH_SPACE);
-  });
+describe("hashline size limits — removed", () => {
+	it("derives the encoding space from the alphabet and hash length", () => {
+		// HASH_SPACE remains the folding modulus; it is NOT a line-count limit.
+		expect(HASH_SPACE).toBe(62 ** 3);
+	});
 
-  it("hashes exactly MAX_HASH_LINES lines with unique anchors", () => {
-    const content = Array.from(
-      { length: MAX_HASH_LINES },
-      (_, i) => `line ${i}`,
-    ).join("\n");
-    const hashes = lineHashesPure(content);
-    expect(hashes).toHaveLength(MAX_HASH_LINES);
-    expect(new Set(hashes).size).toBe(MAX_HASH_LINES);
-  }, 300_000);
+	it("hashes far more lines than the old 62^3 ceiling without error", () => {
+		// The old unique-allocation design capped files at HASH_SPACE lines;
+		// deterministic content signatures have no ceiling.
+		const line = "const x = 1; // padding padding padding padding";
+		const content = Array.from({ length: HASH_SPACE + 5 }, () => line).join(
+			"\n",
+		);
+		const hashes = lineHashesPure(content);
+		expect(hashes).toHaveLength(HASH_SPACE + 5);
+		// Identical lines share one deterministic hash — repetition is fine.
+		expect(new Set(hashes).size).toBe(1);
+	});
 
-  it("throws a clear E_FILE_TOO_LARGE error above the limit", () => {
-    const content = Array.from({ length: MAX_HASH_LINES + 1 }, () => "x").join(
-      "\n",
-    );
-    expect(() => lineHashesPure(content)).toThrow("E_FILE_TOO_LARGE");
-  }, 300_000);
-
-  it("preserves unique hashes at the boundary through the store path", async () => {
-    const content = Array.from({ length: MAX_HASH_LINES }, (_, i) => `x${i}`).join(
-      "\n",
-    );
-    const hashes = await lineHashes(content, home.testPath);
-    expect(hashes).toHaveLength(MAX_HASH_LINES);
-    expect(new Set(hashes).size).toBe(MAX_HASH_LINES);
-  }, 300_000);
+	it("does not throw E_FILE_TOO_LARGE through the persistence path", async () => {
+		const line = "x";
+		const content = Array.from({ length: 300_000 }, () => line).join("\n");
+		const hashes = await lineHashes(content, home.testPath);
+		expect(hashes).toHaveLength(300_000);
+	});
 });
 
-describe("read tool line cap", () => {
-  it("rejects oversized files with E_FILE_TOO_LARGE before hashing", async () => {
-    const content = Array.from({ length: MAX_HASH_LINES + 1 }, () => "x").join(
-      "\n",
-    );
-    await withTempFile("huge.ts", content, async ({ cwd }) => {
-      const { readTool, ctx } = setupReadTest(cwd);
-      await expect(
-        readTool.execute("r1", { path: "huge.ts" }, undefined, undefined, ctx),
-      ).rejects.toThrow("E_FILE_TOO_LARGE");
-    });
-  });
+describe("deterministic content hashing", () => {
+	it("maps identical content to the identical hash", () => {
+		const a = hashOf(canon("function foo() {"));
+		const b = hashOf(canon("function foo() {"));
+		expect(a).toBe(b);
+	});
 
-  it("reads a file at the limit without hashing errors", async () => {
-    const content = Array.from({ length: MAX_HASH_LINES }, (_, i) => `x${i}`).join(
-      "\n",
-    );
-    await withTempFile("big.ts", content, async ({ cwd }) => {
-      const { readTool, ctx } = setupReadTest(cwd);
-      const result = await readTool.execute(
-        "r1",
-        { path: "big.ts" },
-        undefined,
-        undefined,
-        ctx,
-      );
-      const text = result.content?.[0]?.text ?? "";
-      expect(text).toContain("│x0");
-      expect(text).toContain("[Showing lines 1-");
-    });
-  }, 300_000);
+	it("is a pure function of the canonicalized line", () => {
+		// whitespace differences canonicalize away
+		expect(hashOf(canon("a = b"))).toBe(hashOf(canon("a=b")));
+		expect(hashOf(canon("let x;"))).toBe(hashOf(canon("let\tx;")));
+	});
+
+	it("produces distinct hashes for distinct content in practice", () => {
+		const lines = Array.from(
+			{ length: 1000 },
+			(_, i) => `line number ${i} unique`,
+		);
+		const hashes = lines.map((l) => hashOf(canon(l)));
+		// 62^3 space: a few collisions are possible, but 1000 distinct lines
+		// must not collapse into a single bucket.
+		expect(new Set(hashes).size).toBeGreaterThan(900);
+	});
 });

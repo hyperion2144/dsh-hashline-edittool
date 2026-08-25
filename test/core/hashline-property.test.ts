@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  lineHashesPure,
-  applyEdit,
-  lineHashes,
-  resEdit,
+	lineHashesPure,
+	applyEdit,
+	lineHashes,
+	resEdit,
+	hashOf,
+	canon,
 } from "../../src/hashline/index.js";
 import { firstNonEmpty, lastNonEmpty, splitLines } from "../../src/utils.js";
 import { useTestHome, expectedEditContent } from "../support/fixtures.js";
@@ -108,7 +110,6 @@ function assertMappingInvariants(
   newLines: string[],
   newHashes: string[],
 ): void {
-  expect(new Set(newHashes).size).toBe(newHashes.length);
   const oldHashToLine = new Map<string, string>();
   for (let i = 0; i < oldHashes.length; i++) {
     oldHashToLine.set(oldHashes[i]!, oldLines[i]!);
@@ -168,11 +169,7 @@ describe("property: single random edit per call", () => {
       );
       expect(result.content).toBe(correctedExpected);
       const removedHashes = new Set(hashes.slice(span.s - 1, span.e));
-      const resultHashes = await lineHashes(correctedExpected, home.testPath, {
-        content,
-        hashes,
-        removedHashes,
-      });
+      const resultHashes = await lineHashes(correctedExpected, home.testPath);
       assertMappingInvariants(
         lines,
         hashes,
@@ -236,11 +233,7 @@ describe("property: sequential random edits", () => {
           removedHashes.add(hash);
         }
       }
-      const resultHashes = await lineHashes(expected, home.testPath, {
-        content,
-        hashes,
-        removedHashes,
-      });
+      const resultHashes = await lineHashes(expected, home.testPath);
       assertMappingInvariants(
         lines,
         hashes,
@@ -252,22 +245,26 @@ describe("property: sequential random edits", () => {
   }, 60_000);
 });
 
-describe("property: pure hashing uniqueness", () => {
-  it("assigns unique anchors for 100 random files up to 200 lines", () => {
-    for (let iter = 0; iter < 100; iter++) {
-      const rnd = mulberry32(iter * 15485863 + 3);
-      const content = Array.from(
-        { length: randInt(rnd, 0, 200) },
-        () => randLine(rnd),
-      ).join("\n");
-      const hashes = lineHashesPure(content);
-      expect(hashes).toHaveLength(splitLines(content).length);
-      expect(new Set(hashes).size).toBe(hashes.length);
-    }
-  }, 60_000);
+describe("property: pure hashing determinism", () => {
+	it("agrees with per-line hashOf for 100 random files up to 200 lines", () => {
+		for (let iter = 0; iter < 100; iter++) {
+			const rnd = mulberry32(iter * 15485863 + 3);
+			const content = Array.from(
+				{ length: randInt(rnd, 0, 200) },
+				() => randLine(rnd),
+			).join("\n");
+			const hashes = lineHashesPure(content);
+			expect(hashes).toHaveLength(splitLines(content).length);
+			// deterministic: identical lines must share one hash, and the array
+			// must equal the per-line hashOf computation
+			const lines = splitLines(content);
+			const perLine = lines.map((l) => hashOf(canon(l)));
+			expect(hashes).toEqual(perLine);
+		}
+	}, 60_000);
 });
 
-describe("property: chained stable mapping at every step", () => {
+describe("property: chained deterministic recompute at every step", () => {
   it("keeps mapping invariants across sequential edits with mapStableHashes per step", async () => {
     for (let iter = 0; iter < 60; iter++) {
       const rnd = mulberry32(iter * 1000003 + 17);
@@ -296,11 +293,7 @@ describe("property: chained stable mapping at every step", () => {
         );
         expect(result.content).toBe(expected);
         const removedHashes = new Set(hashes.slice(span.s - 1, span.e));
-        const nextHashes = await lineHashes(expected, chainPath, {
-          content,
-          hashes,
-          removedHashes,
-        });
+        const nextHashes = await lineHashes(expected, chainPath);
         expect(nextHashes).toHaveLength(splitLines(expected).length);
         assertMappingInvariants(
           lines,

@@ -186,10 +186,12 @@ A stale, never-served, or ambiguous range is hard-rejected **before anything is 
 current range is echoed back as fresh anchors (reject-and-serve) — the retry needs no `read`.
 
 **A modern edit pattern for agents.** Content-addressed anchors (the 3-char hash) survive edits
-above; the `line#hash` form additionally pins the line's absolute position. Edit one part of a
-file and the rest of the line#hash markers shift predictably — the post-edit response carries a
-`Shift:` block (`lines > N shift by +K`) that lets the model chain the next edit via
-`newLine#oldHash` without a re-read.
+above; the `line#hash` form additionally pins the line's absolute position. Every hunk in one
+`edit` call resolves its anchors against the same file snapshot, so multiple non-overlapping
+edits apply atomically in a single pass; overlapping ranges are rejected up front
+(`[E_BATCH_CONFLICT]`). The post-edit diff rows carry final line numbers and hashes, and each
+hunk's `Shift:` block maps its original range to its final position (`Shift: edits[1] lines 5..6
+moved to lines 7..9 (+2)`), so follow-up edits copy the markers straight from the diff.
 
 ### How It Compares
 
@@ -324,7 +326,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
-| `[E_FILE_TOO_LARGE]` | File exceeds the hashline line ceiling; use `write` or another approach. |
+| `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written. |
 | `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |
 | `[E_OP_INS]` | `op:"ins"` — inserted lines placed after the anchor; informational. |

@@ -13,12 +13,10 @@ import {
 	currentPositionOfDrifted,
 } from "../../src/served-store.js";
 import { shutdownHashStore } from "../../src/hash-store.js";
-import { initHasher } from "../../src/hashline/hasher.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
 
 let tmpHome: string;
 beforeAll(async () => {
-	await initHasher();
 });
 
 describe("served-state — record semantics", () => {

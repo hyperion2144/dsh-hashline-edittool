@@ -1,9 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { genDiff } from "../../src/edit-diff.js";
-import { initHasher } from "../../src/hashline/index.js";
 
 beforeAll(async () => {
-  await initHasher();
 });
 describe("genDiff", () => {
 	it("adds hash hints for context and addition lines and pads deletion lines", () => {
@@ -60,7 +58,7 @@ describe("genDiff", () => {
 			if (!line.includes("│")) continue;
 			// diff prefix + line# + hash + │ — column position varies with
 			// line-number width but the marker structure is invariant.
-			expect(line).toMatch(/^[ +-]\d+#[A-Za-z0-9 ]{3}│/);
+			expect(line).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*│/);
 		}
 
 		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}│function greet\(name\) \{$/));
@@ -140,7 +138,7 @@ describe("genDiff — property: column alignment", () => {
           expect(
             line,
             `unmarked diff row for iter ${iter}: ${JSON.stringify(line)}`,
-          ).toMatch(/^[ +-]\d+#[A-Za-z0-9 ]{3}│/);
+          ).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*│/);
         }
       }
     }
@@ -149,7 +147,7 @@ describe("genDiff — property: column alignment", () => {
   it("keeps the marker structure correct for single-line diffs too", () => {
     const { diff } = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
     for (const line of diff.split("\n")) {
-      if (line.includes("│")) expect(line).toMatch(/^[ +-]\d+#[A-Za-z0-9 ]{3}│/);
+      if (line.includes("│")) expect(line).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*│/);
     }
   });
 });

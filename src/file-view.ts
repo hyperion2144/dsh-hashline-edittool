@@ -24,7 +24,7 @@ import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "./constants.js";
 import { lineHashes, fmtRegion, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
-import { HASH_SPACE, HASHLINE_HEADER, ANCHOR_LEN } from "./hashline/hash-assign.js";
+import { HASHLINE_HEADER, ANCHOR_LEN } from "./hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "./utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "./edit-diff.js";
 import { resolveTarget, toCwd } from "./paths.js";
@@ -32,7 +32,6 @@ import type { FileIO } from "./fs-bridge.js";
 import type { ServedRow } from "./hashline/served.js";
 import type { HashStore } from "./hash-store.js";
 
-export const MAX_HASH_LINES = HASH_SPACE;
 export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024;
 
@@ -250,16 +249,6 @@ export async function loadFileKindAndText(
       if (!hadUtf8DecodeErrors && decoded.includes("\uFFFD")) {
         hadUtf8DecodeErrors = true;
       }
-      if (options?.maxLines !== undefined) {
-        for (let i = 0; i < decoded.length; i++) {
-          if (decoded.charCodeAt(i) === 10) newlineCount++;
-        }
-        if (newlineCount > options.maxLines) {
-          throw new Error(
-            `[E_FILE_TOO_LARGE] ${options.displayPath ?? filePath} has more than ${options.maxLines} lines, exceeding the ${options.maxLines}-line edit limit. Hashline editing targets source-sized files; for very large files use write or a non-line-based approach.`,
-          );
-        }
-      }
       return decoded;
     }
     parts.push(decodeChunk(sample, true));
@@ -388,18 +377,9 @@ export async function normFromText(input: {
   const { bom, text: rawContent } = stripBOM(input.rawText);
   const originalEnding = detectEnding(rawContent);
   const normalized = toLF(rawContent);
-  if (input.maxLines !== undefined) {
-    const lineCount = visLines(normalized).length;
-    if (lineCount > input.maxLines) {
-      throw new Error(
-        `[E_FILE_TOO_LARGE] ${displayPath} has ${lineCount} lines, exceeding the ${input.maxLines}-line edit limit. Hashline editing targets source-sized files; for very large files use write or a non-line-based approach.`,
-      );
-    }
-  }
   const fileHashes = await lineHashes(
     normalized,
     absolutePath,
-    undefined,
     input.store,
     input.noPersist !== true,
   );
@@ -684,7 +664,6 @@ export async function readView(
       rawText,
       displayPath: path,
       signal,
-      maxLines: MAX_HASH_LINES,
     });
   const r = await fmtReadPreview(
     normalized,

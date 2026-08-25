@@ -16,12 +16,11 @@ import {
 	servedPositionsOf,
 } from "../../src/served-store.js";
 import { HASH_STORE_VERSION, SERVED_TTL_MS } from "../../src/constants.js";
-import { initHasher, contentChecksum } from "../../src/hashline/hasher.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
+import { contentChecksum } from "../../src/hashline/hash-assign.js";
 
 let tmpHome: string;
 beforeAll(async () => {
-	await initHasher();
 });
 
 describe("served state — record semantics", () => {
