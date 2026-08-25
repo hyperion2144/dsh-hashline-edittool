@@ -71,7 +71,8 @@
     "prepublishOnly": "npm run typecheck && npm test && node scripts/assert-tagged.mjs",
     "benchmark": "node benchmark/run.mjs",
     "postpublish": "node scripts/tag-current.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "dev:reload": "bash scripts/dev-reload.sh"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
