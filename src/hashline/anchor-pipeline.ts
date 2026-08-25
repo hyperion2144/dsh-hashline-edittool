@@ -294,7 +294,12 @@ function assertItem(edit: Record<string, unknown>): void {
 	}
 }
 
-const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(?:\\d+)#)?(${HASH_CLASS})│`);
+// Accepts read/grep/diff output rows pasted into remove_from/remove_to:
+//   "12#aB3│const x = 1;"  → anchor "12#aB3" (trailing content dropped)
+//   "+12#aB3│..."          → anchor "12#aB3" (diff "+" dropped)
+//   "-12#aB3│..."          → anchor "12#aB3" (diff "-" dropped)
+// Group 1 = diff marker, group 2 = line number (optional), group 3 = hash.
+const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(\\d+)#)?(${HASH_CLASS})│`);
 
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
@@ -303,19 +308,27 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	const bounds = [edit.remove_from, edit.remove_to].map((ref) => {
 		const trimmed = ref.trim();
 		const match = trimmed.match(ANCHOR_ROW_RE);
-		if (match) {
-			let message: string;
-			if (match[1] === "+") {
-				message = `[E_BAD_REF] stripped diff-preview marker from remove_from/remove_to "${trimmed}".`;
-			} else if (match[1] === "-") {
-				message = `[E_BAD_REF] stripped leading "-" marker from remove_from/remove_to "${trimmed}".`;
-			} else {
-				message = `[E_BAD_REF] stripped "HASH│" prefix from remove_from/remove_to "${trimmed}".`;
-			}
-			warnings?.push(message);
-			return match[2]!;
+		if (!match) return ref;
+		if (!match[2]) {
+			// A bare `hash│content` row cannot be salvaged: the design requires
+			// line#hash (the line disambiguates positions whose content is
+			// identical, e.g. blank lines). Tell the model what to pass instead
+			// of stripping to a hash that parseRef would reject.
+			throw new Error(
+				`[E_BAD_REF] Invalid anchor "${trimmed}": the row lacks a line number. Pass the full marker like "12${LINE_HASH_SEP}aB3" (line${LINE_HASH_SEP}hash), not just the hash.`,
+			);
 		}
-		return ref;
+		const anchor = `${match[2]}${LINE_HASH_SEP}${match[3]!}`;
+		let message: string;
+		if (match[1] === "+") {
+			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content from remove_from/remove_to "${trimmed}" — using "${anchor}".`;
+		} else if (match[1] === "-") {
+			message = `[E_BAD_REF] stripped leading "-" marker and trailing content from remove_from/remove_to "${trimmed}" — using "${anchor}".`;
+		} else {
+			message = `[E_BAD_REF] stripped trailing content from remove_from/remove_to "${trimmed}" — using "${anchor}".`;
+		}
+		warnings?.push(message);
+		return anchor;
 	}) as [string, string];
 	return {
 		content_lines: editLines,
