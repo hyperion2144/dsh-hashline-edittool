@@ -23,7 +23,7 @@ import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "./constants.js";
-import { lineHashes, fmtRegion, HASH_SEP } from "./hashline/index.js";
+import { lineHashes, fmtRegion, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
 import { HASH_SPACE, HASHLINE_HEADER, ANCHOR_LEN } from "./hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "./utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "./edit-diff.js";
@@ -511,7 +511,7 @@ export async function fmtReadPreview(
         (await (path ? lineHashes(text, path) : lineHashes(text)));
       const emptyLineHash = allHashes[0]!;
       return {
-        text: `${HASHLINE_HEADER}\n1${HASH_SEP}${emptyLineHash}${HASH_SEP}\n[File is empty. Use edit to insert content.]`,
+        text: `${HASHLINE_HEADER}\n1${LINE_HASH_SEP}${emptyLineHash}${HASH_SEP}\n[File is empty. Use edit to insert content.]`,
         served: [{ position: 0, hash: emptyLineHash }],
       };
     }
@@ -540,7 +540,7 @@ export async function fmtReadPreview(
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
     bytes: Buffer.byteLength(
-      `${startLine + index}${HASH_SEP}${selectedHashes[index]}${HASH_SEP}${line}`,
+      `${startLine + index}${LINE_HASH_SEP}${selectedHashes[index]}${HASH_SEP}${line}`,
       'utf-8',
     ),
   }));

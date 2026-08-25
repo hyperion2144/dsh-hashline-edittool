@@ -13,14 +13,14 @@ describe("parseHashRef", () => {
 
 	it("rejects trailing content after the anchor", () => {
 		expect(() => parseHashRef("aB3:const x = 1;")).toThrow(
-			/Expected.*line.*hash.*hash.*e\.g\./,
+			/Expected "<line>#<hash>".*e\.g\./,
 		);
 	});
 
 	it("rejects a full HASH│content line copied into remove_from/remove_to", () => {
-		expect(() => parseHashRef("aB3│const x = 1;")).toThrow(
-			/remove_from and remove_to must contain only the marker/,
-		);
+	expect(() => parseHashRef("aB3│const x = 1;")).toThrow(
+		/must start with/,
+	);
 	});
 	it("rejects leading >>> markers (strict mode: no marker stripping)", () => {
 		expect(() => parseHashRef(">>> aB3")).toThrow(/E_BAD_REF/);

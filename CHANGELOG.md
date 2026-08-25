@@ -7,6 +7,9 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 ### Fixed
 
 - `edit` anchors (`remove_from` / `remove_to`) now accept a full read/grep/diff output row pasted verbatim — e.g. `12#aB3│const x = 1;` (optionally with `+`/`-` diff markers or surrounding whitespace) — and automatically extract the `line#hash` anchor while dropping the trailing `│content` noise. A row without a line number (bare `aB3│content`) is still rejected with a clear message, since the line number is what disambiguates identical content.
+- `[E_BAD_REF]` messages no longer echo the whole pasted line/block: inputs are clipped (`clipLine`, 60 chars) in `diagRef` and the `resEdit` stripping warnings, and the bare-anchor rejection shows only a clipped hint. Multi-line blocks pasted into an anchor now warn that only the first row's anchor is used and the rest is ignored.
+- Anchor contract sync: prompts, schema descriptions, and README error tables no longer advertise a "bare 3-char hash" as accepted — `line#hash` copied from the leftmost column is stated as the only valid anchor form (the code already rejected bare hashes).
+- Fixed empty-file read rendering: the marker row was emitted as `1│<hash>│` (missing the `#` separator) instead of `1#<hash>│`; the byte-size computation in `fmtReadPreview` used the same wrong separator.
 
 ## [0.4.0] - 2026-08-21
 
