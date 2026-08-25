@@ -51,6 +51,17 @@ describe("detectRangeConflicts", () => {
 		expect(conflicts[0]).toEqual([edges[0], edges[1]]);
 	});
 
+
+	it("flags ins whose anchor line is strictly inside a replace range (reverse direction)", () => {
+		const edges: RangeEdge[] = [
+			{ index: 0, startLine: 4, endLine: 6, isIns: false },
+			{ index: 1, startLine: 5, endLine: 5, isIns: true }, // anchor 5 is strictly inside 4..6
+		];
+		const conflicts = detectRangeConflicts(edges);
+		expect(conflicts).toHaveLength(1);
+		expect(conflicts[0]).toEqual([edges[0], edges[1]]);
+	});
+
 	it("allows ins right before a replace range (anchor line outside)", () => {
 		const edges: RangeEdge[] = [
 			{ index: 0, startLine: 4, endLine: 6, isIns: false },

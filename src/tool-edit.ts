@@ -34,7 +34,7 @@ import {
 	pathSchema,
 	editsSchema,
 } from "./contract.js";
-import { abortIf, isRec, visLines } from "./utils.js";
+import { abortIf, isRec, visLines, formatLineRange } from "./utils.js";
 
 import { enforceNoopLoop } from "./mutation.js";
 import { runFileEdits, type PreparedItem, type FileEditResult, type HunkShift } from "./edit-engine.js";
@@ -414,6 +414,14 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 		.map((hunk) => shiftBlockForHunk(hunk))
 		.filter((b) => b.length > 0)
 		.join("");
+	// End-of-file cumulative Shift block for multi-hunk batches: tells the
+	// model how the file's total length moved (spec §3.4). Omitted when only
+	// one hunk produced a block — the per-hunk block already covers it.
+	const totalDelta = linesAdded - linesRemoved;
+	const totalShiftBlock =
+		shiftBlocks.length > 1 && totalDelta !== 0
+			? `\n\nShift: end of file moved from ${visLines(file.originalNormalized).length} lines to ${visLines(file.result).length} lines (${totalDelta > 0 ? "+" : ""}${totalDelta} total).`
+			: "";
 	const successPrefix = `Successfully edited in ${displayPath}.`;
 	const lineSummary =
 		linesAdded > 0 || linesRemoved > 0
@@ -422,7 +430,7 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	const warningsBlock =
 		file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
 	const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
-	return `${diffBody}${shiftBlocks}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
+	return `${diffBody}${shiftBlocks}${totalShiftBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 }
 
 function shiftBlockForHunk(hunk: HunkShift): string {
@@ -437,16 +445,8 @@ function shiftBlockForHunk(hunk: HunkShift): string {
 	// No movement at all (neither this hunk's own delta nor drift from
 	// earlier hunks) — nothing to tell the model.
 	if (delta === 0 && finalStartLine === originalStartLine) return "";
-	const origRange =
-		originalStartLine === originalEndLine
-			? `line ${originalStartLine}`
-			: `lines ${originalStartLine}..${originalEndLine}`;
-	const finalRange =
-		finalStartLine === finalEndLine
-			? `line ${finalStartLine}`
-			: `lines ${finalStartLine}..${finalEndLine}`;
 	const sign = delta > 0 ? "+" : "";
-	return `\n\nShift: edits[${index}] ${origRange} moved to ${finalRange} (${sign}${delta}). Rows below this hunk shifted by ${sign}${delta}; use the final line#hash markers from the diff rows above for follow-up edits.`;
+	return `\n\nShift: edits[${index}] ${formatLineRange(originalStartLine, originalEndLine)} moved to ${formatLineRange(finalStartLine, finalEndLine)} (${sign}${delta}). Rows below this hunk shifted by ${sign}${delta}; use the final line#hash markers from the diff rows above for follow-up edits.`;
 }
 
 /**

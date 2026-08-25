@@ -170,6 +170,13 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				});
 				const text = getText(res);
 				expect(text).toContain("Successfully edited in t.txt");
+				// diff rows carry FINAL line numbers + hashes (unchanged rows keep
+				// their hash; their positions reflect the fully applied batch)
+				expect(text).toContain(` 4#${by("l4").hash.split("#")[1]}│l4`);
+				expect(text).toContain(` 5#${by("l6").hash.split("#")[1]}│l6`);
+				expect(text).toContain(` 6#${by("l7").hash.split("#")[1]}│l7`);
+				expect(text).toContain(` 8#${by("l8").hash.split("#")[1]}│l8`);
+				expect(text).toMatch(/\+7#[A-Za-z0-9]{3}│I7/); // inserted row at its FINAL line
 				expect(await readFile(path, "utf-8")).toBe(
 					"l1\nR2\nR3\nl4\nl6\nl7\nI7\nl8\n",
 				);

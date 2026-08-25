@@ -16,6 +16,8 @@
  * @module dsh-hashline-edittool/range-conflicts
  */
 
+import { formatLineRange } from "./utils.js";
+
 export interface RangeEdge {
 	/** 0-based position of the hunk in the batch (for error messages). */
 	index: number;
@@ -77,7 +79,5 @@ export function describeEdge(edge: RangeEdge): string {
 	if (edge.isIns) {
 		return `edits[${edge.index}] insert after line ${edge.startLine}`;
 	}
-	return edge.startLine === edge.endLine
-		? `edits[${edge.index}] line ${edge.startLine}`
-		: `edits[${edge.index}] lines ${edge.startLine}..${edge.endLine}`;
+	return `edits[${edge.index}] ${formatLineRange(edge.startLine, edge.endLine)}`;
 }

@@ -122,6 +122,8 @@ describe("edit — Shift block", () => {
 			// each hunk's original → final range.
 			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
 			expect(out).toMatch(/Shift: edits\[1\] line 5 moved to lines 6\.\.7 \(\+1\)/);
+			// Multi-hunk batches end with one end-of-file cumulative Shift block.
+			expect(out).toMatch(/Shift: end of file moved from 8 lines to 10 lines \(\+2 total\)\./);
 		});
 	});
 });
