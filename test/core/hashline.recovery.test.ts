@@ -140,23 +140,23 @@ describe("applyEdit — recovery scenarios", () => {
     expect(() => resEdit(edit)).toThrow(/Invalid anchor/);
   });
 
-  it("strips bare hash prefix in content_lines", async () => {
+  it("strips a full line#hash: prefix in content_lines", async () => {
     const content = "a\nb\nc\nd\ne";
     const hashes = await lineHashes(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `2#${hashes[1]!}`,
-      remove_to: `3#${hashes[2]!}`, replacement_text: `${hashes[1]!}:b\nX` },
+      remove_to: `3#${hashes[2]!}`, replacement_text: `2#${hashes[1]!}:b\nX` },
     ));
     expect(result.content).toBe("a\nb\nX\nd\ne");
-    expect(result.warnings?.[0]).toMatch(/stripped "HASH:" prefix/);
+    expect(result.warnings?.[0]).toMatch(/stripped "line#hash:" prefix/);
   });
 
-  it("strips diff preview rows in content_lines", async () => {
+  it("strips an anchored +line#hash: diff preview row in content_lines", async () => {
     const content = "a\nb\nc";
     const hashes = await lineHashes(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `2#${hashes[1]!}`,
-      remove_to: `2#${hashes[1]!}`, replacement_text: `+${hashes[1]!}:B` },
+      remove_to: `2#${hashes[1]!}`, replacement_text: `+2#${hashes[1]!}:B` },
     ));
     expect(result.content).toBe("a\nB\nc");
     expect(result.warnings?.[0]).toMatch(/stripped diff-preview marker/);
