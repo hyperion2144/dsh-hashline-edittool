@@ -23,6 +23,7 @@ import { ctxFsIO } from "./fs-bridge.js";
 import { FsSandboxController } from "./sandbox.js";
 import { registerReadTool } from "./tool-read.js";
 import { registerEditTool } from "./tool-edit.js";
+import { installHashlineSettings } from "./config.js";
 import { registerUndoTool } from "./tool-undo.js";
 import { registerGrepTool } from "./tool-grep.js";
 import { registerWriteHook } from "./write-hook.js";
@@ -137,6 +138,10 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 
 /** Mount the bundle: initialize the store, then install tools per agent. */
 export function apply(rootCtx: Context): void {
+	// Hashline settings namespace (separator / hash length / output format):
+	// registers with the settings service; re-applies the hash shape on every commit.
+	installHashlineSettings(rootCtx);
+
 	// The per-workspace stores are opened lazily on the first tool call in
 	// each workspace (there is no shared store to prune at boot anymore);
 	// hashing is synchronous and dependency-free, so no warm-up is needed.
