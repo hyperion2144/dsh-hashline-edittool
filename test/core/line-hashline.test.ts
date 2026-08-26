@@ -1,6 +1,6 @@
 /**
  * Tests for the line#hash anchor upgrade. Covers:
- *   - `read` rendering carries the `HASH IDENTIFIER │ FILE LINES` header
+ *   - `read` rendering carries the `ANCHOR:FILELINE` header
  *   - `parseRef` accepts both `line#hash` and bare-hash forms
  *   - `edit.remove_to` is optional (defaults to remove_from)
  *   - post-edit response carries the `Shift:` block
@@ -36,15 +36,15 @@ describe("parseRef — line#hash form", () => {
 });
 
 describe("read — header line", () => {
-	it("emits the HASH IDENTIFIER │ FILE LINES header on top", async () => {
+	it("emits the ANCHOR:FILELINE header on top", async () => {
 		await withTempFile("h.txt", "alpha\nbeta\n", async ({ cwd }) => {
 			const { ctx, readTool } = setupIntegrationTest(cwd);
 			const res = await readTool.execute("r", { path: "h.txt" }, undefined, undefined, ctx);
 			const text = getText(res);
 			const lines = text.split("\n");
-			expect(lines[0]).toMatch(/^HASH IDENTIFIER │ FILE LINES/);
-			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}│\s*alpha$/);
-			expect(lines[2]).toMatch(/^2#[A-Za-z0-9]{3}│beta$/);
+			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}:\s*alpha$/);
+			expect(lines[2]).toMatch(/^2#[A-Za-z0-9]{3}:beta$/);
 		});
 	});
 });
@@ -54,20 +54,20 @@ describe("edit — remove_to optional", () => {
 		await withTempFile("single.ts", "one\ntwo\nthree\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "single.ts" }, undefined, undefined, ctx);
-			const lines = getText(read).split("\n").filter((l) => l.includes("│") && !l.startsWith("HASH IDENTIFIER"));
+			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
 			// Extract line#hash of line 2 ("two")
 			const lineMarker = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
 
 			await editTool.execute(
 				"e",
-				{ path: "single.ts", edits: [{ op: "replace", from: lineMarker, lines: ["TWO!"] }] },
+				{ path: "single.ts", edits: [{ op: "replace", anchor_start: lineMarker, lines: ["TWO!"] }] },
 				undefined,
 				undefined,
 				ctx,
 			);
 
 			const read2 = await readTool.execute("r2", { path: "single.ts" }, undefined, undefined, ctx);
-			const lines2 = getText(read2).split("\n").filter((l) => l.includes("│") && !l.startsWith("HASH IDENTIFIER"));
+			const lines2 = getText(read2).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
 			expect(lines2[0]).toMatch(/one$/);
 			expect(lines2[1]).toMatch(/TWO!$/);
 			expect(lines2[2]).toMatch(/three$/);
@@ -80,14 +80,14 @@ describe("edit — Shift block", () => {
 		await withTempFile("shift.ts", "a\nb\nc\nd\ne\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "shift.ts" }, undefined, undefined, ctx);
-			const lines = getText(read).split("\n").filter((l) => l.includes("│") && !l.startsWith("HASH IDENTIFIER"));
+			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
 			// Replace line 2 ("b") with two lines.
 			const lineMarker = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
 			const res = await editTool.execute(
 				"e",
 				{
 					path: "shift.ts",
-					edits: [{ op: "replace", from: lineMarker, lines: ["B", "B2"] }],
+					edits: [{ op: "replace", anchor_start: lineMarker, lines: ["B", "B2"] }],
 				},
 				undefined,
 				undefined,
@@ -102,7 +102,7 @@ describe("edit — Shift block", () => {
 		await withTempFile("two.ts", "a\nb\nc\nd\ne\nf\ng\nh\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "two.ts" }, undefined, undefined, ctx);
-			const lines = getText(read).split("\n").filter((l) => l.includes("│") && !l.startsWith("HASH IDENTIFIER"));
+			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
 			const line2 = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
 			const line5 = lines[4]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
 			const res = await editTool.execute(
@@ -113,8 +113,8 @@ describe("edit — Shift block", () => {
 						// Snapshot semantics: BOTH hunks use ORIGINAL anchors; the
 						// engine resolves them against the same snapshot and rejects
 						// overlaps, then emits per-hunk original→final Shift blocks.
-						{ op: "replace", from: line2, lines: ["B", "B2"] },
-						{ op: "replace", from: line5, lines: ["E", "E2"] },
+						{ op: "replace", anchor_start: line2, lines: ["B", "B2"] },
+						{ op: "replace", anchor_start: line5, lines: ["E", "E2"] },
 					],
 				},
 				undefined,
@@ -167,12 +167,12 @@ describe("stale anchor echo — read format", () => {
 		expect(caught).toBeDefined();
 		expect(caught!.message).toMatch(/E_STALE_ANCHOR/);
 		expect(caught!.message).toMatch(/Echo of the line you tried/);
-		expect(caught!.message).toMatch(/HASH IDENTIFIER │ FILE LINES/);
+		expect(caught!.message).toMatch(/ANCHOR:FILELINE/);
 	});
 });
 
 describe("grep — line#hash output", () => {
-	it("renders matches as line#hash│content under the header", async () => {
+	it("renders matches as line#hash:content under the header", async () => {
 		await withTempFile("g.txt", "alpha\nbeta\nalpha-again\ngamma\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
 			const { buildGrepTool } = await import("../../src/tool-grep.js");
@@ -191,8 +191,8 @@ describe("grep — line#hash output", () => {
 			const text = value.modelText;
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^--- .*g\.txt ---$/);
-			expect(lines[1]).toMatch(/^HASH IDENTIFIER │ FILE LINES/);
-			expect(lines[2]).toMatch(/^1#\w{3}│\s*alpha$/);
+			expect(lines[1]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[2]).toMatch(/^1#\w{3}:\s*alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
 			expect(lines.some((l) => l.includes("gamma"))).toBe(false);
 			expect(value.files.length).toBe(1);
@@ -218,12 +218,12 @@ describe("grep — line#hash output", () => {
 			)) as { modelText: string };
 			const text = value.modelText;
 			// Should include c (line 3), b (line 2), d (line 4)
-			expect(text).toMatch(/\d+#\w{3}│\s*b/);
-			expect(text).toMatch(/\d+#\w{3}│\s*c/);
-			expect(text).toMatch(/\d+#\w{3}│\s*d/);
+			expect(text).toMatch(/\d+#\w{3}:\s*b/);
+			expect(text).toMatch(/\d+#\w{3}:\s*c/);
+			expect(text).toMatch(/\d+#\w{3}:\s*d/);
 			// Should not include a (line 1) or e (line 5)
-			expect(text).not.toMatch(/\d+#\w{3}│a/);
-			expect(text).not.toMatch(/\d+#\w{3}│e/);
+			expect(text).not.toMatch(/\d+#\w{3}:a/);
+			expect(text).not.toMatch(/\d+#\w{3}:e/);
 		});
 	});
 

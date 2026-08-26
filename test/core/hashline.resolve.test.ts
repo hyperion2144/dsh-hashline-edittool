@@ -95,11 +95,11 @@ describe("resEdit", () => {
 	});
 
 	it("still rejects rows without a leading hash", () => {
-		const edit: HTEdit = { remove_from: "│const x = 1;", remove_to: "1#MQX", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: ":const x = 1;", remove_to: "1#MQX", replacement_text: "new" };
 		expect(() => resEdit(edit)).toThrow(/^\[E_BAD_REF\]/);
 	});
 	it("extracts line#hash from a full read row and drops trailing content", () => {
-		const edit: HTEdit = { remove_from: "12#MQX│const x = 1;", remove_to: "12#MQX│const x = 1;", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: "12#MQX:const x = 1;", remove_to: "12#MQX:const x = 1;", replacement_text: "new" };
 		const warnings: string[] = [];
 		const resolved = resEdit(edit, warnings);
 		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
@@ -109,7 +109,7 @@ describe("resEdit", () => {
 	});
 
 	it("strips + and - diff markers from pasted rows, keeping the anchor", () => {
-		const edit: HTEdit = { remove_from: "+12#MQX│const x = 1;", remove_to: "-12#MQX│const x = 1;", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: "+12#MQX:const x = 1;", remove_to: "-12#MQX:const x = 1;", replacement_text: "new" };
 		const warnings: string[] = [];
 		const resolved = resEdit(edit, warnings);
 		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
@@ -119,18 +119,18 @@ describe("resEdit", () => {
 	});
 
 	it("trims surrounding whitespace around a pasted row", () => {
-		const edit: HTEdit = { remove_from: "  12#MQX│const x = 1;  ", remove_to: "  12#MQX│const x = 1;  ", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: "  12#MQX:const x = 1;  ", remove_to: "  12#MQX:const x = 1;  ", replacement_text: "new" };
 		const resolved = resEdit(edit);
 		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
 	});
 
 	it("rejects a pasted row without a line number", () => {
-		const edit: HTEdit = { remove_from: "MQX│const x = 1;", remove_to: "1#MQX", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: "MQX:const x = 1;", remove_to: "1#MQX", replacement_text: "new" };
 		expect(() => resEdit(edit)).toThrow(/lacks a line number/);
 	});
 
 	it("takes only the first row of a multi-line block pasted into an anchor", () => {
-		const edit: HTEdit = { remove_from: "12#MQX│line1\n34#cD4│line2", remove_to: "12#MQX│line1\n34#cD4│line2", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: "12#MQX:line1\n34#cD4:line2", remove_to: "12#MQX:line1\n34#cD4:line2", replacement_text: "new" };
 		const warnings: string[] = [];
 		const resolved = resEdit(edit, warnings);
 		expect(resolved.hash_bounds[0]).toEqual({ line: 12, hash: "MQX" });
@@ -140,7 +140,7 @@ describe("resEdit", () => {
 	});
 
 	it("does not warn when a pasted row has empty content after the separator", () => {
-		const edit: HTEdit = { remove_from: "12#MQX│", remove_to: "12#MQX│", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: "12#MQX:", remove_to: "12#MQX:", replacement_text: "new" };
 		const warnings: string[] = [];
 		resEdit(edit, warnings);
 		expect(warnings).toHaveLength(0);
@@ -148,10 +148,10 @@ describe("resEdit", () => {
 
 	it("clips long pasted content in the rejection message", () => {
 		const longContent = "y".repeat(500);
-		const edit: HTEdit = { remove_from: `MQX│${longContent}`, remove_to: "1#MQX", replacement_text: "new" };
+		const edit: HTEdit = { remove_from: `MQX:${longContent}`, remove_to: "1#MQX", replacement_text: "new" };
 		const error = () => resEdit(edit);
 		expect(error).toThrow(/lacks a line number/);
-		expect(error).toThrow(/MQX│y{50,59}\.\.\./);
+		expect(error).toThrow(/MQX:y{50,59}\.\.\./);
 		expect(error).not.toThrow(longContent.slice(60));
 	});
 

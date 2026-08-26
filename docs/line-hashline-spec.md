@@ -15,7 +15,7 @@ Upgrade the hashline edit anchor from a pure 3-character content hash
   against a downstream line whose absolute line number has shifted, **without
   forcing a re-`read`**.
 - `grep` becomes a first-class hashline-aware tool: every match is returned with
-  the same `line#hash│content` marker so the model can edit the hit directly
+  the same `line#hash:content` marker so the model can edit the hit directly
   from the grep output.
 - The marker and the file content are visually and structurally separated, so
   the model never confuses one for the other.
@@ -27,15 +27,15 @@ half moves.
 
 ## 2. Background — current behaviour
 
-- `read` renders rows as `HASH│content` (`fmtRegion` in
-  `src/hashline/anchor-pipeline.ts`, `HASH_SEP = "│"`).
+- `read` renders rows as `HASH:content` (`fmtRegion` in
+  `src/hashline/anchor-pipeline.ts`, `HASH_SEP = ":"`).
 - `genDiff` (`src/edit-diff.ts`) renders diff rows as
-  `[+- ]HASH│content`.
+  `[+- ]HASH:content`.
 - `edit.remove_from` and `remove_to` are both required; equal hashes means
   one-line edit.
 - `[E_STALE_ANCHOR]` (`fmtMismatchWithServes` in
   `src/hashline/anchor-pipeline.ts`) echoes the resolved anchor's context with
-  bare `HASH│content` rows plus line numbers — not the read format.
+  bare `HASH:content` rows plus line numbers — not the read format.
 - No `grep` tool is owned by this plugin (verified by `grep -rn "grep" src/`
   returning no registration — only doc-string mentions).
 
@@ -44,14 +44,14 @@ half moves.
 ### 3.1 Anchor format
 
 ```
-42#ve7│function hello() {
+42#ve7:function hello() {
 ↑  ↑
-│  └── 3-char content-derived hash (unchanged behaviour)
+:  └── 3-char content-derived hash (unchanged behaviour)
 └───── absolute 1-indexed line number in the file the tool last wrote/read
 ```
 
 - Separator between `line` and `hash`: `#` (single ASCII). Distinct from the
-  `│` that separates marker from content.
+  `:` that separates marker from content.
 - `parseRef` accepts both `line#hash` and a bare `hash`. Bare-hash form is
   retained as a hash-only fallback (no line check), for compatibility with
   older read output and to let the model skip the bookkeeping when it knows
@@ -65,11 +65,11 @@ Every hashline-producing tool response (read, grep, post-edit diff, stale
 echo) opens with a single header line:
 
 ```
-HASH IDENTIFIER │ FILE LINES
+ANCHOR:FILELINE
 ```
 
 The left column is the marker (`line#hash`); the right column is the
-verbatim file line content. The `│` separator is the existing
+verbatim file line content. The `:` separator is the existing
 `HASH_SEP`. No other output in the response carries this exact header
 string, so a model can pattern-match on it as the start of a hashline
 block.
@@ -79,19 +79,19 @@ each file gets its own section header:
 
 ```
 --- src/foo.ts ---
-HASH IDENTIFIER │ FILE LINES
+ANCHOR:FILELINE
   ...
 ```
 
 ### 3.3 `read` rendering
 
 ```
-HASH IDENTIFIER │ FILE LINES
- 3#ve7│import foo from "./foo.js";
- 4#qp1│
- 5#8mK│function hello() {
- 6#u2x│  return "world";
- 7#4nB│}
+ANCHOR:FILELINE
+ 3#ve7:import foo from "./foo.js";
+ 4#qp1:
+ 5#8mK:function hello() {
+ 6#u2x:  return "world";
+ 7#4nB:}
  ...
 [Showing lines 1-7 of 7.]
 ```
@@ -114,12 +114,12 @@ forms validate the resolved range against served state (existing
 The post-edit response has three blocks, in order:
 
 ```
-HASH IDENTIFIER │ FILE LINES
+ANCHOR:FILELINE
 [Diff rows for the edited range — + is new, - is old, space is unchanged context]
-+5#hA1│new line a
-+6#hA2│new line b
--5#oldH│old single line that was replaced
- 4#kp3│unchanged surrounding line
++5#hA1:new line a
++6#hA2:new line b
+-5#oldH:old single line that was replaced
+ 4#kp3:unchanged surrounding line
  ...                                  # ellipsis when context was trimmed
 
 [Shift: lines below the last changed row have shifted in their absolute line number]
@@ -182,14 +182,14 @@ Output:
 
 ```
 --- src/foo.ts ---
-HASH IDENTIFIER │ FILE LINES
-42#ve7│function hello() {
-43#8mK│  console.log("world");
+ANCHOR:FILELINE
+42#ve7:function hello() {
+43#8mK:  console.log("world");
 ...
 --- src/bar.ts ---
-HASH IDENTIFIER │ FILE LINES
-11#qp1│function greet() {
-12#u2x│  console.log("hi");
+ANCHOR:FILELINE
+11#qp1:function greet() {
+12#u2x:  console.log("hi");
 ...
 ```
 
@@ -210,12 +210,12 @@ HASH IDENTIFIER │ FILE LINES
 has changed since that anchor was read, or the line has shifted.
 
  Echo of the line you tried (read-style, ±3 lines of context):
- HASH IDENTIFIER │ FILE LINES
- 39#aaa│…
- 40#bbb│…
-   42#ccc│something different here now ← what line 42 actually is today
-   43#ddd│…
-   44#eee│…
+ ANCHOR:FILELINE
+ 39#aaa:…
+ 40#bbb:…
+   42#ccc:something different here now ← what line 42 actually is today
+   43#ddd:…
+   44#eee:…
 
  If this is the line you meant to edit, reuse the fresh hash 42#ccc
  without calling read.
@@ -252,9 +252,9 @@ These are the strings shipped in `src/prompts.ts`. Preset overrides are
 unaffected — each preset's `*.md` keeps its own copy.
 
 **`READ_DESCRIPTION`**: "Read a text file; each line is returned as
-`line#hash│content` (line = absolute 1-indexed line number, hash =
+`line#hash:content` (line = absolute 1-indexed line number, hash =
 3-char content-derived). The response opens with a header
-`HASH IDENTIFIER │ FILE LINES`; everything below the header is the
+`ANCHOR:FILELINE`; everything below the header is the
 verbatim file line content. Use `line#hash` as the anchor in `edit`
 calls. A bare `hash` is also accepted when you are sure the file has
 not been touched above. Binary/directory → rejected; empty → header
@@ -296,8 +296,8 @@ hunk; expect `[E_BATCH_CONFLICT]` on overlapping ranges, per-hunk
 original-to-final Shift blocks, and an end-of-file total block.
 
 **`GREP_DESCRIPTION`**: "Search for a pattern in one or more files.
-Output mirrors `read`: each match is a `line#hash│content` row under
-a `HASH IDENTIFIER │ FILE LINES` header, one section per file.
+Output mirrors `read`: each match is a `line#hash:content` row under
+a `ANCHOR:FILELINE` header, one section per file.
 Context lines (`-C N`) carry markers too. Grep counts as `read`, so
 matches can be edited directly without a separate `read`."
 
@@ -319,7 +319,7 @@ matches can be edited directly without a separate `read`."
 | `src/tool-edit.ts` | `remove_to ??= remove_from` in the normalize path. |
 | `src/tool-batch-edit.ts` | Pass through the new edit-engine fields; final response assembled by `edit-response.ts`. |
 | `src/tool-read.ts` | No schema change; only the rendered text changes (via `file-view.ts`). |
-| **`src/tool-grep.ts` (new)** | `defineTool({ name: "grep", ... })` mirroring `tool-read.ts`. `execute` runs a literal-substring or regex match per file, builds `line#hash│content` rows via `file-view.ts::preview` (pure), emits observed via `io.emitObserved`, records served via `recordServedTruncated`. |
+| **`src/tool-grep.ts` (new)** | `defineTool({ name: "grep", ... })` mirroring `tool-read.ts`. `execute` runs a literal-substring or regex match per file, builds `line#hash:content` rows via `file-view.ts::preview` (pure), emits observed via `io.emitObserved`, records served via `recordServedTruncated`. |
 | **`src/prompts.ts`** | Add `GREP_DESCRIPTION` and `GREP_GUIDANCE`; update `EDIT_*` / `READ_*` / `BATCH_EDIT_*` strings per §5. |
 | **`src/guidance.ts` + `src/guidance/index.ts`** | Register `tool:grep` in `GUIDANCE_SECTIONS` with default order `134`. |
 | **`src/guidance/materialize.ts` + `resolve.ts` + `parse.ts`** | Materialize a `grep.md` per shipped preset; resolve it like the existing four sections. |
@@ -331,7 +331,7 @@ matches can be edited directly without a separate `read`."
 
 | Test | Asserts |
 | --- | --- |
-| `read.header.line-hash` | read output starts with `HASH IDENTIFIER │ FILE LINES` and rows match `^\s*\d+#\w{3}│` |
+| `read.header.line-hash` | read output starts with `ANCHOR:FILELINE` and rows match `^\s*\d+#\w{3}:` |
 | `read.header.empty` | empty file: header only, no rows |
 | `read.continuation-paging` | `offset`/`limit` paging still emits the header |
 | `edit.single-line.remove_to_omitted` | passing only `remove_from` lands as a 1-line edit |
@@ -342,9 +342,9 @@ matches can be edited directly without a separate `read`."
 | `edit.shift-block deletes to empty` | replacement `""` of last row → `Shift: lines > N shift by -1` and end-of-file message |
 | `edit.no-shift noop` | equal content → no Shift block |
 | `batch.two-hunks.shift` | hunk A +1 line, hunk B +2 lines → both use ORIGINAL anchors; A emits `+1`, B emits `+2`, file end emits `+3` total |
-| `stale-echo.read-format` | not-found echo is `HASH IDENTIFIER │ FILE LINES` ±3 rows in read format |
+| `stale-echo.read-format` | not-found echo is `ANCHOR:FILELINE` ±3 rows in read format |
 | `stale-echo.served-rows` | echo rows appear in `servedRows` so a retry with the fresh hash passes |
-| `grep.single-file` | literal match produces `line#hash│content` rows under header; file section header present |
+| `grep.single-file` | literal match produces `line#hash:content` rows under header; file section header present |
 | `grep.context` | `-C 2` includes 2 marker rows above/below |
 | `grep.regex` | `regex:true` enables `RegExp` matching |
 | `grep.emit-observed` | after grep, `edit` against a hit does not trigger sandbox escalation |
@@ -363,7 +363,7 @@ of this change.
 | --- | --- |
 | `README.md` | §Quick Start, §Why Hashline, §How It Compares, §Correctness in edge cases, §Benchmark (note), §Tools table (+ grep row), §Error codes, §Project Structure, §Roadmap. See plan-issue earlier in the conversation. |
 | `README.zh.md` | Full mirror translation. |
-| `CONTEXT.md` | Add `line#hash anchor`, `Shift`, `HASH IDENTIFIER │ FILE LINES`, `Reject-and-serve` (refined). Update Prompt section list to include `tool:grep`. |
+| `CONTEXT.md` | Add `line#hash anchor`, `Shift`, `ANCHOR:FILELINE`, `Reject-and-serve` (refined). Update Prompt section list to include `tool:grep`. |
 | `CHANGELOG.md` | `[Unreleased]` block with Added / Changed / Tests. Tests count is filled after `npm test`. |
 
 ## 9. Risks and open questions

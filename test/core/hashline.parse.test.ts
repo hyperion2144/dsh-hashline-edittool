@@ -13,12 +13,12 @@ describe("parseHashRef", () => {
 
 	it("rejects trailing content after the anchor", () => {
 		expect(() => parseHashRef("aB3:const x = 1;")).toThrow(
-			/Expected "<line>#<hash>".*e\.g\./,
+			/must start with/,
 		);
 	});
 
-	it("rejects a full HASH│content line copied into remove_from/remove_to", () => {
-	expect(() => parseHashRef("aB3│const x = 1;")).toThrow(
+	it("rejects a full HASH:content line copied into remove_from/remove_to", () => {
+	expect(() => parseHashRef("aB3:const x = 1;")).toThrow(
 		/must start with/,
 	);
 	});
@@ -108,10 +108,10 @@ describe("parseText", () => {
 	});
 
 	it("passes through diff-preview rows verbatim (marker stripping happens in applyEdit)", () => {
-		expect(parseText("+aB3│foo\n+xYp│bar")).toEqual(["+aB3│foo", "+xYp│bar"]);
-		expect(parseText(" aB3│keep\n-10    old\n xYp│after")).toEqual([" aB3│keep", "-10    old", " xYp│after"]);
-		expect(parseText(" aB3│keep\n-   │old\n xYp│after")).toEqual([" aB3│keep", "-   │old", " xYp│after"]);
-		expect(parseText("-aB3│old\n- aB3│old")).toEqual(["-aB3│old", "- aB3│old"]);
+		expect(parseText("+aB3:foo\n+xYp:bar")).toEqual(["+aB3:foo", "+xYp:bar"]);
+		expect(parseText(" aB3:keep\n-10    old\n xYp:after")).toEqual([" aB3:keep", "-10    old", " xYp:after"]);
+		expect(parseText(" aB3:keep\n-   :old\n xYp:after")).toEqual([" aB3:keep", "-   :old", " xYp:after"]);
+		expect(parseText("-aB3:old\n- aB3:old")).toEqual(["-aB3:old", "- aB3:old"]);
 	});
 
 	it("passes through numbered deletion rows as literal content", () => {

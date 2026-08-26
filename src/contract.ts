@@ -35,9 +35,9 @@ export interface EditItemParams {
 	/** Required. Insert / delete / replace semantic. */
 	op: "ins" | "del" | "replace";
 	/** Required. Anchor of the FIRST line of the affected range. */
-	from: string;
+	anchor_start: string;
 	/** Optional. Anchor of the LAST line. If omitted, the edit targets only `from`. Forbidden for `op: "ins"`. */
-	to?: string;
+	anchor_end?: string;
 	/** Required for `ins` and `replace`; forbidden for `del`. New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
 	lines?: string[];
 	/** Optional per-item path override (multi-file edits in one call). */
@@ -70,8 +70,8 @@ const EDIT_KS = new Set([
 
 const EDIT_ITEM_KS = new Set([
 	"op",
-	"from",
-	"to",
+	"anchor_start",
+	"anchor_end",
 	"lines",
 	"path",
 ]);
@@ -114,7 +114,7 @@ export function assertEditItem(
 ): asserts item is EditItemParams {
 	if (!isRec(item)) {
 		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}] must be an object with op, from, and (when applicable) to / lines.`,
+			`[E_BAD_SHAPE] edits[${index}] must be an object with op, anchor_start, and (when applicable) anchor_end / lines.`,
 		);
 	}
 	rejectUnknownFields(item, EDIT_ITEM_KS, `edits[${index}]`);
@@ -123,20 +123,20 @@ export function assertEditItem(
 			`[E_BAD_SHAPE] edits[${index}].op must be "ins", "del", or "replace".`,
 		);
 	}
-	if (typeof item.from !== "string" || item.from.length === 0) {
+	if (typeof item.anchor_start !== "string" || item.anchor_start.length === 0) {
 		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}].from must be a non-empty "<line>#<hash>" anchor string (e.g. "12#aB3").`,
+			`[E_BAD_SHAPE] edits[${index}].anchor_start must be a non-empty "<line>#<hash>" anchor string (e.g. "12#aB3").`,
 		);
 	}
-	if (item.to !== undefined) {
-		if (typeof item.to !== "string" || item.to.length === 0) {
+	if (item.anchor_end !== undefined) {
+		if (typeof item.anchor_end !== "string" || item.anchor_end.length === 0) {
 			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].to must be a non-empty anchor string when provided.`,
+				`[E_BAD_SHAPE] edits[${index}].anchor_end must be a non-empty anchor string when provided.`,
 			);
 		}
 		if (item.op === "ins") {
 			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"ins" does not accept "to"; ins inserts immediately after "from".`,
+				`[E_BAD_SHAPE] edits[${index}].op:"ins" does not accept "anchor_end"; ins inserts immediately after "anchor_start".`,
 			);
 		}
 	}
@@ -249,24 +249,24 @@ export const editItemSchema = {
 			enum: ["ins", "del", "replace"],
 			required: true,
 			description:
-				'Edit semantic. "ins" inserts `lines` AFTER the `from` line; "del" removes the from..to range; "replace" swaps the from..to range with `lines`.',
+				'Edit semantic. "ins" inserts `lines` AFTER the `anchor_start` line; "del" removes the range; "replace" swaps it with `lines`.',
 		},
-		from: {
+		anchor_start: {
 			type: "string",
 			required: true,
 			description:
-				'Required. Anchor of the FIRST line of the range. `<line>#<hash>` (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row. For `op:"ins"`, the inserted lines land AFTER this line; for `del`/`replace`, this is the first line of the affected range.',
+				'Required. Anchor (line#hash from a read/grep/diff row) of the FIRST line of the range. For `op:"ins"`, the lines land AFTER this line.',
 		},
-		to: {
+		anchor_end: {
 			type: "string",
 			description:
-				'Anchor of the LAST line of the range. If omitted, the edit targets just the `from` line. Forbidden for `op:"ins"`.',
+				'Anchor of the LAST line of the range. If omitted, the edit targets just `anchor_start`. Forbidden for `op:"ins"`.',
 		},
 		lines: {
 			type: "array",
 			items: { type: "string" },
 			description:
-				'Required and must be non-empty for `op:"ins"` and `op:"replace"`. Forbidden for `op:"del"`. For `ins`: lines to insert after `from`. For `replace`: lines to substitute the from..to range with. Pass `[""]` to clear a single line (still a replace, not a del).',
+				'Required and must be non-empty for `op:"ins"` and `op:"replace"`. Forbidden for `op:"del"`. For `ins`: lines to insert after `anchor_start`. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
 		},
 		path: {
 			type: "string",

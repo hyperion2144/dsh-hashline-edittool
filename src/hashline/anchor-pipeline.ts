@@ -49,8 +49,8 @@ function diagRef(ref: string): string {
 		return `[E_BAD_REF] Invalid anchor. Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
 	}
 
-	if (trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${HASH_SEP}" (e.g. "12#aB3│"); or pass just the marker "12#aB3".`;
+	if (trimmed.includes(":") || trimmed.includes("│")) {
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${HASH_SEP}" (e.g. "12#aB3:"); or pass just the marker "12#aB3".`;
 	}
 
 	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
@@ -317,11 +317,11 @@ function assertItem(edit: Record<string, unknown>): void {
 }
 
 // Accepts read/grep/diff output rows pasted into remove_from/remove_to:
-//   "12#aB3│const x = 1;"  → anchor "12#aB3" (trailing content dropped)
-//   "+12#aB3│..."          → anchor "12#aB3" (diff "+" dropped)
-//   "-12#aB3│..."          → anchor "12#aB3" (diff "-" dropped)
+//   "12#aB3:const x = 1;"  → anchor "12#aB3" (trailing content dropped)
+//   "+12#aB3:..."          → anchor "12#aB3" (diff "+" dropped)
+//   "-12#aB3:..."          → anchor "12#aB3" (diff "-" dropped)
 // Group 1 = diff marker, group 2 = line number (optional), group 3 = hash.
-const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(\\d+)#)?(${HASH_CLASS})│`);
+const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(\\d+)#)?(${HASH_CLASS})\\s*[:│]`);
 
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
@@ -376,41 +376,62 @@ function stripBarePrefixes(
 	fileHashes: string[],
 	warnings: string[],
 ): HEdit {
-	const fileHashSet = new Set(fileHashes);
-	const stripped: { lineIndex: number; matched: boolean }[] = [];
+	// Strip ONLY when the `line#hash:` prefix is a REAL file marker: the line
+	// number is in range and that line's hash equals the prefix hash. Model
+	// pasted read rows always satisfy this; file content that merely LOOKS
+	// like `12#aB3:...` almost never does (the line's real hash would have to
+	// equal the prefix by chance), so such content is kept verbatim.
+	const stripped: { lineIndex: number }[] = [];
+	const skipped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
 		const match = line.match(HL_BARE_PREFIX_RE);
 		if (!match) return line;
-		// `HL_BARE_PREFIX_RE` captures `line` in group 1 (optional) and `hash` in
-		// group 2 — only the hash should be checked against the file's hash set.
-		stripped.push({ lineIndex, matched: fileHashSet.has(match[2]!) });
+		const lineNum = Number.parseInt(match[1]!, 10) - 1;
+		const hash = match[2]!;
+		const isRealMarker =
+			Number.isInteger(lineNum) &&
+			lineNum >= 0 &&
+			lineNum < fileHashes.length &&
+			fileHashes[lineNum] === hash;
+		if (!isRealMarker) {
+			skipped.push(lineIndex);
+			return line; // literal content — never corrupt it
+		}
+		stripped.push({ lineIndex });
 		return line.slice(match[0].length);
 	});
-	if (stripped.length === 0) return edit;
-	const locations = stripped
-		.map((s) => `replacement_text line ${s.lineIndex + 1}`)
-		.join(", ");
-	const matchedCount = stripped.filter((s) => s.matched).length;
-	const evidence = matchedCount === 0
-		? "0 matched — verify literal 'HASH│' content"
-		: `${matchedCount}/${stripped.length} matched`;
-	warnings.push(
-		`[E_BARE_HASH_PREFIX] stripped "HASH│" prefix from ${locations} (${evidence}).`,
-	);
+	if (stripped.length > 0) {
+		const locations = stripped
+			.map((s) => `replacement_text line ${s.lineIndex + 1}`)
+			.join(", ");
+		warnings.push(
+			`[E_BARE_HASH_PREFIX] stripped "line#hash:" prefix from ${locations}.`,
+		);
+	}
+	if (skipped.length > 0) {
+		const locations = skipped.map((i) => `replacement_text line ${i + 1}`).join(", ");
+		warnings.push(
+			`[E_BARE_HASH_PREFIX] prefix on ${locations} does not match the file's hashes; kept verbatim as literal content.`,
+		);
+	}
 	return { ...edit, content_lines: contentLines };
 }
 
 /** @internal — private to anchor-pipeline seam */
-function stripDiffPrefixes(edit: HEdit, warnings: string[]): HEdit {
+function stripDiffPrefixes(
+	edit: HEdit,
+	fileHashes: string[],
+	warnings: string[],
+): HEdit {
 	const stripped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
 		const plus = line.match(HL_PREFIX_PLUS_RE);
-		if (plus) {
+		if (plus && isRealMarkerLine(plus[0], fileHashes)) {
 			stripped.push(lineIndex);
 			return line.slice(plus[0].length);
 		}
 		const minus = line.match(HL_PREFIX_MINUS_RE);
-		if (minus) {
+		if (minus && isRealMarkerLine(minus[0], fileHashes)) {
 			stripped.push(lineIndex);
 			return line.slice(minus[0].length);
 		}
@@ -1035,6 +1056,7 @@ export function applyEdit(
 	const rangeFixed = swapReversedRanges(edit, warnings);
 	const prefixFixed = stripDiffPrefixes(
 		stripBarePrefixes(rangeFixed, fileHashes, warnings),
+		fileHashes,
 		warnings,
 	);
 
@@ -1226,3 +1248,24 @@ export function changedRange(
 		lastChangedLine: Math.max(first, lastRes) + 1,
 	};
 }
+
+
+/**
+ * `+12#aB3:...` / `-12#aB3:...` (or `-12#   :` placeholder-hash rows) are
+ * stripped only when the prefix is a real file marker; anything else stays
+ * literal. The placeholder form (unknown old hash in a diff row the model
+ * copied) is stripped when the line number exists, since such a prefix
+ * cannot be legitimate file content.
+ */
+function isRealMarkerLine(prefix: string, fileHashes: string[]): boolean {
+	const m = /^(?:[+-])(\d+)#([A-Za-z0-9]{3}| {3})\s*[:│]$/.exec(prefix);
+	if (!m) return false;
+	const lineNum = Number.parseInt(m[1]!, 10) - 1;
+	if (!Number.isInteger(lineNum) || lineNum < 0 || lineNum >= fileHashes.length) {
+		return false;
+	}
+	const hash = m[2]!;
+	if (hash.trim() === "") return true; // placeholder: line exists is enough
+	return fileHashes[lineNum] === hash;
+}
+

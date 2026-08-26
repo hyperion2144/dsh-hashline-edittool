@@ -20,19 +20,15 @@ export interface ToolGuidance {
 }
 
 export const EDIT_DESCRIPTION =
-	"Apply one or more edits to a text file in a single atomic call. Each item in `edits` carries an `op` (`ins` / `del` / `replace`), a `from` anchor (and optionally a `to` anchor for ranges), and the `lines` to insert or replace with. " +
-	"`ins` inserts `lines` AFTER the `from` line (the `from` line itself is preserved); `del` removes the from..to range; `replace` swaps the from..to range with `lines`. " +
-	"Pass `<line>#<hash>` (e.g. `12#ve7`) for `from` / `to`, copied EXACTLY from the leftmost column of a read/grep/diff row (this is the only accepted anchor form). " +
-	"Never pass the line content into these anchor fields. " +
-	"Edits in one call are resolved against the same file snapshot (concurrent semantics): every `from` anchor is the original `<line>#<hash>` — non-overlapping ranges apply together, overlapping ranges are rejected with `[E_BATCH_CONFLICT]`. The post-edit response carries per-hunk `Shift:` blocks mapping original ranges to final line numbers; the diff rows show final `line#hash` markers.";
+	"Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are `<line>#<hash>` copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
 
 export const EDIT_GUIDANCE: ToolGuidance = {
 	intro:
-		"Edit one or more ranges via `edits:[{op, from, to?, lines?}]` — never by line content.",
+		"Edit one or more ranges via `edits:[{op, anchor_start, anchor_end?, lines?}]` — never by line content.",
 	lines: [
-		"`edit`: each item is `{ op, from, to?, lines? }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`).",
+		"`edit`: each item is `{ op, anchor_start, anchor_end?, lines? }`. `op` is `ins` (insert after `anchor_start`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`).",
 		"`edit`: op memory: `ins` KEEPS the anchor line and inserts after it (using it like replace leaves the old line behind); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means NOTHING was written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
-		"`edit`: `from` is required and anchors the FIRST line of the range (`12#ve7`); `to` is optional and anchors the LAST line (omit = single-line edit). `op:\"ins\"` accepts ONLY `from` — the insert lands AFTER that line; `to` is rejected.",
+		"`edit`: `anchor_start` is required and anchors the FIRST line of the range (`12#ve7`); `anchor_end` is optional and anchors the LAST line (omit = single-line edit). `op:\"ins\"` accepts ONLY `from` — the insert lands AFTER that line; `to` is rejected.",
 		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 		"`edit`: anchors must be `<line>#<hash>` copied from the leftmost column of a read/grep/diff row — never hand-write or paste bare hashes or line content.",
 		"`edit`: all items in one call resolve against the same file snapshot — pass ORIGINAL anchors for every hunk; ranges that overlap are rejected ([E_BATCH_CONFLICT]) instead of being applied in sequence. The diff rows carry final line#hash markers; each `Shift:` block maps the hunk's original range to its final position.",
@@ -42,16 +38,14 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 };
 
 export const READ_DESCRIPTION =
-	"Read a text file; each line is returned as `<line>#<hash>│content` (`line` = absolute 1-indexed line number, `hash` = 3-char content-derived). " +
-	"The response opens with a `HASH IDENTIFIER │ FILE LINES` header; everything below the header is the verbatim file line content. " +
-	"Use the `line#hash` marker as the anchor in `edit` calls. Binary/directory → rejected; empty → header only; pageable with offset/limit; BOM stripped; non-UTF-8 shown as U+FFFD.";
+	"Read a text file: each line is `<line>#<hash>:content` under a `ANCHOR:FILELINE` header; the left marker is the edit anchor. Binary/directory rejected; pageable with offset/limit.";
 
 export const READ_GUIDANCE: ToolGuidance = {
 	intro:
 		"Use read, not shell commands, to inspect text files and obtain the line#hash anchors the editing tools require.",
 	lines: [
 		"`read`: call it only for content the tools have not served — a page you never saw, or lines past the post-edit diff.",
-		"`read`: each row is `<line>#<hash>│content`; the marker is the anchor (line number + 3-char hash). The header `HASH IDENTIFIER │ FILE LINES` separates marker columns from file content.",
+		"`read`: each row is `<line>#<hash>:content`; the marker is the anchor (line number + 3-char hash). The header `ANCHOR:FILELINE` separates marker columns from file content.",
 		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
 		"`read`: binary/directory rejects; page large files with offset/limit.",
 	],
@@ -65,21 +59,19 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 	intro: "Revert the last edit on a file.",
 	lines: [
 		"`undo_last_edit`: reverts only the most recent edit — any write clears history, so call it immediately after a bad edit.",
-		"`undo_last_edit`: the restored diff's `+line#hash│` and ` line#hash│` rows are fresh anchors for follow-up edits.",
+		"`undo_last_edit`: the restored diff's `+line#hash:` and ` line#hash:` rows are fresh anchors for follow-up edits.",
 	],
 };
 
 export const GREP_DESCRIPTION =
-	"Search one or more files for a literal string (or, with `regex: true`, a JavaScript-flavre regex). " +
-	"Output mirrors `read`: each match is a `<line>#<hash>│content` row under a `HASH IDENTIFIER │ FILE LINES` header, one section per file. " +
-	"Context rows (`-C N`) carry markers too. Matches and context rows are recorded as served, so you can edit the hit directly with the grep output's marker — no separate `read` required.";
+	"Search files (literal by default, `regex: true` for regex); output mirrors `read` (`<line>#<hash>:content` rows); matches are served, so they can be edited directly.";
 
 export const GREP_GUIDANCE: ToolGuidance = {
 	intro: "Search files and obtain line#hash anchors in one step.",
 	lines: [
 		"`grep`: defaults to literal substring matching; pass `regex: true` for JavaScript-flavre regex (escape special chars when in doubt).",
 		"`grep`: `-C N` (or `--context N`) adds N marker rows above and below each match — use a small N to keep context cheap; the rows still carry markers, so a hit from the context window is editable.",
-		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with `HASH IDENTIFIER │ FILE LINES` and lists matches in file order.",
+		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with `ANCHOR:FILELINE` and lists matches in file order.",
 		"`grep`: every file read is recorded as observed, so the matches can be edited without a separate `read` call.",
 		"`grep`: use `limit` to cap matches per file when probing a noisy file; the cap applies per file, not globally.",
 	],

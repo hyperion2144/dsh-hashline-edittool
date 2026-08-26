@@ -48,7 +48,7 @@ describe("tool-read structured presentation", () => {
 			expect(value.lines[1]).toEqual({ number: 2, text: "beta" });
 			expect(value.hashlines[0]?.hash).toMatch(/^[A-Za-z0-9]{3}$/);
 			expect(value.hashlines[0]?.number).toBe(1);
-			expect(value.modelText).toMatch(/^HASH IDENTIFIER │ FILE LINES/);
+			expect(value.modelText).toMatch(/^ANCHOR:FILELINE/);
 		});
 	});
 
@@ -64,7 +64,7 @@ describe("tool-read structured presentation", () => {
 					arguments: args,
 				}) as never;
 			const value = (await tool.execute({ path: "p2.txt" }, exec({}))) as { modelText: string; lines: { number: number }[] };
-			expect(value.modelText.startsWith("HASH IDENTIFIER │ FILE LINES")).toBe(true);
+			expect(value.modelText.startsWith("ANCHOR:FILELINE")).toBe(true);
 			expect(value.modelText).toMatch(/\[Showing lines 1-2000 of 2500/);
 			expect(value.lines).toHaveLength(2000);
 		});
@@ -145,7 +145,7 @@ describe("edit / undo structured value shape", () => {
 			const readValue = (await read.execute({ path: "e.txt" }, exec({}))) as { lines: { number: number; hash: string }[]; hashlines: { number: number; hash: string }[] };
 			const lineMarker = `${readValue.hashlines[1]?.number}#${readValue.hashlines[1]?.hash}`;
 			const value = (await edit.execute(
-				{ path: "e.txt", edits: [{ op: "replace", from: lineMarker, lines: ["B!"] }] },
+				{ path: "e.txt", edits: [{ op: "replace", anchor_start: lineMarker, lines: ["B!"] }] },
 				exec({}),
 			)) as {
 				path: string;
@@ -162,9 +162,9 @@ describe("edit / undo structured value shape", () => {
 			expect(value.added).toBe(1);
 			// 1→1 line replacement produces no line shift below the edit, so the
 			// Shift block is suppressed. The model text carries the new
-			// HASH IDENTIFIER │ FILE LINES block instead of a unified diff.
+			// ANCHOR:FILELINE block instead of a unified diff.
 			expect(value.modelText).toMatch(/Successfully edited in e\.txt/);
-			expect(value.modelText).toMatch(/2#[A-Za-z0-9]{3}│B!/);
+			expect(value.modelText).toMatch(/2#[A-Za-z0-9]{3}:B!/);
 		});
 	});
 
@@ -199,7 +199,7 @@ describe("edit / undo structured value shape", () => {
 			const v1 = (await edit.execute(
 				{
 					path: "b1.txt",
-					edits: [{ op: "replace", from: m1, lines: ["B!"] }],
+					edits: [{ op: "replace", anchor_start: m1, lines: ["B!"] }],
 				},
 				exec({}),
 			)) as {
@@ -210,7 +210,7 @@ describe("edit / undo structured value shape", () => {
 			const v2 = (await edit.execute(
 				{
 					path: "b2.txt",
-					edits: [{ op: "replace", from: m2, lines: ["B!"] }],
+					edits: [{ op: "replace", anchor_start: m2, lines: ["B!"] }],
 				},
 				exec({}),
 			)) as {
@@ -230,7 +230,7 @@ describe("edit / undo structured value shape", () => {
 				{
 					path: "b1.txt",
 					edits: [
-						{ op: "replace", path: "b1.txt", from: m1b, lines: ["B1!"] },
+						{ op: "replace", path: "b1.txt", anchor_start: m1b, lines: ["B1!"] },
 					],
 				},
 				exec({}),

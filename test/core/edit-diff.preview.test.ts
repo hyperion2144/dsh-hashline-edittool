@@ -7,10 +7,10 @@ describe("genDiff", () => {
 	it("adds hash hints for context and addition lines and pads deletion lines", () => {
 		const result = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
 		const diff = result.diff;
-		expect(diff).toMatch(/^ \d+#[A-Za-z0-9]{3}│alpha$/m);
-		expect(diff).toMatch(/^\+\d+#[A-Za-z0-9]{3}│BETA$/m);
-		expect(diff).toMatch(/^-\d+#[ ]{3}│beta$/m);
-		expect(diff).toMatch(/^ \d+#[A-Za-z0-9]{3}│gamma$/m);
+		expect(diff).toMatch(/^ \d+#[A-Za-z0-9]{3}:alpha$/m);
+		expect(diff).toMatch(/^\+\d+#[A-Za-z0-9]{3}:BETA$/m);
+		expect(diff).toMatch(/^-\d+#[ ]{3}:beta$/m);
+		expect(diff).toMatch(/^ \d+#[A-Za-z0-9]{3}:gamma$/m);
 	});
 
 	it("carries the old hashes on deletion rows when oldContentHashes are provided", () => {
@@ -21,8 +21,8 @@ describe("genDiff", () => {
 			undefined,
 			["AAA", "BBB", "CCC"],
 		);
-		expect(diff).toMatch(/^-\d+#BBB│beta$/m);
-		expect(diff).toMatch(/^\+\d+#[A-Za-z0-9]{3}│BETA$/m);
+		expect(diff).toMatch(/^-\d+#BBB:beta$/m);
+		expect(diff).toMatch(/^\+\d+#[A-Za-z0-9]{3}:BETA$/m);
 	});
 
 	it("tracks old line numbers across skipped context and multi-line deletions", () => {
@@ -33,8 +33,8 @@ describe("genDiff", () => {
 			undefined,
 			["H1", "H2", "H3", "H4"],
 		);
-		expect(diff).toMatch(/-\d+#H2│b/);
-		expect(diff).toMatch(/-\d+#H3│c/);
+		expect(diff).toMatch(/-\d+#H2:b/);
+		expect(diff).toMatch(/-\d+#H3:c/);
 	});
 
 	it("marks every diff row with the line#hash marker prefix", () => {
@@ -55,16 +55,16 @@ describe("genDiff", () => {
 
 		const lines = diff.split("\n");
 		for (const line of lines) {
-			if (!line.includes("│")) continue;
-			// diff prefix + line# + hash + │ — column position varies with
+			if (!line.includes(":")) continue;
+			// diff prefix + line# + hash + : — column position varies with
 			// line-number width but the marker structure is invariant.
-			expect(line).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*│/);
+			expect(line).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*:/);
 		}
 
-		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}│function greet\(name\) \{$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^-\d+#[ ]{3}│ {2}console\.log\('old'\)$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^\+\d+#[A-Za-z0-9]{3}│ {2}return `Hello, \$\{name\}`$/));
-		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}│\}$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}:function greet\(name\) \{$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^-\d+#[ ]{3}: {2}console\.log\('old'\)$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^\+\d+#[A-Za-z0-9]{3}: {2}return `Hello, \$\{name\}`$/));
+		expect(lines).toContainEqual(expect.stringMatching(/^ \d+#[A-Za-z0-9]{3}:\}$/));
 	});
 	it("truncates context between two distant changes", () => {
 		const lines = [];
@@ -115,8 +115,8 @@ describe("genDiff — property: column alignment", () => {
     "import x",
     "a = 1;",
     "// c",
-    "a│b",
-    "line with │ inside",
+    "a:b",
+    "line with : inside",
     "  const y = 2;",
   ];
 
@@ -134,11 +134,11 @@ describe("genDiff — property: column alignment", () => {
 
       const { diff } = genDiff(oldContent, newContent, randInt(rnd, 0, 4));
       for (const line of diff.split("\n")) {
-        if (line.includes("│")) {
+        if (line.includes(":")) {
           expect(
             line,
             `unmarked diff row for iter ${iter}: ${JSON.stringify(line)}`,
-          ).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*│/);
+          ).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*:/);
         }
       }
     }
@@ -147,7 +147,7 @@ describe("genDiff — property: column alignment", () => {
   it("keeps the marker structure correct for single-line diffs too", () => {
     const { diff } = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
     for (const line of diff.split("\n")) {
-      if (line.includes("│")) expect(line).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*│/);
+      if (line.includes(":")) expect(line).toMatch(/^[ +-]\s*\d+#[A-Za-z0-9 ]{3}\s*:/);
     }
   });
 });

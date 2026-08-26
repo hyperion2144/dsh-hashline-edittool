@@ -35,7 +35,7 @@ async function servedRows(
 	const res = await harness.readTool.execute("read", { path });
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
-		const sep = line.indexOf("│");
+		const sep = line.indexOf(":");
 		if (sep === -1) continue;
 		rows.push({ hash: line.slice(0, sep), content: line.slice(sep + 1) });
 	}
@@ -53,8 +53,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			const res = await editTool(harness).execute("edit", {
 				path: "t.txt",
 				edits: [
-					{ op: "replace", from: one.hash, lines: ["ONE"] },
-					{ op: "replace", from: three.hash, lines: ["THREE"] },
+					{ op: "replace", anchor_start: one.hash, lines: ["ONE"] },
+					{ op: "replace", anchor_start: three.hash, lines: ["THREE"] },
 				],
 			});
 
@@ -74,8 +74,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				editTool(harness).execute("edit", {
 					path: "t.txt",
 					edits: [
-						{ op: "replace", from: one.hash, lines: ["ONE"] },
-						{ op: "replace", from: "zzz", lines: ["NOPE"] },
+						{ op: "replace", anchor_start: one.hash, lines: ["ONE"] },
+						{ op: "replace", anchor_start: "zzz", lines: ["NOPE"] },
 					],
 				}),
 			).rejects.toThrow(/E_BATCH_ABORT/);
@@ -92,7 +92,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 
 			await harness.editTool.execute("edit", {
 				path: "t.txt",
-				edits: [{ op: "replace", from: one.hash, lines: ["ONE"] }],
+				edits: [{ op: "replace", anchor_start: one.hash, lines: ["ONE"] }],
 			});
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nline three\n");
 
@@ -112,8 +112,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			await editTool(harness).execute("edit", {
 				path: "t.txt",
 				edits: [
-					{ op: "replace", from: one.hash, lines: ["ONE"] },
-					{ op: "replace", from: three.hash, lines: ["THREE"] },
+					{ op: "replace", anchor_start: one.hash, lines: ["ONE"] },
+					{ op: "replace", anchor_start: three.hash, lines: ["THREE"] },
 				],
 			});
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nTHREE\n");
@@ -131,7 +131,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			const one = served.find((r) => r.content === "line one")!;
 			const edit = {
 				path: "t.txt",
-				edits: [{ op: "replace", from: one.hash, lines: ["line one"] }],
+				edits: [{ op: "replace", anchor_start: one.hash, lines: ["line one"] }],
 			};
 
 			const first = await editTool(harness).execute("edit", edit);
@@ -163,20 +163,20 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				const res = await editTool(harness).execute("edit", {
 					path: "t.txt",
 					edits: [
-						{ op: "replace", from: by("l2").hash, to: by("l3").hash, lines: ["R2", "R3"] },
-						{ op: "del", from: by("l5").hash },
-						{ op: "ins", from: by("l7").hash, lines: ["I7"] },
+						{ op: "replace", anchor_start: by("l2").hash, anchor_end: by("l3").hash, lines: ["R2", "R3"] },
+						{ op: "del", anchor_start: by("l5").hash },
+						{ op: "ins", anchor_start: by("l7").hash, lines: ["I7"] },
 					],
 				});
 				const text = getText(res);
 				expect(text).toContain("Successfully edited in t.txt");
 				// diff rows carry FINAL line numbers + hashes (unchanged rows keep
 				// their hash; their positions reflect the fully applied batch)
-				expect(text).toContain(` 4#${by("l4").hash.split("#")[1]}│l4`);
-				expect(text).toContain(` 5#${by("l6").hash.split("#")[1]}│l6`);
-				expect(text).toContain(` 6#${by("l7").hash.split("#")[1]}│l7`);
-				expect(text).toContain(` 8#${by("l8").hash.split("#")[1]}│l8`);
-				expect(text).toMatch(/\+7#[A-Za-z0-9]{3}│I7/); // inserted row at its FINAL line
+				expect(text).toContain(` 4#${by("l4").hash.split("#")[1]}:l4`);
+				expect(text).toContain(` 5#${by("l6").hash.split("#")[1]}:l6`);
+				expect(text).toContain(` 6#${by("l7").hash.split("#")[1]}:l7`);
+				expect(text).toContain(` 8#${by("l8").hash.split("#")[1]}:l8`);
+				expect(text).toMatch(/\+7#[A-Za-z0-9]{3}:I7/); // inserted row at its FINAL line
 				expect(await readFile(path, "utf-8")).toBe(
 					"l1\nR2\nR3\nl4\nl6\nl7\nI7\nl8\n",
 				);
@@ -192,8 +192,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "replace", from: by("l4").hash, to: by("l6").hash, lines: ["X"] },
-							{ op: "del", from: by("l6").hash },
+							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X"] },
+							{ op: "del", anchor_start: by("l6").hash },
 						],
 					}),
 				).rejects.toThrow(/E_BATCH_CONFLICT/);
@@ -210,8 +210,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "ins", from: by("l3").hash, lines: ["A"] },
-							{ op: "ins", from: by("l3").hash, lines: ["B"] },
+							{ op: "ins", anchor_start: by("l3").hash, lines: ["A"] },
+							{ op: "ins", anchor_start: by("l3").hash, lines: ["B"] },
 						],
 					}),
 				).rejects.toThrow(/E_BATCH_CONFLICT/);
@@ -228,8 +228,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "replace", from: by("l4").hash, to: by("l6").hash, lines: ["X"] },
-							{ op: "ins", from: by("l4").hash, lines: ["Y"] },
+							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X"] },
+							{ op: "ins", anchor_start: by("l4").hash, lines: ["Y"] },
 						],
 					}),
 				).rejects.toThrow(/E_BATCH_CONFLICT/);
@@ -247,8 +247,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					await editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "replace", from: by("l1").hash, lines: ["A"] },
-							{ op: "replace", from: "2#zzz", lines: ["B"] },
+							{ op: "replace", anchor_start: by("l1").hash, lines: ["A"] },
+							{ op: "replace", anchor_start: "2#zzz", lines: ["B"] },
 						],
 					});
 					expect.unreachable("edit should have rejected");
@@ -257,7 +257,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				}
 				expect(message).toMatch(/E_BATCH_ABORT/);
 				// stale-anchor echo must appear exactly once — no duplicated on-disk block
-				expect(message.split("HASH IDENTIFIER │ FILE LINES").length - 1).toBe(1);
+				expect(message.split("ANCHOR:FILELINE").length - 1).toBe(1);
 				expect(await readFile(path, "utf-8")).toBe(MULTI);
 			});
 		});

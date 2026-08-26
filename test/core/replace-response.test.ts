@@ -173,11 +173,11 @@ describe("buildChanged", () => {
       editMeta: { editsAttempted: 1, noopEditsCount: 0, firstChangedLine: 3, lastChangedLine: 3, addedLines: 1, removedLines: 1 },
     });
     const diff = output.details.diff!;
-    expect(diff).toContain("│bbb");
-    expect(diff).toContain("│CCC");
-    expect(diff).toContain("│ddd");
-    expect(diff).not.toContain("│aaa");
-    expect(diff).not.toContain("│eee");
+    expect(diff).toContain(":bbb");
+    expect(diff).toContain(":CCC");
+    expect(diff).toContain(":ddd");
+    expect(diff).not.toContain(":aaa");
+    expect(diff).not.toContain(":eee");
   });
 });
 

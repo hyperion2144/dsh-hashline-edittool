@@ -10,7 +10,7 @@
  *     grep),
  *   - `output.render(args, value)` projects the model-facing text from the
  *     structured value and returns one or more `ContentBlock`s (we use a
- *     single `code` block so the `│` separator in the row format does not
+ *     single `code` block so the `:` separator in the row format does not
  *     trigger markdown table parsing),
  *   - `output.presentationMeta(args, value)` derives the card projection
  *     persisted in the session log; `presentResult(args, result)` reads
@@ -198,7 +198,7 @@ export function buildReadPresentation(
 	};
 }
 
-/** Regex that strips the `HASH IDENTIFIER │ FILE LINES` header for the read-card `content` fallback. */
+/** Regex that strips the `ANCHOR:FILELINE` header for the read-card `content` fallback. */
 const READ_BODY_RE = new RegExp(
 	`^${HASHLINE_HEADER.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\n([\\s\\S]*)$`,
 );

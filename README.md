@@ -74,13 +74,13 @@ dsh --profile <name> --dump-config   # shows a "# == dsh-hashline-edittool" laye
 | Profile | a dsh profile (`dsh plugin` initializes one on first use) |
 | Backends | sandboxed / remote filesystems supported (writes go through `ctx.fs`) |
 
-`read` returns every line as `<line>#<hash>│<content>` — the absolute line number (1-indexed) plus a 3-char content-derived hash. The response opens with a `HASH IDENTIFIER │ FILE LINES` header that separates the marker column from the verbatim file content:
+`read` returns every line as `<line>#<hash>:<content>` — the absolute line number (1-indexed) plus a 3-char content-derived hash. The response opens with a `ANCHOR:FILELINE` header that separates the marker column from the verbatim file content:
 
 ```text
-HASH IDENTIFIER │ FILE LINES
- 3#ve7│function hello() {
- 4#szJ│  console.log("world");
- 5#kQm│}
+ANCHOR:FILELINE
+ 3#ve7:function hello() {
+ 4#szJ:  console.log("world");
+ 5#kQm:}
 ```
 
 `edit` targets one or more ranges of `line#hash` anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). A single-line replace:
@@ -97,9 +97,9 @@ HASH IDENTIFIER │ FILE LINES
 and produces a diff with fresh anchors **plus** a `Shift:` block that describes how absolute line numbers below the edit moved — the next edit chains from there without a re-read:
 
 ```text
-HASH IDENTIFIER │ FILE LINES
-+ 4#a3m│  console.log('hi');
-- 4#szJ│  console.log("world");
+ANCHOR:FILELINE
++ 4#a3m:  console.log('hi');
+- 4#szJ:  console.log("world");
 
 Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
 ```
@@ -310,9 +310,9 @@ this README are a snapshot of that run; regenerate, don't trust.
 
 | Tool | What it does |
 | ------ | -------------- |
-| `read` | Returns a file as `HASH IDENTIFIER │ FILE LINES` header + `<line>#<hash>│<content>` rows. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
+| `read` | Returns a file as `ANCHOR:FILELINE` header + `<line>#<hash>:<content>` rows. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
 | `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, from, to?, lines? }, …] }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`). Verifies **every line** of each resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block per hunk describing how absolute line numbers below the edit moved. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
-| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<line>#<hash>│<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
+| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<line>#<hash>:<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
 ### Error codes
@@ -324,7 +324,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
 | `[E_BAD_REF]` | `from`/`to` is not a `<line>#<hash>` copied from the leftmost column of a read/grep/diff row. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
-| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` prefix pasted into `lines` (autocorrected). |
+| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written. |
 | `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
@@ -377,18 +377,18 @@ undo history from the shared home — treat any pre-0.1.2 undo entries as gone.
 ```
 dsh-hashline-edittool/
 ├── src/
-│   ├── hashline/        # hash + served-state core
-│   ├── tool-read.ts     # read  — line#hash│content, offset/limit paging
-│   ├── tool-edit.ts     # edit  — range-by-line#hash, reject-and-serve, Shift block
-│   ├── tool-batch-edit.ts
-│   ├── tool-grep.ts     # grep  — line#hash│content under header per file
-│   ├── tool-undo.ts     # undo_last_edit
-│   ├── sandbox.ts       # FsSandboxController mirror (sandbox_permissions/justification)
-│   ├── write-hook.ts    # auto-read appended to write results
-│   ├── served-store.ts  # per-workspace SQLite store (node:sqlite)
-│   └── workspace.ts     # session-cwd AsyncLocalStorage carrier
+:   ├── hashline/        # hash + served-state core
+:   ├── tool-read.ts     # read  — line#hash:content, offset/limit paging
+:   ├── tool-edit.ts     # edit  — range-by-line#hash, reject-and-serve, Shift block
+:   ├── tool-batch-edit.ts
+:   ├── tool-grep.ts     # grep  — line#hash:content under header per file
+:   ├── tool-undo.ts     # undo_last_edit
+:   ├── sandbox.ts       # FsSandboxController mirror (sandbox_permissions/justification)
+:   ├── write-hook.ts    # auto-read appended to write results
+:   ├── served-store.ts  # per-workspace SQLite store (node:sqlite)
+:   └── workspace.ts     # session-cwd AsyncLocalStorage carrier
 ├── benchmark/           # reproducible hashline-vs-str_replace-vs-oh-my-pi token benchmark
-│   └── corpus/          # frozen 103-line fixture
+:   └── corpus/          # frozen 103-line fixture
 ├── test/                # 615 tests
 ├── cordis.patch.yml     # bundle patch
 └── package.json         # dsh.bundle manifest
