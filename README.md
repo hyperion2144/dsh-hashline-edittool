@@ -104,6 +104,30 @@ ANCHOR:FILELINE
 Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
 ```
 
+## Configuration
+
+The plugin reads a `hashline` namespace from the dsh settings service (persisted to `~/.dsh/settings.yaml`). All keys are optional; live edits to settings.yaml take effect immediately (the hash shape recompiles, tools switch output format on the next call).
+
+```yaml
+hashline:
+  separator: ":"         # column separator between the marker and the content (default ":")
+  hash_length: 3         # anchor hash length, 1..6 (default 3; hash space = 62^len)
+  output_format: text    # "text" (hashline rows) | "json" (pure JSON)
+```
+
+### text output (default)
+
+Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the left `line#hash` edit anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part.
+
+### json output
+
+Set `output_format: json` for pure-JSON tool outputs — the model parses the JSON directly:
+
+- **read** returns `{path, offset, totalLines, lines: {anchor: content}}` — each `lines` key is a `<line>#<hash>` edit anchor, each value is the verbatim file content.
+- **grep** returns `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`.
+- **edit** returns (success and failure alike) `{ok, files: [{path, applied: [{index, before, after}], finalLines, noop}], hints, warnings, errors}` — `finalLines` keys are fresh anchors for follow-up edits; errors carry `{code, message}`.
+
+Legacy `│`-separated rows still parse in both modes.
 
 ## Configuring Guidance per Preset
 

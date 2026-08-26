@@ -21,19 +21,18 @@
 
 import { abortIf, splitLines, rejectUnknownFields, firstNonEmptyIndex, lastNonEmptyIndex, clipLine } from "../utils.js";
 import {
-  HASH_CLASS,
-  HL_BARE_PREFIX_RE,
-  HL_PREFIX_PLUS_RE,
-  HL_PREFIX_MINUS_RE,
-  HASH_SEP,
-  ANCHOR_LEN,
   ALPH_RE,
   LINE_HASH_SEP,
-  LINE_HASH_RE,
-  HASHLINE_HEADER,
   STALE_CONTEXT_LINES,
   canon,
   lineHashesPure,
+  lineHashRe,
+  hashSep,
+  hashClassSource,
+  hashlineHeader,
+  hlBarePrefixRe,
+  hlPrefixPlusRe,
+  hlPrefixMinusRe,
 } from "./hash-assign.js";
 import { recordServed, servedPositionsOf } from "../served-store.js";
 import { fmtHashlineRow, anchorWidth } from "./hash-assign.js";
@@ -50,7 +49,7 @@ function diagRef(ref: string): string {
 	}
 
 	if (trimmed.includes(":") || trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${HASH_SEP}" (e.g. "12#aB3:"); or pass just the marker "12#aB3".`;
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${hashSep()}" (e.g. "12#aB3${hashSep()}"); or pass just the marker "12#aB3".`;
 	}
 
 	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
@@ -59,7 +58,7 @@ function diagRef(ref: string): string {
 function parseRef(ref: string): Anchor {
 	const trimmed = ref.trim();
 
-	const lineMatch = LINE_HASH_RE.exec(trimmed);
+	const lineMatch = lineHashRe().exec(trimmed);
 	if (lineMatch) {
 		const lineStr = lineMatch[1]!;
 		const line = Number.parseInt(lineStr, 10);
@@ -235,7 +234,7 @@ function fmtMismatchWithServes(
 			const echoLines: string[] = [];
 			for (let ln = from; ln <= to; ln++) {
 				const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
-				echoLines.push(`  ${marker}${HASH_SEP}${clipLine(fileLines[ln - 1] ?? "")}`);
+				echoLines.push(`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`);
 				pushRow(ln);
 			}
 			const markers = group.map(
@@ -247,7 +246,7 @@ function fmtMismatchWithServes(
 					: `reuse a fresh marker from: ${markers.join(", ")}`;
 			out.push("");
 			out.push(
-				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${HASHLINE_HEADER}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
+				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${hashlineHeader()}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
 			);
 		}
 	}
@@ -266,7 +265,7 @@ function fmtMismatchWithServes(
 				.map((line) => {
 					const content = clipLine(fileLines[line - 1] ?? "");
 					pushRow(line);
-					return `    ${line}${LINE_HASH_SEP}${fileHashes[line - 1]}${HASH_SEP}${content}`;
+					return `    ${line}${LINE_HASH_SEP}${fileHashes[line - 1]}${hashSep()}${content}`;
 				})
 				.join("\n");
 			out.push(
@@ -321,7 +320,7 @@ function assertItem(edit: Record<string, unknown>): void {
 //   "+12#aB3:..."          → anchor "12#aB3" (diff "+" dropped)
 //   "-12#aB3:..."          → anchor "12#aB3" (diff "-" dropped)
 // Group 1 = diff marker, group 2 = line number (optional), group 3 = hash.
-const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(\\d+)#)?(${HASH_CLASS})\\s*[:│]`);
+const ANCHOR_ROW_RE = () => new RegExp(`^([+-]?)(?:(\\d+)#)?(${hashClassSource()})\\s*[${hashSep()}│]`);
 
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
@@ -329,7 +328,7 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	const editLines = parseText(edit.replacement_text);
 	const bounds = [edit.remove_from, edit.remove_to].map((ref) => {
 		const trimmed = ref.trim();
-		const match = trimmed.match(ANCHOR_ROW_RE);
+		const match = trimmed.match(ANCHOR_ROW_RE());
 		if (!match) return ref;
 		if (!match[2]) {
 			// A bare `hash│content` row cannot be salvaged: the design requires
@@ -384,7 +383,7 @@ function stripBarePrefixes(
 	const stripped: { lineIndex: number }[] = [];
 	const skipped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
-		const match = line.match(HL_BARE_PREFIX_RE);
+		const match = line.match(hlBarePrefixRe());
 		if (!match) return line;
 		const lineNum = Number.parseInt(match[1]!, 10) - 1;
 		const hash = match[2]!;
@@ -425,12 +424,12 @@ function stripDiffPrefixes(
 ): HEdit {
 	const stripped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
-		const plus = line.match(HL_PREFIX_PLUS_RE);
+		const plus = line.match(hlPrefixPlusRe());
 		if (plus && isRealMarkerLine(plus[0], fileHashes)) {
 			stripped.push(lineIndex);
 			return line.slice(plus[0].length);
 		}
-		const minus = line.match(HL_PREFIX_MINUS_RE);
+		const minus = line.match(hlPrefixMinusRe());
 		if (minus && isRealMarkerLine(minus[0], fileHashes)) {
 			stripped.push(lineIndex);
 			return line.slice(minus[0].length);
@@ -772,7 +771,7 @@ export function buildRangeEcho(
 
 export function fmtServedRows(rows: ServedRow[], fileLines: string[]): string {
 	return rows
-		.map((row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}${HASH_SEP}${fileLines[row.position] ?? ""}`)
+		.map((row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}${hashSep()}${fileLines[row.position] ?? ""}`)
 		.join("\n");
 }
 
@@ -859,10 +858,10 @@ export function verifyServedRange(args: {
 		const ctxServedRows: ServedRow[] = [];
 		for (let ln = ctxFrom; ln <= ctxTo; ln++) {
 			const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
-			ctxEchoLines.push(`  ${marker}${HASH_SEP}${clipLine(fileLines[ln - 1] ?? "")}`);
+			ctxEchoLines.push(`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`);
 			ctxServedRows.push({ position: ln - 1, hash: fileHashes[ln - 1]! });
 		}
-		const ctxEcho = `${HASHLINE_HEADER}\n${ctxEchoLines.join("\n")}`;
+		const ctxEcho = `${hashlineHeader()}\n${ctxEchoLines.join("\n")}`;
 		const freshMarker = `${mismatchLine}${LINE_HASH_SEP}${expectedHash}`;
 		const servedAtLine = served[firstMismatch];
 		const staleMsg =

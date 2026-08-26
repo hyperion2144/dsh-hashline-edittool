@@ -24,7 +24,7 @@ import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "./constants.js";
 import { lineHashes, fmtRegion, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
-import { HASHLINE_HEADER, ANCHOR_LEN } from "./hashline/hash-assign.js";
+import { hashlineHeader, hashSep } from "./hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "./utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "./edit-diff.js";
 import { resolveTarget, toCwd } from "./paths.js";
@@ -491,7 +491,7 @@ export async function fmtReadPreview(
         (await (path ? lineHashes(text, path) : lineHashes(text)));
       const emptyLineHash = allHashes[0]!;
       return {
-        text: `${HASHLINE_HEADER}\n1${LINE_HASH_SEP}${emptyLineHash}${HASH_SEP}\n[File is empty. Use edit to insert content.]`,
+        text: `${hashlineHeader()}\n1${LINE_HASH_SEP}${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
         served: [{ position: 0, hash: emptyLineHash }],
       };
     }
@@ -515,12 +515,12 @@ export async function fmtReadPreview(
     precomputedHashes ??
     (await (path ? lineHashes(text, path) : lineHashes(text)));
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
-  const formatted = `${HASHLINE_HEADER}\n${fmtRegion(selectedHashes, selected, startLine)}`;
+  const formatted = `${hashlineHeader()}\n${fmtRegion(selectedHashes, selected, startLine)}`;
   const maxBytes = maxLineBytes;
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
     bytes: Buffer.byteLength(
-      `${startLine + index}${LINE_HASH_SEP}${selectedHashes[index]}${HASH_SEP}${line}`,
+      `${startLine + index}${LINE_HASH_SEP}${selectedHashes[index]}${hashSep()}${line}`,
       'utf-8',
     ),
   }));
@@ -555,9 +555,9 @@ export async function fmtReadPreview(
       (skippedTruncation.truncated || lastShownLine < totalLines)
     ) {
       nextOffset = lastShownLine + 1;
-      preview = `${HASHLINE_HEADER}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
+      preview = `${hashlineHeader()}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
     } else {
-      preview = `${HASHLINE_HEADER}\n${preview}\n\n${warning}`;
+      preview = `${hashlineHeader()}\n${preview}\n\n${warning}`;
     }
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {
