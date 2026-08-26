@@ -42,7 +42,7 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 		"`edit`: anchors must be `<line>#<hash>` copied from the leftmost column of a read/grep/diff row — never hand-write or paste bare hashes or line content.",
 		"`edit`: all items in one call resolve against the same file snapshot — pass ORIGINAL anchors for every hunk; ranges that overlap are rejected ([E_BATCH_CONFLICT]) instead of being applied in sequence. The diff rows carry final line#hash markers; each `Shift:` block maps the hunk's original range to its final position.",
-		"`edit`: a stale or never-served range is hard-rejected (`[E_STALE_ANCHOR]` / `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±3 context) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
+		"`edit`: a stale or never-served range is hard-rejected (`[E_STALE_ANCHOR]` / `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
 		"`edit`: for multiple edits to one file (or across files with per-item `path`), list them in ONE `edits` array — the tool validates every item before writing and applies them all-or-nothing, emitting a Shift block per hunk. Do not issue several `edit` calls in one message.",
 	],
 };

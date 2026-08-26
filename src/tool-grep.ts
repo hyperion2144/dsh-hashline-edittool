@@ -28,7 +28,7 @@ import { execCwd, execSessionKey, recordServed } from "./session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import { withWorkspace } from "./session-view.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
-import { hashlineHeader } from "./hashline/hash-assign.js";
+import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
 import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
 import { HASH_SPACE } from "./hashline/hash-assign.js";
 import { visLines, abortIf, clipLine } from "./utils.js";
@@ -326,7 +326,7 @@ export function buildGrepTool(io: FileIO) {
 						})),
 					});
 					if (jsonOutput) {
-						const context = opts.context ?? 2;
+						const context = opts.context ?? contextLinesCfg();
 						jsonFiles.push({
 							path: displayPath,
 							matches: section.matches.map((m) => {

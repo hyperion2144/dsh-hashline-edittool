@@ -23,7 +23,7 @@ import { abortIf, splitLines, rejectUnknownFields, firstNonEmptyIndex, lastNonEm
 import {
   ALPH_RE,
   LINE_HASH_SEP,
-  STALE_CONTEXT_LINES,
+  contextLinesCfg,
   canon,
   lineHashesPure,
   lineHashRe,
@@ -198,7 +198,7 @@ function fmtMismatchWithServes(
 		// Echo windows: single-line edits carry the same anchor in both
 		// remove_from and remove_to, and from/to that are BOTH stale and
 		// adjacent produce nearly identical ±3 windows. Merge windows whose
-		// centers are within 2*STALE_CONTEXT_LINES+1 of each other so the file
+		// centers are within 2*contextLinesCfg()+1 of each other so the file
 		// region is echoed once; the header above still reports every stale
 		// anchor and the merged block lists every fresh marker.
 		const centers = notFound.map((m) => {
@@ -218,7 +218,7 @@ function fmtMismatchWithServes(
 			const last = groups[groups.length - 1];
 			if (
 				last &&
-				c.center - last[last.length - 1]!.center <= 2 * STALE_CONTEXT_LINES + 1
+				c.center - last[last.length - 1]!.center <= 2 * contextLinesCfg() + 1
 			) {
 				last.push(c);
 			} else {
@@ -226,10 +226,10 @@ function fmtMismatchWithServes(
 			}
 		}
 		for (const group of groups) {
-			const from = Math.max(1, group[0]!.center - STALE_CONTEXT_LINES);
+			const from = Math.max(1, group[0]!.center - contextLinesCfg());
 			const to = Math.min(
 				fileLines.length,
-				group[group.length - 1]!.center + STALE_CONTEXT_LINES,
+				group[group.length - 1]!.center + contextLinesCfg(),
 			);
 			const echoLines: string[] = [];
 			for (let ln = from; ln <= to; ln++) {
@@ -246,7 +246,7 @@ function fmtMismatchWithServes(
 					: `reuse a fresh marker from: ${markers.join(", ")}`;
 			out.push("");
 			out.push(
-				`  Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${hashlineHeader()}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
+				`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader()}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
 			);
 		}
 	}
@@ -852,8 +852,8 @@ export function verifyServedRange(args: {
 	if (firstMismatch !== undefined) {
 		const mismatchLine = firstMismatch + 1;
 		const expectedHash = fileHashes[firstMismatch]!;
-		const ctxFrom = Math.max(1, mismatchLine - STALE_CONTEXT_LINES);
-		const ctxTo = Math.min(fileLines.length, mismatchLine + STALE_CONTEXT_LINES);
+		const ctxFrom = Math.max(1, mismatchLine - contextLinesCfg());
+		const ctxTo = Math.min(fileLines.length, mismatchLine + contextLinesCfg());
 		const ctxEchoLines: string[] = [];
 		const ctxServedRows: ServedRow[] = [];
 		for (let ln = ctxFrom; ln <= ctxTo; ln++) {
@@ -874,7 +874,7 @@ export function verifyServedRange(args: {
 				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${staleMsg}. ` +
 				`This usually happens after a previous edit shifted lines below your read window. ` +
 				`A full read() will re-sync, but if the line below is what you meant, you can reuse the fresh marker instead.\n` +
-				`Echo of the line you tried (read-style, ±${STALE_CONTEXT_LINES} context):\n${ctxEcho}\n\n` +
+				`Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
 				`If this is the line you meant, reuse the fresh marker ${freshMarker} without calling read.\n` +
 				`If not, call read() to find the correct line.`,
 			servedRows: ctxServedRows,

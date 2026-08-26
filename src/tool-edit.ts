@@ -485,29 +485,26 @@ export function registerEditTool(
 function buildEditJson(
 	file: FileEditResult,
 	displayPath: string,
-): EditCanonicalValue {
-	const resultLines = visLines(file.result);
-	const resultHashes = file.resultHashes;
-	const origLines = visLines(file.originalNormalized);
-	const origHashes = file.originalHashes;
-	const applied = (file.hunkShifts ?? []).map((h) => {
-		const before: Record<string, string> = {};
-		const after: Record<string, string> = {};
-		for (let ln = h.originalStartLine; ln <= Math.min(h.originalEndLine, origLines.length); ln++) {
-			before[`${ln}${LINE_HASH_SEP}${origHashes[ln - 1] ?? ""}`] = origLines[ln - 1] ?? "";
-		}
-		for (let ln = h.finalStartLine; ln <= Math.min(h.finalEndLine, resultLines.length); ln++) {
-			after[`${ln}${LINE_HASH_SEP}${resultHashes[ln - 1] ?? ""}`] = resultLines[ln - 1] ?? "";
-		}
-		return { index: h.index, before, after };
-	});
-	// Final anchor view over the changed window (+2 context on each side).
-	const finalLines: Record<string, string> = {};
-	const from = Math.max(1, (file.range?.startLine ?? 1) - 2);
-	const to = Math.min(resultLines.length, (file.range?.endLine ?? resultLines.length) + 2);
-	for (let ln = from; ln <= to; ln++) {
-		finalLines[`${ln}${LINE_HASH_SEP}${resultHashes[ln - 1] ?? ""}`] = resultLines[ln - 1] ?? "";
-	}
+): {
+	ok: boolean;
+	path: string;
+	diff: Array<{ kind: "+" | "-" | " "; anchor: string; content: string }>;
+	hints: string[];
+	warnings: string[];
+	errors: unknown[];
+} {
+	// The json view is the text diff, structured row by row (json-ified text):
+	// kind mirrors the diff prefix (+ added / - removed / space = context),
+	// anchors are the FINAL line#hash markers, content is verbatim. No
+	// before/after window maps — overlapping end-line hunks (ins anchored on
+	// a replace range's end line) made per-hunk windows ambiguous.
+	const diff = genDiff(
+		file.originalNormalized,
+		file.result,
+		3,
+		file.resultHashes,
+		file.originalHashes,
+	);
 	const hints = (file.hunkShifts ?? [])
 		.filter((h) => h.delta !== 0 || h.finalStartLine !== h.originalStartLine)
 		.map(
@@ -516,17 +513,12 @@ function buildEditJson(
 		);
 	return {
 		ok: true,
-		files: [
-			{
-				path: displayPath,
-				applied,
-				finalLines,
-				noop: file.appliedCount === 0,
-			},
-		],
+		path: displayPath,
+		diff: diff.rows.map((r) => ({ kind: r.kind, anchor: r.anchor, content: r.content })),
 		hints,
 		warnings: file.warnings,
 		errors: [],
-	} as unknown as EditCanonicalValue;
+	};
 }
+
 

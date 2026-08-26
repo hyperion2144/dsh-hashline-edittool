@@ -83,13 +83,27 @@ ANCHOR:FILELINE
  5#kQm:}
 ```
 
-`edit` targets one or more ranges of `line#hash` anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). A single-line replace:
+`edit` targets one or more ranges of `line#hash` anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). The contract is **exact**:
+
+- `replace` requires **both** anchors; a single-line replace passes the same marker twice (`anchor_start === anchor_end`), and `lines` must contain **exactly one entry per range line** — mismatched counts are rejected (`E_LINE_COUNT_MISMATCH`) instead of silently duplicating or deleting lines.
+- `ins` inserts into the **gap after** its anchor line (the anchor line's content is untouched) and may anchor on **another hunk's range END line** (half-open `N ∉ [hs, he)`) — never its start or interior.
+- `del` deletes the range (lines must be empty).
+
+Three canonical templates cover every block rewrite in one call:
+
+| intent | edits[] |
+|---|---|
+| equal rewrite | `replace` with matching counts |
+| shrink N→M | `replace` the first M lines + `del` the rest |
+| expand M→N | `replace` the M-line range + `ins` at the range's last line |
+
+A single-line replace:
 
 ```json
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "from": "4#szJ", "lines": ["  console.log('hi');"] }
+    { "op": "replace", "anchor_start": "4#szJ", "anchor_end": "4#szJ", "lines": ["  console.log('hi');"] }
   ]
 }
 ```
@@ -113,6 +127,7 @@ hashline:
   separator: ":"         # column separator between the marker and the content (default ":")
   hash_length: 3         # anchor hash length, 1..6 (default 3; hash space = 62^len)
   output_format: text    # "text" (hashline rows) | "json" (pure JSON)
+  context_lines: 3       # context rows echoed around stale anchors / diffs / grep (default 3, 0..20)
 ```
 
 ### text output (default)
@@ -125,7 +140,7 @@ Set `output_format: json` for pure-JSON tool outputs — the model parses the JS
 
 - **read** returns `{path, offset, totalLines, lines: {anchor: content}}` — each `lines` key is a `<line>#<hash>` edit anchor, each value is the verbatim file content.
 - **grep** returns `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`.
-- **edit** returns `{ok: true, files: [{path, applied: [{index, before, after}], finalLines, noop}], hints, warnings, errors: []}` on success — `finalLines` keys are fresh anchors for follow-up edits. **Rejected edits fail loudly (throw, isError) in json mode exactly as in text mode** — the model receives the `E_` code + message through the failure channel.
+- **edit** returns `{ok: true, path, diff: [{kind: "+" | "-" | " ", anchor, content}], hints, warnings, errors: []}` on success — `diff` is the text diff json-ified row by row (kind mirrors the diff prefix, anchors are final line#hash markers usable for follow-up edits, context rows inherit `context_lines`). **Rejected edits fail loudly (throw, isError) in json mode exactly as in text mode** — the model receives the `E_` code + message through the failure channel.
 
 Legacy `│`-separated rows still parse in both modes.
 
@@ -192,7 +207,7 @@ Re-seeding happens at boot, never mid-session.
 
 ## Why Hashline
 
-**Token-saving.** An edit call carries `remove_from` / `remove_to` (two `<line>#<hash>` markers)
+**Token-saving.** An edit call carries `anchor_start` / `anchor_end` (two `<line>#<hash>` markers)
 plus the replacement text — it never echoes the text being replaced. A `str_replace` call must
 reproduce that text verbatim. On a 12-edit session over a realistic file this is **26% fewer output
 tokens** (24–45% on multi-line ranges) — and these are *output* tokens, billed at ~5-6× the input
@@ -312,6 +327,21 @@ Saved vs `str_replace`: hashline **266 (26%)** · oh-my-pi per-edit **425 (42%)*
 > single-line edits, while remaining the only arm that verifies every resolved line against the
 > served state and never lands a wrong-line edit silently. See [`benchmark/README.md`](benchmark/README.md)
 > for the per-scenario breakdown and methodology.
+
+### Output-format overhead: `text` vs `json` (model input tokens)
+
+[`benchmark/text-json.mjs`](benchmark/text-json.mjs) measures the model-side INPUT tokens the two output formats feed back into the context (js-tiktoken cl100k_base, same corpus — run `node benchmark/text-json.mjs`):
+
+| scenario | text | json | json/text |
+|---|---|---|---|
+| read · whole file (104 lines) | 1,307 | 1,493 | 1.14× |
+| read · 50-line window | 662 | 725 | 1.10× |
+| read · 10-line window | 210 | 177 | 0.84× |
+| edit · 1→1 single line | 157 | 222 | 1.41× |
+| edit · shrink 10→2 | 239 | 406 | 1.70× |
+| edit · expand 2→10 | 248 | 360 | 1.45× |
+
+json's read dict repeats each anchor key per line (large windows +10–14%); small read windows win for json (no header overhead). json edit responses carry per-row `{kind, anchor, content}` objects (+40–70%) in exchange for the text-identical diff view with structured anchors.
 
 The script is deterministic by construction: a frozen corpus, a content-addressed edit script that
 self-checks (a reformatted corpus throws instead of silently changing what's measured), a pinned

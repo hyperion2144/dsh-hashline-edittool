@@ -40,7 +40,7 @@ export const ALPH_RE = new RegExp(`^[${ALPH_SAFE}]+$`);
 
 /** Separator inside an anchor between the absolute 1-indexed line number and the hash. */
 export const LINE_HASH_SEP = "#";
-/** Number of context rows to echo around a stale or ambiguous anchor (read format). */
+/** Default context rows echo (3); live value via contextLinesCfg(). */
 export const STALE_CONTEXT_LINES = 3;
 
 // --- shape (live-configurable) ---
@@ -49,9 +49,11 @@ export interface HashlineShape {
 	hashLength: number;
 	/** Column separator between marker and content (default ":"). */
 	separator: string;
+	/** Context rows echoed around a stale/ambiguous anchor (default 3); also the default diff/grep context. */
+	contextLines: number;
 }
 
-const DEFAULT_SHAPE: HashlineShape = { hashLength: 3, separator: ":" };
+const DEFAULT_SHAPE: HashlineShape = { hashLength: 3, separator: ":", contextLines: 3 };
 
 let shape: HashlineShape = { ...DEFAULT_SHAPE };
 let compiled: CompiledShape | undefined;
@@ -116,6 +118,9 @@ export function hashLength(): number {
 }
 export function hashSep(): string {
 	return shape.separator;
+}
+export function contextLinesCfg(): number {
+	return shape.contextLines;
 }
 export function hashClassSource(): string {
 	return getCompiled().hashClassSource;
