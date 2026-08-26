@@ -26,7 +26,7 @@
  */
 
 import { structuredPatch } from "diff";
-import { HASH_SEP, LINE_HASH_SEP, HASHLINE_HEADER } from "./hashline/index.js";
+import { LINE_HASH_SEP, hashSep, hashlineHeader } from "./hashline/hash-assign.js";
 
 /** Extension → syntax-highlighting language hint (mirrored from dsh-tool-fs; extended for the hashline corpus). */
 const LANG_BY_EXTENSION: Record<string, string> = {
@@ -181,9 +181,9 @@ export function buildReadPresentation(
 	}
 
 	const body = lineRenders
-		.map(({ number, hash, text }) => `${number}${LINE_HASH_SEP}${hash}${HASH_SEP}${text}`)
+		.map(({ number, hash, text }) => `${number}${LINE_HASH_SEP}${hash}${hashSep()}${text}`)
 		.join("\n");
-	const modelText = `${HASHLINE_HEADER}\n${body}\n\n${footer}`;
+	const modelText = `${hashlineHeader()}\n${body}\n\n${footer}`;
 
 	return {
 		path,
@@ -200,7 +200,7 @@ export function buildReadPresentation(
 
 /** Regex that strips the `ANCHOR:FILELINE` header for the read-card `content` fallback. */
 const READ_BODY_RE = new RegExp(
-	`^${HASHLINE_HEADER.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\n([\\s\\S]*)$`,
+	`^${hashlineHeader().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\n([\\s\\S]*)$`,
 );
 
 export function extractReadBody(modelText: string): string | undefined {

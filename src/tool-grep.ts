@@ -26,7 +26,8 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "./session-view.js";
 import { withWorkspace } from "./session-view.js";
-import { lineHashes, HASH_SEP, HASHLINE_HEADER, LINE_HASH_SEP } from "./hashline/index.js";
+import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
+import { hashlineHeader } from "./hashline/hash-assign.js";
 import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
 import { HASH_SPACE } from "./hashline/hash-assign.js";
 import { visLines, abortIf, clipLine } from "./utils.js";
@@ -121,7 +122,7 @@ export async function grepFileContent(
 }
 
 function renderSection(path: string, section: GrepFileSection): string {
-	const headerLines: string[] = [`--- ${path} ---`, HASHLINE_HEADER];
+	const headerLines: string[] = [`--- ${path} ---`, hashlineHeader()];
 	const anchors = section.contextRows.map(
 		(row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}`,
 	);
