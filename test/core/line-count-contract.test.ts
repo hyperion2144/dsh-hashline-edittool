@@ -209,28 +209,24 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
-	it("json output surfaces the new errors in errors[]", async () => {
+	it("rejected edits fail loudly in json mode too (throw, isError)", async () => {
 		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt"); // anchors from text mode
 			applyEffective({ output_format: "json" });
-			const res = await editTool(harness).execute("edit", {
-				path: "t.txt",
-				edits: [
-					{
-						op: "replace",
-						anchor_start: served[0]!.hash,
-						anchor_end: served[1]!.hash,
-						lines: ["A"],
-					},
-				],
-			});
-			const out = JSON.parse(getText(res)) as {
-				ok: boolean;
-				errors: Array<{ code: string; message: string }>;
-			};
-			expect(out.ok).toBe(false);
-			expect(out.errors[0]!.code).toBe("E_LINE_COUNT_MISMATCH");
+			await expect(
+				editTool(harness).execute("edit", {
+					path: "t.txt",
+					edits: [
+						{
+							op: "replace",
+							anchor_start: served[0]!.hash,
+							anchor_end: served[1]!.hash,
+							lines: ["A"],
+						},
+					],
+				}),
+			).rejects.toThrow(/E_LINE_COUNT_MISMATCH/);
 		});
 	});
 });

@@ -125,7 +125,7 @@ Set `output_format: json` for pure-JSON tool outputs — the model parses the JS
 
 - **read** returns `{path, offset, totalLines, lines: {anchor: content}}` — each `lines` key is a `<line>#<hash>` edit anchor, each value is the verbatim file content.
 - **grep** returns `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`.
-- **edit** returns (success and failure alike) `{ok, files: [{path, applied: [{index, before, after}], finalLines, noop}], hints, warnings, errors}` — `finalLines` keys are fresh anchors for follow-up edits; errors carry `{code, message}`.
+- **edit** returns `{ok: true, files: [{path, applied: [{index, before, after}], finalLines, noop}], hints, warnings, errors: []}` on success — `finalLines` keys are fresh anchors for follow-up edits. **Rejected edits fail loudly (throw, isError) in json mode exactly as in text mode** — the model receives the `E_` code + message through the failure channel.
 
 Legacy `│`-separated rows still parse in both modes.
 

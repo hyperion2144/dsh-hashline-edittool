@@ -226,22 +226,11 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				try {
 					file = await runFileEdits(io, items, { signal, sessionKey });
 				} catch (err) {
-					if (!isJsonOutput()) throw err;
-					const message =
-						err instanceof Error ? err.message : String(err);
-					const codeMatch = /^\[([A-Z_]+)\]/.exec(message);
-					const envelope = {
-						ok: false,
-						errors: [{ code: codeMatch?.[1] ?? "E_EDIT", message }],
-						hints: [],
-						warnings: [],
-					};
-					return {
-						...envelope,
-						// render projects modelText; without it the envelope would
-						// degrade to a bare object in the content payload.
-						modelText: JSON.stringify(envelope),
-					} as unknown as EditCanonicalValue;
+					// Rejected edits ALWAYS fail loudly — text and json modes alike.
+					// A structured envelope would hide the failure behind a normal
+					// tool result; the model sees isError + the E_ code + message
+					// either way.
+					throw err;
 				}
 				await applyFileResultTo(file, {
 					canonical,
