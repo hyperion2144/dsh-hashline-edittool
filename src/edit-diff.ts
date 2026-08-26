@@ -1,5 +1,5 @@
 import * as Diff from "diff";
-import { lineHashesPure, ANCHOR_LEN, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
+import { lineHashesPure, LINE_HASH_SEP, hashSep, hashLength } from "./hashline/index.js";
 import type { ServedRow } from "./hashline/served.js";
 
 export type LineEnding = "\r\n" | "\n" | "\r";
@@ -47,12 +47,12 @@ function fmtDiffLine(
 	oldHash: string | undefined = undefined,
 ): string {
 	if (prefix === "-" && oldHash !== undefined) {
-		return `${prefix}${lineNumber}${LINE_HASH_SEP}${oldHash}${HASH_SEP}${line}`;
+		return `${prefix}${lineNumber}${LINE_HASH_SEP}${oldHash}${hashSep()}${line}`;
 	}
 	if (hash === undefined) {
-		return `${prefix}${lineNumber}${LINE_HASH_SEP}${" ".repeat(ANCHOR_LEN)}${HASH_SEP}${line}`;
+		return `${prefix}${lineNumber}${LINE_HASH_SEP}${" ".repeat(hashLength())}${hashSep()}${line}`;
 	}
-	return `${prefix}${lineNumber}${LINE_HASH_SEP}${hash}${HASH_SEP}${line}`;
+	return `${prefix}${lineNumber}${LINE_HASH_SEP}${hash}${hashSep()}${line}`;
 }
 
 const ELLIPSIS_MARKER: unique symbol = Symbol("ellipsis");

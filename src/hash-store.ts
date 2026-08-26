@@ -21,7 +21,7 @@ import { DatabaseSync } from "node:sqlite";
 import { hashStorePath } from "./paths.js";
 import { workspaceCwd } from "./workspace.js";
 import { errCode, splitLines } from "./utils.js";
-import { contentChecksum, HASH_RE } from "./hashline/hash-assign.js";
+import { contentChecksum, hashRe } from "./hashline/hash-assign.js";
 import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT, SERVED_TTL_MS } from "./constants.js";
 
 // ---- validators (owned here; the store's corruption handling uses them) ----
@@ -35,7 +35,7 @@ export interface LegacySnapshot {
 export function isValidHashList(value: unknown): value is string[] {
 	if (!Array.isArray(value)) return false;
 	for (const hash of value) {
-		if (typeof hash !== "string" || !HASH_RE.test(hash)) return false;
+		if (typeof hash !== "string" || !hashRe().test(hash)) return false;
 	}
 	return true;
 }
@@ -52,7 +52,7 @@ export function isValidServedList(value: unknown): value is (string | null)[] {
 	if (!Array.isArray(value)) return false;
 	for (const entry of value) {
 		if (entry === null) continue;
-		if (typeof entry !== "string" || !HASH_RE.test(entry)) return false;
+		if (typeof entry !== "string" || !hashRe().test(entry)) return false;
 	}
 	return true;
 }
@@ -507,7 +507,7 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				if (!Array.isArray(parsed)) return new Set();
 				return new Set(
 					parsed.filter(
-						(h): h is string => typeof h === "string" && HASH_RE.test(h),
+						(h): h is string => typeof h === "string" && hashRe().test(h),
 					),
 				);
 			} catch {

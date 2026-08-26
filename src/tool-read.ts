@@ -20,10 +20,12 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { normalizeRequest as normReq, assertReadRequest, pathSchema } from "./contract.js";
 
 import { readAndServe } from "./read-and-serve.js";
-import { READ_DESCRIPTION } from "./prompts.js";
+import { readDescription } from "./prompts.js";
 import { DEFAULT_MAX_LINES } from "./file-view.js";
+import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import {
 	buildReadPresentation,
+	buildReadJson,
 	extractReadBody,
 	langFromPath,
 	readMetaFromMeta,
@@ -45,7 +47,7 @@ import { withWorkspace } from "./session-view.js";
 export function buildReadTool(io: FileIO) {
 	return defineTool({
 		name: "read",
-		description: READ_DESCRIPTION,
+		description: readDescription(getEffectiveConfig()),
 		parameters: {
 			path: pathSchema,
 			offset: {
@@ -187,13 +189,42 @@ export function buildReadTool(io: FileIO) {
 					} as ReadValue & { modelText: string };
 				}
 
-				const presentation = buildReadPresentation(
-					result.normalized,
-					result.hashes,
-					canonical.offset ?? 1,
-					canonical.limit ?? DEFAULT_MAX_LINES,
-					rawPath,
-				);
+				const presentation = isJsonOutput()
+					? (() => {
+						const jsonView = buildReadJson(
+							result.normalized,
+							result.hashes,
+							canonical.offset ?? 1,
+							canonical.limit ?? DEFAULT_MAX_LINES,
+							rawPath,
+						) as { path: string; offset: number; totalLines: number; lines: Record<string, string> };
+						// The tool schema still requires the structured ReadValue fields
+						// (path/offset/totalLines/lines/hashlines); modelText carries the
+						// pure-JSON view the model parses.
+						const hashlines = Object.entries(jsonView.lines).map(([anchor, text]) => {
+							const sep = anchor.indexOf("#");
+							return {
+								number: Number(anchor.slice(0, sep)),
+								hash: anchor.slice(sep + 1),
+								text,
+							};
+						});
+						return {
+							path: jsonView.path,
+							offset: jsonView.offset,
+							totalLines: jsonView.totalLines,
+							lines: hashlines.map(({ number, text }) => ({ number, text })),
+							hashlines,
+							modelText: JSON.stringify(jsonView),
+						} as ReadValue & { modelText: string };
+					})()
+					: buildReadPresentation(
+							result.normalized,
+							result.hashes,
+							canonical.offset ?? 1,
+							canonical.limit ?? DEFAULT_MAX_LINES,
+							rawPath,
+						);
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the
 				// structured value's modelText is faithful to the original contract.

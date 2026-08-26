@@ -1,7 +1,7 @@
 import type { ServedRow } from "./hashline/served.js";
 import { genDiff } from "./edit-diff.js";
 import { visLines, clipLine } from "./utils.js";
-import { HASHLINE_HEADER, LINE_HASH_SEP, HASH_SEP, ANCHOR_LEN } from "./hashline/index.js";
+import { hashlineHeader, LINE_HASH_SEP } from "./hashline/index.js";
 import type { HunkShift } from "./edit-engine.js";
 
 
@@ -234,7 +234,7 @@ export function buildChanged(input: SuccessInput): TResult {
 		originalLineCount: visLines(originalNormalized).length,
 		resultLineCount: resultLines.length,
 	});
-	const diffBody = diffResult.diff ? `${HASHLINE_HEADER}\n${diffResult.diff}` : "";
+	const diffBody = diffResult.diff ? `${hashlineHeader()}\n${diffResult.diff}` : "";
 	const text =
 		resultLines.length === 0
 			? "File is empty. Use edit to insert content." + noticeBlock
@@ -347,7 +347,7 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			.filter((block) => block.length > 0)
 			.join("");
 		diffParts.push(
-			`--- ${s.path} ---\n${HASHLINE_HEADER}\n${diffResult.diff}${hunkShiftBlocks}`,
+			`--- ${s.path} ---\n${hashlineHeader()}\n${diffResult.diff}${hunkShiftBlocks}`,
 		);
 		if (diffResult.servedRows.length > 0) {
 			servedByPath.push({ path: s.path, servedRows: diffResult.servedRows });

@@ -31,7 +31,7 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
-import { HASH_RE } from "./hashline/hash-assign.js";
+import { hashRe } from "./hashline/hash-assign.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "./constants.js";
 import type { ServedRow, ResolvedRange } from "./hashline/served.js";
@@ -190,7 +190,7 @@ export function _mergeServedRows(
     if (!Number.isInteger(entry.position) || entry.position < 0) {
       throw new TypeError(`Invalid served position: ${entry.position}`);
     }
-    if (entry.hash !== null && (typeof entry.hash !== "string" || !HASH_RE.test(entry.hash))) {
+    if (entry.hash !== null && (typeof entry.hash !== "string" || !hashRe().test(entry.hash))) {
       throw new TypeError(`Invalid served hash: ${String(entry.hash)}`);
     }
     while (updated.length <= entry.position) updated.push(null);
@@ -249,7 +249,7 @@ export async function driftReported(sessionKey: string, path: string): Promise<S
 
 export async function markDriftReported(sessionKey: string, path: string, hashes: string[]): Promise<void> {
   try {
-    const valid = hashes.filter((hash) => HASH_RE.test(hash));
+    const valid = hashes.filter((hash) => hashRe().test(hash));
     if (valid.length === 0) return;
     const store = await loadHashStore();
     withStore(() => {
