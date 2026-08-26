@@ -390,3 +390,31 @@ export function parseLineFromHash(ref: string): number | undefined {
 	const n = Number.parseInt(ref.slice(0, idx), 10);
 	return Number.isInteger(n) && n >= 1 ? n : undefined;
 }
+
+
+/** Pure-JSON read view: `lines` is a dict {anchor: content} for the window. */
+export function buildReadJson(
+	content: string,
+	hashes: readonly string[],
+	offset: number,
+	limit: number,
+	path: string,
+): object {
+	const allLines = splitLines(content);
+	const totalLines = allLines.length;
+	const start = Math.max(1, offset);
+	const startIdx = start - 1;
+	const endIdx = Math.min(startIdx + limit, totalLines);
+	const lines: Record<string, string> = {};
+	for (let i = startIdx; i < endIdx; i++) {
+		const anchor = `${i + 1}${LINE_HASH_SEP}${hashes[i] ?? ""}`;
+		lines[anchor] = allLines[i] ?? "";
+	}
+	return {
+		path,
+		offset: start,
+		totalLines,
+		lines,
+	};
+}
+

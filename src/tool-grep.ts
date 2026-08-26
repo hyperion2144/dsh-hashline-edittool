@@ -25,6 +25,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "./session-view.js";
+import { isJsonOutput } from "./config.js";
 import { withWorkspace } from "./session-view.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
 import { hashlineHeader } from "./hashline/hash-assign.js";
@@ -284,6 +285,16 @@ export function buildGrepTool(io: FileIO) {
 
 				const fileSections: string[] = [];
 				const cardFiles: GrepFileMatches[] = [];
+				const jsonOutput = isJsonOutput();
+				const jsonFiles: Array<{
+					path: string;
+					matches: Array<{
+						anchor: string;
+						text: string;
+						contextBefore: Record<string, string>;
+						contextAfter: Record<string, string>;
+					}>;
+				}> = [];
 				const allServed: Array<{ path: string; rows: { position: number; hash: string }[] }> = [];
 				const allSeen: Array<{ path: string }> = [];
 				let totalMatches = 0;
@@ -314,6 +325,30 @@ export function buildGrepTool(io: FileIO) {
 							line: renderSection(displayPath, section).split("\n").slice(2).join("\n"),
 						})),
 					});
+					if (jsonOutput) {
+						const context = opts.context ?? 2;
+						jsonFiles.push({
+							path: displayPath,
+							matches: section.matches.map((m) => {
+								const anchor = (pos: number) =>
+									`${pos + 1}${LINE_HASH_SEP}${section.contextRows.find((r) => r.position === pos)?.hash ?? hashes[pos] ?? ""}`;
+								const before: Record<string, string> = {};
+								const after: Record<string, string> = {};
+								for (let k = Math.max(0, m.position - context); k < m.position; k++) {
+									before[anchor(k)] = section.contextRows.find((r) => r.position === k)?.content ?? linesOf(raw)[k] ?? "";
+								}
+								for (let k = m.position + 1; k <= Math.min(linesOf(raw).length - 1, m.position + context); k++) {
+									after[anchor(k)] = section.contextRows.find((r) => r.position === k)?.content ?? linesOf(raw)[k] ?? "";
+								}
+								return {
+									anchor: anchor(m.position),
+									text: m.content,
+									contextBefore: before,
+									contextAfter: after,
+								};
+							}),
+						});
+					}
 					allServed.push({ path: file, rows: section.contextRows });
 					allSeen.push({ path: file });
 				}
@@ -345,7 +380,9 @@ export function buildGrepTool(io: FileIO) {
 					files: cardFiles,
 					truncated,
 					total: totalMatches,
-					modelText: fileSections.join("\n\n"),
+					modelText: jsonOutput
+						? JSON.stringify({ total: totalMatches, truncated, files: jsonFiles })
+						: fileSections.join("\n\n"),
 				};
 				return value;
 			});
@@ -361,4 +398,12 @@ export function registerGrepTool(
 	return agentCtx.tools.register(buildGrepTool(io));
 }
 
+
+/** Split content for json context lookup (mirrors splitLines semantics). */
+function linesOf(content: string): string[] {
+	if (content.length === 0) return [];
+	const lines = content.split("\n");
+	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+	return lines;
+}
 

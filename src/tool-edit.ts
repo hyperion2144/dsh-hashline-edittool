@@ -35,6 +35,8 @@ import {
 	editsSchema,
 } from "./contract.js";
 import { abortIf, isRec, visLines, formatLineRange } from "./utils.js";
+import { isJsonOutput } from "./config.js";
+import { LINE_HASH_SEP } from "./hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "./mutation.js";
 import { runFileEdits, type PreparedItem, type FileEditResult, type HunkShift } from "./edit-engine.js";
@@ -220,7 +222,21 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					);
 				}
 
-				const file = await runFileEdits(io, items, { signal, sessionKey });
+				let file: FileEditResult;
+				try {
+					file = await runFileEdits(io, items, { signal, sessionKey });
+				} catch (err) {
+					if (!isJsonOutput()) throw err;
+					const message =
+						err instanceof Error ? err.message : String(err);
+					const codeMatch = /^\[([A-Z_]+)\]/.exec(message);
+					return {
+						ok: false,
+						errors: [{ code: codeMatch?.[1] ?? "E_EDIT", message }],
+						hints: [],
+						warnings: [],
+					} as unknown as EditCanonicalValue;
+				}
 				await applyFileResultTo(file, {
 					canonical,
 					resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
@@ -232,7 +248,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					absolutePath,
 					sessionKey,
 				});
-				return buildCanonicalFromFileResult(file, canonical.path);
+				return isJsonOutput()
+					? buildEditJson(file, canonical.path)
+					: buildCanonicalFromFileResult(file, canonical.path);
 			});
 		},
 	});
@@ -460,3 +478,54 @@ export function registerEditTool(
 ): () => void {
 	return agentCtx.tools.register(buildEditTool(io, sandbox));
 }
+
+
+/** Pure-JSON edit result: per-hunk before/after + final window lines. */
+function buildEditJson(
+	file: FileEditResult,
+	displayPath: string,
+): EditCanonicalValue {
+	const resultLines = visLines(file.result);
+	const resultHashes = file.resultHashes;
+	const origLines = visLines(file.originalNormalized);
+	const origHashes = file.originalHashes;
+	const applied = (file.hunkShifts ?? []).map((h) => {
+		const before: Record<string, string> = {};
+		const after: Record<string, string> = {};
+		for (let ln = h.originalStartLine; ln <= Math.min(h.originalEndLine, origLines.length); ln++) {
+			before[`${ln}${LINE_HASH_SEP}${origHashes[ln - 1] ?? ""}`] = origLines[ln - 1] ?? "";
+		}
+		for (let ln = h.finalStartLine; ln <= Math.min(h.finalEndLine, resultLines.length); ln++) {
+			after[`${ln}${LINE_HASH_SEP}${resultHashes[ln - 1] ?? ""}`] = resultLines[ln - 1] ?? "";
+		}
+		return { index: h.index, before, after };
+	});
+	// Final anchor view over the changed window (+2 context on each side).
+	const finalLines: Record<string, string> = {};
+	const from = Math.max(1, (file.range?.startLine ?? 1) - 2);
+	const to = Math.min(resultLines.length, (file.range?.endLine ?? resultLines.length) + 2);
+	for (let ln = from; ln <= to; ln++) {
+		finalLines[`${ln}${LINE_HASH_SEP}${resultHashes[ln - 1] ?? ""}`] = resultLines[ln - 1] ?? "";
+	}
+	const hints = (file.hunkShifts ?? [])
+		.filter((h) => h.delta !== 0 || h.finalStartLine !== h.originalStartLine)
+		.map(
+			(h) =>
+				`edits[${h.index}]: original ${h.originalStartLine === h.originalEndLine ? "line " + h.originalStartLine : "lines " + h.originalStartLine + ".." + h.originalEndLine} moved to ${h.finalStartLine === h.finalEndLine ? "line " + h.finalStartLine : "lines " + h.finalStartLine + ".." + h.finalEndLine} (${(h.delta > 0 ? "+" : "") + h.delta})`,
+		);
+	return {
+		ok: true,
+		files: [
+			{
+				path: displayPath,
+				applied,
+				finalLines,
+				noop: file.appliedCount === 0,
+			},
+		],
+		hints,
+		warnings: file.warnings,
+		errors: [],
+	} as unknown as EditCanonicalValue;
+}
+

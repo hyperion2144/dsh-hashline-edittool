@@ -90,7 +90,7 @@ function compileShape(s: HashlineShape): CompiledShape {
 		bareRe: new RegExp(
 			`^\\s*(\\d+${LINE_HASH_SEP})(${hashClassSource})\\s*${seps}`,
 		),
-		header: `ANCHOR${s.separator}FILELINE — each row is <line>${LINE_HASH_SEP}<hash>${s.separator}<content>; edit uses the LEFT "line${LINE_HASH_SEP}hash" marker as its anchor; everything after "${s.separator}" is the verbatim file content.`,
+		header: `ANCHOR${s.separator}FILELINE — each row is <line>${LINE_HASH_SEP}<hash>${s.separator}<content>; edit uses the LEFT "line${LINE_HASH_SEP}hash" marker as its anchor; everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part.`,
 	};
 }
 
@@ -153,7 +153,7 @@ export const HASH_SPACE = ALPH.length ** HASH_LEN;
 export const HASH_CLASS = `[${ALPH_SAFE}]{${HASH_LEN}}`;
 export const HASH_RE = new RegExp(`^${HASH_CLASS}$`);
 export const LINE_HASH_RE = /^(\d+)#([A-Za-z0-9]{3})$/;
-export const HASHLINE_HEADER = `ANCHOR${HASH_SEP}FILELINE — each row is <line>${LINE_HASH_SEP}<hash>${HASH_SEP}<content>; edit uses the LEFT "line${LINE_HASH_SEP}hash" marker as its anchor; everything after "${HASH_SEP}" is the verbatim file content.`;
+export const HASHLINE_HEADER = `ANCHOR${HASH_SEP}FILELINE — each row is <line>${LINE_HASH_SEP}<hash>${HASH_SEP}<content>; edit uses the LEFT "line${LINE_HASH_SEP}hash" marker as its anchor; everything after "${HASH_SEP}" is the verbatim file content; to modify the file, pass the content after "${HASH_SEP}" — never the anchor part.`;
 export const HL_PREFIX_PLUS_RE = new RegExp(`^\\+\\d+${LINE_HASH_SEP}${HASH_CLASS}\\s*[:│]`);
 export const HL_PREFIX_MINUS_RE = new RegExp(
 	`^-(?:\\d+${LINE_HASH_SEP}${HASH_CLASS}\\s*[:│]|\\d+${LINE_HASH_SEP} ${placeholderSpaces(HASH_LEN)}\\s*[:│])`,

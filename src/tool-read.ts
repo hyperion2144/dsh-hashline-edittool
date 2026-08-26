@@ -22,8 +22,10 @@ import { normalizeRequest as normReq, assertReadRequest, pathSchema } from "./co
 import { readAndServe } from "./read-and-serve.js";
 import { READ_DESCRIPTION } from "./prompts.js";
 import { DEFAULT_MAX_LINES } from "./file-view.js";
+import { isJsonOutput } from "./config.js";
 import {
 	buildReadPresentation,
+	buildReadJson,
 	extractReadBody,
 	langFromPath,
 	readMetaFromMeta,
@@ -187,13 +189,25 @@ export function buildReadTool(io: FileIO) {
 					} as ReadValue & { modelText: string };
 				}
 
-				const presentation = buildReadPresentation(
-					result.normalized,
-					result.hashes,
-					canonical.offset ?? 1,
-					canonical.limit ?? DEFAULT_MAX_LINES,
-					rawPath,
-				);
+				const presentation = isJsonOutput()
+					? ({
+							modelText: JSON.stringify(
+								buildReadJson(
+									result.normalized,
+									result.hashes,
+									canonical.offset ?? 1,
+									canonical.limit ?? DEFAULT_MAX_LINES,
+									rawPath,
+								),
+							),
+						} as ReadValue & { modelText: string })
+					: buildReadPresentation(
+							result.normalized,
+							result.hashes,
+							canonical.offset ?? 1,
+							canonical.limit ?? DEFAULT_MAX_LINES,
+							rawPath,
+						);
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the
 				// structured value's modelText is faithful to the original contract.
