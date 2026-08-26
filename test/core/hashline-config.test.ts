@@ -111,6 +111,27 @@ describe("read json view", () => {
 	});
 });
 
+describe("settings file provider document", () => {
+	it("extracts the hashline section and passes other sections through", async () => {
+		const { parseYamlDocument } = await import("../../src/settings-provider.js");
+		const doc = parseYamlDocument([
+			"# dsh settings",
+			"subagent-pro:",
+			"  defaultRole: researcher",
+			"hashline:",
+			"  separator: \"|\"",
+			"  hash_length: 4",
+			"  output_format: json",
+		].join("\n"));
+		expect(doc.hashline).toEqual({
+			separator: "|",
+			hash_length: 4,
+			output_format: "json",
+		});
+		expect(typeof doc["subagent-pro"]).toBe("string"); // passthrough
+	});
+});
+
 describe("edit json envelope", () => {
 	function fakeFile(partial?: Partial<FileEditResult>): FileEditResult {
 		return {
