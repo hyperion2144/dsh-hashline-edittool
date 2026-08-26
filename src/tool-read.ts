@@ -190,17 +190,34 @@ export function buildReadTool(io: FileIO) {
 				}
 
 				const presentation = isJsonOutput()
-					? ({
-							modelText: JSON.stringify(
-								buildReadJson(
-									result.normalized,
-									result.hashes,
-									canonical.offset ?? 1,
-									canonical.limit ?? DEFAULT_MAX_LINES,
-									rawPath,
-								),
-							),
-						} as ReadValue & { modelText: string })
+					? (() => {
+						const jsonView = buildReadJson(
+							result.normalized,
+							result.hashes,
+							canonical.offset ?? 1,
+							canonical.limit ?? DEFAULT_MAX_LINES,
+							rawPath,
+						) as { path: string; offset: number; totalLines: number; lines: Record<string, string> };
+						// The tool schema still requires the structured ReadValue fields
+						// (path/offset/totalLines/lines/hashlines); modelText carries the
+						// pure-JSON view the model parses.
+						const hashlines = Object.entries(jsonView.lines).map(([anchor, text]) => {
+							const sep = anchor.indexOf("#");
+							return {
+								number: Number(anchor.slice(0, sep)),
+								hash: anchor.slice(sep + 1),
+								text,
+							};
+						});
+						return {
+							path: jsonView.path,
+							offset: jsonView.offset,
+							totalLines: jsonView.totalLines,
+							lines: hashlines.map(({ number, text }) => ({ number, text })),
+							hashlines,
+							modelText: JSON.stringify(jsonView),
+						} as ReadValue & { modelText: string };
+					})()
 					: buildReadPresentation(
 							result.normalized,
 							result.hashes,

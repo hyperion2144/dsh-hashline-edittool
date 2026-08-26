@@ -248,9 +248,15 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					absolutePath,
 					sessionKey,
 				});
+				const canonicalValue = buildCanonicalFromFileResult(file, canonical.path);
 				return isJsonOutput()
-					? buildEditJson(file, canonical.path)
-					: buildCanonicalFromFileResult(file, canonical.path);
+					? {
+						...canonicalValue,
+						// Schema-valid structured value; modelText carries the pure-JSON
+						// envelope the model parses.
+						modelText: JSON.stringify(buildEditJson(file, canonical.path)),
+					}
+					: canonicalValue;
 			});
 		},
 	});

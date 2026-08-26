@@ -180,7 +180,10 @@ export function installHashlineSettings(ctx: Context): void {
 	// read-only file-backed provider — the settings.yaml file is the source
 	// of truth in every deployment.
 	if (!ensureSettingsService(ctx)) {
-		applyEffective({}); // defaults; installation failed
+		// Do NOT reset the effective config here: a sibling apply of this
+		// plugin may have already installed a working service (profiles can
+		// double-mount via bundles + dependencies) — resetting would wipe
+		// its resolved value back to defaults.
 		return;
 	}
 	const snapshot = createSnapshot({});
@@ -193,13 +196,23 @@ export function installHashlineSettings(ctx: Context): void {
 			console.error(`dsh-hashline-edittool: settings apply failed: ${message}`);
 		}
 	};
+	const hooks = snapshot.hooks;
+	// installSettingsSection drives its inject callback ASYNCHRONOUSLY: our
+	// own sync() below may run before the section ever pushes its value into
+	// the snapshot. Re-apply on every onChange (attach + every commit) so the
+	// resolved value always lands.
+	const hookedOnChange = hooks.onChange;
+	hooks.onChange = () => {
+		hookedOnChange();
+		sync();
+	};
 	try {
 		installSettingsSection(
 			ctx,
 			HASHLINE_SETTINGS_NAMESPACE as never,
 			HashlineSettingsSchema,
 			{} as HashlineSettings,
-			snapshot.hooks,
+			hooks,
 		);
 	} catch (err) {
 		const message =

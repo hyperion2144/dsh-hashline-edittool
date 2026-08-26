@@ -93,18 +93,37 @@ export class FileSettingsProvider extends SettingsProvider {
 
 export type { HashlineSettings };
 
-/** Provide the service on ctx when the host did not mount one. */
+/**
+ * Provide the service on ctx when the host did not mount one. Returns true
+ * when a settings service is in place — including when another apply of this
+ * plugin (a profile may double-mount the package via bundles + dependencies)
+ * already registered it.
+ */
 export function ensureSettingsService(ctx: Context): boolean {
 	const settingsSvc = (ctx as unknown as { get(name: string): unknown }).get(
 		"settings",
 	);
 	if (settingsSvc !== undefined) return true;
 	try {
-		ctx.provide("settings", new FileSettingsProvider(ctx));
-		return true;
+		// cordis' Service base class registers the instance under its name on
+		// construction — there is nothing to ctx.provide() additionally (an
+		// extra provide would collide with the just-registered instance).
+		new FileSettingsProvider(ctx);
+		return (ctx as unknown as { get(name: string): unknown }).get(
+			"settings",
+		) !== undefined;
 	} catch (err) {
 		const message =
 			err instanceof Error ? err.message : String(err);
+		// Already registered (by an earlier apply, possibly on a sibling
+		// scope): the service IS in place — accept it instead of failing.
+		if (
+			message.includes("already been registered") ||
+			message.includes("registered at") ||
+			message.includes("has been registered")
+		) {
+			return true;
+		}
 		console.error(
 			`dsh-hashline-edittool: failed to mount file settings provider (tolerated): ${message}`,
 		);
