@@ -49,7 +49,7 @@ function diagRef(ref: string): string {
 	}
 
 	if (trimmed.includes(":") || trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${hashSep()}" (e.g. "12#aB3:"); or pass just the marker "12#aB3".`;
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${hashSep()}" (e.g. "12#aB3${hashSep()}"); or pass just the marker "12#aB3".`;
 	}
 
 	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
