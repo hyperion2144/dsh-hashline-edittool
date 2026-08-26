@@ -35,6 +35,7 @@ export interface HashlineSettings {
 	separator?: string;
 	hash_length?: number;
 	output_format?: "text" | "json";
+	context_lines?: number;
 }
 
 /** Permissive schema — unknown keys tolerated so newer versions don't break older builds. */
@@ -43,6 +44,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		separator: z.string().min(1).max(4),
 		hash_length: z.number().min(1).max(6),
 		output_format: z.union(["text", "json"]),
+		context_lines: z.number().min(0).max(20),
 	})
 	.loose() as unknown as z<HashlineSettings>;
 
@@ -52,12 +54,14 @@ export interface EffectiveHashlineConfig {
 	separator: string;
 	hashLength: number;
 	outputFormat: OutputFormat;
+	contextLines: number;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	separator: ":",
 	hashLength: 3,
 	outputFormat: "text",
+	contextLines: 3,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -86,8 +90,15 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 			: DEFAULT_CONFIG.hashLength;
 	const fmt =
 		settings?.output_format === "json" ? "json" : DEFAULT_CONFIG.outputFormat;
-	effective = { separator: sep, hashLength: len, outputFormat: fmt };
-	applyHashlineShape({ hashLength: len, separator: sep });
+	const nctx =
+		typeof settings?.context_lines === "number" &&
+		Number.isInteger(settings.context_lines) &&
+		settings.context_lines >= 0 &&
+		settings.context_lines <= 20
+			? settings.context_lines
+			: DEFAULT_CONFIG.contextLines;
+	effective = { separator: sep, hashLength: len, outputFormat: fmt, contextLines: nctx };
+	applyHashlineShape({ hashLength: len, separator: sep, contextLines: nctx });
 }
 
 /** Default settings.yaml location (same file the dsh settings layer uses). */

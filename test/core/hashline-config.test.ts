@@ -30,10 +30,18 @@ describe("hashline settings / effective config", () => {
 		expect(cfg.separator).toBe("|");
 		expect(cfg.hashLength).toBe(4);
 		expect(cfg.outputFormat).toBe("json");
-		expect(getHashlineShape()).toEqual({ hashLength: 4, separator: "|" });
+		expect(getHashlineShape()).toEqual({ hashLength: 4, separator: "|", contextLines: 3 });
 		// hash length feeds the generator
 		const hashes = lineHashesPure("a\nbb\n");
 		expect(hashes[0]).toMatch(/^[A-Za-z0-9]{4}$/);
+	});
+
+	it("applies context_lines", () => {
+		applyEffective({ context_lines: 5 });
+		expect(getEffectiveConfig().contextLines).toBe(5);
+		expect(getHashlineShape().contextLines).toBe(5);
+		applyEffective({ context_lines: 99 }); // out of range -> default
+		expect(getEffectiveConfig().contextLines).toBe(3);
 	});
 
 	it("falls back to defaults on invalid values", () => {

@@ -18,6 +18,7 @@ export {
  LINE_HASH_RE,
  hashLength,
  hashSep,
+ contextLinesCfg,
  hashClassSource,
  hashRe,
  lineHashRe,
