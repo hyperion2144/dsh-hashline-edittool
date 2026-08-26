@@ -19,8 +19,17 @@ export interface ToolGuidance {
 	lines: readonly string[];
 }
 
-export const EDIT_DESCRIPTION =
-	"Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are `<line>#<hash>` copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
+import type { EffectiveHashlineConfig } from "./config.js";
+
+/** Edit tool description, generated from the effective config (text/json). */
+export function editDescription(cfg: EffectiveHashlineConfig): string {
+	const base =
+		"Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are `<line>#<hash>` copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
+	if (cfg.outputFormat === "json") {
+		return base + " JSON output: `{ok, files:[{path, applied, finalLines, noop}], hints, warnings, errors}` — `finalLines` keys are fresh anchors for follow-up edits.";
+	}
+	return base;
+}
 
 export const EDIT_GUIDANCE: ToolGuidance = {
 	intro:
@@ -37,8 +46,13 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 	],
 };
 
-export const READ_DESCRIPTION =
-	"Read a text file: each line is `<line>#<hash>:content` under a `ANCHOR:FILELINE` header; the left marker is the edit anchor. Binary/directory rejected; pageable with offset/limit.";
+/** Read tool description, generated from the effective config (text/json). */
+export function readDescription(cfg: EffectiveHashlineConfig): string {
+	if (cfg.outputFormat === "json") {
+		return `Read a file as pure JSON: {path, offset, totalLines, lines: {anchor: content}} — each "lines" key is a "<line>#<hash>" edit anchor; the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.`;
+	}
+	return "Read a text file: each line is `<line>#<hash>:content` under a `ANCHOR:FILELINE` header; the left marker is the edit anchor. Binary/directory rejected; pageable with offset/limit.";
+}
 
 export const READ_GUIDANCE: ToolGuidance = {
 	intro:
@@ -63,8 +77,13 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 	],
 };
 
-export const GREP_DESCRIPTION =
-	"Search files (literal by default, `regex: true` for regex); output mirrors `read` (`<line>#<hash>:content` rows); matches are served, so they can be edited directly.";
+/** Grep tool description, generated from the effective config (text/json). */
+export function grepDescription(cfg: EffectiveHashlineConfig): string {
+	if (cfg.outputFormat === "json") {
+		return "Search files (literal by default, `regex: true` for regex); returns pure JSON {total, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]} — match anchors are edit anchors (line#hash), texts are verbatim file content; matches are served so they can be edited directly.";
+	}
+	return "Search files (literal by default, `regex: true` for regex); output mirrors `read` (`<line>#<hash>:content` rows); matches are served, so they can be edited directly.";
+}
 
 export const GREP_GUIDANCE: ToolGuidance = {
 	intro: "Search files and obtain line#hash anchors in one step.",

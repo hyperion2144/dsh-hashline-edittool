@@ -20,9 +20,9 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { normalizeRequest as normReq, assertReadRequest, pathSchema } from "./contract.js";
 
 import { readAndServe } from "./read-and-serve.js";
-import { READ_DESCRIPTION } from "./prompts.js";
+import { readDescription } from "./prompts.js";
 import { DEFAULT_MAX_LINES } from "./file-view.js";
-import { isJsonOutput } from "./config.js";
+import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import {
 	buildReadPresentation,
 	buildReadJson,
@@ -47,7 +47,7 @@ import { withWorkspace } from "./session-view.js";
 export function buildReadTool(io: FileIO) {
 	return defineTool({
 		name: "read",
-		description: READ_DESCRIPTION,
+		description: readDescription(getEffectiveConfig()),
 		parameters: {
 			path: pathSchema,
 			offset: {

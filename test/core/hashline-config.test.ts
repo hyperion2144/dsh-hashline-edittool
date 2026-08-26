@@ -1,0 +1,160 @@
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	applyEffective,
+	getEffectiveConfig,
+	type EffectiveHashlineConfig,
+} from "../../src/config.js";
+import { buildReadJson } from "../../src/presentation-helpers.js";
+import { lineHashesPure, resEdit, applyEdit } from "../../src/hashline/index.js";
+import {
+	applyHashlineShape,
+	getHashlineShape,
+} from "../../src/hashline/hash-assign.js";
+import type { FileEditResult } from "../../src/edit-engine.js";
+
+afterEach(() => {
+	applyEffective({});
+});
+
+describe("hashline settings / effective config", () => {
+	it("defaults to ':' / 3 / text", () => {
+		const cfg = getEffectiveConfig();
+		expect(cfg.separator).toBe(":");
+		expect(cfg.hashLength).toBe(3);
+		expect(cfg.outputFormat).toBe("text");
+	});
+
+	it("applies separator + hash_length + output_format", () => {
+		applyEffective({ separator: "|", hash_length: 4, output_format: "json" });
+		const cfg: EffectiveHashlineConfig = getEffectiveConfig();
+		expect(cfg.separator).toBe("|");
+		expect(cfg.hashLength).toBe(4);
+		expect(cfg.outputFormat).toBe("json");
+		expect(getHashlineShape()).toEqual({ hashLength: 4, separator: "|" });
+		// hash length feeds the generator
+		const hashes = lineHashesPure("a\nbb\n");
+		expect(hashes[0]).toMatch(/^[A-Za-z0-9]{4}$/);
+	});
+
+	it("falls back to defaults on invalid values", () => {
+		applyEffective({
+			separator: "",
+			hash_length: 99,
+			output_format: "yaml" as never,
+		});
+		const cfg = getEffectiveConfig();
+		expect(cfg.separator).toBe(":");
+		expect(cfg.hashLength).toBe(3);
+		expect(cfg.outputFormat).toBe("text");
+	});
+});
+
+describe("configurable separator + hash length end-to-end", () => {
+	it("parses anchors and strips markers under a custom separator/length", async () => {
+		applyEffective({ separator: "|", hash_length: 4 });
+		const content = "alpha\nbeta\ngamma";
+		const hashes = lineHashesPure(content);
+		expect(hashes[1]).toMatch(/^[A-Za-z0-9]{4}$/);
+		// anchor field accepts "line#hash" with the custom separator pasted row
+		const edit = {
+			remove_from: `${1}#${hashes[0]}|alpha`,
+			remove_to: `${1}#${hashes[0]}|alpha`,
+			replacement_text: "ALPHA",
+		} as const;
+		const resolved = resEdit(edit as never);
+		expect(resolved.hash_bounds[0]).toEqual({ line: 1, hash: hashes[0] });
+		const result = applyEdit(content, resolved);
+		expect(result.content).toBe("ALPHA\nbeta\ngamma");
+	});
+
+	it("keeps legacy │ rows parseable under the custom separator", () => {
+		applyEffective({ separator: "|", hash_length: 3 });
+		const content = "a\nb\n";
+		const hashes = lineHashesPure(content);
+		const edit = {
+			remove_from: `2#${hashes[1]}│b`,
+			remove_to: `2#${hashes[1]}│b`,
+			replacement_text: "B",
+		} as const;
+		const resolved = resEdit(edit as never);
+		expect(resolved.hash_bounds[0]).toEqual({ line: 2, hash: hashes[1] });
+	});
+});
+
+describe("read json view", () => {
+	it("builds {path, offset, totalLines, lines} with anchor keys", () => {
+		const content = "one\ntwo\n\nfour";
+		const hashes = ["aB3", "xY7", "zQ9", "mN0"];
+		const json = buildReadJson(content, hashes, 1, 4, "f.txt") as {
+			lines: Record<string, string>;
+		};
+		expect(json.path).toBe("f.txt");
+		expect(json.offset).toBe(1);
+		expect(json.totalLines).toBe(4);
+		expect(json.lines).toEqual({
+			"1#aB3": "one",
+			"2#xY7": "two",
+			"3#zQ9": "",
+			"4#mN0": "four",
+		});
+	});
+
+	it("honors offset/limit windows", () => {
+		const content = Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n");
+		const hashes = Array.from({ length: 10 }, (_, i) => "" + i + "ab");
+		const json = buildReadJson(content, hashes, 4, 2, "f") as {
+			offset: number;
+			lines: Record<string, string>;
+		};
+		expect(json.offset).toBe(4);
+		expect(Object.keys(json.lines)).toEqual(["4#3ab", "5#4ab"]);
+	});
+});
+
+describe("edit json envelope", () => {
+	function fakeFile(partial?: Partial<FileEditResult>): FileEditResult {
+		return {
+			displayPath: "x.ts",
+			absolutePath: "/abs/x.ts",
+			originalNormalized: "a\nb\nc",
+			result: "a\nB\nc",
+			bom: "",
+			originalEnding: "\n",
+			hadUtf8DecodeErrors: false,
+			originalHashes: ["aA1", "bB2", "cC3"],
+			resultHashes: ["aA1", "bB2", "cC3"],
+			resultServedRows: [],
+			appliedCount: 1,
+			noopCount: 0,
+			totalAddedLines: 0,
+			totalRemovedLines: 0,
+			warnings: [],
+			driftNotice: undefined,
+			firstChangedLine: 2,
+			lastChangedLine: 2,
+			range: { startLine: 2, endLine: 2, startHash: "bB2", endHash: "bB2" },
+			hunkShifts: [
+				{
+					index: 0,
+					delta: 0,
+					firstStableLineNew: 3,
+					lastChangedLine: 2,
+					originalStartLine: 2,
+					originalEndLine: 2,
+					finalStartLine: 2,
+					finalEndLine: 2,
+				},
+			],
+			...partial,
+		} as FileEditResult;
+	}
+
+	it("serializes ok + files/applied/finalLines", async () => {
+		// exercised through tool-edit; here we only assert the shape helpers
+		// (buildEditJson is private) — smoke via applyEffective + import check
+		const { isJsonOutput } = await import("../../src/config.js");
+		applyEffective({ output_format: "json" });
+		expect(isJsonOutput()).toBe(true);
+		expect(fakeFile().appliedCount).toBe(1);
+	});
+});

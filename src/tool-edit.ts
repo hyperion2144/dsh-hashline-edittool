@@ -35,7 +35,7 @@ import {
 	editsSchema,
 } from "./contract.js";
 import { abortIf, isRec, visLines, formatLineRange } from "./utils.js";
-import { isJsonOutput } from "./config.js";
+import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import { LINE_HASH_SEP } from "./hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "./mutation.js";
@@ -47,7 +47,7 @@ import {
 } from "./noop-guard.js";
 import { commit, resolveMissingPath, snapshotIdFor } from "./mutation.js";
 import { recordServedTruncated, recordServedAfterEdit } from "./session-view.js";
-import { EDIT_DESCRIPTION } from "./prompts.js";
+import { editDescription } from "./prompts.js";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
@@ -124,7 +124,7 @@ function buildPreparedItem(
 export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 	return defineTool({
 		name: "edit",
-		description: EDIT_DESCRIPTION,
+		description: editDescription(getEffectiveConfig()),
 		parameters: {
 			path: { ...pathSchema, required: true },
 			edits: { ...editsSchema, required: true },
