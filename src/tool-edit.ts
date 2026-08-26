@@ -87,15 +87,15 @@ function buildPreparedItem(
 	topLevelPath: string,
 	item: {
 		op?: "ins" | "del" | "replace";
-		from: string;
-		to?: string;
+		anchor_start: string;
+		anchor_end?: string;
 		lines?: string[];
 		path?: string;
 	},
 	absolutePath: string,
 ): PreparedItem {
 	const itemPath = item.path ?? topLevelPath;
-	const toResolved = item.to ?? item.from;
+	const toResolved = item.anchor_end ?? item.anchor_start;
 	const replacementText =
 		item.op === "del"
 			? ""
@@ -104,7 +104,7 @@ function buildPreparedItem(
 		index,
 		path: itemPath,
 		absolutePath,
-		remove_from: item.from,
+		remove_from: item.anchor_start,
 		remove_to: toResolved,
 		replacement_text: replacementText,
 		op: item.op ?? "replace",
@@ -159,7 +159,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 		presentCall: (args) => {
 			const a = args as {
 				path?: string;
-				edits?: Array<{ from?: string; path?: string }>;
+				edits?: Array<{ anchor_start?: string; path?: string }>;
 			};
 			const topPath = typeof a.path === "string" ? a.path : undefined;
 			if (topPath === undefined && (!Array.isArray(a.edits) || a.edits.length === 0)) return undefined;
@@ -167,7 +167,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 			const displayPath =
 				(typeof firstEdit?.path === "string" ? firstEdit.path : topPath) ?? "";
 			if (displayPath === "") return undefined;
-			const line = parseLineFromHash(firstEdit?.from ?? "");
+			const line = parseLineFromHash(firstEdit?.anchor_start ?? "");
 			return {
 				card: "generic",
 				title: `Edit ${displayPath}`,
@@ -292,21 +292,21 @@ async function applyFileResultTo(
 		const first = file.appliedCount > 0 ? file : null;
 		if (first) {
 			const head = ctx.canonical.edits[0] as
-				| { from: string; to?: string; lines?: string[]; op?: string }
+				| { anchor_start: string; anchor_end?: string; lines?: string[]; op?: string }
 				| undefined;
 			if (head) {
 				const payload = noopPayloadKey(
 					ctx.absolutePath,
-					head.from,
-					head.to ?? head.from,
+					head.anchor_start,
+					head.anchor_end ?? head.anchor_start,
 					(head.lines ?? []).join("\n"),
 				);
 				const count = trackNoopPayload(ctx.absolutePath, payload);
 				if (count >= 2) {
 					const notice = enforceNoopLoopSync({
 						absolutePath: ctx.absolutePath,
-						removeFrom: head.from,
-						removeTo: head.to ?? head.from,
+						removeFrom: head.anchor_start,
+						removeTo: head.anchor_end ?? head.anchor_start,
 						replacementText: (head.lines ?? []).join("\n"),
 						displayPath: ctx.canonical.path,
 						count,
@@ -386,7 +386,7 @@ function buildCanonicalFromFileResult(
 
 /** Project the FileEditResult into the model-facing text. Mirrors the layout
  *  of `buildChanged` in `edit-response.ts` so the 0.4 contract holds:
- *    1. `HASH IDENTIFIER │ FILE LINES` header
+ *    1. `ANCHOR:FILELINE` header
  *    2. `+- line#hash │ content` diff rows (only the changed hunks, with 3
  *       lines of context on each side)
  *    3. One `Shift:` block per hunk

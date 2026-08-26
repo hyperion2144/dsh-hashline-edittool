@@ -105,11 +105,11 @@ export async function execPipeline(
 	// that still use the old `{ path, remove_from, remove_to, replacement_text }`
 	// spelling. We normalize the first item (default `op: "replace"`).
 	const firstItem = params.edits?.[0]
-	const removeFromRaw = (params as { remove_from?: string }).remove_from ?? firstItem?.from
+	const removeFromRaw = (params as { remove_from?: string }).remove_from ?? firstItem?.anchor_start
 	const removeToRaw =
 		(params as { remove_to?: string }).remove_to ??
-		firstItem?.to ??
-		firstItem?.from ??
+		firstItem?.anchor_end ??
+		firstItem?.anchor_start ??
 		removeFromRaw
 	const replTextRaw =
 		(params as { replacement_text?: string }).replacement_text ??

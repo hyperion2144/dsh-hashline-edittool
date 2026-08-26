@@ -71,9 +71,9 @@ dsh --profile <name> --dump-config   # 会显示 "# == dsh-hashline-edittool" �
 `read` 返回的每一行都带有哈希前缀——哈希*就是*这一行的地址：
 
 ```text
-ve7│function hello() {
-szJ│  console.log("world");
-kQm│}
+ve7:function hello() {
+szJ:  console.log("world");
+kQm:}
 ```
 
 `edit` 通过 `edits:[]` 数组按 `line#hash` 锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。单行替换：
@@ -90,9 +90,9 @@ kQm│}
 并产生带全新锚点的 diff，让下一次编辑无需重新读取即可通过校验：
 
 ```text
-HASH IDENTIFIER │ FILE LINES
-+ 4#a3m│  console.log('hi');
-- 4#szJ│  console.log("world");
+ANCHOR:FILELINE
++ 4#a3m:  console.log('hi');
+- 4#szJ:  console.log("world");
 
 Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
 ```
@@ -235,7 +235,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 
 | 工具 | 作用 |
 | ------ | ------ |
-| `read` | 以 `HASH IDENTIFIER │ FILE LINES` 头部 + `<line>#<hash>│<content>` 行形式返回文件。参数：`offset`（1 起始）、`limit`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——哈希锚点需要完整行。 |
+| `read` | 以 `ANCHOR:FILELINE` 头部 + `<line>#<hash>:<content>` 行形式返回文件。参数：`offset`（1 起始）、`limit`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——哈希锚点需要完整行。 |
 | `edit` | 通过 `{ path, edits: [{ op, from, to?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `from` 之后插入）、`del`（删除 from..to 范围）或 `replace`（用 `lines` 替换 from..to 范围）。对解析出的范围内**每一行**对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。响应为每个 hunk 携带 `Shift:` 块描述编辑后下方绝对行号如何移动。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。 |
 
@@ -248,7 +248,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | `[E_BAD_OP]` | 范围结束先于范围开始（首尾颠倒时会自动纠正）。 |
 | `[E_BAD_REF]` | `from`/`to` 不是从 read/grep/diff 行最左列复制的 `<line>#<hash>`。 |
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
-| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>│` 前缀被粘贴进 `lines`（自动纠正）。 |
+| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` 前缀被粘贴进 `lines`（自动纠正）。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
 | `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠；请拆分或合并，未写入任何内容。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘贴进 `replacement_text`（自动纠正）。 |
@@ -289,17 +289,17 @@ dsh 的工具注册表按作用域解析：agent 看到的是 `agent → preset 
 ```
 dsh-hashline-edittool/
 ├── src/
-│   ├── hashline/        # 哈希 + 已提供状态核心
-│   ├── tool-read.ts     # read  — line#hash│内容，offset/limit 分页
-│   ├── tool-edit.ts     # edit  — 按哈希范围、reject-and-serve
-│   ├── tool-batch-edit.ts
-│   ├── tool-undo.ts     # undo_last_edit
-│   ├── sandbox.ts       # FsSandboxController 镜像（sandbox_permissions/justification）
-│   ├── write-hook.ts    # 附加到 write 结果的自动读取
-│   ├── served-store.ts  # 按工作区的 SQLite 存储（node:sqlite）
-│   └── workspace.ts     # 会话 cwd 的 AsyncLocalStorage 载体
+:   ├── hashline/        # 哈希 + 已提供状态核心
+:   ├── tool-read.ts     # read  — line#hash:内容，offset/limit 分页
+:   ├── tool-edit.ts     # edit  — 按哈希范围、reject-and-serve
+:   ├── tool-batch-edit.ts
+:   ├── tool-undo.ts     # undo_last_edit
+:   ├── sandbox.ts       # FsSandboxController 镜像（sandbox_permissions/justification）
+:   ├── write-hook.ts    # 附加到 write 结果的自动读取
+:   ├── served-store.ts  # 按工作区的 SQLite 存储（node:sqlite）
+:   └── workspace.ts     # 会话 cwd 的 AsyncLocalStorage 载体
 ├── benchmark/           # 可复现的 hashline、str_replace 与 oh-my-pi token 基准测试
-│   └── corpus/          # 固定的 103 行语料
+:   └── corpus/          # 固定的 103 行语料
 ├── test/                # 615 个测试
 ├── cordis.patch.yml     # bundle 补丁
 └── package.json         # dsh.bundle manifest

@@ -2,7 +2,7 @@
  * The dsh `grep` tool: hash-anchored substring / regex search that shadows
  * the built-in `grep` on the agent's own scope layer. Output mirrors the
  * `read` tool: every match row is `<line>#<hash>│content` under a
- * `HASH IDENTIFIER │ FILE LINES` header, one section per file. Matches are
+ * `ANCHOR:FILELINE` header, one section per file. Matches are
  * recorded as served so a follow-up `edit` against a hit does not require a
  * separate `read`.
  *

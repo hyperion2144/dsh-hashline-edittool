@@ -49,8 +49,8 @@ function diagRef(ref: string): string {
 		return `[E_BAD_REF] Invalid anchor. Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
 	}
 
-	if (trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${HASH_SEP}" (e.g. "12#aB3│"); or pass just the marker "12#aB3".`;
+	if (trimmed.includes(":") || trimmed.includes("│")) {
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${HASH_SEP}" (e.g. "12#aB3:"); or pass just the marker "12#aB3".`;
 	}
 
 	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
@@ -317,11 +317,11 @@ function assertItem(edit: Record<string, unknown>): void {
 }
 
 // Accepts read/grep/diff output rows pasted into remove_from/remove_to:
-//   "12#aB3│const x = 1;"  → anchor "12#aB3" (trailing content dropped)
-//   "+12#aB3│..."          → anchor "12#aB3" (diff "+" dropped)
-//   "-12#aB3│..."          → anchor "12#aB3" (diff "-" dropped)
+//   "12#aB3:const x = 1;"  → anchor "12#aB3" (trailing content dropped)
+//   "+12#aB3:..."          → anchor "12#aB3" (diff "+" dropped)
+//   "-12#aB3:..."          → anchor "12#aB3" (diff "-" dropped)
 // Group 1 = diff marker, group 2 = line number (optional), group 3 = hash.
-const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(\\d+)#)?(${HASH_CLASS})│`);
+const ANCHOR_ROW_RE = new RegExp(`^([+-]?)(?:(\\d+)#)?(${HASH_CLASS})\\s*[:│]`);
 
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
@@ -395,7 +395,7 @@ function stripBarePrefixes(
 		? "0 matched — verify literal 'HASH│' content"
 		: `${matchedCount}/${stripped.length} matched`;
 	warnings.push(
-		`[E_BARE_HASH_PREFIX] stripped "HASH│" prefix from ${locations} (${evidence}).`,
+		`[E_BARE_HASH_PREFIX] stripped "HASH:" prefix from ${locations} (${evidence}).`,
 	);
 	return { ...edit, content_lines: contentLines };
 }

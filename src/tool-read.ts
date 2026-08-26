@@ -1,5 +1,5 @@
 /**
- * The dsh `read` tool: hash-anchored reads (`<line>#<hash>│content` rows) that
+ * The dsh `read` tool: hash-anchored reads (`<line>#<hash>:content` rows) that
  * shadow the built-in `read` on the agent's own scope layer. Every shown row
  * is recorded as served, so a later `edit` can verify the model was actually
  * shown the lines it targets.
@@ -7,7 +7,7 @@
  * Structured presentation: the canonical value carries the model-facing
  * fields plus the `lines` / `hashlines` arrays the web's read card needs.
  * `output.render` projects the model text (as a `code` content block so the
- * `│` separator in the row format does not trigger markdown table parsing).
+ * `:` separator in the row format does not trigger markdown table parsing).
  * `output.presentationMeta` derives the read-card projection; `presentResult`
  * reads the persisted meta + content and emits a `ReadResultView`.
  * `presentCall` is generic (no IO, pure on `args`) — the read result isn't
