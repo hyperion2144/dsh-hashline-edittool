@@ -129,7 +129,7 @@ describe("genDiff", () => {
     const newContent = "a\n__ELLIPSIS__\nc\nD\n";
     const { diff } = genDiff(oldContent, newContent, 3);
     const lines = diff.split("\n");
-    expect(lines.some((line) => line.endsWith("│__ELLIPSIS__"))).toBe(true);
+    expect(lines.some((line) => line.endsWith(":__ELLIPSIS__"))).toBe(true);
     expect(lines.filter((line) => line.trim() === "...")).toHaveLength(0);
   });
 
@@ -138,7 +138,7 @@ describe("genDiff", () => {
     const newContent = "a\n__ELLIPSIS__\nc\nD\n";
     const hashes = lineHashesPure(newContent);
     const { diff } = genDiff(oldContent, newContent, 2, hashes);
-    const cLine = diff.split("\n").find((line) => line.endsWith("│c"))!;
+    const cLine = diff.split("\n").find((line) => line.endsWith(":c"))!;
     expect(cLine.startsWith(` 3#${hashes[2]}`)).toBe(true);
   });
 });

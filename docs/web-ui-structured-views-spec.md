@@ -158,7 +158,7 @@ canonical contract — the model text uses it, and the card uses
 `output.render(args, value)` projects the model-facing text:
 
 ```
-HASH IDENTIFIER │ FILE LINES
+ANCHOR:FILELINE
  3#ve7│function hello() {
  4#szJ│  console.log("world");
  ...
@@ -171,7 +171,7 @@ LINES` header (fixed). Each subsequent line is
 pagination footer matches today's behaviour
 (`(Showing lines 3-4 of 12. Use offset=5 to continue.)`).
 
-A thin regex `^HASH IDENTIFIER │ FILE LINES\n([\s\S]*)$` extracts
+A thin regex `^ANCHOR:FILELINE\n([\s\S]*)$` extracts
 `body` for the `content` field of the `ReadResultView` (the
 envelope-stripped fallback).
 
@@ -197,7 +197,7 @@ has no content yet.
    not exceed `totalLines`. (Mirrors `dsh-tool-fs`'s `isFileTextLine` +
    loop.)
 4. Parse `result.content[0].text` (must be exactly one text block) with
-   `^HASH IDENTIFIER │ FILE LINES\n([\s\S]*)$` to extract the body
+   `^ANCHOR:FILELINE\n([\s\S]*)$` to extract the body
    for the fallback `content` field.
 5. Return `{ card: 'read', title: 'Read <path>', path, offset,
    lines, totalLines, lang?, hashlines, content: [{ type: 'text',
@@ -227,7 +227,7 @@ Canonical `value`:
 ```
 
 `output.render(args, value)` projects:
-- `HASH IDENTIFIER │ FILE LINES` header
+- `ANCHOR:FILELINE` header
 - The post-edit diff rows (`+line#hash│content`, `-line#hash│content`,
   ` line#hash│content`) from `computeHunkDiffs(value.before,
   value.after)` (mirroring `dsh-tool-fs`'s implementation)
@@ -312,7 +312,7 @@ Canonical `value`:
 
 ```
 --- src/foo.ts ---
-HASH IDENTIFIER │ FILE LINES
+ANCHOR:FILELINE
 42#ve7│function hello() {
 43#8mK│  console.log("world");
 ...
@@ -359,7 +359,7 @@ blocks.
 
 ### 5.2 Markdown table side-effect
 
-The `HASH IDENTIFIER │ FILE LINES` header + `<line>#hash│content` rows
+The `ANCHOR:FILELINE` header + `<line>#hash│content` rows
 can accidentally trigger markdown table parsing when a row has `│`
 as the separator and surrounding rows line up.
 
@@ -421,7 +421,7 @@ a small map (mirror of `dsh-tool-fs`'s helper; we extend with
 | `output.presentationMeta` (all 5 tools) | **New.** Returns the structured card projection. |
 | `presentCall` (`edit`, `batch_edit`, `undo_last_edit`, `read`) | **New.** Returns a generic call view with `kind` + `locations` hint. `grep` has no `presentCall` (per spec). |
 | `presentResult` (all 5 tools) | **New.** Returns the typed `ToolResultView`. |
-| Model-facing text format | **Unchanged.** `HASH IDENTIFIER │ FILE LINES`, `<line>#hash│content`, `Shift:` blocks, `[E_*]` codes — byte-identical. |
+| Model-facing text format | **Unchanged.** `ANCHOR:FILELINE`, `<line>#hash│content`, `Shift:` blocks, `[E_*]` codes — byte-identical. |
 
 No prompt-section or contract change for the model. A human reading
 the chat sees the same text as today, plus the structured card from
@@ -444,7 +444,7 @@ the web.
 | Test | Asserts |
 | --- | --- |
 | `tool-read.presentResult` returns `ReadResultView` with `path`, `offset`, `lines: [{number, text}]`, `totalLines`, `lang?`, `hashlines`. |
-| `tool-read.presentResult.content` strips the `HASH IDENTIFIER │ FILE LINES` envelope. |
+| `tool-read.presentResult.content` strips the `ANCHOR:FILELINE` envelope. |
 | `tool-read.presentResult` keeps `offset` even when `lines` is empty (oversize first-line cap). |
 | `tool-read.presentResult` returns `undefined` when `result.isError` is true. |
 | `tool-read.presentResult` returns `undefined` when `result.meta` is missing or fails soft-validation. |

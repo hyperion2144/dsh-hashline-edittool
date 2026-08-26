@@ -40,7 +40,7 @@ describe("computeDrift", () => {
 			{ position: 3, hash: "X03", content: "changed", drifted: true },
 		]);
 		expect(result!.text).toContain("Drift notice:");
-		expect(result!.text).toContain("X03│changed");
+		expect(result!.text).toContain("X03:changed");
 	});
 
 	it("excludes the resolved range even when a boundary line was deleted", () => {
@@ -141,7 +141,7 @@ describe("computeDrift", () => {
 		expect(result!.allAlreadyReported).toBe(true);
 		expect(result!.rows).toEqual([]);
 		expect(result!.text).toContain("already reported");
-		expect(result!.text).not.toContain("│");
+		expect(result!.text).not.toMatch(/\d+#[A-Za-z0-9]{3}/);
 	});
 
 	it("shows a full notice with rows for all drifted lines when any is not yet reported", () => {

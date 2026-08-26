@@ -259,7 +259,7 @@ export function getText(result: { content: Array<{ text?: string }> }): string {
 }
 
 export function extractHash(line: string): string {
-	return line.split("│")[0]!;
+	return line.split(":")[0]!;
 }
 
 export function expectedEditContent(

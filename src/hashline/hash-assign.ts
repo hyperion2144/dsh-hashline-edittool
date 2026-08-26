@@ -35,7 +35,7 @@ export const HASH_SPACE = ALPH.length ** HASH_LEN;
 
 // --- separators ---
 export const ANCHOR_LEN = HASH_LEN;
-export const HASH_SEP = "│";
+export const HASH_SEP = ":";
 /** Separator inside an anchor between the absolute 1-indexed line number and the 3-char hash. */
 export const LINE_HASH_SEP = "#";
 /** Regex for the `line#hash` anchor form (group 1 = line, group 2 = hash). */
@@ -47,7 +47,7 @@ export const STALE_CONTEXT_LINES = 3;
  * post-edit diff, stale echo). Marks the boundary between model-facing marker
  * columns and verbatim file content.
  */
-export const HASHLINE_HEADER = `HASH IDENTIFIER ${HASH_SEP} FILE LINES \u2014 copy the LEFT anchor into edit, never the content`;
+export const HASHLINE_HEADER = `ANCHOR${HASH_SEP}FILELINE`;
 
 // --- hashing (private) ---
 /**
@@ -131,14 +131,16 @@ export function lineHashesPure(content: string): string[] {
 	return hashes;
 }
 
-// Prefix regexes accept an optional `line#` in front of the hash (the v1
-// format `hash│content` is still tolerated on input for backwards compat).
-export const HL_PREFIX_PLUS_RE = new RegExp(`^\\+(?:(?:\\d+)#)?${HASH_CLASS}\\s*│`);
+// Marker stripping matches ONLY the full anchor form: `line#hash:` rows
+// (optionally with +/- diff markers). A bare `hash:` content prefix is NOT
+// stripped — the line locates, and line#hash is the only anchor form; the
+// legacy `│` separator still parses.
+export const HL_PREFIX_PLUS_RE = new RegExp(`^\\+\\d+#${HASH_CLASS}\\s*[:│]`);
 export const HL_PREFIX_MINUS_RE = new RegExp(
-	`^-(?:(?:(?:\\d+)#)?${HASH_CLASS}\\s*│| {${ANCHOR_LEN}}\\s*│)`,
+	`^-(?:\\d+#${HASH_CLASS}\\s*[:│]|\\d+# {${ANCHOR_LEN}}\\s*[:│])`,
 );
 export const HL_BARE_PREFIX_RE = new RegExp(
-	`^\\s*(?:(\\d+)#)?(${HASH_CLASS})\\s*│`,
+	`^\\s*(\\d+#)(${HASH_CLASS})\\s*[:│]`,
 );
 
 
