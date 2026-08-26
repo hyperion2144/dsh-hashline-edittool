@@ -350,7 +350,9 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
-| `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written. |
+| `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
+| `[E_LINE_COUNT_MISMATCH]` | `replace`'s `lines` count differs from its range line count — each range line maps to exactly one entry (shrink: replace + del; expand: replace + ins). |
+| `[E_MISSING_ANCHOR_END]` | `op:"replace"` requires both `anchor_start` and `anchor_end` (single-line: pass the same anchor twice). |
 | `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |
 | `[E_OP_INS]` | `op:"ins"` — inserted lines placed after the anchor; informational. |

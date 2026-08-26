@@ -53,8 +53,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			const res = await editTool(harness).execute("edit", {
 				path: "t.txt",
 				edits: [
-					{ op: "replace", anchor_start: one.hash, lines: ["ONE"] },
-					{ op: "replace", anchor_start: three.hash, lines: ["THREE"] },
+					{ op: "replace", anchor_start: one.hash, anchor_end: one.hash, lines: ["ONE"] },
+					{ op: "replace", anchor_start: three.hash, anchor_end: three.hash, lines: ["THREE"] },
 				],
 			});
 
@@ -74,8 +74,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				editTool(harness).execute("edit", {
 					path: "t.txt",
 					edits: [
-						{ op: "replace", anchor_start: one.hash, lines: ["ONE"] },
-						{ op: "replace", anchor_start: "zzz", lines: ["NOPE"] },
+						{ op: "replace", anchor_start: one.hash, anchor_end: one.hash, lines: ["ONE"] },
+						{ op: "replace", anchor_start: "zzz", anchor_end: "zzz", lines: ["NOPE"] },
 					],
 				}),
 			).rejects.toThrow(/E_BATCH_ABORT/);
@@ -92,7 +92,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 
 			await harness.editTool.execute("edit", {
 				path: "t.txt",
-				edits: [{ op: "replace", anchor_start: one.hash, lines: ["ONE"] }],
+				edits: [{ op: "replace", anchor_start: one.hash, anchor_end: one.hash, lines: ["ONE"] }],
 			});
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nline three\n");
 
@@ -112,8 +112,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			await editTool(harness).execute("edit", {
 				path: "t.txt",
 				edits: [
-					{ op: "replace", anchor_start: one.hash, lines: ["ONE"] },
-					{ op: "replace", anchor_start: three.hash, lines: ["THREE"] },
+					{ op: "replace", anchor_start: one.hash, anchor_end: one.hash, lines: ["ONE"] },
+					{ op: "replace", anchor_start: three.hash, anchor_end: three.hash, lines: ["THREE"] },
 				],
 			});
 			expect(await readFile(path, "utf-8")).toBe("ONE\nline two\nTHREE\n");
@@ -131,7 +131,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			const one = served.find((r) => r.content === "line one")!;
 			const edit = {
 				path: "t.txt",
-				edits: [{ op: "replace", anchor_start: one.hash, lines: ["line one"] }],
+				edits: [{ op: "replace", anchor_start: one.hash, anchor_end: one.hash, lines: ["line one"] }],
 			};
 
 			const first = await editTool(harness).execute("edit", edit);
@@ -192,7 +192,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X"] },
+							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X", "Y", "Z"] },
 							{ op: "del", anchor_start: by("l6").hash },
 						],
 					}),
@@ -228,7 +228,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X"] },
+							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X", "Y", "Z"] },
 							{ op: "ins", anchor_start: by("l4").hash, lines: ["Y"] },
 						],
 					}),
@@ -247,8 +247,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					await editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "replace", anchor_start: by("l1").hash, lines: ["A"] },
-							{ op: "replace", anchor_start: "2#zzz", lines: ["B"] },
+							{ op: "replace", anchor_start: by("l1").hash, anchor_end: by("l1").hash, lines: ["A"] },
+							{ op: "replace", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B"] },
 						],
 					});
 					expect.unreachable("edit should have rejected");

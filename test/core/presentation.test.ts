@@ -145,7 +145,7 @@ describe("edit / undo structured value shape", () => {
 			const readValue = (await read.execute({ path: "e.txt" }, exec({}))) as { lines: { number: number; hash: string }[]; hashlines: { number: number; hash: string }[] };
 			const lineMarker = `${readValue.hashlines[1]?.number}#${readValue.hashlines[1]?.hash}`;
 			const value = (await edit.execute(
-				{ path: "e.txt", edits: [{ op: "replace", anchor_start: lineMarker, lines: ["B!"] }] },
+				{ path: "e.txt", edits: [{ op: "replace", anchor_start: lineMarker, anchor_end: lineMarker, lines: ["B!"] }] },
 				exec({}),
 			)) as {
 				path: string;
@@ -199,7 +199,7 @@ describe("edit / undo structured value shape", () => {
 			const v1 = (await edit.execute(
 				{
 					path: "b1.txt",
-					edits: [{ op: "replace", anchor_start: m1, lines: ["B!"] }],
+					edits: [{ op: "replace", anchor_start: m1, anchor_end: m1, lines: ["B!"] }],
 				},
 				exec({}),
 			)) as {
@@ -210,7 +210,7 @@ describe("edit / undo structured value shape", () => {
 			const v2 = (await edit.execute(
 				{
 					path: "b2.txt",
-					edits: [{ op: "replace", anchor_start: m2, lines: ["B!"] }],
+					edits: [{ op: "replace", anchor_start: m2, anchor_end: m2, lines: ["B!"] }],
 				},
 				exec({}),
 			)) as {
@@ -230,7 +230,7 @@ describe("edit / undo structured value shape", () => {
 				{
 					path: "b1.txt",
 					edits: [
-						{ op: "replace", path: "b1.txt", anchor_start: m1b, lines: ["B1!"] },
+						{ op: "replace", path: "b1.txt", anchor_start: m1b, anchor_end: m1b, lines: ["B1!"] },
 					],
 				},
 				exec({}),

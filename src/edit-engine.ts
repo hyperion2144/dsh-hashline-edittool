@@ -576,14 +576,31 @@ export async function runFileEdits(
 				b.line <= originalHashes.length &&
 				originalHashes[b.line - 1] === b.hash,
 		);
-	const edges: RangeEdge[] = resolvedEdits
-		.filter(({ edit }) => anchorMatchesSnapshot(edit))
-		.map(({ item, edit, isIns }) => ({
+	// Phase 2a: exact line-count contract for every replace whose anchors
+	// match the snapshot. Each range line maps to EXACTLY one lines entry —
+	// more (duplicated lines the model also re-served) or fewer (silently
+	// deleted range lines) is an error with the canonical templates.
+	const edges: RangeEdge[] = [];
+	for (const { item, edit, isIns } of resolvedEdits) {
+		if (!anchorMatchesSnapshot(edit)) continue;
+		if (item.op === "replace") {
+			const startLine = edit.hash_bounds[0].line;
+			const endLine = edit.hash_bounds[1].line;
+			const rangeLen = endLine - startLine + 1;
+			const linesLen = edit.content_lines.length;
+			if (linesLen !== rangeLen) {
+				throw new Error(
+					`[E_LINE_COUNT_MISMATCH] edits[${item.index}] (${item.path}): replace swaps lines ${startLine}..${endLine} (${rangeLen} line(s)) but lines has ${linesLen} — each range line maps to EXACTLY one lines entry. Templates: equal → replace with matching counts; shrink N→M → replace the first M lines + del the rest; expand M→N → replace the M-line range + ins at the range's last line.`
+				);
+			}
+		}
+		edges.push({
 			index: item.index,
 			startLine: edit.hash_bounds[0].line,
 			endLine: edit.hash_bounds[1].line,
 			isIns,
-		}));
+		});
+	}
 	const conflicting = detectRangeConflicts(edges);
 	if (conflicting.length > 0) {
 		const detail = conflicting
@@ -619,8 +636,13 @@ export async function runFileEdits(
 	// Disjoint ranges keep every hunk's original anchors valid: applying a
 	// later hunk never moves rows above its start. This is the concurrent
 	// (snapshot) semantics — a batch behaves as one atomic edit.
+	// Descending by original start line; same anchor line: the ins (gap
+	// insert) runs FIRST so a replace on that line still finds its original
+	// hash — the ins never rewrites its anchor line.
 	const ordered = [...resolvedEdits].sort(
-		(a, b) => b.edit.hash_bounds[0].line - a.edit.hash_bounds[0].line,
+		(a, b) =>
+			b.edit.hash_bounds[0].line - a.edit.hash_bounds[0].line ||
+			Number(b.isIns) - Number(a.isIns),
 	);
 
 	let currentContent = originalNormalized;

@@ -70,10 +70,24 @@ describe("detectRangeConflicts", () => {
 		expect(detectRangeConflicts(edges)).toHaveLength(0);
 	});
 
+	it("allows ins whose anchor line equals the range END (half-open rule)", () => {
+		const edges: RangeEdge[] = [
+			{ index: 0, startLine: 4, endLine: 6, isIns: false },
+			{ index: 1, startLine: 6, endLine: 6, isIns: true }, // insert after line 6 = range end
+		];
+		expect(detectRangeConflicts(edges)).toHaveLength(0);
+	});
 	it("flags ins whose anchor line equals the range start", () => {
 		const edges: RangeEdge[] = [
 			{ index: 0, startLine: 4, endLine: 6, isIns: false },
-			{ index: 1, startLine: 6, endLine: 6, isIns: true },
+			{ index: 1, startLine: 4, endLine: 4, isIns: true },
+		];
+		expect(detectRangeConflicts(edges)).toHaveLength(1);
+	});
+	it("flags ins whose anchor line sits inside the range", () => {
+		const edges: RangeEdge[] = [
+			{ index: 0, startLine: 4, endLine: 6, isIns: false },
+			{ index: 1, startLine: 5, endLine: 5, isIns: true },
 		];
 		expect(detectRangeConflicts(edges)).toHaveLength(1);
 	});

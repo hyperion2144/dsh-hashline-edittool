@@ -60,7 +60,7 @@ describe("edit — remove_to optional", () => {
 
 			await editTool.execute(
 				"e",
-				{ path: "single.ts", edits: [{ op: "replace", anchor_start: lineMarker, lines: ["TWO!"] }] },
+				{ path: "single.ts", edits: [{ op: "replace", anchor_start: lineMarker, anchor_end: lineMarker, lines: ["TWO!"] }] },
 				undefined,
 				undefined,
 				ctx,
@@ -87,14 +87,14 @@ describe("edit — Shift block", () => {
 				"e",
 				{
 					path: "shift.ts",
-					edits: [{ op: "replace", anchor_start: lineMarker, lines: ["B", "B2"] }],
+					edits: [{ op: "replace", anchor_start: lineMarker, anchor_end: lineMarker, lines: ["B"] }, { op: "ins", anchor_start: lineMarker, lines: ["B2"] }],
 				},
 				undefined,
 				undefined,
 				ctx,
 			);
 			const out = getText(res);
-			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
+			expect(out).toMatch(/Shift: edits\[1\] line 2 moved to lines 2\.\.3 \(\+1\)/);
 		});
 	});
 
@@ -113,8 +113,8 @@ describe("edit — Shift block", () => {
 						// Snapshot semantics: BOTH hunks use ORIGINAL anchors; the
 						// engine resolves them against the same snapshot and rejects
 						// overlaps, then emits per-hunk original→final Shift blocks.
-						{ op: "replace", anchor_start: line2, lines: ["B", "B2"] },
-						{ op: "replace", anchor_start: line5, lines: ["E", "E2"] },
+						{ op: "replace", anchor_start: line2, anchor_end: line2, lines: ["B"] }, { op: "ins", anchor_start: line2, lines: ["B2"] },
+						{ op: "replace", anchor_start: line5, anchor_end: line5, lines: ["E"] }, { op: "ins", anchor_start: line5, lines: ["E2"] },
 					],
 				},
 				undefined,
@@ -124,8 +124,8 @@ describe("edit — Shift block", () => {
 			const out = getText(res);
 			// Both hunks replace one line with two (+1 each); Shift blocks name
 			// each hunk's original → final range.
-			expect(out).toMatch(/Shift: edits\[0\] line 2 moved to lines 2\.\.3 \(\+1\)/);
-			expect(out).toMatch(/Shift: edits\[1\] line 5 moved to lines 6\.\.7 \(\+1\)/);
+			expect(out).toMatch(/Shift: edits\[1\] line 2 moved to lines 2\.\.3 \(\+1\)/);
+			expect(out).toMatch(/Shift: edits\[3\] line 5 moved to lines 6\.\.7 \(\+1\)/);
 			// Multi-hunk batches end with one end-of-file cumulative Shift block.
 			expect(out).toMatch(/Shift: end of file moved from 8 lines to 10 lines \(\+2 total\)\./);
 		});

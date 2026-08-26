@@ -36,7 +36,11 @@ export interface EditItemParams {
 	op: "ins" | "del" | "replace";
 	/** Required. Anchor of the FIRST line of the affected range. */
 	anchor_start: string;
-	/** Optional. Anchor of the LAST line. If omitted, the edit targets only `from`. Forbidden for `op: "ins"`. */
+	/**
+	 * Anchor of the LAST line. REQUIRED for `replace` (single-line replace
+	 * passes the same anchor twice); optional for `del` (omit = one line);
+	 * forbidden for `ins`.
+	 */
 	anchor_end?: string;
 	/** Required for `ins` and `replace`; forbidden for `del`. New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
 	lines?: string[];
@@ -139,6 +143,11 @@ export function assertEditItem(
 				`[E_BAD_SHAPE] edits[${index}].op:"ins" does not accept "anchor_end"; ins inserts immediately after "anchor_start".`,
 			);
 		}
+	}
+	if (item.op === "replace" && item.anchor_end === undefined) {
+		throw new Error(
+			`[E_MISSING_ANCHOR_END] edits[${index}].op:"replace" requires BOTH anchor_start and anchor_end — replace always swaps a whole range; for a single-line replace pass the same anchor twice (anchor_start === anchor_end). To insert lines, use op:"ins".`,
+		);
 	}
 	if (item.op === "ins" || item.op === "replace") {
 		if (
@@ -260,7 +269,7 @@ export const editItemSchema = {
 		anchor_end: {
 			type: "string",
 			description:
-				'Anchor of the LAST line of the range. If omitted, the edit targets just `anchor_start`. Forbidden for `op:"ins"`.',
+					'Anchor of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Forbidden for `op:"ins"`.',
 		},
 		lines: {
 			type: "array",

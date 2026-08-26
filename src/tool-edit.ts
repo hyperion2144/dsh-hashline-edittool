@@ -230,11 +230,17 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					const message =
 						err instanceof Error ? err.message : String(err);
 					const codeMatch = /^\[([A-Z_]+)\]/.exec(message);
-					return {
+					const envelope = {
 						ok: false,
 						errors: [{ code: codeMatch?.[1] ?? "E_EDIT", message }],
 						hints: [],
 						warnings: [],
+					};
+					return {
+						...envelope,
+						// render projects modelText; without it the envelope would
+						// degrade to a bare object in the content payload.
+						modelText: JSON.stringify(envelope),
 					} as unknown as EditCanonicalValue;
 				}
 				await applyFileResultTo(file, {

@@ -43,8 +43,14 @@ function insConflictsWithRange(
 	ins: RangeEdge,
 	range: RangeEdge,
 ): boolean {
+	// Half-open rule: the ins anchor may sit on the range's END line (a
+	// batch applies back-to-front, so the gap insert lands after the range
+	// and neither replace nor del touches it), but never on its start or
+	// interior — inserting into a range being rewritten/deleted is
+	// ambiguous and rejects.
 	return (
-		ins.startLine >= range.startLine && ins.startLine <= range.endLine
+		ins.startLine >= range.startLine &&
+		ins.startLine < range.endLine
 	);
 }
 
