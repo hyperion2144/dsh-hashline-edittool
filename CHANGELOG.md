@@ -4,7 +4,15 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- Configurable hashline shape via `~/.dsh/settings.yaml` (`hashline:` namespace): `separator` (default `:`), `hash_length` (default 3, 1..6), `output_format` (`text` | `json`), `context_lines` (default 3, 0..20 — unified across stale-echo, diff and grep context). No settings service installed in the deployment? The plugin mounts a read-only file-backed provider itself (`FileSettingsProvider`); `@deepseek-ai/*` packages are host-shared peer dependencies.
+- **Pure-JSON output mode** (`output_format: json`): `read` returns `{path, offset, totalLines, lines: {anchor: content}}`; `grep` returns `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`; `edit` returns `{ok, path, diff: [{kind: "+" | "-" | " ", anchor, content}], hints, warnings, errors}` — the text diff json-ified row by row. Rejected edits fail loudly (throw, isError) in both modes.
+- **Exact line-count edit contract**: `replace` requires both `anchor_start` and `anchor_end`, and `lines` must contain exactly one entry per range line (`E_LINE_COUNT_MISMATCH`, message teaches the three templates: equal → replace; shrink N→M → replace first M + del rest; expand M→N → replace the range + ins at its last line). `ins` inserts into the gap after its anchor line and may anchor on another hunk's range END line (half-open `N ∉ [hs, he)`), never its start/interior (`E_BATCH_CONFLICT`).
+- `benchmark/text-json.mjs` — text vs json output-format token comparison.
+
 ### Fixed
+
 
 - `edit` anchors (`remove_from` / `remove_to`) now accept a full read/grep/diff output row pasted verbatim — e.g. `12#aB3:const x = 1;` (optionally with `+`/`-` diff markers or surrounding whitespace) — and automatically extract the `line#hash` anchor while dropping the trailing `:content` noise. A row without a line number (bare `aB3:content`) is still rejected with a clear message, since the line number is what disambiguates identical content.
 - `[E_BAD_REF]` messages no longer echo the whole pasted line/block: inputs are clipped (`clipLine`, 60 chars) in `diagRef` and the `resEdit` stripping warnings, and the bare-anchor rejection shows only a clipped hint. Multi-line blocks pasted into an anchor now warn that only the first row's anchor is used and the rest is ignored.
