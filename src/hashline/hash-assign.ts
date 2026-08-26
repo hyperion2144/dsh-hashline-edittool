@@ -47,7 +47,7 @@ export const STALE_CONTEXT_LINES = 3;
  * post-edit diff, stale echo). Marks the boundary between model-facing marker
  * columns and verbatim file content.
  */
-export const HASHLINE_HEADER = `ANCHOR${HASH_SEP}FILELINE`;
+export const HASHLINE_HEADER = `ANCHOR${HASH_SEP}FILELINE — each row is <line>#<hash>:<content>; edit uses the LEFT "line#hash" marker as its anchor; everything after ":" is the verbatim file content.`;
 
 // --- hashing (private) ---
 /**
