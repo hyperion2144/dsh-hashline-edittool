@@ -9,6 +9,23 @@ import { makeExec } from "../support/fixtures.js";
  * read must emit an ABSENT observation so a later write becomes
  * create-if-absent.
  */
+describe("Windows atomic-replace failure mapping", () => {
+	it("maps a replacefilew/1175 error to E_WIN_REPLACE with a diagnosis", async () => {
+		const { mapFsError } = await import("../../src/fs-bridge.js");
+		const err = Object.assign(new Error("replacefilew eio win32 1175 C:\\x.txt"), {
+			code: "FS_WRITE_FAILED",
+		});
+		expect(() => mapFsError(err, "x.txt")).toThrow(/E_WIN_REPLACE/);
+		expect(() => mapFsError(err, "x.txt")).toThrow(/another process is likely holding/);
+	});
+
+	it("passes unrelated fs errors through unchanged", async () => {
+		const { mapFsError } = await import("../../src/fs-bridge.js");
+		const err = Object.assign(new Error("boom"), { code: "E_WHATEVER" });
+		expect(() => mapFsError(err, "x.txt")).toThrow("boom");
+	});
+});
+
 describe("read of a deleted file emits an absent observation", () => {
 	it("emits emitAbsent and rejects with not-found", async () => {
 		const absentEmitted: string[] = [];

@@ -114,6 +114,17 @@ export function mapFsError(error: unknown, displayPath: string): never {
 			throw new Error("Operation aborted");
 		}
 	}
+	// Windows atomic-replace failures (dsh-fs-local calls ReplaceFileW):
+	// error 1175 = ERROR_UNABLE_TO_MOVE_REPLACEMENT — the target is held open
+	// by another process (IDE watcher, antivirus scan, cloud sync) or the
+	// replace cannot cross volumes. Surface a diagnosis instead of the raw
+	// syscall text.
+	const message = error instanceof Error ? error.message : String(error);
+	if (/replacefilew|win32 1175|unable to move replacement/i.test(message)) {
+		throw new Error(
+			`[E_WIN_REPLACE] The file could not be atomically replaced on Windows (ReplaceFileW): another process is likely holding the target open (editor/IDE watcher, antivirus scan, cloud sync) or the path is write-protected. Close programs using the file and retry; if it persists, write to a new path and remove the old one.`,
+		);
+	}
 	throw error;
 }
 
