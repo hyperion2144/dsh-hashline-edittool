@@ -76,16 +76,58 @@ szJ:  console.log("world");
 kQm:}
 ```
 
-`edit` 通过 `edits:[]` 数组按 `line#hash` 锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。单行替换：
+`edit` 通过 `edits:[]` 数组按 `line#hash` 锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。契约是**精确**的：
+
+- `replace` 必须同时给出**两个锚点**；单行替换把同一标记传两次（`anchor_start === anchor_end`），且 `lines` 必须与范围行数**一一对应**——行数不匹配会被拒绝（`E_LINE_COUNT_MISMATCH`），不会静默造成重复或误删。
+- `ins` 在锚点行的**行后间隙**插入（锚点行内容原样保留），且允许锚定在**其它 hunk 范围的 END 行**上（半开规则 `N ∉ [hs, he)`），但不允许锚定在范围的起始行或中间行。
+- `del` 删除范围（`lines` 必须为空）。
+
+三种规范模板覆盖所有整块改写，一次调用完成：
+
+| 意图 | edits[] |
+|---|---|
+| 等量改写 | `replace`，行数一致 |
+| 收缩 N→M | `replace` 前 M 行 + `del` 其余 |
+| 展开 M→N | `replace` 整个 M 行范围 + `ins` 锚定范围最后一行 |
+
+单行替换示例：
 
 ```json
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "from": "4#szJ", "lines": ["  console.log('hi');"] }
+    { "op": "replace", "anchor_start": "4#szJ", "anchor_end": "4#szJ", "lines": ["  console.log('hi');"] }
   ]
 }
 ```
+
+## 配置
+
+插件从 dsh 设置服务读取 `hashline` 命名空间（持久化到 `~/.dsh/settings.yaml`）。所有键均可选；对 settings.yaml 的实时修改立即生效（hash 形状重编译、工具输出格式下一次调用即切换）。
+
+```yaml
+hashline:
+  separator: ":"         # 行分隔符（默认 ":"）
+  hash_length: 3         # 锚点 hash 长度 1..6（默认 3；空间 = 62^len）
+  output_format: text    # "text"（hashline 行格式）| "json"（纯 JSON）
+  context_lines: 3       # 上下文行数：stale 回显 / diff / grep 统一生效（默认 3，0..20）
+```
+
+若部署环境没有挂载 settings 服务（如最小 smoke profile），插件会自行挂载一个只读的文件后端 provider——配置文件始终是唯一事实源；`@deepseek-ai/*` 均为宿主共享的 peer 依赖。
+
+### text 输出（默认）
+
+每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、左侧 `line#hash` 编辑锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。
+
+### json 输出
+
+设 `output_format: json` 后工具返回纯 JSON，模型直接解析：
+
+- **read** 返回 `{path, offset, totalLines, lines: {anchor: content}}`——每个 `lines` 键都是 `<line>#<hash>` 编辑锚点，值即文件原文。
+- **grep** 返回 `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`。
+- **edit** 成功返回 `{ok: true, path, diff: [{kind: "+" | "-" | " ", anchor, content}], hints, warnings, errors: []}`——`diff` 是 text diff 逐行 json 化的结果（`kind` 与 diff 前缀一致，锚点为最终 `line#hash`，可直接用于后续编辑；上下文行数继承 `context_lines`）。**被拒绝的编辑在 json 模式与 text 模式一样显式失败（throw, isError）**——模型经由失败通道拿到 `E_` 代码与消息，不会伪装成成功调用。
+
+旧 `│` 分隔的行在两种模式下仍可解析。
 
 并产生带全新锚点的 diff，让下一次编辑无需重新读取即可通过校验：
 
@@ -156,7 +198,7 @@ preset 从来不是必需的。
 
 ## 为什么用 Hashline
 
-**省 token。** 一次编辑调用只携带 `remove_from` / `remove_to`（两个 `<line>#<hash>` 锚点）加替换文本——从不回显被替换的文本。`str_replace` 调用则必须逐字复现被替换的文本。在一个真实文件上的 12 次编辑会话中，这可以**减少 26% 的输出 token**（多行范围达 24–45%）——而且这些是*输出* token，按输入的约 5-6 倍计费。见[基准测试](#基准测试)。
+**省 token。** 一次编辑调用只携带 `anchor_start` / `anchor_end`（两个 `<line>#<hash>` 锚点）加替换文本——从不回显被替换的文本。`str_replace` 调用则必须逐字复现被替换的文本。在一个真实文件上的 12 次编辑会话中，这可以**减少 26% 的输出 token**（多行范围达 24–45%）——而且这些是*输出* token，按输入的约 5-6 倍计费。见[基准测试](#基准测试)。
 
 **但这从来不是“最省 token”。** 节省随被替换文本的规模增长——最短的单行微调时几乎持平——而且像 [@oh-my-pi/hashline](#对比) 这样的紧凑补丁语言还能发出更轻的负载（同一会话中 42–53%）。关键在于**正确形态**的编辑调用：不复述旧代码，模型只需跟踪两个稳定的内容地址——其中哈希部分跨编辑不变，行号部分则交给 post-edit `Shift:` 块，下一次编辑用 `newLine#oldHash` 即可。
 
@@ -215,6 +257,21 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | 模型需要跟踪的行号 | ✅ 无——内容锚点 | ✅ 无——文本匹配 | ❌ 每次编辑重新编号 |
 | 确定性、可在本地复现 | ✅ `npm run benchmark` | — | — |
 
+### 输出格式开销：`text` vs `json`（模型输入 token）
+
+[`benchmark/text-json.mjs`](benchmark/text-json.mjs) 测量两种输出格式回灌进上下文的模型侧输入 token（js-tiktoken cl100k_base，同一 corpus；运行 `node benchmark/text-json.mjs`）：
+
+| 场景 | text | json | json/text |
+|---|---|---|---|
+| read · 全文件（104 行） | 1,307 | 1,493 | 1.14× |
+| read · 50 行窗口 | 662 | 725 | 1.10× |
+| read · 10 行窗口 | 210 | 177 | 0.84× |
+| edit · 单行 1→1 | 157 | 222 | 1.41× |
+| edit · 收缩 10→2 | 239 | 406 | 1.70× |
+| edit · 展开 2→10 | 248 | 360 | 1.45× |
+
+json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗口 json 反而更省（无 header 开销）。json 的 edit 响应每行带 `{kind, anchor, content}` 对象（+40~70%），换来与 text 完全同构的 diff 视图与结构化锚点。
+
 ### 可复现
 
 上面的数字**是确定性的，你可以本地复现**——`npm run benchmark`：
@@ -236,7 +293,7 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | 工具 | 作用 |
 | ------ | ------ |
 | `read` | 以 `ANCHOR:FILELINE` 头部 + `<line>#<hash>:<content>` 行形式返回文件。参数：`offset`（1 起始）、`limit`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——哈希锚点需要完整行。 |
-| `edit` | 通过 `{ path, edits: [{ op, from, to?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `from` 之后插入）、`del`（删除 from..to 范围）或 `replace`（用 `lines` 替换 from..to 范围）。对解析出的范围内**每一行**对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。响应为每个 hunk 携带 `Shift:` 块描述编辑后下方绝对行号如何移动。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
+| `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围）或 `replace`（**必须同时给出 `anchor_start`+`anchor_end`**，且 `lines` 行数与范围行数一一对应，否则 `E_LINE_COUNT_MISMATCH`）。对解析出的范围内**每一行**对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。响应为每个 hunk 携带 `Shift:` 块描述编辑后下方绝对行号如何移动。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。 |
 
 ### 错误码
@@ -246,11 +303,13 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | `[E_ACCESS]` | 文件存在但工具不可读/不可写。 |
 | `[E_AMBIGUOUS_ANCHOR]` | 一个哈希匹配当前多行；调用 `read` 获取新锚点。 |
 | `[E_BAD_OP]` | 范围结束先于范围开始（首尾颠倒时会自动纠正）。 |
-| `[E_BAD_REF]` | `from`/`to` 不是从 read/grep/diff 行最左列复制的 `<line>#<hash>`。 |
+| `[E_BAD_REF]` | `anchor_start`/`anchor_end` 不是从 read/grep/diff 行最左列复制的 `<line>#<hash>`。 |
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` 前缀被粘贴进 `lines`（自动纠正）。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
-| `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠；请拆分或合并，未写入任何内容。 |
+| `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠（`ins` 可锚定某范围的 END 行，但不允许起始行/中间行）；请拆分或合并，未写入任何内容。 |
+| `[E_LINE_COUNT_MISMATCH]` | `replace` 的 `lines` 行数与范围行数不一致——每个范围行对应且仅对应一条 `lines`（收缩：replace + del；展开：replace + ins）。 |
+| `[E_MISSING_ANCHOR_END]` | `op:"replace"` 必须同时给出 `anchor_start` 与 `anchor_end`（单行替换两值相同）。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘贴进 `replacement_text`（自动纠正）。 |
 | `[E_NOOP_LOOP]` | 完全相同的编辑反复不产生任何变化；再次提交会被拒绝。 |
 | `[E_NOT_FOUND]` | 文件不存在。 |
