@@ -17,8 +17,9 @@
  * @module dsh-hashline-edittool/tool-grep
  */
 
-import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, lstat } from "node:fs/promises";
+import { minimatch } from "minimatch";
+import { basename, join, relative } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
@@ -160,7 +161,12 @@ export function buildGrepTool(io: FileIO) {
 			path: {
 				type: "string",
 				description:
-					"File or directory to search. Directories recurse one level deep.",
+					"File or directory to search. Optional — defaults to the session workspace (cwd). Directories recurse the whole tree (hidden entries and node_modules skipped).",
+			},
+			include: {
+				type: "string",
+				description:
+					"Optional single positive glob filter — e.g. \"*.ts\" (basenames at any depth) or \"src/**/*.test.js\". Negated (!) patterns are rejected.",
 			},
 			pattern: {
 				type: "string",
@@ -252,8 +258,23 @@ export function buildGrepTool(io: FileIO) {
 				const signal = exec.signal;
 
 				const params = args as Record<string, unknown>;
-				if (typeof params.path !== "string" || params.path.length === 0) {
-					throw new Error('[E_BAD_SHAPE] Grep request requires a non-empty "path".');
+				// `path` is optional — it defaults to the session workspace (cwd),
+				// matching the host grep. Directories recurse the whole tree.
+				if (
+					params.path !== undefined &&
+					(typeof params.path !== "string" || params.path.length === 0)
+				) {
+					throw new Error('[E_BAD_SHAPE] Grep request "path" must be a non-empty string when given.');
+				}
+				let includeGlob: string | undefined;
+				if (params.include !== undefined) {
+					if (typeof params.include !== "string" || params.include.trim().length === 0) {
+						throw new Error('[E_BAD_SHAPE] Grep request "include" must be a non-empty glob when given.');
+					}
+					if (params.include.startsWith("!")) {
+						throw new Error('[E_BAD_SHAPE] Grep request "include" must be a positive glob filter; negated patterns ("!…") are not supported.');
+					}
+					includeGlob = params.include;
 				}
 				if (typeof params.pattern !== "string") {
 					throw new Error('[E_BAD_SHAPE] Grep request requires a "pattern" string.');
@@ -266,21 +287,22 @@ export function buildGrepTool(io: FileIO) {
 				// Pre-build matcher so a bad regex fails before any IO.
 				buildMatcher(params.pattern, opts.regex === true);
 
-				const root = await io.resolve(params.path, cwd, signal);
+				const root = await io.resolve(params.path ?? ".", cwd, signal);
 				abortIf(signal);
-				const pathStat = await stat(root);
+				const rootStat = await lstat(root);
 				let files: string[];
-				if (pathStat.isDirectory()) {
-					const entries = await readdir(root);
-					files = entries
-						.filter((name) => !name.startsWith(".") && name !== "node_modules")
-						.map((name) => join(root, name));
-				} else if (pathStat.isFile()) {
+				if (rootStat.isFile()) {
 					files = [root];
+				} else if (rootStat.isDirectory()) {
+					files = await gatherFiles(root, opts, signal);
 				} else {
 					throw new Error(
 						`[E_NOT_TEXT] Path is neither file nor directory: ${params.path}`,
 					);
+				}
+				if (includeGlob !== undefined) {
+					const relOf = (p: string) => relative(root, p);
+					files = files.filter((p) => matchInclude(includeGlob!, relOf(p)));
 				}
 
 				const fileSections: string[] = [];
@@ -310,7 +332,10 @@ export function buildGrepTool(io: FileIO) {
 					totalMatches += section.matches.length;
 					// The model-facing path is the relative path the user passed in,
 					// derived from `file` (absolute) by stripping the directory part.
-					const displayPath = file.slice(file.lastIndexOf("/") + 1) || file;
+					// Show the path relative to the searched root (host-aligned):
+					// src/deep.txt under a directory root; the bare basename when
+					// the root IS the file.
+					const displayPath = relative(root, file) || basename(file);
 					fileSections.push(buildSectionModelText(displayPath, section));
 					cardFiles.push({
 						path: displayPath,
@@ -397,5 +422,57 @@ function linesOf(content: string): string[] {
 	const lines = content.split("\n");
 	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 	return lines;
+}
+
+
+/** Recursive file gather: whole tree, skipping hidden entries and node_modules. */
+async function gatherFiles(
+	root: string,
+	_opts: unknown,
+	signal: AbortSignal | undefined,
+): Promise<string[]> {
+	const out: string[] = [];
+	const stack = [root];
+	while (stack.length > 0) {
+		abortIf(signal);
+		const dir = stack.pop()!;
+		let entries: string[];
+		try {
+			entries = await readdir(dir);
+		} catch {
+			continue; // unreadable dir — skip silently
+		}
+		for (const name of entries) {
+			if (name.startsWith(".") || name === "node_modules") continue;
+			const p = join(dir, name);
+			let st;
+			try {
+				st = await lstat(p);
+			} catch {
+				continue;
+			}
+			if (st.isSymbolicLink()) continue; // no symlink recursion (loop-safe)
+			if (st.isDirectory()) {
+				stack.push(p);
+			} else if (st.isFile()) {
+				out.push(p);
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * Host-style include glob: a pattern without "/" matches the basename at ANY
+ * depth (like ripgrep --glob); with "/" it matches the root-relative path.
+ */
+function matchInclude(pattern: string, relPath: string): boolean {
+	const bare = pattern.split("/").every((seg) => !seg.includes("*") && !seg.includes("?"));
+	void bare;
+	if (!pattern.includes("/")) {
+		const name = relPath.split("/").pop() ?? relPath;
+		return minimatch(name, pattern, { dot: true });
+	}
+	return minimatch(relPath, pattern, { dot: true });
 }
 
