@@ -185,8 +185,8 @@ export function countLineChanges(
 ): { totalAddedLines: number; totalRemovedLines: number } {
 	if (isNoop) return { totalAddedLines: 0, totalRemovedLines: 0 };
 	let totalRemovedLines = 0;
-	const startLine = originalHashes.indexOf(edit.hash_bounds[0].hash);
-	const endLine = originalHashes.indexOf(edit.hash_bounds[1].hash);
+	const startLine = edit.hash_bounds[0].line - 1;
+	const endLine = edit.hash_bounds[1].line - 1;
 	if (startLine >= 0 && endLine >= 0) {
 		totalRemovedLines = Math.abs(endLine - startLine) + 1;
 	}
@@ -262,17 +262,28 @@ export function resolveIns(
 	replacementText: string,
 	warnings: string[],
 ): { removeTo: string; replacementText: string } {
-	// Resolve removeFrom to its absolute line via the hash.
+	// Resolve removeFrom by the ANCHOR (claimed line + hash), never by bare
+	// hash lookup: the line identifies the row, the hash only verifies it
+	// (identical hashes may legitimately collide — 62^len space). A hash
+	// lookup would pick the FIRST row sharing the hash and paste THAT row's
+	// content into the insert.
 	let fromLine = -1;
 	try {
-		const hash = parseHashRef(removeFrom).hash;
-		fromLine = hashes.indexOf(hash);
+		const ref = parseHashRef(removeFrom);
+		if (
+			ref.line >= 1 &&
+			ref.line <= hashes.length &&
+			hashes[ref.line - 1] === ref.hash
+		) {
+			fromLine = ref.line - 1;
+		}
 	} catch {
 		// Let resEdit surface the anchor error with the right code.
 		return { removeTo: removeFrom, replacementText };
 	}
 	if (fromLine < 0) {
-		// Stale anchor — let resEdit/applyEdit surface [E_STALE_ANCHOR].
+		// Anchor does not verify at the claimed line — let resEdit/applyEdit
+		// surface [E_STALE_ANCHOR] / [E_RANGE_UNVERIFIED].
 		return { removeTo: removeFrom, replacementText };
 	}
 	const lines = splitLines(content);
