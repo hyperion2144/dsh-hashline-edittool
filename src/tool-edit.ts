@@ -36,7 +36,7 @@ import {
 } from "./contract.js";
 import { abortIf, isRec, visLines, formatLineRange } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
-import { LINE_HASH_SEP } from "./hashline/hash-assign.js";
+import { LINE_HASH_SEP, contextLinesCfg } from "./hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "./mutation.js";
 import { runFileEdits, type PreparedItem, type FileEditResult, type HunkShift } from "./edit-engine.js";
@@ -424,7 +424,7 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	const diffResult = genDiff(
 		file.originalNormalized,
 		file.result,
-		3,
+		contextLinesCfg(),
 		file.resultHashes,
 		file.originalHashes,
 	);
@@ -501,7 +501,7 @@ function buildEditJson(
 	const diff = genDiff(
 		file.originalNormalized,
 		file.result,
-		3,
+		contextLinesCfg(),
 		file.resultHashes,
 		file.originalHashes,
 	);
