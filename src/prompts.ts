@@ -81,9 +81,9 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 /** Grep tool description, generated from the effective config (text/json). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Search files (literal by default, `regex: true` for regex); returns pure JSON {total, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]} — match anchors are edit anchors (line#hash), texts are verbatim file content; matches are served so they can be edited directly.";
+		return "Search files (literal by default, `regex: true` for regex); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are edit anchors (line#hash), values are verbatim file content; matches are served so they can be edited directly.";
 	}
-	return "Search files (literal by default, `regex: true` for regex); output mirrors `read` (`<line>#<hash>:content` rows); matches are served, so they can be edited directly.";
+	return "Search files (literal by default, `regex: true` for regex): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<line>#<hash>:content` rows); matches are served, so they can be edited directly.";
 }
 
 export const GREP_GUIDANCE: ToolGuidance = {
