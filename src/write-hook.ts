@@ -9,6 +9,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { readAndServe } from './read-and-serve.js'
+import { buildReadJson } from './presentation-helpers.js'
+import { isJsonOutput } from './config.js'
 import type { FileIO } from './fs-bridge.js'
 import { execCwd, execSessionKey } from './session-view.js'
 import { withWorkspace } from './session-view.js'
@@ -58,12 +60,25 @@ export function registerWriteHook(
 				const cwd = execCwd(exec)
 				const sessionKey = execSessionKey(exec)
 				const signal = exec.signal
-				const { text } = await readAndServe(io, rawPath, cwd, { sessionKey, signal })
+				const served = await readAndServe(io, rawPath, cwd, { sessionKey, signal })
+				const view = isJsonOutput() &&
+					served.normalized !== undefined &&
+					served.hashes !== undefined
+					? JSON.stringify(
+						buildReadJson(
+							served.normalized,
+							served.hashes,
+							1,
+							served.hashes.length,
+							rawPath,
+						),
+					)
+					: `\n\n${AUTO_READ_HEADING}\n${served.text}`
 				return {
 					kind: 'accept' as const,
 					content: [
 						...(decisionContent),
-						{ type: 'text', text: `\n\n${AUTO_READ_HEADING}\n${text}` },
+						{ type: 'text', text: view },
 					],
 				}
 			} catch (error) {
