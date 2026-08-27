@@ -159,17 +159,37 @@ export function buildReadTool(io: FileIO) {
 				assertReadRequest(canonical);
 				const rawPath = canonical.path;
 
-				const result = await readAndServe(
-					io,
-					rawPath,
-					cwd,
-					{
-						sessionKey,
-						signal,
-						offset: canonical.offset,
-						limit: canonical.limit,
-					},
-				);
+				// A read of a file deleted mid-session must clear the stale
+				// "present" observation: the policy would otherwise keep
+				// demanding a re-read that can never succeed (read → not-found
+				// → read loop). An absent observation makes a later write a
+				// create-if-absent.
+				let result;
+				try {
+					result = await readAndServe(
+						io,
+						rawPath,
+						cwd,
+						{
+							sessionKey,
+							signal,
+							offset: canonical.offset,
+							limit: canonical.limit,
+						},
+					);
+				} catch (err) {
+					const message =
+						err instanceof Error ? err.message : String(err);
+					const code = (err as { code?: unknown })?.code;
+					if (
+						code === "FS_NOT_FOUND" ||
+						message.includes("[E_NOT_FOUND]") ||
+						/not found/i.test(message)
+					) {
+						await io.emitAbsent(canonical.path, exec, signal);
+					}
+					throw err;
+				}
 				// Record the present observation with the fs policy gate so later
 				// built-in write/edit calls see this file as observed at the
 				// version the model just read (a no-op when no policy listens).
