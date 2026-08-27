@@ -924,6 +924,28 @@ export interface PersistWriteOptions {
 	restoreUnwrittenUndos?: boolean;
 }
 
+/** Retry once on transient Windows atomic-replace failures before surfacing. */
+async function writeWithRetry(
+	io: FileIO,
+	absolutePath: string,
+	content: string,
+	signal: AbortSignal | undefined,
+	exec: Parameters<FileIO["writeText"]>[3],
+	sandboxPolicy: Parameters<FileIO["writeText"]>[4],
+): Promise<void> {
+	try {
+		await io.writeText(absolutePath, content, signal, exec, sandboxPolicy);
+		return;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (!/replacefilew|win32 1175|unable to move replacement/i.test(message)) {
+			throw error;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		await io.writeText(absolutePath, content, signal, exec, sandboxPolicy);
+	}
+}
+
 /**
  * The persist-undo → write-all → restore-on-failure transaction shared by
  * `edit` (one or more files via the `edits` array). Every file's undo entry is
@@ -964,7 +986,11 @@ export async function persistUndoAndWrite(
 	try {
 		for (const u of undos) {
 			abortIf(opts.signal);
-			await io.writeText(
+			// Windows atomic-replace failures are often transient (antivirus
+			// scan windows, sync tools reopening the file): retry once before
+			// failing the batch.
+			await writeWithRetry(
+				io,
 				u.file.absolutePath,
 				u.file.bom + restoreEndings(u.file.result, u.file.originalEnding),
 				opts.signal,

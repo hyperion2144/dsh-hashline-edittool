@@ -388,6 +388,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_STALE_ANCHOR]` | Anchor(s) no longer resolve; call `read` for fresh anchors. |
 | `[E_UNDO_STALE]` | Cannot undo: the file was modified (or deleted) after the edit. |
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted; the edit was not applied. |
+| `[E_WIN_REPLACE]` | Windows atomic replace failed (ReplaceFileW / error 1175): the target is held open by another process (IDE watcher, antivirus, sync) or is write-protected — close it and retry. |
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` to clear it. |
 
 ## How It Replaces the Built-in Tools
