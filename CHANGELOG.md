@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-27
+
 ### Added
 
 - Configurable hashline shape via `~/.dsh/settings.yaml` (`hashline:` namespace): `separator` (default `:`), `hash_length` (default 3, 1..6), `output_format` (`text` | `json`), `context_lines` (default 3, 0..20 — unified across stale-echo, diff and grep context). No settings service installed in the deployment? The plugin mounts a read-only file-backed provider itself (`FileSettingsProvider`); `@deepseek-ai/*` packages are host-shared peer dependencies.
