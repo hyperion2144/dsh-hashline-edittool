@@ -116,8 +116,8 @@ hashline:
 设 `output_format: json` 后工具返回纯 JSON，模型直接解析：
 
 - **read** 返回 `{path, offset, totalLines, lines: {anchor: content}}`——每个 `lines` 键都是 `<line>#<hash>` 编辑锚点，值即文件原文。
-- **grep** 返回 `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`。
-- **edit** 成功返回 `{ok: true, path, diff: [{kind: "+" | "-" | " ", anchor, content}], hints, warnings, errors: []}`——`diff` 是 text diff 逐行 json 化的结果（`kind` 与 diff 前缀一致，锚点为最终 `line#hash`，可直接用于后续编辑；上下文行数继承 `context_lines`）。**被拒绝的编辑在 json 模式与 text 模式一样显式失败（throw, isError）**——模型经由失败通道拿到 `E_` 代码与消息，不会伪装成成功调用。
+- **grep** 返回 `{total, truncated, files: [{path, matches: {anchor: content}}]}`——与 read 的 `lines` 同构的单一锚点字典；命中行与上下文行（按 `context_lines`）同在一个字典，`total` 为命中数（与普通 grep 一致，行本身不标记命中/上下文）。
+- **edit** 成功返回 `{ok: true, path, diff: {key: content}, hints, warnings, errors: []}`——`diff` 是逐行锚点字典：删除行 key 为 `"-旧行号#旧hash"`，新增行 key 为 `"+最终行号#新hash"`，上下文行 key 为裸锚点（与 read 的 `lines` 对齐；上下文行数继承 `context_lines`）。**被拒绝的编辑在 json 模式与 text 模式一样显式失败（throw, isError）**——模型经由失败通道拿到 `E_` 代码与消息，不会伪装成成功调用。
 
 旧 `│` 分隔的行在两种模式下仍可解析。
 
@@ -260,9 +260,9 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | read · 全文件（104 行） | 1,307 | 1,493 | 1.14× |
 | read · 50 行窗口 | 662 | 725 | 1.10× |
 | read · 10 行窗口 | 210 | 177 | 0.84× |
-| edit · 单行 1→1 | 157 | 222 | 1.41× |
-| edit · 收缩 10→2 | 239 | 406 | 1.70× |
-| edit · 展开 2→10 | 248 | 360 | 1.45× |
+| edit · 单行 1→1 | 157 | 165 | 1.05× |
+| edit · 收缩 10→2 | 239 | 278 | 1.16× |
+| edit · 展开 2→10 | 248 | 232 | 0.94× |
 
 json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗口 json 反而更省（无 header 开销）。json 的 edit 响应每行带 `{kind, anchor, content}` 对象（+40~70%），换来与 text 完全同构的 diff 视图与结构化锚点。
 

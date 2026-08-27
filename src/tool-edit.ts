@@ -488,16 +488,16 @@ function buildEditJson(
 ): {
 	ok: boolean;
 	path: string;
-	diff: Array<{ kind: "+" | "-" | " "; anchor: string; content: string }>;
+	diff: Record<string, string>;
 	hints: string[];
 	warnings: string[];
 	errors: unknown[];
 } {
-	// The json view is the text diff, structured row by row (json-ified text):
-	// kind mirrors the diff prefix (+ added / - removed / space = context),
-	// anchors are the FINAL line#hash markers, content is verbatim. No
-	// before/after window maps — overlapping end-line hunks (ins anchored on
-	// a replace range's end line) made per-hunk windows ambiguous.
+	// The json view of the diff is anchor-keyed, exactly like read's lines:
+	// every row is `key: content`, where the key carries the row type in its
+	// prefix — "-<old line#old hash>" for a removed row, "+<final line#new
+	// hash>" for an added row, and the BARE anchor for context rows. No kind
+	// field, no before/after windows.
 	const diff = genDiff(
 		file.originalNormalized,
 		file.result,
@@ -511,10 +511,15 @@ function buildEditJson(
 			(h) =>
 				`edits[${h.index}]: original ${h.originalStartLine === h.originalEndLine ? "line " + h.originalStartLine : "lines " + h.originalStartLine + ".." + h.originalEndLine} moved to ${h.finalStartLine === h.finalEndLine ? "line " + h.finalStartLine : "lines " + h.finalStartLine + ".." + h.finalEndLine} (${(h.delta > 0 ? "+" : "") + h.delta})`,
 		);
+	const diffDict: Record<string, string> = {};
+	for (const r of diff.rows) {
+		const key = r.kind === "-" ? `-${r.anchor}` : r.kind === "+" ? `+${r.anchor}` : r.anchor;
+		diffDict[key] = r.content;
+	}
 	return {
 		ok: true,
 		path: displayPath,
-		diff: diff.rows.map((r) => ({ kind: r.kind, anchor: r.anchor, content: r.content })),
+		diff: diffDict,
 		hints,
 		warnings: file.warnings,
 		errors: [],

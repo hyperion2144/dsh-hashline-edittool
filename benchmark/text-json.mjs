@@ -82,12 +82,16 @@ function editJson(content, start, end, newLines) {
 		...newLines,
 		...content.split("\n").slice(end),
 	].join("\n");
-	// Mirror the real json view: genDiff rows (kind + - space / anchor / content).
+	// Mirror the real json view: anchor-keyed diff dict.
 	const diff = genDiff(content, result, 3, undefined, undefined);
+	const diffDict = {};
+	for (const r of diff.rows) {
+		diffDict[r.kind === "-" ? "-" + r.anchor : r.kind === "+" ? "+" + r.anchor : r.anchor] = r.content;
+	}
 	return JSON.stringify({
 		ok: true,
 		path: "cart.ts",
-		diff: diff.rows.map((r) => ({ kind: r.kind, anchor: r.anchor, content: r.content })),
+		diff: diffDict,
 		hints: [
 			`edits[0]: original lines ${start}..${end} moved to ${start}..${start + newLines.length - 1} (${newLines.length - (end - start + 1) >= 0 ? "+" : ""}${newLines.length - (end - start + 1)})`,
 		],

@@ -131,8 +131,8 @@ Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describin
 Set `output_format: json` for pure-JSON tool outputs — the model parses the JSON directly:
 
 - **read** returns `{path, offset, totalLines, lines: {anchor: content}}` — each `lines` key is a `<line>#<hash>` edit anchor, each value is the verbatim file content.
-- **grep** returns `{total, truncated, files: [{path, matches: [{anchor, text, contextBefore, contextAfter}]}]}`.
-- **edit** returns `{ok: true, path, diff: [{kind: "+" | "-" | " ", anchor, content}], hints, warnings, errors: []}` on success — `diff` is the text diff json-ified row by row (kind mirrors the diff prefix, anchors are final line#hash markers usable for follow-up edits, context rows inherit `context_lines`). **Rejected edits fail loudly (throw, isError) in json mode exactly as in text mode** — the model receives the `E_` code + message through the failure channel.
+- **grep** returns `{total, truncated, files: [{path, matches: {anchor: content}}]}` — one anchor-keyed dict like read's `lines`; match rows and their context rows (per `context_lines`) live together, `total` counts the matches (like plain grep, rows carry no match-vs-context marker).
+- **edit** returns `{ok: true, path, diff: {key: content}, hints, warnings, errors: []}` on success — `diff` is the text diff as an anchor-keyed dict: removed rows keyed `"-<old line#old hash>"`, added rows `"+<final line#new hash>"`, context rows keyed by the BARE anchor (aligned with read's `lines`; context count follows `context_lines`). **Rejected edits fail loudly (throw, isError) in json mode exactly as in text mode** — the model receives the `E_` code + message through the failure channel.
 
 Legacy `│`-separated rows still parse in both modes.
 
@@ -331,9 +331,9 @@ Saved vs `str_replace`: hashline **266 (26%)** · oh-my-pi per-edit **425 (42%)*
 | read · whole file (104 lines) | 1,307 | 1,493 | 1.14× |
 | read · 50-line window | 662 | 725 | 1.10× |
 | read · 10-line window | 210 | 177 | 0.84× |
-| edit · 1→1 single line | 157 | 222 | 1.41× |
-| edit · shrink 10→2 | 239 | 406 | 1.70× |
-| edit · expand 2→10 | 248 | 360 | 1.45× |
+| edit · 1→1 single line | 157 | 165 | 1.05× |
+| edit · shrink 10→2 | 239 | 278 | 1.16× |
+| edit · expand 2→10 | 248 | 232 | 0.94× |
 
 json's read dict repeats each anchor key per line (large windows +10–14%); small read windows win for json (no header overhead). json edit responses carry per-row `{kind, anchor, content}` objects (+40–70%) in exchange for the text-identical diff view with structured anchors.
 
