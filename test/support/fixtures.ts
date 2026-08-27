@@ -17,6 +17,7 @@ import { localIO, type FileIO } from "../../src/fs-bridge.js";
 import { buildEditTool } from "../../src/tool-edit.js";
 import { buildReadTool } from "../../src/tool-read.js";
 import { buildUndoTool } from "../../src/tool-undo.js";
+import { buildGrepTool } from "../../src/tool-grep.js";
 import { FsSandboxController } from "../../src/sandbox.js";
 
 export async function getWritableTempRoot(): Promise<string> {
@@ -229,6 +230,7 @@ export function setupIntegrationTest(cwd: string) {
 		read: wrapTool(buildReadTool(io), makeExecFor),
 		edit: wrapTool(buildEditTool(io, sandbox), makeExecFor),
 		undo_last_edit: wrapTool(buildUndoTool(io, sandbox), makeExecFor),
+		grep: wrapTool(buildGrepTool(io), makeExecFor),
 	};
 	return {
 		io,
