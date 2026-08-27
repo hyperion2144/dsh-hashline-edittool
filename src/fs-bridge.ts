@@ -58,6 +58,17 @@ export interface FileIO {
 		exec?: ToolExecution,
 		signal?: AbortSignal,
 	): Promise<void>;
+	/**
+	 * Emit `fs/observed` with an ABSENT observation for a read that failed
+	 * with not-found: the policy then treats the file as confirmed absent,
+	 * so a later write falls back to create-if-absent instead of demanding
+	 * a re-read it can never satisfy (read → not-found → read loop).
+	 */
+	emitAbsent(
+		absolutePath: string,
+		exec?: ToolExecution,
+		signal?: AbortSignal,
+	): Promise<void>;
 	/** Opaque change-version for snapshot bookkeeping, or undefined when unavailable. */
 	statVersion(
 		absolutePath: string,
@@ -187,6 +198,34 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 				);
 			}
 		},
+		async emitAbsent(absolutePath, exec, signal) {
+			try {
+				const target = await fs.resolve(absolutePath, {
+					...(signal !== undefined ? { signal } : {}),
+				});
+				const info = await fs.stat(target, signal);
+				if (info === undefined) {
+					ctx.emit("fs/observed", target, { kind: "absent" }, exec);
+				}
+			} catch (error) {
+				// Re-resolve may race a recreate; only absence is worth recording.
+				const code = (error as { code?: string })?.code;
+				if (code === "FS_NOT_FOUND") {
+					try {
+						const target = await fs.resolve(absolutePath, {
+							...(signal !== undefined ? { signal } : {}),
+						});
+						ctx.emit("fs/observed", target, { kind: "absent" }, exec);
+					} catch {
+						// resolve itself failed — nothing to record
+					}
+				} else {
+					console.error(
+						`dsh-hashline-edittool: fs/observed(absent) emission failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+		},
 		async statVersion(absolutePath, signal) {
 			try {
 				const target = await fs.resolve(absolutePath, {
@@ -216,6 +255,9 @@ export function localIO(): FileIO {
 			await writeAtomic(absolutePath, content);
 		},
 		async emitObserved() {
+			// No policy event gate on the host filesystem; nothing to record.
+		},
+		async emitAbsent() {
 			// No policy event gate on the host filesystem; nothing to record.
 		},
 		async statVersion(absolutePath) {
