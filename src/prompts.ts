@@ -41,9 +41,9 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 		"`edit`: `anchor_start` is required and anchors the FIRST line of the range (`12#ve7`); `anchor_end` anchors the LAST line — REQUIRED for `replace` (a single-line replace passes the same anchor twice). `op:\"ins\"` accepts ONLY `anchor_start` — the insert lands AFTER that line; `anchor_end` is rejected.",
 		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 		"`edit`: anchors must be `<line>#<hash>` copied from the leftmost column of a read/grep/diff row — never hand-write or paste bare hashes or line content.",
-		"`edit`: all items in one call resolve against the same file snapshot — pass ORIGINAL anchors for every hunk; ranges that overlap are rejected ([E_BATCH_CONFLICT]) instead of being applied in sequence. The diff rows carry final line#hash markers; each `Shift:` block maps the hunk's original range to its final position.",
+		"`edit`: ALL anchors in one call come from the same ORIGINAL read — never shift them to positions a previous hunk would produce in sequence (there is no 'after the previous edit' coordinate; the batch applies against the original snapshot). The response's diff rows and `Shift:` blocks show the FINAL positions.",
 		"`edit`: a stale or never-served range is hard-rejected (`[E_STALE_ANCHOR]` / `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
-		"`edit`: for multiple edits to one file (or across files with per-item `path`), list them in ONE `edits` array — the tool validates every item before writing and applies them all-or-nothing, emitting a Shift block per hunk. Do not issue several `edit` calls in one message.",
+		"`edit`: the batch is ATOMIC — any hunk failure rejects the WHOLE batch ([E_BATCH_ABORT]) and nothing is written; already-resolved hunks are not applied, so there is nothing to roll back or undo. Do not issue several `edit` calls in one message — one call, one `edits` array.",
 	],
 };
 

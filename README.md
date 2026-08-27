@@ -216,6 +216,8 @@ the line half shifts in the `Shift:` block, with `newLine#oldHash` for the next 
 A stale, never-served, or ambiguous range is hard-rejected **before anything is written**, and the
 current range is echoed back as fresh anchors (reject-and-serve) — the retry needs no `read`.
 
+**One call = one snapshot, and it is atomic.** All anchors in one `edit` call resolve against the **original** file snapshot — never shift them to positions a previous hunk would produce in sequence (there is no "after the previous edit" coordinate); the response's diff rows and `Shift:` blocks show the final positions. The batch is **all-or-nothing**: any hunk failure rejects the whole call (`[E_BATCH_ABORT]`) and **nothing is written** — already-resolved hunks are not applied, so there is nothing to roll back.
+
 **A modern edit pattern for agents.** Content-addressed anchors (the 3-char hash) survive edits
 above; the `line#hash` form additionally pins the line's absolute position. Every hunk in one
 `edit` call resolves its anchors against the same file snapshot, so multiple non-overlapping
