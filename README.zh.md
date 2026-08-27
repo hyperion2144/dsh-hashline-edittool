@@ -314,6 +314,7 @@ json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗�
 | `[E_STALE_ANCHOR]` | 锚点不再能解析；调用 `read` 获取新锚点。 |
 | `[E_UNDO_STALE]` | 无法撤销：编辑之后文件被修改（或删除）。 |
 | `[E_UNDO_UNAVAILABLE]` | 撤销历史无法持久化；编辑未被应用。 |
+| `[E_WIN_REPLACE]` | Windows 原子替换失败（ReplaceFileW / 错误 1175）：目标文件被其它进程占用（IDE watcher、杀毒、云同步）或受写保护——关闭占用后重试。 |
 | `[E_WOULD_EMPTY]` | 编辑会把非空文件清空；请用 `write` 清空。 |
 
 ## 如何替换内置工具
