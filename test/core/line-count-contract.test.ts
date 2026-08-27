@@ -147,6 +147,49 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
+	it("json success diff is an anchor-keyed dict (+/- prefixed changes, bare context)", async () => {
+		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, "t.txt");
+			const by = (c: string) => served.find((r) => r.content === c)!;
+			applyEffective({ output_format: "json" });
+			const res = await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [
+					{ op: "replace", anchor_start: by("b").hash, anchor_end: by("b").hash, lines: ["B"] },
+				],
+			});
+			const out = JSON.parse(getText(res)) as { ok: boolean; diff: Record<string, string> };
+			expect(out.ok).toBe(true);
+			// removed row: "-" + old anchor; added row: "+" + final anchor
+			expect(out.diff[`-${by("b").hash}`]).toBe("b");
+			const added = Object.keys(out.diff).find((k) => k.startsWith("+2#")) ?? "";
+			expect(out.diff[added]).toBe("B");
+			// context rows use BARE anchors, aligned with read's lines
+			expect(out.diff[by("a").hash]).toBe("a");
+			expect(out.diff[by("c").hash]).toBe("c");
+		});
+	});
+
+	it("grep json matches is one anchor-keyed dict (match + context rows together)", async () => {
+		await withTempFile("t.txt", "alpha\nbeta\ngamma\ndelta\n", async ({ cwd }) => {
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, "t.txt");
+			applyEffective({ output_format: "json" });
+			const res = await (harness.getTool("grep") as unknown as {
+				execute: (id: string, p: unknown) => Promise<{ content: Array<{ text?: string }> }>;
+			}).execute("g", { path: "t.txt", pattern: "beta" });
+			const out = JSON.parse(getText(res)) as {
+				files: Array<{ path: string; matches: Record<string, string> }>;
+			};
+			const matches = out.files[0]!.matches;
+			// match row and its context rows all live in the one dict (key = line#hash)
+			expect(matches[served[1]!.hash]).toBe("beta");
+			expect(matches[served[0]!.hash]).toBe("alpha");
+			expect(matches[served[2]!.hash]).toBe("gamma");
+		});
+	});
+
 	it("rejected edits fail loudly in json mode too (throw, isError)", async () => {
 		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);

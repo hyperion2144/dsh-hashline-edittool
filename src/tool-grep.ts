@@ -288,12 +288,7 @@ export function buildGrepTool(io: FileIO) {
 				const jsonOutput = isJsonOutput();
 				const jsonFiles: Array<{
 					path: string;
-					matches: Array<{
-						anchor: string;
-						text: string;
-						contextBefore: Record<string, string>;
-						contextAfter: Record<string, string>;
-					}>;
+					matches: Record<string, string>;
 				}> = [];
 				const allServed: Array<{ path: string; rows: { position: number; hash: string }[] }> = [];
 				const allSeen: Array<{ path: string }> = [];
@@ -327,27 +322,24 @@ export function buildGrepTool(io: FileIO) {
 					});
 					if (jsonOutput) {
 						const context = opts.context ?? contextLinesCfg();
-						jsonFiles.push({
-							path: displayPath,
-							matches: section.matches.map((m) => {
-								const anchor = (pos: number) =>
-									`${pos + 1}${LINE_HASH_SEP}${section.contextRows.find((r) => r.position === pos)?.hash ?? hashes[pos] ?? ""}`;
-								const before: Record<string, string> = {};
-								const after: Record<string, string> = {};
-								for (let k = Math.max(0, m.position - context); k < m.position; k++) {
-									before[anchor(k)] = section.contextRows.find((r) => r.position === k)?.content ?? linesOf(raw)[k] ?? "";
-								}
-								for (let k = m.position + 1; k <= Math.min(linesOf(raw).length - 1, m.position + context); k++) {
-									after[anchor(k)] = section.contextRows.find((r) => r.position === k)?.content ?? linesOf(raw)[k] ?? "";
-								}
-								return {
-									anchor: anchor(m.position),
-									text: m.content,
-									contextBefore: before,
-									contextAfter: after,
-								};
-							}),
-						});
+						// matches is ONE anchor-keyed dict like read's lines: match
+						// rows and their context rows live together, key = line#hash,
+						// value = verbatim content (no separate before/after fields).
+						const matches: Record<string, string> = {};
+						const rowsByPos = new Map<number, { hash: string; content: string }>(
+							section.contextRows.map((r) => [r.position, r]),
+						);
+						for (const m of section.matches) {
+							const anchorAt = (pos: number) =>
+								`${pos + 1}${LINE_HASH_SEP}${rowsByPos.get(pos)?.hash ?? hashes[pos] ?? ""}`;
+							matches[anchorAt(m.position)] =
+								rowsByPos.get(m.position)?.content ?? linesOf(raw)[m.position] ?? "";
+							for (let k = Math.max(0, m.position - context); k <= Math.min(linesOf(raw).length - 1, m.position + context); k++) {
+								if (k === m.position) continue;
+								matches[anchorAt(k)] = rowsByPos.get(k)?.content ?? linesOf(raw)[k] ?? "";
+							}
+						}
+						jsonFiles.push({ path: displayPath, matches });
 					}
 					allServed.push({ path: file, rows: section.contextRows });
 					allSeen.push({ path: file });
