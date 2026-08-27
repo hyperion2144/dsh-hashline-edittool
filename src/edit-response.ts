@@ -1,7 +1,7 @@
 import type { ServedRow } from "./hashline/served.js";
 import { genDiff } from "./edit-diff.js";
 import { visLines, clipLine } from "./utils.js";
-import { hashlineHeader, LINE_HASH_SEP } from "./hashline/index.js";
+import { hashlineHeader, LINE_HASH_SEP, contextLinesCfg } from "./hashline/index.js";
 import type { HunkShift } from "./edit-engine.js";
 
 
@@ -209,7 +209,7 @@ export function buildChanged(input: SuccessInput): TResult {
 	const diffResult = genDiff(
 		originalNormalized,
 		result,
-		1,
+		contextLinesCfg(),
 		resultHashes,
 		originalHashes,
 	);
@@ -325,7 +325,7 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 		const diffResult = genDiff(
 			s.originalNormalized,
 			s.result,
-			1,
+			contextLinesCfg(),
 			s.resultHashes,
 			s.originalHashes,
 		);

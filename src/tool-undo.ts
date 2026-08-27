@@ -18,7 +18,7 @@ import { cntDiff, splitLines } from "./utils.js";
 import { assertUndoRequest } from "./contract.js";
 import { normalizeRequest as normReq } from "./contract.js";
 import { upsertSnapshotFor } from "./hash-store.js";
-import { contentChecksum } from "./hashline/hash-assign.js";
+import { contentChecksum, contextLinesCfg } from "./hashline/hash-assign.js";
 import { lineHashes } from "./hashline/hash.js";
 import { changedRange } from "./hashline/anchor-pipeline.js";
 import { getUndo, clearUndo } from "./undo-edit.js";
@@ -171,7 +171,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const diffResult = genDiff(
 				undo.content,
 				currentNormalized,
-				0,
+				contextLinesCfg(),
 				undefined,
 				undo.hashes,
 			);

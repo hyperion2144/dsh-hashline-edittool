@@ -157,7 +157,7 @@ describe("buildChanged", () => {
     expect(output.details.metrics!.removed_lines).toBe(0);
   });
 
-  it("shows exactly one context line above and below the change in the diff", async () => {
+  it("shows the configured context lines above and below the change in the diff", async () => {
     const original = "aaa\nbbb\nccc\nddd\neee\n";
     const result = "aaa\nbbb\nCCC\nddd\neee\n";
     const originalHashes = await lineHashes(original, home.testPath);
@@ -173,11 +173,12 @@ describe("buildChanged", () => {
       editMeta: { editsAttempted: 1, noopEditsCount: 0, firstChangedLine: 3, lastChangedLine: 3, addedLines: 1, removedLines: 1 },
     });
     const diff = output.details.diff!;
+    // context_lines default 3: both neighbours above and below appear
+    expect(diff).toContain(":aaa");
     expect(diff).toContain(":bbb");
     expect(diff).toContain(":CCC");
     expect(diff).toContain(":ddd");
-    expect(diff).not.toContain(":aaa");
-    expect(diff).not.toContain(":eee");
+    expect(diff).toContain(":eee");
   });
 });
 
