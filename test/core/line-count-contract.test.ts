@@ -54,50 +54,7 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
-	it("rejects a replace whose lines count is too small (E_LINE_COUNT_MISMATCH)", async () => {
-		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
-			const harness = setupIntegrationTest(cwd);
-			const served = await servedRows(harness, "t.txt");
-			await expect(
-				editTool(harness).execute("edit", {
-					path: "t.txt",
-					edits: [
-						{
-							op: "replace",
-							anchor_start: served[0]!.hash,
-							anchor_end: served[2]!.hash,
-							lines: ["A"],
-						},
-					],
-				}),
-			).rejects.toThrow(/E_LINE_COUNT_MISMATCH/);
-		});
-	});
-
-	it("rejects a replace whose lines count is too large, teaching the templates", async () => {
-		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
-			const harness = setupIntegrationTest(cwd);
-			const served = await servedRows(harness, "t.txt");
-			const err = await editTool(harness)
-				.execute("edit", {
-					path: "t.txt",
-					edits: [
-						{
-							op: "replace",
-							anchor_start: served[0]!.hash,
-							anchor_end: served[1]!.hash,
-							lines: ["A", "B", "C"],
-						},
-					],
-				})
-				.then(() => null, (e: unknown) => (e instanceof Error ? e.message : String(e)));
-			expect(err).toMatch(/E_LINE_COUNT_MISMATCH/);
-			expect(err).toContain("shrink N→M → replace the first M lines + del the rest");
-			expect(err).toContain("expand M→N → replace the M-line range + ins at the range's last line");
-		});
-	});
-
-	it("shrinks 10→2 as replace(first 2)+del(rest) in one call", async () => {
+	it("replaces a 10-line range with 2 lines in one call (free line count)", async () => {
 		await withTempFile("t.txt", BLOCK10, async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
@@ -105,8 +62,7 @@ describe("exact line-count edit contract", () => {
 			const res = await editTool(harness).execute("edit", {
 				path: "t.txt",
 				edits: [
-					{ op: "replace", anchor_start: by("l1").hash, anchor_end: by("l2").hash, lines: ["N1", "N2"] },
-					{ op: "del", anchor_start: by("l3").hash, anchor_end: by("l10").hash },
+					{ op: "replace", anchor_start: by("l1").hash, anchor_end: by("l10").hash, lines: ["N1", "N2"] },
 				],
 			});
 			expect(getText(res)).toContain("Successfully edited in t.txt");
@@ -114,38 +70,20 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
-	it("expands 2→10 as replace(2)+ins(last line) in one call, either hunk order", async () => {
+	it("replaces a 2-line range with 10 lines in one call (free line count)", async () => {
 		await withTempFile("t.txt", "a\nb\n", async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
 			const a = served.find((r) => r.content === "a")!;
 			const b = served.find((r) => r.content === "b")!;
-			for (const hunks of [
-				[
-					{ op: "replace", anchor_start: a.hash, anchor_end: b.hash, lines: ["A", "B"] },
-					{ op: "ins", anchor_start: b.hash, lines: ["i1", "i2", "i3"] },
+			const res = await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [
+					{ op: "replace", anchor_start: a.hash, anchor_end: b.hash, lines: ["A", "B", "i1", "i2", "i3"] },
 				],
-				[
-					{ op: "ins", anchor_start: b.hash, lines: ["i1", "i2", "i3"] },
-					{ op: "replace", anchor_start: a.hash, anchor_end: b.hash, lines: ["A", "B"] },
-				],
-			] as const) {
-				await writeFile(path, "a\nb\n");
-				// Re-serve after restoring the file so the served mirror matches,
-				// then re-resolve anchors (the first variant rewrote the file).
-				await harness.readTool.execute("read", { path: "t.txt" });
-				const served2 = await servedRows(harness, "t.txt");
-				const a2 = served2.find((r) => r.content === "a")!;
-				const b2 = served2.find((r) => r.content === "b")!;
-				const use = (h: (typeof hunks)[number]) =>
-					h.op === "ins" ? { ...h, anchor_start: b2.hash } : { ...h, anchor_start: a2.hash, anchor_end: b2.hash };
-				const res = await editTool(harness).execute("edit", {
-					path: "t.txt",
-					edits: hunks.map(use),
-				});
-				expect(getText(res)).toContain("Successfully edited in t.txt");
-				expect(await readFile(path, "utf-8")).toBe("A\nB\ni1\ni2\ni3\n");
-			}
+			});
+			expect(getText(res)).toContain("Successfully edited in t.txt");
+			expect(await readFile(path, "utf-8")).toBe("A\nB\ni1\ni2\ni3\n");
 		});
 	});
 
@@ -217,16 +155,9 @@ describe("exact line-count edit contract", () => {
 			await expect(
 				editTool(harness).execute("edit", {
 					path: "t.txt",
-					edits: [
-						{
-							op: "replace",
-							anchor_start: served[0]!.hash,
-							anchor_end: served[1]!.hash,
-							lines: ["A"],
-						},
-					],
+					edits: [{ op: "replace", anchor_start: served[0]!.hash, lines: ["A"] }],
 				}),
-			).rejects.toThrow(/E_LINE_COUNT_MISMATCH/);
+			).rejects.toThrow(/E_MISSING_ANCHOR_END/);
 		});
 	});
 });

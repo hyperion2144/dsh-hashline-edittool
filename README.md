@@ -85,17 +85,9 @@ ANCHOR:FILELINE
 
 `edit` targets one or more ranges of `line#hash` anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). The contract is **exact**:
 
-- `replace` requires **both** anchors; a single-line replace passes the same marker twice (`anchor_start === anchor_end`), and `lines` must contain **exactly one entry per range line** — mismatched counts are rejected (`E_LINE_COUNT_MISMATCH`) instead of silently duplicating or deleting lines.
+- `replace` requires **both** anchors; a single-line replace passes the same marker twice (`anchor_start === anchor_end`). `lines` has **any length** — the whole range is swapped for it (shrink and expand are single-hunk `replace`s).
 - `ins` inserts into the **gap after** its anchor line (the anchor line's content is untouched) and may anchor on **another hunk's range END line** (half-open `N ∉ [hs, he)`) — never its start or interior.
 - `del` deletes the range (lines must be empty).
-
-Three canonical templates cover every block rewrite in one call:
-
-| intent | edits[] |
-|---|---|
-| equal rewrite | `replace` with matching counts |
-| shrink N→M | `replace` the first M lines + `del` the rest |
-| expand M→N | `replace` the M-line range + `ins` at the range's last line |
 
 A single-line replace:
 
@@ -223,6 +215,8 @@ the line half shifts in the `Shift:` block, with `newLine#oldHash` for the next 
 **Correctness.** Every resolved edit range is verified against the exact lines the model was shown.
 A stale, never-served, or ambiguous range is hard-rejected **before anything is written**, and the
 current range is echoed back as fresh anchors (reject-and-serve) — the retry needs no `read`.
+
+**One call = one snapshot, and it is atomic.** All anchors in one `edit` call resolve against the **original** file snapshot — never shift them to positions a previous hunk would produce in sequence (there is no "after the previous edit" coordinate); the response's diff rows and `Shift:` blocks show the final positions. The batch is **all-or-nothing**: any hunk failure rejects the whole call (`[E_BATCH_ABORT]`) and **nothing is written** — already-resolved hunks are not applied, so there is nothing to roll back.
 
 **A modern edit pattern for agents.** Content-addressed anchors (the 3-char hash) survive edits
 above; the `line#hash` form additionally pins the line's absolute position. Every hunk in one
@@ -381,7 +375,6 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
-| `[E_LINE_COUNT_MISMATCH]` | `replace`'s `lines` count differs from its range line count — each range line maps to exactly one entry (shrink: replace + del; expand: replace + ins). |
 | `[E_MISSING_ANCHOR_END]` | `op:"replace"` requires both `anchor_start` and `anchor_end` (single-line: pass the same anchor twice). |
 | `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |

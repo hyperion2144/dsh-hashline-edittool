@@ -78,17 +78,9 @@ kQm:}
 
 `edit` 通过 `edits:[]` 数组按 `line#hash` 锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。契约是**精确**的：
 
-- `replace` 必须同时给出**两个锚点**；单行替换把同一标记传两次（`anchor_start === anchor_end`），且 `lines` 必须与范围行数**一一对应**——行数不匹配会被拒绝（`E_LINE_COUNT_MISMATCH`），不会静默造成重复或误删。
+- `replace` 必须同时给出**两个锚点**；单行替换把同一标记传两次（`anchor_start === anchor_end`）。`lines` **行数任意**——整个范围被整体替换（收缩与展开都是单 hunk `replace`）。
 - `ins` 在锚点行的**行后间隙**插入（锚点行内容原样保留），且允许锚定在**其它 hunk 范围的 END 行**上（半开规则 `N ∉ [hs, he)`），但不允许锚定在范围的起始行或中间行。
 - `del` 删除范围（`lines` 必须为空）。
-
-三种规范模板覆盖所有整块改写，一次调用完成：
-
-| 意图 | edits[] |
-|---|---|
-| 等量改写 | `replace`，行数一致 |
-| 收缩 N→M | `replace` 前 M 行 + `del` 其余 |
-| 展开 M→N | `replace` 整个 M 行范围 + `ins` 锚定范围最后一行 |
 
 单行替换示例：
 
@@ -204,6 +196,8 @@ preset 从来不是必需的。
 
 **正确性。** 每个解析出的编辑范围都会与模型实际看到的行逐行核对。过期、从未提供或歧义的范围会在**写入任何内容之前**被硬性拒绝，并把当前行以 read 格式（±3 上下文）回显为全新 `<line>#<hash>` 锚点（reject-and-serve）——重试无需 `read`。
 
+**一次调用 = 同一快照，且完全原子。** 一次 `edit` 调用内的所有锚点都基于**原始**文件快照解析——绝不使用前面 hunk 应用后偏移出的行号（不存在「上一项编辑之后」的坐标；响应里的 diff 行与 `Shift:` 块展示的是最终位置）。批量是**全有或全无**：任一 hunk 失败会拒绝整个调用（`[E_BATCH_ABORT]`）且**不写入任何内容**——已解析的其它 hunk 不会被应用，因此无需回退。
+
 **面向 Agent 的现代编辑范式。** 内容地址（3 字符 hash）与行号搭配为 `<line>#<hash>`：一次 `edit` 调用内的每个 hunk 都基于同一文件快照解析锚点，多个不重叠的修改可以原子地一次应用；重叠范围会在写前被拒绝（`[E_BATCH_CONFLICT]`）。编辑后的 diff 行携带最终行号与 hash，每个 hunk 的 `Shift:` 块把原始范围映射到最终位置（`Shift: edits[1] lines 5..6 moved to lines 7..9 (+2)`），后续编辑直接从 diff 行复制标记即可。模型按行**是什么**（hash）+ **当前在哪**（line）来定位，而不是按它之前在第几行。
 
 ### 对比
@@ -308,7 +302,6 @@ json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗�
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` 前缀被粘贴进 `lines`（自动纠正）。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
 | `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠（`ins` 可锚定某范围的 END 行，但不允许起始行/中间行）；请拆分或合并，未写入任何内容。 |
-| `[E_LINE_COUNT_MISMATCH]` | `replace` 的 `lines` 行数与范围行数不一致——每个范围行对应且仅对应一条 `lines`（收缩：replace + del；展开：replace + ins）。 |
 | `[E_MISSING_ANCHOR_END]` | `op:"replace"` 必须同时给出 `anchor_start` 与 `anchor_end`（单行替换两值相同）。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘贴进 `replacement_text`（自动纠正）。 |
 | `[E_NOOP_LOOP]` | 完全相同的编辑反复不产生任何变化；再次提交会被拒绝。 |
