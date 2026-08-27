@@ -307,9 +307,15 @@ function nearestSurvivingPosition(served: (string | null)[], surviving: Set<stri
 
 export function currentPositionOfDrifted(served: (string | null)[], currentPositions: Map<string, number>, surviving: Set<string>, servedIndex: number, delta: number): number {
   const below = nearestSurvivingPosition(served, surviving, servedIndex, "below");
-  if (below !== undefined) return currentPositions.get(served[below]!)! + 1;
+  if (below !== undefined) {
+    const pos = currentPositions.get(served[below]!);
+    if (pos !== undefined) return pos + 1;
+  }
   const above = nearestSurvivingPosition(served, surviving, servedIndex, "above");
-  if (above !== undefined) return currentPositions.get(served[above]!)! - 1;
+  if (above !== undefined) {
+    const pos = currentPositions.get(served[above]!);
+    if (pos !== undefined) return pos - 1;
+  }
   return servedIndex + delta;
 }
 
@@ -340,9 +346,18 @@ export interface DriftNoticeResult {
 export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | undefined {
   const { served, resultHashes, resultLines, range, reported, cap = SERVED_ECHO_CAP } = input;
   const resultHashSet = new Set(resultHashes);
+  // Position anchors for drift echoes are hash-keyed (the old row has no
+  // surviving line number), but a hash that appears MULTIPLE times is not a
+  // position — remove it so drifted rows never anchor to an ambiguous spot.
   const currentPosOfHash = new Map<string, number>();
+  const hashCount = new Map<string, number>();
   for (let i = 0; i < resultHashes.length; i++) {
-    currentPosOfHash.set(resultHashes[i]!, i);
+    const h = resultHashes[i]!;
+    hashCount.set(h, (hashCount.get(h) ?? 0) + 1);
+    currentPosOfHash.set(h, i);
+  }
+  for (const [h, count] of hashCount) {
+    if (count > 1) currentPosOfHash.delete(h);
   }
   const startPositions = servedPositionsOf(served, range.startHash);
   const endPositions = servedPositionsOf(served, range.endHash);
