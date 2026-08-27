@@ -2,6 +2,27 @@ import { describe, expect, it } from "vitest";
 import { computeDrift } from "../../src/drift.js";
 
 describe("computeDrift", () => {
+	it("never anchors drift echoes to an ambiguous (duplicated) hash", () => {
+		// hA appears at result rows 1 and 3: not a unique position anchor —
+		// the drifted row (hB, gone from the result) must fall back to a
+		// numeric estimate, never NaN.
+		const result = computeDrift({
+			served: ["hA", "hB", "hA"],
+			resultHashes: ["hA", "hC", "hA"],
+			resultLines: ["a", "c", "a"],
+			range: {
+				startLine: 1,
+				endLine: 1,
+				startHash: "hA",
+				endHash: "hA",
+				delta: 0,
+			},
+			reported: new Set(),
+		});
+		expect(result).toBeDefined();
+		expect(result!.text).not.toContain("NaN");
+		expect(result!.rows.every((r) => Number.isFinite(r.position))).toBe(true);
+	});
 	it("returns undefined when nothing drifted outside the range", () => {
 		const result = computeDrift({
 			served: ["h00", "h01", "h02"],

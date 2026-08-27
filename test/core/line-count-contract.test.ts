@@ -171,6 +171,25 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
+	it("ins resolves its anchor by line#hash, never by bare hash (collision-safe)", async () => {
+		// Lines 1 and 3 share identical content -> identical hash. A bare-hash
+		// lookup would pick line 1 and paste the insert after IT; anchor
+		// resolution must act on the claimed line (3).
+		await withTempFile("t.txt", "dup\na\ndup\n", async ({ cwd, path }) => {
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, "t.txt");
+			// line 3 shares its content (and hash) with line 1; anchor must act
+			// on the CLAIMED line 3, not the first bare-hash hit (line 1).
+			const line3Anchor = `3${served[0]!.hash.slice(served[0]!.hash.indexOf("#"))}`;
+			const res = await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [{ op: "ins", anchor_start: line3Anchor, lines: ["IN"] }],
+			});
+			expect(getText(res)).toContain("after line 3");
+			expect(await readFile(path, "utf-8")).toBe("dup\na\ndup\nIN\n");
+		});
+	});
+
 	it("grep json matches is one anchor-keyed dict (match + context rows together)", async () => {
 		await withTempFile("t.txt", "alpha\nbeta\ngamma\ndelta\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);
