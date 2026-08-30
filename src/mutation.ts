@@ -96,8 +96,12 @@ export async function execPipeline(
 	cwd: string,
 	options?: ExecPipelineOptions,
 ): Promise<PipelineResult> {
-	const path = params.path
-
+	const path = params.path;
+	if (typeof path !== "string" || path.length === 0) {
+		throw new Error(
+			'[E_BAD_SHAPE] execPipeline (legacy single-edit) requires a non-empty "path". For multi-file edits, use the `edit` tool with per-item `path`.',
+		);
+	}
 	const editWarnings: string[] = []
 	// 0.4 contract: `params` now carries `{ path, edits: [...] }`. The single
 	// edit path constructs a single-item batch (the tool always routes through

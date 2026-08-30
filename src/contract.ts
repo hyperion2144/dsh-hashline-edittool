@@ -49,7 +49,13 @@ export interface EditItemParams {
 }
 
 export interface EditParams {
-	path: string;
+	/**
+	 * Default path for the edits. Optional iff every item in `edits` carries its
+	 * own `path`; otherwise required (non-empty string). When present, items
+	 * without their own `path` use this as the file; items with their own `path`
+	 * override it per-item.
+	 */
+	path?: string;
 	edits: EditItemParams[];
 }
 
@@ -138,11 +144,6 @@ export function assertEditItem(
 				`[E_BAD_SHAPE] edits[${index}].anchor_end must be a non-empty anchor string when provided.`,
 			);
 		}
-		if (item.op === "ins") {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"ins" does not accept "anchor_end"; ins inserts immediately after "anchor_start".`,
-			);
-		}
 	}
 	if (item.op === "replace" && item.anchor_end === undefined) {
 		throw new Error(
@@ -188,10 +189,10 @@ export function assertEditRequest(
 
 	rejectUnknownFields(request, EDIT_KS, "Edit request");
 
-	if (typeof request.path !== "string" || request.path.length === 0) {
-		throw new Error(
-			'[E_BAD_SHAPE] Edit request requires a non-empty "path" string.',
-		);
+	const topLevelPath = request.path;
+	const hasTopLevelPath = typeof topLevelPath === "string" && topLevelPath.length > 0;
+	if (hasTopLevelPath) {
+		normalizeFilePath(request);
 	}
 
 	if (!Array.isArray(request.edits) || request.edits.length === 0) {
@@ -204,8 +205,6 @@ export function assertEditRequest(
 			`[E_BAD_SHAPE] Edit accepts at most ${EDITS_MAX_ITEMS} edits; got ${request.edits.length}. Split the batch.`,
 		);
 	}
-
-	const hasTopLevelPath = true;
 	request.edits.forEach((item, index) => {
 		assertEditItem(item, index, hasTopLevelPath);
 	});
@@ -269,7 +268,7 @@ export const editItemSchema = {
 		anchor_end: {
 			type: "string",
 			description:
-					'Anchor of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Forbidden for `op:"ins"`.',
+					'Anchor of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).',
 		},
 		lines: {
 			type: "array",
