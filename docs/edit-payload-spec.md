@@ -1,6 +1,6 @@
 # Spec — Upstream cherry-picks + merged `edit` payload with `op` semantics
 
-> Status: **Draft** — awaiting review before implementation begins.
+> Status: **Implemented** — authoritative for the 0.4.x `edit` contract.
 > Scope: (a) cherry-pick the non-breaking upstream T1+T2+T5 fixes into the
 > current line#hash codebase, (b) adopt a stronger version of upstream T3
 > (merged `edit` payload) that **removes `batch_edit` and adds an `op`
