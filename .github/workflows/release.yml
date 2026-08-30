@@ -9,6 +9,14 @@ on:
   push:
     tags:
       - "v*"
+  # Manual re-trigger for tags that predate CI enablement (or any tag):
+  #   gh workflow run release.yml -f tag=v0.X.Y
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create the GitHub Release for (e.g. v0.4.1). Defaults to the pushed tag."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -24,7 +32,7 @@ jobs:
       - name: Create GitHub Release from CHANGELOG
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
