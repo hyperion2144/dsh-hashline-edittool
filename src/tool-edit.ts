@@ -60,7 +60,7 @@ import { execCwd, execSessionKey } from "./session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
 import { genDiff } from "./edit-diff.js";
-import { HASHLINE_HEADER } from "./hashline/index.js";
+import { hashlineHeader } from "./hashline/index.js";
 
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
@@ -115,26 +115,32 @@ function buildPreparedItem(
 }
 
 /**
- * Extract the root-cause error code + a concise message from a failure string.
+ * Extract the root-cause error code + the single-file error text verbatim
+ * from a per-file batch failure string.
  *
  * A failed per-file batch surfaces as `[E_BATCH_ABORT] edits[i] (path) failed:
- * (inner code) <core message>...` followed by an echo block. The per-file `fail`
- * entry should carry the INNER code (the root cause) and the core message
- * without the echo rows (ADR-0004: no file content in `fail[]`).
+ * <inner full message>\nThe whole batch was rejected ...` where `<inner full
+ * message>` is the single-file throw's own message (which may itself contain
+ * the ±3 echo block + fresh-marker hint). Per the multi-file contract the
+ * fail entry must carry the single-file error text UNCHANGED (the container
+ * is per-file; the content is the single-file error), so we strip only the
+ * batch wrapper prefix and the batch-abort tail — never the echo.
  */
 function extractFailure(message: string): { code: string; message: string } {
 	// Last error code wins: E_BATCH_ABORT wraps the inner cause.
 	const codes = message.match(/\[(E_[A-Z_]+)\]/g) ?? [];
 	const code = codes.length > 0 ? codes[codes.length - 1]! : "[E_INVALID_PATCH]";
-	// Core message: everything up to the echo block / trailing newline block,
-	// with the wrapper prefix and the inner error-code prefix stripped.
-	let core = message
-		.split(/\n\s*Echo of the line you tried/i)[0]!
-		.split(/\n\n/)[0]!
+	// Inner full message: strip the batch wrapper prefix and the batch tail;
+	// keep everything else verbatim (echo block, fresh-marker hint included).
+	let inner = message
 		.replace(/^\[E_BATCH_ABORT\]\s*edits\[\d+\]\s*\([^)]*\)\s*failed:\s*/i, "")
+		.replace(/\nThe whole batch was rejected[\s\S]*$/, "")
 		.trim();
-	if (core.startsWith(code)) core = core.slice(code.length).trim();
-	return { code, message: core.length > 0 ? core : message };
+	// The inner error repeats the code at its head (`[E_STALE_ANCHOR] 2 stale...`);
+	// the fail block composes "Edit for <path> failed: <code> <message>", so drop
+	// the leading code from message to avoid duplicating it.
+	if (inner.startsWith(code)) inner = inner.slice(code.length).trim();
+	return { code, message: inner.length > 0 ? inner : message };
 }
 
 /**
@@ -543,7 +549,7 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 		file.resultHashes,
 		file.originalHashes,
 	);
-	const diffBody = diffResult.diff ? `${HASHLINE_HEADER}\n${diffResult.diff}` : "";
+	const diffBody = diffResult.diff ? `${hashlineHeader()}\n${diffResult.diff}` : "";
 	const shiftBlocks = (file.hunkShifts ?? [])
 		.map((hunk) => shiftBlockForHunk(hunk))
 		.filter((b) => b.length > 0)

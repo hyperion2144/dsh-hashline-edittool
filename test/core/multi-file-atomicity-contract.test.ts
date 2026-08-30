@@ -121,6 +121,11 @@ describe("multi-file edit — ADR-0004 response shape", () => {
 			expect(text).toContain("Successfully edited 1 file(s) — 1 of 2 edit(s) applied.");
 			expect(text).toContain("Successfully edited in b1.txt.");
 			expect(text).toContain("Edit for b2.txt failed: [E_STALE_ANCHOR]");
+			// 与单文件一致: fail 块保留 echo + fresh-marker 提示 (ADR-0004 修订后)
+			expect(text).toContain("Echo of the line you tried");
+			expect(text).toContain("reuse a fresh marker");
+			// 不能带 batch 尾巴 (多文件上下文误导)
+			expect(text).not.toContain("The whole batch was rejected");
 			// b1 成功落盘, b2 未变
 			expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
 			expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
@@ -160,7 +165,12 @@ describe("multi-file edit — ADR-0004 response shape", () => {
 					code: "[E_STALE_ANCHOR]",
 				});
 				expect(parsed.fail[0]!.message).toContain("2 stale anchors");
-				// fail entry 不带文件原文 — 只有 path/code/message
+				// 与单文件一致: message 保留 echo + fresh-marker 提示
+				expect(parsed.fail[0]!.message).toContain("Echo of the line you tried");
+				expect(parsed.fail[0]!.message).toContain("reuse a fresh marker");
+				// 不带 batch 尾巴
+				expect(parsed.fail[0]!.message).not.toContain("The whole batch was rejected");
+				// fail entry 结构仍是 path/code/message (echo 在 message 字符串内)
 				expect(Object.keys(parsed.fail[0]!)).toEqual(["path", "code", "message"]);
 				expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
 			});
@@ -243,6 +253,36 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 			}
 		});
 
+		it("E_BAD_REF fail block strips the batch-abort tail (multi-file context)", async () => {
+			applyEffective({ hash_length: 2, output_format: "text" });
+			try {
+				await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+					await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+					const harness = setupIntegrationTest(cwd);
+					const a1 = await readAnchors(harness, "b1.txt");
+
+					// 非法 anchor: hash_length=2 下 "2#zzz" 3 位 hash 长度非法 → E_BAD_REF
+					const res = await harness.editTool.execute("edit", {
+						path: "b1.txt",
+						edits: [
+							{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A!"] },
+							{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B!"] },
+						],
+					});
+					const text = getText(res);
+
+					expect(text).toContain("Successfully edited in b1.txt.");
+					expect(text).toContain("Edit for b2.txt failed: [E_BAD_REF]");
+					// #1 回归: 多文件下不能带 batch 尾巴 (b1 实际已写入, "NOTHING was written" 误导)
+					expect(text).not.toContain("The whole batch was rejected");
+					expect(text).not.toContain("NOTHING was written");
+					expect(await readFile(p1, "utf-8")).toBe("A!\nb\nc\n");
+					expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
+				});
+			} finally {
+				applyEffective({});
+			}
+		});
 		it("TD3#7 auto-fold normalizer: item.path === topLevelPath treated as single-file default", async () => {
 			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 				const harness = setupIntegrationTest(cwd);
