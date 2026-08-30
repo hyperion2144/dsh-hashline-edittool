@@ -253,7 +253,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				>();
 				for (let i = 0; i < canonical.edits.length; i++) {
 					const e = canonical.edits[i]!;
-					const path = e.path ?? (topLevelPath as string);
+					// ADR-0002 normalizer: item.path === topLevelPath 折叠为缺省（冗余声明不算多文件）
+					const itemPath =
+						e.path !== undefined && e.path === topLevelPath ? undefined : e.path;
+					const path = itemPath ?? (topLevelPath as string);
 					const list = groups.get(path) ?? [];
 					list.push({ index: i, edit: e });
 					groups.set(path, list);

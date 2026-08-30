@@ -202,4 +202,66 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 			).rejects.toThrow(/E_BAD_SHAPE/);
 		});
 	});
+
+	describe("multi-file edit — ADR-0003 §TD3 extra cases", () => {
+		it("TD3#4 all-files-failure: both files unchanged, ok:false, fail has both entries", async () => {
+			applyEffective({ output_format: "json" });
+			try {
+				await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+					await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+					const harness = setupIntegrationTest(cwd);
+					// anchors 用 text 模式读
+					applyEffective({});
+					const a1 = await readAnchors(harness, "b1.txt");
+					const a2 = await readAnchors(harness, "b2.txt");
+					applyEffective({ output_format: "json" });
+
+					// 两条 stale anchor → 两个文件都失败
+					const res = await harness.editTool.execute("edit", {
+						path: "b1.txt",
+						edits: [
+							{ op: "replace", path: "b1.txt", anchor_start: "1#zzz", anchor_end: "1#zzz", lines: ["X"] },
+							{ op: "replace", path: "b2.txt", anchor_start: "1#zzz", anchor_end: "1#zzz", lines: ["Y"] },
+						],
+					});
+					const text = getText(res);
+					const parsed = JSON.parse(text) as {
+						ok: boolean;
+						success: unknown[];
+						fail: Array<{ path: string; code: string }>;
+					};
+					expect(parsed.ok).toBe(false);
+					expect(parsed.success).toEqual([]);
+					expect(parsed.fail.map((f) => f.path).sort()).toEqual(["b1.txt", "b2.txt"]);
+					expect(parsed.fail.every((f) => f.code === "[E_STALE_ANCHOR]")).toBe(true);
+					// 两个文件都未变
+					expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
+					expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
+				});
+			} finally {
+				applyEffective({});
+			}
+		});
+
+		it("TD3#7 auto-fold normalizer: item.path === topLevelPath treated as single-file default", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// 全部 item 的 path 与顶层 path 相同 → 折叠 → 单文件快路径（0.4 形态 value）
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+						{ op: "replace", path: "b1.txt", anchor_start: a1[1]!.hash, anchor_end: a1[1]!.hash, lines: ["B1!"] },
+					],
+				});
+				const text = getText(res);
+				// 单文件形态：不含 "--- b1.txt ---" 分隔、summary 是单文件 "Successfully edited in b1.txt"
+				expect(text).not.toContain("--- b1.txt ---");
+				expect(text).toContain("Successfully edited in b1.txt");
+				expect(await readFile(p1, "utf-8")).toBe("A1!\nB1!\nc\n");
+			});
+		});
+	});
 });
