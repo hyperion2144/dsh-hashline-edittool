@@ -359,7 +359,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | Tool | What it does |
 | ------ | -------------- |
 | `read` | Returns a file as `ANCHOR:FILELINE` header + `<line>#<hash>:<content>` rows. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
-| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, from, to?, lines? }, …] }`. `op` is `ins` (insert after `from`), `del` (delete the from..to range), or `replace` (swap the from..to range with `lines`). Verifies **every line** of each resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block per hunk describing how absolute line numbers below the edit moved. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
+| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — requires BOTH anchors; a single-line replace passes the same anchor twice). Verifies **every line** of each resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block per hunk describing how absolute line numbers below the edit moved. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
 | `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<line>#<hash>:<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
@@ -370,7 +370,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_ACCESS]` | File exists but is not readable/writable by the tool. |
 | `[E_AMBIGUOUS_ANCHOR]` | A hash matches more than one current line; call `read` for fresh anchors. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
-| `[E_BAD_REF]` | `from`/`to` is not a `<line>#<hash>` copied from the leftmost column of a read/grep/diff row. |
+| `[E_BAD_REF]` | `anchor_start`/`anchor_end` is not a `<line>#<hash>` copied from the leftmost column of a read/grep/diff row. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
