@@ -15,6 +15,8 @@
  * (text shape is covered by read-preview, edit-diff, line-hashline).
  */
 import { beforeAll, describe, expect, it } from "vitest";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
 
 beforeAll(async () => {
@@ -169,9 +171,7 @@ describe("edit / undo structured value shape", () => {
 	});
 
 	it("edit applies a per-item path override across files", async () => {
-		await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd }) => {
-			const { writeFile } = await import("node:fs/promises");
-			const { join } = await import("node:path");
+		await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: b1Path }) => {
 			// Create the second file in the same cwd so a single edit call
 			// can target both via per-item `path` overrides.
 			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
@@ -193,49 +193,19 @@ describe("edit / undo structured value shape", () => {
 			const readB2 = (await read.execute({ path: "b2.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
 			const m1 = `${readB1.hashlines[1]?.number}#${readB1.hashlines[1]?.hash}`;
 			const m2 = `${readB2.hashlines[1]?.number}#${readB2.hashlines[1]?.hash}`;
-			// Two files, one edit call. The 0.4 edit tool returns one canonical
-			// value per file, but the test calls twice — once per file — to
-			// preserve the per-file assertion shape.
-			const v1 = (await edit.execute(
-				{
-					path: "b1.txt",
-					edits: [{ op: "replace", anchor_start: m1, anchor_end: m1, lines: ["B!"] }],
-				},
-				exec({}),
-			)) as {
-				path: string;
-				before: string;
-				after: string;
-			};
-			const v2 = (await edit.execute(
-				{
-					path: "b2.txt",
-					edits: [{ op: "replace", anchor_start: m2, anchor_end: m2, lines: ["B!"] }],
-				},
-				exec({}),
-			)) as {
-				path: string;
-				before: string;
-				after: string;
-			};
-			expect(v1.before).toBe("a\nb\nc\n");
-			expect(v1.after).toBe("a\nB!\nc\n");
-			expect(v2.before).toBe("x\ny\nz\n");
-			expect(v2.after).toBe("x\nB!\nz\n");
-			// Per-item path overrides let one `edit` call target multiple
-			// files; verify the top-level + per-item dispatch doesn't throw.
-			const readB1b = (await read.execute({ path: "b1.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
-			const m1b = `${readB1b.hashlines[1]?.number}#${readB1b.hashlines[1]?.hash}`;
-			const combined = await edit.execute(
+			// Per-item path overrides let one `edit` call target multiple files.
+			await edit.execute(
 				{
 					path: "b1.txt",
 					edits: [
-						{ op: "replace", path: "b1.txt", anchor_start: m1b, anchor_end: m1b, lines: ["B1!"] },
+						{ op: "replace", path: "b1.txt", anchor_start: m1, anchor_end: m1, lines: ["B1!"] },
+						{ op: "replace", path: "b2.txt", anchor_start: m2, anchor_end: m2, lines: ["B2!"] },
 					],
 				},
 				exec({}),
 			);
-			expect(combined).toBeDefined();
+			expect(await readFile(b1Path, "utf-8")).toBe("a\nB1!\nc\n");
+			expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\nB2!\nz\n");
 		});
 	});
 });
