@@ -1,5 +1,7 @@
 # Spec — Line-anchored hashline (`line#hash`)
 
+> **Superseded by `edit-payload-spec.md`** — This document describes the pre-0.4.0 contract (0.3-era, including `batch_edit`). The 0.4+ contract merged multi-hunk editing into a single `edit({path, edits:[…]})` payload with `op: "ins"|"del"|"replace"` semantics; see [`edit-payload-spec.md`](./edit-payload-spec.md) for the authoritative 0.4 contract. Kept as a historical record of the contract evolution.
+
 > Status: **Draft** — awaiting review before implementation begins.
 > Scope: read / edit / batch_edit / grep / undo_last_edit contract changes plus the
 > corresponding prompt-section updates. Implementation order and per-file change
