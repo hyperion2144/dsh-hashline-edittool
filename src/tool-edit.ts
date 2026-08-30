@@ -48,6 +48,7 @@ import {
 import { commit, resolveMissingPath, snapshotIdFor } from "./mutation.js";
 import { recordServedTruncated, recordServedAfterEdit } from "./session-view.js";
 import { editDescription } from "./prompts.js";
+import type { JsonValue } from "@deepseek-ai/dsh-session";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
@@ -114,6 +115,29 @@ function buildPreparedItem(
 }
 
 /**
+ * Extract the root-cause error code + a concise message from a failure string.
+ *
+ * A failed per-file batch surfaces as `[E_BATCH_ABORT] edits[i] (path) failed:
+ * (inner code) <core message>...` followed by an echo block. The per-file `fail`
+ * entry should carry the INNER code (the root cause) and the core message
+ * without the echo rows (ADR-0004: no file content in `fail[]`).
+ */
+function extractFailure(message: string): { code: string; message: string } {
+	// Last error code wins: E_BATCH_ABORT wraps the inner cause.
+	const codes = message.match(/\[(E_[A-Z_]+)\]/g) ?? [];
+	const code = codes.length > 0 ? codes[codes.length - 1]! : "[E_INVALID_PATCH]";
+	// Core message: everything up to the echo block / trailing newline block,
+	// with the wrapper prefix and the inner error-code prefix stripped.
+	let core = message
+		.split(/\n\s*Echo of the line you tried/i)[0]!
+		.split(/\n\n/)[0]!
+		.replace(/^\[E_BATCH_ABORT\]\s*edits\[\d+\]\s*\([^)]*\)\s*failed:\s*/i, "")
+		.trim();
+	if (core.startsWith(code)) core = core.slice(code.length).trim();
+	return { code, message: core.length > 0 ? core : message };
+}
+
+/**
  * Register the hash-anchored `edit` tool on the calling agent's scope.
  * @param _rootCtx - host context (logger, lifecycle).
  * @param agentCtx - the agent's scoped context; registrations here land on the
@@ -126,7 +150,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 		name: "edit",
 		description: editDescription(getEffectiveConfig()),
 		parameters: {
-			path: { ...pathSchema, required: true },
+			path: { ...pathSchema },
 			edits: { ...editsSchema, required: true },
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
@@ -135,16 +159,22 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				type: "object",
 				additionalProperties: false,
 				properties: {
-					path: { type: "string", required: true },
-					before: { type: "string", required: true },
-					after: { type: "string", required: true },
-					added: { type: "integer", required: true },
-					removed: { type: "integer", required: true },
+					// 单文件形态 (0.4 compat)
+					path: { type: "string" },
+					before: { type: "string" },
+					after: { type: "string" },
+					added: { type: "integer" },
+					removed: { type: "integer" },
 					firstChangedLine: { type: "integer" },
 					lastChangedLine: { type: "integer" },
 					warnings: { type: "array", items: { type: "string" } },
 					driftNotice: { type: "string" },
-					noop: { type: "boolean", required: true },
+					noop: { type: "boolean" },
+					// 多文件形态
+					ok: { type: "boolean" },
+					success: { type: "array" },
+					fail: { type: "array" },
+					// 两种形态都有
 					modelText: { type: "string", required: true },
 				},
 			},
@@ -152,7 +182,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				{ type: "text", text: (value as EditCanonicalValue).modelText },
 			],
 			presentationMeta: (_args, value) => {
-				const v = value as EditCanonicalValue;
+				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[] };
+				// 多文件形态: 无 before/after 整文件内容, 无法算 hunk diffs → 空 diffs
+				if (Array.isArray(v.success) || Array.isArray(v.fail)) return { diffs: [] } as never;
 				if (v.noop) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				return { diffs } as never;
@@ -211,47 +243,126 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 
 				abortIf(signal);
 
-				// Build PreparedItem[] from the merged `edits` array. Per-item
-				// `path` overrides the top-level `path` for that edit only.
-				const items: PreparedItem[] = [];
-				const absolutePath = await io.resolve(canonical.path, cwd, signal);
+				// ---- 按 resolved 路径分组: 每组 = (displayPath, items) ----
+				// per-item `path` ?? top-level `path` 决定每个 edit 的目标文件
+				// (ADR-0002: 顶层 path 缺省时 assertEditRequest 已保证每个 item 带 path)
+				const topLevelPath = canonical.path;
+				const groups = new Map<
+					string,
+					Array<{ index: number; edit: (typeof canonical.edits)[number] }>
+				>();
 				for (let i = 0; i < canonical.edits.length; i++) {
 					const e = canonical.edits[i]!;
-					items.push(
-						buildPreparedItem(i, canonical.path, e, absolutePath),
-					);
+					const path = e.path ?? (topLevelPath as string);
+					const list = groups.get(path) ?? [];
+					list.push({ index: i, edit: e });
+					groups.set(path, list);
 				}
 
-				let file: FileEditResult;
-				try {
-					file = await runFileEdits(io, items, { signal, sessionKey });
-				} catch (err) {
-					// Rejected edits ALWAYS fail loudly — text and json modes alike.
-					// A structured envelope would hide the failure behind a normal
-					// tool result; the model sees isError + the E_ code + message
-					// either way.
-					throw err;
+				// ---- 单文件快捷路径 (0.4 兼容, ADR-0004 D4): 仅一组时维持旧形态 ----
+				if (groups.size === 1) {
+					const [displayPath, group] = groups.entries().next().value as [
+						string,
+						Array<{ index: number; edit: (typeof canonical.edits)[number] }>,
+					];
+					const absolutePath = await io.resolve(displayPath, cwd, signal);
+					const items = group.map(({ index, edit }) =>
+						buildPreparedItem(index, displayPath, edit, absolutePath),
+					);
+					const file = await runFileEdits(io, items, { signal, sessionKey });
+					await applyFileResultTo(file, {
+						canonical,
+						displayPath,
+						resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
+						sandbox,
+						sandboxPolicy,
+						exec,
+						signal,
+						io,
+						absolutePath,
+						sessionKey,
+					});
+					const canonicalValue = buildCanonicalFromFileResult(file, displayPath);
+					return isJsonOutput()
+						? {
+							...canonicalValue,
+							// Schema-valid structured value; modelText carries the pure-JSON
+							// envelope the model parses.
+							modelText: JSON.stringify(buildEditJson(file, displayPath)),
+						}
+						: canonicalValue;
 				}
-				await applyFileResultTo(file, {
-					canonical,
-					resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
-					sandbox,
-					sandboxPolicy,
-					exec,
-					signal,
-					io,
-					absolutePath,
-					sessionKey,
+
+				// ---- 多文件: 每组并发 + per-file atomic (ADR-0003) ----
+				// 某文件失败只进 fail[]，不影响其他文件的结果
+				const outcomes = await Promise.all(
+					[...groups.entries()].map(async ([displayPath, group]) => {
+						try {
+							const absolutePath = await io.resolve(displayPath, cwd, signal);
+							const items = group.map(({ index, edit }) =>
+								buildPreparedItem(index, displayPath, edit, absolutePath),
+							);
+							const file = await runFileEdits(io, items, { signal, sessionKey });
+							await applyFileResultTo(file, {
+								canonical,
+								displayPath,
+								resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
+								sandbox,
+								sandboxPolicy,
+								exec,
+								signal,
+								io,
+								absolutePath,
+								sessionKey,
+							});
+							return { ok: true as const, displayPath, file };
+						} catch (err) {
+							const message = err instanceof Error ? err.message : String(err);
+							const detected = extractFailure(message);
+							return {
+								ok: false as const,
+								displayPath,
+								code: detected.code,
+								message: detected.message,
+							};
+						}
+					}),
+				);
+
+				const successes = outcomes.filter((o) => o.ok);
+				const fails = outcomes.filter((o) => !o.ok);
+				const success = successes.map((o) =>
+					buildEditJson((o as { ok: true; file: FileEditResult; displayPath: string }).file, o.displayPath),
+				);
+				const fail = fails.map((o) => ({
+					path: o.displayPath,
+					code: o.code,
+					message: o.message,
+				}));
+
+				if (!isJsonOutput()) {
+					// text 模式: 聚合 prose (ADR-0004 D1) — 成功块在前, 失败块在后
+					const appliedTotal = successes.reduce((n, o) => n + o.file.appliedCount, 0);
+					const noopTotal = successes.reduce((n, o) => n + o.file.noopCount, 0);
+					const totalEdits = canonical.edits.length;
+					const summary =
+						`Successfully edited ${successes.length} file(s) — ${appliedTotal} of ${totalEdits} edit(s) applied` +
+						`${noopTotal > 0 ? ` (${noopTotal} noop)` : ""}.`;
+					const blocks = outcomes.map((o) =>
+						o.ok
+							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath)}`
+							: `Edit for ${o.displayPath} failed: ${o.code} ${o.message}`,
+					);
+					return { success, fail, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
+				}
+
+				// json 模式: stringified envelope (ADR-0004 D2)
+				const modelText = JSON.stringify({
+					ok: success.length > 0,
+					success,
+					fail,
 				});
-				const canonicalValue = buildCanonicalFromFileResult(file, canonical.path);
-				return isJsonOutput()
-					? {
-						...canonicalValue,
-						// Schema-valid structured value; modelText carries the pure-JSON
-						// envelope the model parses.
-						modelText: JSON.stringify(buildEditJson(file, canonical.path)),
-					}
-					: canonicalValue;
+				return { ok: success.length > 0, success, fail, modelText };
 			});
 		},
 	});
@@ -266,7 +377,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 async function applyFileResultTo(
 	file: FileEditResult,
 	ctx: {
-		canonical: { path: string; edits: Array<unknown> };
+		canonical: { path?: string; edits: Array<unknown> };
+		displayPath: string;
 		resolutionWarning: string | undefined;
 		sandbox: FsSandboxController;
 		sandboxPolicy: Awaited<ReturnType<FsSandboxController["resolvePolicy"]>>;
@@ -327,7 +439,7 @@ async function applyFileResultTo(
 						removeFrom: head.anchor_start,
 						removeTo: head.anchor_end ?? head.anchor_start,
 						replacementText: (head.lines ?? []).join("\n"),
-						displayPath: ctx.canonical.path,
+						displayPath: ctx.displayPath,
 						count,
 					});
 					if (notice) file.warnings.push(notice);
@@ -491,7 +603,7 @@ function buildEditJson(
 	diff: Record<string, string>;
 	hints: string[];
 	warnings: string[];
-	errors: unknown[];
+	errors: JsonValue[];
 } {
 	// The json view of the diff is anchor-keyed, exactly like read's lines:
 	// every row is `key: content`, where the key carries the row type in its

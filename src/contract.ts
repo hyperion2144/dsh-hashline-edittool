@@ -49,7 +49,13 @@ export interface EditItemParams {
 }
 
 export interface EditParams {
-	path: string;
+	/**
+	 * Default path for the edits. Optional iff every item in `edits` carries its
+	 * own `path`; otherwise required (non-empty string). When present, items
+	 * without their own `path` use this as the file; items with their own `path`
+	 * override it per-item.
+	 */
+	path?: string;
 	edits: EditItemParams[];
 }
 
@@ -188,10 +194,10 @@ export function assertEditRequest(
 
 	rejectUnknownFields(request, EDIT_KS, "Edit request");
 
-	if (typeof request.path !== "string" || request.path.length === 0) {
-		throw new Error(
-			'[E_BAD_SHAPE] Edit request requires a non-empty "path" string.',
-		);
+	const topLevelPath = request.path;
+	const hasTopLevelPath = typeof topLevelPath === "string" && topLevelPath.length > 0;
+	if (hasTopLevelPath) {
+		normalizeFilePath(request);
 	}
 
 	if (!Array.isArray(request.edits) || request.edits.length === 0) {
@@ -204,8 +210,6 @@ export function assertEditRequest(
 			`[E_BAD_SHAPE] Edit accepts at most ${EDITS_MAX_ITEMS} edits; got ${request.edits.length}. Split the batch.`,
 		);
 	}
-
-	const hasTopLevelPath = true;
 	request.edits.forEach((item, index) => {
 		assertEditItem(item, index, hasTopLevelPath);
 	});
