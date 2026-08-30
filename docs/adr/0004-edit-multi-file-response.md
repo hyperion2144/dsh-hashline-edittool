@@ -59,14 +59,21 @@ ANCHOR:FILELINE — ...
 Successfully edited in <path2>. Added <a> line(s), removed <b> line(s).
 
 Edit for <path3> failed: [E_*] <message>
+
+  Echo of the line you tried (read-style, ±3 context):
+ANCHOR:FILELINE — ...
+ ...
+
+  If this is the line you meant to edit, reuse a fresh marker from: ...
+  If not, call read() to find the correct line.
 ```
 
 Format rules:
 - **Per-file success**: the same prose that 0.4 single-file edit returns for that file. The aggregation just concatenates these blocks with `--- <path> ---` separators (same as `buildBatchResult`'s multi-file sectioning).
-- **Per-file fail**: a single line `Edit for <path> failed: [E_*] <message>` — the same `Error` text 0.4 throws, prefixed with the file path.
+- **Per-file fail**: `Edit for <path> failed: [E_*] <message>` followed by the REST of the single-file error text verbatim — including the ±3 echo block and the fresh-marker hint, exactly as 0.4's throw path renders them. The multi-file container only changes the organization; the per-file content is the single-file error unchanged. The batch-abort tail (`The whole batch was rejected …`) is stripped: it is single-file batch wording and would misstate the multi-file outcome (other files DID commit).
 - **Order**: success blocks first, then fail blocks.
 - **Summary line**: `Successfully edited <N> file(s) — <M> of <K> edit(s) applied (<X> noop).` (or the equivalent when all are noop). The `Successfully edited in <path>.` per-file line remains inside each block.
-- **No file content** beyond what 0.4 already exposes in the per-file `Successfully edited in <path>.` block (line counts, summary). Failed blocks contain only the error text — no original file content.
+- **No file content** beyond what 0.4 already exposes (per-file success block, or the echo lines in a fail block — ±3 rows, same as single-file).
 
 ### D2 — `content[].text` in json mode (`jsonOutput: true`)
 
@@ -161,6 +168,7 @@ ANCHOR:FILELINE — each row is `<line>#<hash>:<content>`; ...
 Successfully edited in b2.txt. Added 1 line(s), removed 1 line(s).
 ```
 
+The per-file success block reuses the single-file ANCHOR:FILELINE header, which is rendered with the CONFIGURED `hashlineHeader()` (`sep`/`hash_length` aware) — same as `read` — not a hard-coded shape.
 ### B. Success, json mode
 
 Same request as A; `jsonOutput: true` is set.
@@ -182,7 +190,7 @@ The model parses this as:
 }
 ```
 
-Each `success[i]` is the verbatim `buildEditJson` output for that file — same shape 0.4 single-file edit returns.
+Each `success[i]` is the verbatim `buildEditJson` output for that file — same shape 0.4 single-file edit returns. The `diff` map may include unchanged context rows (bare `line#hash` keys without `+`/`-` prefix), exactly as 0.4's single-file json envelope does; this example elides them for brevity.
 
 ### C. Partial-fail, text mode (b1 succeeds / b2 anchor stale)
 
@@ -210,7 +218,18 @@ ANCHOR:FILELINE — each row is `<line>#<hash>:<content>`; ...
 Successfully edited in b1.txt. Added 1 line(s), removed 1 line(s).
 
 Edit for b2.txt failed: [E_STALE_ANCHOR] 2 stale anchors in b2.txt: "As2", "As2". Re-read for fresh anchors.
+
+  Echo of the line you tried (read-style, ±3 context):
+ANCHOR:FILELINE — each row is `<line>#<hash>:<content>`; ...
+  1#...: x
+  2#...: y
+  3#...: z
+
+  If this is the line you meant to edit, reuse a fresh marker from: 2#..., 2#... without calling read.
+  If not, call read() to find the correct line.
 ```
+
+Per-file fail blocks carry the single-file error verbatim (echo + fresh-marker hint), so the model can retry without an extra `read` — same contract as single-file.
 
 ### D. Partial-fail, json mode
 
@@ -218,7 +237,7 @@ Same request as C; `jsonOutput: true` is set.
 
 `content[0].text` (the model's read, single string):
 ```text
-{"ok":true,"success":[{"ok":true,"path":"b1.txt","diff":{"-1#...":"alpha","+1#...":"A1!"},"hints":[],"warnings":[],"errors":[]}],"fail":[{"path":"b2.txt","code":"[E_STALE_ANCHOR]","message":"2 stale anchors in b2.txt: \"As2\", \"As2\". Re-read for fresh anchors."}]}
+{"ok":true,"success":[{"ok":true,"path":"b1.txt","diff":{"-1#...":"alpha","+1#...":"A1!"},"hints":[],"warnings":[],"errors":[]}],"fail":[{"path":"b2.txt","code":"[E_STALE_ANCHOR]","message":"2 stale anchors in b2.txt: \"As2\", \"As2\". Re-read for fresh anchors.\n\n  Echo of the line you tried (read-style, ±3 context):\nANCHOR:FILELINE — ...\n  1#...: x\n  2#...: y\n  3#...: z\n\n  If this is the line you meant to edit, reuse a fresh marker from: 2#..., 2#... without calling read.\n  If not, call read() to find the correct line."}]}
 ```
 
 The model parses this as:
@@ -229,12 +248,12 @@ The model parses this as:
     { ok: true, path: "b1.txt", diff: {"-1#...": "alpha", "+1#...": "A1!"}, hints: [], warnings: [], errors: [] }
   ],
   fail: [
-    { path: "b2.txt", code: "[E_STALE_ANCHOR]", message: "2 stale anchors in b2.txt: \"As2\", \"As2\". Re-read for fresh anchors." }
+    { path: "b2.txt", code: "[E_STALE_ANCHOR]", message: "2 stale anchors in b2.txt: \"As2\", \"As2\". Re-read for fresh anchors.\n\n  Echo of the line you tried (read-style, ±3 context):\nANCHOR:FILELINE — ...\n  1#...: x\n  2#...: y\n  3#...: z\n\n  If this is the line you meant to edit, reuse a fresh marker from: 2#..., 2#... without calling read.\n  If not, call read() to find the correct line." }
   ]
 }
 ```
 
-Note: the failed file's `fail[]` entry is `{path, code, message}` — **no original content**. The model can call `read` on `b2.txt` if it needs the file content for retry.
+Note: the failed file's `fail[]` entry keeps the `{path, code, message}` structure; the `message` carries the single-file error text VERBATIM, including the echo block and fresh-marker hint (each `\n` inside `message` is a real newline in the JSON string). No whole-file content (`before`/`after`) — only the single-file error's own ±3 echo. The model can retry directly with the fresh marker.
 
 ## Relationship to other ADRs
 

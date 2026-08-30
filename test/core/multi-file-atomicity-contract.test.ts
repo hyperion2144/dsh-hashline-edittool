@@ -1,0 +1,329 @@
+/**
+ * Multi-file edit contract tests per ADR-0004 §A/§B/§C/§D + ADR-0003 §TD3.
+ *
+ * The LLM-visible contract is `content[0].text` (the `modelText` field of the
+ * canonical value). text mode: aggregated prose. json mode: stringified JSON
+ * envelope `{ok, success:[...], fail:[...]}`.
+ */
+import { describe, expect, it } from "vitest";
+import { writeFile, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+	withTempFile,
+	setupIntegrationTest,
+	getText,
+} from "../support/fixtures.js";
+import { applyEffective } from "../../src/config.js";
+
+type Tool = {
+	execute: (_callId: string, params: unknown) => Promise<{
+		content: Array<{ text?: string }>;
+	}>;
+};
+
+async function readAnchors(
+	harness: ReturnType<typeof setupIntegrationTest>,
+	path: string,
+): Promise<Array<{ hash: string; content: string }>> {
+	const res = await harness.readTool.execute("read", { path });
+	const rows: Array<{ hash: string; content: string }> = [];
+	for (const line of (getText(res) as string).split("\n")) {
+		const m = line.match(/(\d+#\w+):(.*)$/);
+		if (m) rows.push({ hash: m[1]!, content: m[2]! });
+	}
+	return rows;
+}
+
+describe("multi-file edit — ADR-0004 response shape", () => {
+	it("A. success text mode: aggregated prose with per-file blocks", async () => {
+		await withTempFile("b1.txt", "alpha\nbeta\ngamma\n", async ({ cwd, path: p1 }) => {
+			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+			const harness = setupIntegrationTest(cwd);
+			const a1 = await readAnchors(harness, "b1.txt");
+			const a2 = await readAnchors(harness, "b2.txt");
+
+			const res = await harness.editTool.execute("edit", {
+				path: "b1.txt",
+				edits: [
+					{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+					{ op: "replace", path: "b2.txt", anchor_start: a2[1]!.hash, anchor_end: a2[1]!.hash, lines: ["B2!"] },
+				],
+			});
+			const text = getText(res);
+
+			expect(text).toContain("Successfully edited 2 file(s) — 2 of 2 edit(s) applied.");
+			expect(text).toContain("--- b1.txt ---");
+			expect(text).toContain("Successfully edited in b1.txt. Added 1 line(s), removed 1 line(s).");
+			expect(text).toContain("--- b2.txt ---");
+			expect(text).toContain("Successfully edited in b2.txt. Added 1 line(s), removed 1 line(s).");
+			// 两个文件都落盘
+			expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
+			expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\nB2!\nz\n");
+		});
+	});
+
+	it("B. success json mode: stringified envelope with verbatim buildEditJson entries", async () => {
+		applyEffective({ output_format: "json" });
+		try {
+			await withTempFile("b1.txt", "alpha\nbeta\ngamma\n", async ({ cwd, path: p1 }) => {
+				await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+				const harness = setupIntegrationTest(cwd);
+				// anchors 用 text 模式读（read 也是 json/text 双模式的）
+				applyEffective({});
+				const a1 = await readAnchors(harness, "b1.txt");
+				const a2 = await readAnchors(harness, "b2.txt");
+				applyEffective({ output_format: "json" });
+
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+						{ op: "replace", path: "b2.txt", anchor_start: a2[1]!.hash, anchor_end: a2[1]!.hash, lines: ["B2!"] },
+					],
+				});
+				const text = getText(res);
+				const parsed = JSON.parse(text) as {
+					ok: boolean;
+					success: Array<{ ok: boolean; path: string; diff: Record<string, string>; errors: unknown[] }>;
+					fail: unknown[];
+				};
+
+				expect(parsed.ok).toBe(true);
+				expect(parsed.fail).toEqual([]);
+				expect(parsed.success).toHaveLength(2);
+				expect(parsed.success[0]).toMatchObject({ ok: true, path: "b1.txt" });
+				expect(parsed.success[1]).toMatchObject({ ok: true, path: "b2.txt" });
+				// diff anchor-keyed: b2 line 2 被 replace
+				expect(Object.keys(parsed.success[1]!.diff).some((k) => k.startsWith("+"))).toBe(true);
+				expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
+			});
+		} finally {
+			applyEffective({});
+		}
+	});
+
+	it("C. partial-fail text mode: success block + Edit for failed line", async () => {
+		await withTempFile("b1.txt", "alpha\nbeta\ngamma\n", async ({ cwd, path: p1 }) => {
+			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+			const harness = setupIntegrationTest(cwd);
+			const a1 = await readAnchors(harness, "b1.txt");
+
+			// b2 用 stale anchor "zzz"
+			const res = await harness.editTool.execute("edit", {
+				path: "b1.txt",
+				edits: [
+					{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+					{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B2!"] },
+				],
+			});
+			const text = getText(res);
+
+			expect(text).toContain("Successfully edited 1 file(s) — 1 of 2 edit(s) applied.");
+			expect(text).toContain("Successfully edited in b1.txt.");
+			expect(text).toContain("Edit for b2.txt failed: [E_STALE_ANCHOR]");
+			// 与单文件一致: fail 块保留 echo + fresh-marker 提示 (ADR-0004 修订后)
+			expect(text).toContain("Echo of the line you tried");
+			expect(text).toContain("reuse a fresh marker");
+			// 不能带 batch 尾巴 (多文件上下文误导)
+			expect(text).not.toContain("The whole batch was rejected");
+			// b1 成功落盘, b2 未变
+			expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
+			expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
+		});
+	});
+
+	it("D. partial-fail json mode: fail entry is {path, code, message} without file content", async () => {
+		applyEffective({ output_format: "json" });
+		try {
+			await withTempFile("b1.txt", "alpha\nbeta\ngamma\n", async ({ cwd, path: p1 }) => {
+				await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+				const harness = setupIntegrationTest(cwd);
+				// anchors 用 text 模式读
+				applyEffective({});
+				const a1 = await readAnchors(harness, "b1.txt");
+				applyEffective({ output_format: "json" });
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+						{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B2!"] },
+					],
+				});
+				const text = getText(res);
+				const parsed = JSON.parse(text) as {
+					ok: boolean;
+					success: Array<{ path: string }>;
+					fail: Array<{ path: string; code: string; message: string }>;
+				};
+
+				expect(parsed.ok).toBe(true); // 至少一个文件成功
+				expect(parsed.success).toHaveLength(1);
+				expect(parsed.success[0]!.path).toBe("b1.txt");
+				expect(parsed.fail).toHaveLength(1);
+				expect(parsed.fail[0]).toMatchObject({
+					path: "b2.txt",
+					code: "[E_STALE_ANCHOR]",
+				});
+				expect(parsed.fail[0]!.message).toContain("2 stale anchors");
+				// 与单文件一致: message 保留 echo + fresh-marker 提示
+				expect(parsed.fail[0]!.message).toContain("Echo of the line you tried");
+				expect(parsed.fail[0]!.message).toContain("reuse a fresh marker");
+				// 不带 batch 尾巴
+				expect(parsed.fail[0]!.message).not.toContain("The whole batch was rejected");
+				// fail entry 结构仍是 path/code/message (echo 在 message 字符串内)
+				expect(Object.keys(parsed.fail[0]!)).toEqual(["path", "code", "message"]);
+				expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
+			});
+		} finally {
+			applyEffective({});
+		}
+	});
+});
+
+describe("multi-file edit — ADR-0002 schema validation", () => {
+	it("top-level absent + all items have per-item path → accepts", async () => {
+		await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd }) => {
+			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+			const harness = setupIntegrationTest(cwd);
+			const a1 = await readAnchors(harness, "b1.txt");
+			const a2 = await readAnchors(harness, "b2.txt");
+			const res = await harness.editTool.execute("edit", {
+				edits: [
+					{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+					{ op: "replace", path: "b2.txt", anchor_start: a2[1]!.hash, anchor_end: a2[1]!.hash, lines: ["B2!"] },
+				],
+			});
+			expect(getText(res)).toContain("Successfully edited 2 file(s)");
+		});
+	});
+
+	it("top-level absent + some item missing per-item path → rejects [E_BAD_SHAPE]", async () => {
+		await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd }) => {
+			const harness = setupIntegrationTest(cwd);
+			const a1 = await readAnchors(harness, "b1.txt");
+			await expect(
+				harness.editTool.execute("edit", {
+					edits: [
+						{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A"] },
+						// 无 per-item path 且顶层 path 也缺 → 必须在 assertEditRequest 拒绝
+						{ op: "replace", anchor_start: a1[1]!.hash, anchor_end: a1[1]!.hash, lines: ["B"] },
+					],
+				}),
+			).rejects.toThrow(/E_BAD_SHAPE/);
+		});
+	});
+
+	describe("multi-file edit — ADR-0003 §TD3 extra cases", () => {
+		it("TD3#4 all-files-failure: both files unchanged, ok:false, fail has both entries", async () => {
+			applyEffective({ output_format: "json" });
+			try {
+				await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+					await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+					const harness = setupIntegrationTest(cwd);
+					// anchors 用 text 模式读
+					applyEffective({});
+					const a1 = await readAnchors(harness, "b1.txt");
+					const a2 = await readAnchors(harness, "b2.txt");
+					applyEffective({ output_format: "json" });
+
+					// 两条 stale anchor → 两个文件都失败
+					const res = await harness.editTool.execute("edit", {
+						path: "b1.txt",
+						edits: [
+							{ op: "replace", path: "b1.txt", anchor_start: "1#zzz", anchor_end: "1#zzz", lines: ["X"] },
+							{ op: "replace", path: "b2.txt", anchor_start: "1#zzz", anchor_end: "1#zzz", lines: ["Y"] },
+						],
+					});
+					const text = getText(res);
+					const parsed = JSON.parse(text) as {
+						ok: boolean;
+						success: unknown[];
+						fail: Array<{ path: string; code: string }>;
+					};
+					expect(parsed.ok).toBe(false);
+					expect(parsed.success).toEqual([]);
+					expect(parsed.fail.map((f) => f.path).sort()).toEqual(["b1.txt", "b2.txt"]);
+					expect(parsed.fail.every((f) => f.code === "[E_STALE_ANCHOR]")).toBe(true);
+					// 两个文件都未变
+					expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
+					expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
+				});
+			} finally {
+				applyEffective({});
+			}
+		});
+
+		it("E_BAD_REF fail block strips the batch-abort tail (multi-file context)", async () => {
+			applyEffective({ hash_length: 2, output_format: "text" });
+			try {
+				await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+					await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
+					const harness = setupIntegrationTest(cwd);
+					const a1 = await readAnchors(harness, "b1.txt");
+
+					// 非法 anchor: hash_length=2 下 "2#zzz" 3 位 hash 长度非法 → E_BAD_REF
+					const res = await harness.editTool.execute("edit", {
+						path: "b1.txt",
+						edits: [
+							{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A!"] },
+							{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B!"] },
+						],
+					});
+					const text = getText(res);
+
+					expect(text).toContain("Successfully edited in b1.txt.");
+					expect(text).toContain("Edit for b2.txt failed: [E_BAD_REF]");
+					// #1 回归: 多文件下不能带 batch 尾巴 (b1 实际已写入, "NOTHING was written" 误导)
+					expect(text).not.toContain("The whole batch was rejected");
+					expect(text).not.toContain("NOTHING was written");
+					expect(await readFile(p1, "utf-8")).toBe("A!\nb\nc\n");
+					expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
+				});
+			} finally {
+				applyEffective({});
+			}
+		});
+
+		it("ins with anchor_end: accepted (no throw) + drop-the-field warning", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// ins 带 anchor_end — 不再拒绝, 返回 warning 提示
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "ins", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
+					],
+				});
+				const text = getText(res);
+
+				expect(text).toContain("Successfully edited in b1.txt.");
+				expect(text).toContain("Warnings:");
+				expect(text).toContain('edits[0].op:"ins" ignores anchor_end');
+				// ins 生效: 在 anchor_start 行后插入
+				expect(await readFile(p1, "utf-8")).toBe("a\nX\nb\nc\n");
+			});
+		});
+		it("TD3#7 auto-fold normalizer: item.path === topLevelPath treated as single-file default", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// 全部 item 的 path 与顶层 path 相同 → 折叠 → 单文件快路径（0.4 形态 value）
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
+						{ op: "replace", path: "b1.txt", anchor_start: a1[1]!.hash, anchor_end: a1[1]!.hash, lines: ["B1!"] },
+					],
+				});
+				const text = getText(res);
+				// 单文件形态：不含 "--- b1.txt ---" 分隔、summary 是单文件 "Successfully edited in b1.txt"
+				expect(text).not.toContain("--- b1.txt ---");
+				expect(text).toContain("Successfully edited in b1.txt");
+				expect(await readFile(p1, "utf-8")).toBe("A1!\nB1!\nc\n");
+			});
+		});
+	});
+});
