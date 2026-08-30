@@ -4,6 +4,16 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-file `edit` dispatch** — per-item `path` now routes each edit item to its own file. Items are grouped by file; a batch touching ≥ 2 distinct files exercises the multi-file path, while a single-file call keeps the 0.4 `edit({path, edits:[…]})` shape verbatim. Top-level `path` becomes optional when every item carries its own `path` (the only new `[E_BAD_SHAPE]` case: top-level omitted and any item missing `path`); `item.path === topLevelPath` is auto-folded as an explicit normalization, not an error; the `editItemSchema` / `editsSchema` / `pathSchema` schemas enforce `additionalProperties: false`.
+- **Per-file atomicity** — each file's sub-batch is processed through the existing single-file flow (read → normalize → apply → persist-undo → write) with all-or-none semantics within that file; files are independent and partial success is reported. Items targeting the same `absolutePath` auto-merge into that file's sub-batch, preserving the existing `[E_BATCH_CONFLICT]` overlap rules inside it.
+- **Aggregated multi-file response** — text mode returns one `content[].text` with per-file `Successfully edited in <path>.` blocks (each with its ANCHOR:FILELINE diff) separated by `--- <path> ---` lines; failed files append `Error: [E_*] <message>` blocks. json mode returns the stringified envelope `{"ok": <bool>, "success": […per-file 0.4 JSON envelope…], "fail": […{path, code, message}…]}`. All-noop batches get a summary line.
+
+### Changed
+
+- Docs: ADR-0002 (multi-file schema contract), ADR-0003 (per-file atomicity), ADR-0004 (aggregated response shape) added under `docs/adr/`.
+
 ## [0.4.0] - 2026-08-27
 
 ### Added
