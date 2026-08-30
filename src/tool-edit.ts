@@ -257,15 +257,24 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					string,
 					Array<{ index: number; edit: (typeof canonical.edits)[number] }>
 				>();
+				// ins 传了 anchor_end: 不拒绝 (宽松), 提示用户不要传 — 按目标文件记录
+				const insAnchorEndWarningsByPath = new Map<string, string[]>();
 				for (let i = 0; i < canonical.edits.length; i++) {
 					const e = canonical.edits[i]!;
 					// ADR-0002 normalizer: item.path === topLevelPath 折叠为缺省（冗余声明不算多文件）
 					const itemPath =
 						e.path !== undefined && e.path === topLevelPath ? undefined : e.path;
 					const path = itemPath ?? (topLevelPath as string);
-					const list = groups.get(path) ?? [];
-					list.push({ index: i, edit: e });
-					groups.set(path, list);
+					if (e.op === "ins" && e.anchor_end !== undefined) {
+						const list = insAnchorEndWarningsByPath.get(path) ?? [];
+						list.push(
+							`edits[${i}].op:"ins" ignores anchor_end — ins inserts after anchor_start; drop the field.`,
+						);
+						insAnchorEndWarningsByPath.set(path, list);
+					}
+					const gList = groups.get(path) ?? [];
+					gList.push({ index: i, edit: e });
+					groups.set(path, gList);
 				}
 
 				// ---- 单文件快捷路径 (0.4 兼容, ADR-0004 D4): 仅一组时维持旧形态 ----
@@ -283,6 +292,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						canonical,
 						displayPath,
 						resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
+						extraWarnings: insAnchorEndWarningsByPath.get(displayPath),
 						sandbox,
 						sandboxPolicy,
 						exec,
@@ -316,6 +326,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 								canonical,
 								displayPath,
 								resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
+								extraWarnings: insAnchorEndWarningsByPath.get(displayPath),
 								sandbox,
 								sandboxPolicy,
 								exec,
@@ -389,6 +400,7 @@ async function applyFileResultTo(
 		canonical: { path?: string; edits: Array<unknown> };
 		displayPath: string;
 		resolutionWarning: string | undefined;
+		extraWarnings?: string[];
 		sandbox: FsSandboxController;
 		sandboxPolicy: Awaited<ReturnType<FsSandboxController["resolvePolicy"]>>;
 		exec: Parameters<typeof commit>[0]["exec"];
@@ -459,6 +471,9 @@ async function applyFileResultTo(
 	}
 	if (ctx.resolutionWarning) {
 		file.warnings.unshift(ctx.resolutionWarning);
+	}
+	if (ctx.extraWarnings && ctx.extraWarnings.length > 0) {
+		file.warnings.push(...ctx.extraWarnings);
 	}
 	if (file.servedRows && file.servedRows.length > 0) {
 		// Awaited so the next edit in the same batch (or the model's next

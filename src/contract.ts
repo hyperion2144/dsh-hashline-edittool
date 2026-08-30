@@ -144,11 +144,6 @@ export function assertEditItem(
 				`[E_BAD_SHAPE] edits[${index}].anchor_end must be a non-empty anchor string when provided.`,
 			);
 		}
-		if (item.op === "ins") {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"ins" does not accept "anchor_end"; ins inserts immediately after "anchor_start".`,
-			);
-		}
 	}
 	if (item.op === "replace" && item.anchor_end === undefined) {
 		throw new Error(
@@ -273,7 +268,7 @@ export const editItemSchema = {
 		anchor_end: {
 			type: "string",
 			description:
-					'Anchor of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Forbidden for `op:"ins"`.',
+					'Anchor of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).',
 		},
 		lines: {
 			type: "array",

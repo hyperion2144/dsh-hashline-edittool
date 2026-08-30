@@ -283,6 +283,28 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 				applyEffective({});
 			}
 		});
+
+		it("ins with anchor_end: accepted (no throw) + drop-the-field warning", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// ins 带 anchor_end — 不再拒绝, 返回 warning 提示
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "ins", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
+					],
+				});
+				const text = getText(res);
+
+				expect(text).toContain("Successfully edited in b1.txt.");
+				expect(text).toContain("Warnings:");
+				expect(text).toContain('edits[0].op:"ins" ignores anchor_end');
+				// ins 生效: 在 anchor_start 行后插入
+				expect(await readFile(p1, "utf-8")).toBe("a\nX\nb\nc\n");
+			});
+		});
 		it("TD3#7 auto-fold normalizer: item.path === topLevelPath treated as single-file default", async () => {
 			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 				const harness = setupIntegrationTest(cwd);
