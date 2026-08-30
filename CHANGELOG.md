@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-30
+
 ### Added
 
 - **Multi-file `edit` dispatch** — per-item `path` now routes each edit item to its own file. Items are grouped by file; a batch touching ≥ 2 distinct files exercises the multi-file path, while a single-file call keeps the 0.4 `edit({path, edits:[…]})` shape verbatim. Top-level `path` becomes optional when every item carries its own `path` (the only new `[E_BAD_SHAPE]` case: top-level omitted and any item missing `path`); `item.path === topLevelPath` is auto-folded as an explicit normalization, not an error; the `editItemSchema` / `editsSchema` / `pathSchema` schemas enforce `additionalProperties: false`.
