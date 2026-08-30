@@ -10,11 +10,11 @@
  * not depend on this one.
  *
  * **0.4.0 contract change.** The `edit` tool now takes an `edits:[]` array
- * with named fields (`op` / `from` / `to?` / `lines?`) and an `op` semantic
+ * with named fields (`op` / `anchor_start` / `anchor_end?` / `lines?`) and an `op` semantic
  * distinguishing `ins` / `del` / `replace`. The legacy `batch_edit` tool
  * is removed; its multi-file capability is preserved as a per-item
  * optional `path` that overrides the top-level `path`. `remove_from` /
- * `remove_to` / `replacement_text` are gone — use `from` / `to` / `lines`
+ * `remove_to` / `replacement_text` are gone — use `anchor_start` / `anchor_end` / `lines`
  * inside each `edits[i]` instead. See `docs/edit-payload-spec.md` for the
  * full design and the rationale.
  * @module dsh-hashline-edittool/contract
@@ -111,8 +111,8 @@ export const normReq = normalizeRequest;
  * Validate one edit item. Throws `[E_BAD_SHAPE]` with a path-qualified
  * message on the first violation. Validation rules:
  *   - `op` is required and one of `ins` / `del` / `replace`
- *   - `from` is required and a non-empty string (the anchor)
- *   - `to` is forbidden for `op: "ins"`, optional otherwise
+ *   - `anchor_start` is required and a non-empty string (the anchor)
+ *   - `anchor_end` is forbidden for `op: "ins"`, optional otherwise (required for `op: "replace"`)
  *   - `lines` is required and must be a non-empty string array for `ins` /
  *     `replace`, and forbidden for `del`
  *   - per-item `path`, if set, must be a non-empty string

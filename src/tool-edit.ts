@@ -1,20 +1,21 @@
 /**
  * The dsh `edit` tool: hash-anchored literal range edits that shadow the
  * built-in `edit` on the agent's own scope layer. Registered through the
- * agent context so the model-facing contract (`op` / `from` / `to?` /
- * `lines?` inside an `edits:[]` array, with served-range verification and
- * reject-and-serve) replaces the built-in one.
+ * agent context so the model-facing contract (`op` / `anchor_start` /
+ * `anchor_end?` / `lines?` inside an `edits:[]` array, with served-range
+ * verification and reject-and-serve) replaces the built-in one.
  *
- * **0.4 contract.** The tool takes `{ path, edits: [{ op, from, to?,
- * lines? }, ...] }` and removes the legacy `batch_edit` tool. Each item
- * carries an `op` semantic:
- *   - `op: "ins"` — insert `lines` AFTER the `from` line (the `from` line
- *     itself is preserved; the line's content is prepended to `lines` and
- *     applied as a single-line replace)
- *   - `op: "del"` — delete the from..to range (or the single `from` line
- *     when `to` is omitted); `lines` is forbidden
- *   - `op: "replace"` — replace the from..to range with `lines`; `lines`
- *     must be non-empty
+ * **0.4 contract.** The tool takes `{ path, edits: [{ op, anchor_start,
+ * anchor_end?, lines? }, ...] }` and removes the legacy `batch_edit` tool.
+ * Each item carries an `op` semantic:
+ *   - `op: "ins"` — insert `lines` AFTER the `anchor_start` line (the
+ *     `anchor_start` line itself is preserved; the line's content is
+ *     prepended to `lines` and applied as a single-line replace)
+ *   - `op: "del"` — delete the anchor_start..anchor_end range (or the
+ *     single `anchor_start` line when `anchor_end` is omitted); `lines` is
+ *     forbidden
+ *   - `op: "replace"` — replace the anchor_start..anchor_end range with
+ *     `lines`; `lines` must be non-empty
  *
  * Structured presentation: the canonical value carries `path` / `before` /
  * `after` / `modelText` / `added` / `removed` / `firstChangedLine` /
@@ -79,7 +80,7 @@ type EditCanonicalValue = {
 
 /**
  * Build a `PreparedItem` from one `edits[i]`. Resolves the per-item
- * `path` against the top-level fallback, defaults `to` to `from` when
+ * `path` against the top-level fallback, defaults `anchor_end` to `anchor_start` when
  * omitted, and maps `op: "del"` to `replacement_text: ""`. The `op:
  * "ins"` case is left to `applyOne`/`resolveIns` — the `replacement_text`
  * is still the raw `lines.join("\n")` here because the anchor's own
