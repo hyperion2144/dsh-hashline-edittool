@@ -22,14 +22,14 @@ Two distinct tracks in one commit-set:
     - Upstream T3 replaces `edit` + `batch_edit` with a single
       `edit({path, edits:[[hash, hash, text]]})` — 3-tuples with
       positional meaning (from, to, text).
-    - Our variant uses **named fields** (`from` / `to` / `lines` / `op`)
+    - Our variant uses **named fields** (`anchor_start` / `anchor_end` / `lines` / `op`)
       and **explicit op semantics** (`ins` / `del` / `replace`):
-      - `op: "ins"` — insert `lines` after the `from` line. `from` is
-        required; `to` is forbidden; `lines` is required and non-empty.
-      - `op: "del"` — delete the `from` line, or the `from..to` range
-        if `to` is given. `from` is required; `lines` is forbidden.
-      - `op: "replace"` — replace the `from` line, or the `from..to`
-        range if `to` is given, with `lines`. `from` is required;
+      - `op: "ins"` — insert `lines` after the `anchor_start` line. `anchor_start` is
+        required; `anchor_end` is forbidden; `lines` is required and non-empty.
+      - `op: "del"` — delete the `anchor_start` line, or the `anchor_start..anchor_end` range
+        if `anchor_end` is given. `anchor_start` is required; `lines` is forbidden.
+      - `op: "replace"` — replace the `anchor_start` line, or the `anchor_start..anchor_end`
+        range if `anchor_end` is given, with `lines`. `anchor_start` is required;
         `lines` is required and **must be non-empty** (use `del` to
         delete).
 
@@ -97,17 +97,15 @@ defineTool({
       type: "string",
       required: true,
       enum: ["ins", "del", "replace"],
-      description: "Edit semantic. `ins` inserts after `from`; `del` deletes the from..to range; `replace` replaces the from..to range with `lines`.",
+      description: "Edit semantic. `ins` inserts after `anchor_start`; `del` deletes the anchor_start..anchor_end range (single line when `anchor_end` is omitted); `replace` swaps the anchor_start..anchor_end range with `lines`.",
     },
-    from: {
+    anchor_start: {
       type: "string",
       required: true,
-      description: "Anchor of the FIRST line of the range. `<line>#<hash>` (e.g. `12#ve7`) or bare 3-char hash when the file is unchanged above. For `op: ins`, the inserted lines land AFTER this line; for `del` and `replace`, this is the first line of the affected range.",
-    },
-    to: {
+      description: "Anchor of the FIRST line of the range. A `<line>#<hash>` marker (e.g. `12#ve7`) copied from a read/grep/diff row — never hand-written or bare hashes. For `op: ins`, the inserted lines land AFTER this line; for `del` and `replace`, this is the first line of the affected range.",
+    anchor_end: {
       type: "string",
-      description: "Anchor of the LAST line of the range. If omitted, the edit targets just the `from` line. Forbidden for `op: ins`.",
-    },
+      description: "Anchor of the LAST line of the range. When omitted, the edit targets just the `anchor_start` line. Forbidden for `op: ins`; REQUIRED for `op: replace` (a single-line replace passes the same anchor twice).",
     lines: {
       type: "array",
       items: { type: "string" },
@@ -119,22 +117,22 @@ defineTool({
 
 ### 3.2 `op` semantics — exhaustive
 
-| `op`     | `from` | `to`    | `lines`            | Behaviour |
-| -------- | ------ | ------- | ------------------ | --------- |
-| `ins`    | ✓ required | ✗ forbidden | ✓ required, `≥ 1` | Insert `lines` **after** the `from` line. The `from` line itself is preserved. |
-| `del`    | ✓ required | optional (default = `from`) | ✗ forbidden | Delete the `from` line, or the `from..to` range if `to` is given. |
-| `replace`| ✓ required | optional (default = `from`) | ✓ required, `≥ 1` | Replace the `from` line, or the `from..to` range if `to` is given, with `lines`. |
+| `op`     | `anchor_start` | `anchor_end` | `lines`            | Behaviour |
+| -------- | -------------- | ------------ | ------------------ | --------- |
+| `ins`    | ✓ required     | ✗ forbidden  | ✓ required, `≥ 1`  | Insert `lines` **after** the `anchor_start` line. The `anchor_start` line itself is preserved. |
+| `del`    | ✓ required     | optional (default = `anchor_start`) | ✗ forbidden | Delete the `anchor_start` line, or the `anchor_start..anchor_end` range if `anchor_end` is given. |
+| `replace`| ✓ required     | ✓ required   | ✓ required, `≥ 1`  | Swap the `anchor_start..anchor_end` range with `lines`; a single-line replace passes the same anchor twice (`anchor_start === anchor_end`). |
 
 Validation rules (in `execute`, after schema soft-validates the schema shape):
 
-- If `op === "ins"` and `to` is set → `[E_BAD_SHAPE] op:"ins" does not accept "to".`
-- If `op === "del"` and `lines` is set (or `lines: []` empty array) → `[E_BAD_SHAPE] op:"del" does not accept "lines".`
-- If `op === "replace"` and `lines` is missing or empty → `[E_BAD_SHAPE] op:"replace" requires a non-empty "lines" array. Use op:"del" to delete.`
-- If `op === "replace"` and `lines` is `[""]` (one empty string) → accepted; the result is the empty line.
+- If `op === "ins"` and `anchor_end` is set → not rejected (lenient): a warning is emitted — `edits[i].op:"ins" ignores anchor_end — ins inserts after anchor_start; drop the field.`
+- If `op === "del"` and `lines` is set (or `lines: []` empty array) → `[E_BAD_SHAPE] edits[i].op:"del" does not accept "lines"; use op:"replace" with lines:[""] to clear a single line.`
+- If `op === "replace"` and `anchor_end` is missing → `[E_MISSING_ANCHOR_END] edits[i].op:"replace" requires BOTH anchor_start and anchor_end — replace always swaps a whole range; for a single-line replace pass the same anchor twice (anchor_start === anchor_end). To insert lines, use op:"ins".`
+- If `op === "replace"` and `lines` is missing or empty → `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`
   (An edit that replaces with `[""]` is distinct from `op:"del"`: the line
-  still exists in the file, just empty. The `from..to` range shrinks by
-  0 if single-line.)
-- If `op === "ins"` and `lines` is missing or empty → `[E_BAD_SHAPE] op:"ins" requires a non-empty "lines" array.`
+  still exists in the file, just empty. The `anchor_start..anchor_end` range
+  shrinks by 0 if single-line.)
+- If `op === "ins"` and `lines` is missing or empty → `[E_BAD_SHAPE] edits[i].op:"ins" requires a non-empty "lines" array of strings to insert.`
 
 ### 3.3 Edit application order and Shift blocks
 
@@ -144,38 +142,39 @@ The Shift block behaviour (per the existing `line#hash` spec at
 when the net line-count change is non-zero, in the same `Shift:
 lines > N shift by +K` format the model already chains against.
 
-`ins` adds `lines.length` lines below the `from` line; the `from` line
-itself does not move, but every line below it does. The Shift block
-quantifies that for the chain.
+**Snapshot-concurrency (0.4).** Every hunk in one `edit` call resolves its
+`anchor_start` / `anchor_end` against the **same original file snapshot**, so
+all hunks may use ORIGINAL anchors — there is no manual `newLine#oldHash`
+chaining. Hunks whose row ranges overlap on that snapshot are rejected up
+front with `[E_BATCH_CONFLICT]` (replace/del × replace/del overlap; two `ins`
+at the same anchor line; an `ins` whose anchor line lies inside a
+replace/del range). Non-overlapping hunks apply atomically, in ONE pass from
+the back, and remain all-or-nothing.
 
-`del` removes `|to - from| + 1` lines (or 1 if `to` is omitted). Lines
-below close up.
+The `Shift:` blocks map each hunk's ORIGINAL range to its FINAL position
+(e.g. `Shift: edits[1] lines 5..6 moved to lines 7..9 (+2)`), and the diff
+rows carry final line numbers + hashes throughout — the model chains the
+next edit by reading the Shift block, never by shifting coordinates.
 
-`replace` keeps the line count the same as the number of `lines`
-inserted. If `|to - from| + 1 !== lines.length`, lines shift below.
+`ins` adds `lines.length` lines below the `anchor_start` line; the
+`anchor_start` line itself does not move, but every line below it does —
+the Shift block quantifies that for the chain.
 
-Edits in the same `edits` array are applied **in order** against
-evolving content (each edit sees the file state after the previous
-edit). This is the existing `applySequence` behaviour — preserve it.
+`del` removes the `anchor_start..anchor_end` range (or just the
+`anchor_start` line when `anchor_end` is omitted). Lines below close up.
+
+`replace` swaps the `anchor_start..anchor_end` range for `lines`; when the
+net line count changes, the Shift block quantifies the shift for the chain.
+
+Edits in the same `edits` array apply atomically against the original
+snapshot described above — the 0.3-era `applySequence` evolving-content
+order is gone.
 
 ### 3.4 Tool description (model-facing) and prompt text
 
 `EDIT_DESCRIPTION` (in `src/prompts.ts`):
 
-> Apply one or more edits to a text file in a single atomic call. Each
-> item in `edits` carries an `op` (`ins` / `del` / `replace`), a `from`
-> anchor, an optional `to` anchor (for range edits), and the `lines` to
-> insert or replace with. `ins` adds `lines` after the `from` line; `del`
-> removes the from..to range; `replace` swaps the from..to range with
-> `lines`. Pass `<line>#<hash>` (e.g. `12#ve7`) for both `from` and
-> `to`; a bare 3-char hash is accepted only when the file is unchanged
-> above. The post-edit response includes a `Shift:` block per hunk
-> describing how absolute line numbers below the edit moved; chain the
-> next edit by reading the Shift block — `newLine=<N>#<oldHash>` from
-> the next unchanged diff row (if rendered), or read for fresh
-> anchors. A stale or never-served range is hard-rejected
-> (`[E_STALE_ANCHOR]` / `[E_RANGE_UNSERVED]`) with a read-format echo
-> that counts as a fresh serve.
+> Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are `<line>#<hash>` copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).
 
 `EDIT_GUIDANCE` bullets updated to remove references to a separate
 `batch_edit` tool; the merged `edit` is explained in terms of `edits:[]`.
@@ -211,9 +210,10 @@ behaviour).
 
 The legacy `edit.remove_to === undefined` / `remove_to === ""` →
 defaults to `remove_from` behaviour is **gone**. The new contract uses
-`from` + `to`; omitting `to` means single-line, no defaulting. A
-single-line `del` becomes `{op: "del", from: "12#ve7"}`; a single-line
-`replace` becomes `{op: "replace", from: "12#ve7", lines: ["new"]}`.
+`anchor_start` + `anchor_end`; omitting `anchor_end` means single-line, no
+defaulting. A single-line `del` becomes `{op: "del", anchor_start: "12#ve7"}`;
+a single-line `replace` becomes `{op: "replace", anchor_start: "12#ve7",
+anchor_end: "12#ve7", lines: ["new"]}`.
 
 This is a **deliberate break** from the line#hash upgrade. The previous
 "omit remove_to = single line" default was implicit; the new contract
@@ -293,8 +293,8 @@ Zed's "terse notices" was a UX study; the upstream benchmark shows
   path: string;                  // optional default path
   edits: Array<{
     op: "ins" | "del" | "replace";  // required
-    from: string;                    // required: anchor of first line
-    to?: string;                     // optional: anchor of last line
+    anchor_start: string;            // required: anchor of first line
+    anchor_end?: string;             // optional: anchor of last line (required for replace)
     lines?: string[];                // required for ins/replace; forbidden for del
   }>;
 }
@@ -306,7 +306,7 @@ JSON example, replace one line with two:
 {
   "path": "src/foo.ts",
   "edits": [
-    { "op": "replace", "from": "3#abc", "to": "3#abc", "lines": ["new line 1", "new line 2"] }
+    { "op": "replace", "anchor_start": "3#abc", "anchor_end": "3#abc", "lines": ["new line 1", "new line 2"] }
   ]
 }
 ```
@@ -317,7 +317,7 @@ JSON example, insert after line 5:
 {
   "path": "src/foo.ts",
   "edits": [
-    { "op": "ins", "from": "5#xyz", "lines": ["inserted"] }
+    { "op": "ins", "anchor_start": "5#xyz", "lines": ["inserted"] }
   ]
 }
 ```
@@ -328,20 +328,20 @@ JSON example, delete lines 10-12:
 {
   "path": "src/foo.ts",
   "edits": [
-    { "op": "del", "from": "10#abc", "to": "12#xyz" }
+    { "op": "del", "anchor_start": "10#abc", "anchor_end": "12#xyz" }
   ]
 }
 ```
 
-JSON example, multi-edit single call (apply in order; each `edits[i]`
-sees the file state after `edits[i-1]`):
+JSON example, multi-edit single call (all hunks resolve against the same
+original snapshot; overlapping ranges are rejected; applied atomically):
 
 ```json
 {
   "path": "src/foo.ts",
   "edits": [
-    { "op": "del",   "from": "10#abc", "to": "10#abc" },
-    { "op": "replace", "from": "15#xyz", "lines": ["new", "values"] }
+    { "op": "del",   "anchor_start": "10#abc", "anchor_end": "10#abc" },
+    { "op": "replace", "anchor_start": "15#xyz", "lines": ["new", "values"] }
   ]
 }
 ```
@@ -355,39 +355,39 @@ sees the file state after `edits[i-1]`):
 | `src/session-view.ts` | T2: `_mergeServedRows` builds a `Map<hash, position>` and nulls the older position on hash collision. `recordServed` / `recordServedTruncated` short-circuit no-op writes. |
 | `src/hashline/anchor-pipeline.ts` | T2: `verifyServedRange` candidate-span enumeration. T5: terse `[E_STALE_ANCHOR]`, `[E_AMBIGUOUS_ANCHOR]`, `[E_BAD_REF]`, `[E_BAD_OP]`, `[E_INVALID_PATCH]`, `[E_BARE_HASH_PREFIX]` notices. |
 | `src/edit-engine.ts` | T5: terse `[E_NOOP_LOOP]` notices. |
-| `src/contract.ts` | T5: schema one-liners. New `EditItemParams` with `op` / `from` / `to?` / `lines?`. Update `EditParams` to `{ path, edits }`. Remove `BatchItemParams` + `BatchEditParams` + `assertBatchEditRequest`. Keep `assertEditRequest` but it now validates the merged `edits` array. |
+| `src/contract.ts` | T5: schema one-liners. New `EditItemParams` with `op` / `anchor_start` / `anchor_end?` / `lines?`. Update `EditParams` to `{ path, edits }`. Remove `BatchItemParams` + `BatchEditParams` + `assertBatchEditRequest`. Keep `assertEditRequest` but it now validates the merged `edits` array. |
 | `src/constants.ts` | `BATCH_EDIT_MAX_ITEMS` → `EDITS_MAX_ITEMS` (same default 32). |
 | `src/prompts.ts` | New `EDIT_DESCRIPTION` + `EDIT_GUIDANCE` (mentions `op` field). Remove `BATCH_EDIT_DESCRIPTION` + `BATCH_EDIT_GUIDANCE`. |
 | `src/guidance/resolve.ts` + `materialize.ts` | Drop `tool:batch_edit` section; add nothing new (the `edit` section covers both). |
-| `src/tool-edit.ts` | Apply the new contract: each `edits[i]` has `op` / `from` / `to?` / `lines?`; map `op` to existing pipeline ops (insert / remove / replace) via a new `applyOneEdit` helper that returns the structured value. No more `batch_edit` seam. |
+| `src/tool-edit.ts` | Apply the new contract: each `edits[i]` has `op` / `anchor_start` / `anchor_end?` / `lines?`; map `op` to existing pipeline ops (insert / remove / replace) via a new `applyOneEdit` helper that returns the structured value. No more `batch_edit` seam. |
 | `src/tool-batch-edit.ts` | **Deleted.** |
-| `test/core/edit-engine.e2e.test.ts` | Update tests: edit payloads use `op`/`from`/`to`/`lines`; no more `remove_from`/`remove_to`. |
+| `test/core/edit-engine.e2e.test.ts` | Update tests: edit payloads use `op`/`anchor_start`/`anchor_end`/`lines`; no more `remove_from`/`remove_to`. |
 | `test/core/replace-response.test.ts` | Update shape expectations. |
 | `test/core/replace-normalize.test.ts` | Update shape expectations. |
 | `test/core/hashline-strict-input.test.ts` | Update `E_BARE_HASH_PREFIX` etc. message expectations to match the terse T5 wording. |
 | `test/support/fixtures.ts` | Update `wrapTool` to handle the new `edit` shape (single item, `op` field). Remove `batchEditTool` from `setupIntegrationTest`. |
-| `test/core/presentation.test.ts` | Update edit / batch_edit tests: drop `batch_edit` test, update `edit` test to assert the new `op` / `from` / `to` / `lines` shape. |
+| `test/core/presentation.test.ts` | Update edit / batch_edit tests: drop `batch_edit` test, update `edit` test to assert the new `op` / `anchor_start` / `anchor_end` / `lines` shape. |
 | `test/core/line-hashline.test.ts` | Update edit / shift tests to use `op` form. |
 | `README.md` + `README.zh.md` | Update install matrix; remove `batch_edit` row from Tools table; update Quick Start example; update the per-op tool description. |
 | `CHANGELOG.md` | New `[Unreleased]` block: T1+T2+T5 cherry-picks; merged `edit` payload with `op` field; `batch_edit` removed. |
-| `docs/line-hashline-spec.md` | Update the `edit` contract section: `op` field, `from` / `to` semantics, no more `batch_edit`. |
+| `docs/line-hashline-spec.md` | Superseded instead of updated (2026-08-30, issue #6): kept as the 0.3-era historical record with a "Superseded by `edit-payload-spec.md`" header. |
 | `docs/absorption-plan.md` | (Not needed — this spec replaces the absorption plan in spirit.) |
 
 ## 7. Test plan
 
 | Test | Asserts |
 | --- | --- |
-| `edit.op: "ins"` | `lines: ["a"]` after `from` line N inserts at position N+1; `from..N` is unchanged; Shift block shows the +1 below. |
-| `edit.op: "ins"` with `to` set | Reject: `[E_BAD_SHAPE] op:"ins" does not accept "to".` |
-| `edit.op: "ins"` with empty `lines` | Reject: `[E_BAD_SHAPE] op:"ins" requires a non-empty "lines" array.` |
-| `edit.op: "del"` single line | `from` line is removed; Shift block shows the -1 below. |
-| `edit.op: "del"` range | `from..to` lines are removed; Shift block shows the -range. |
-| `edit.op: "del"` with `lines` set | Reject: `[E_BAD_SHAPE] op:"del" does not accept "lines".` |
-| `edit.op: "replace"` single line | `from` line is replaced with `lines`; no Shift block (net line count 0). |
-| `edit.op: "replace"` range | `from..to` lines are replaced with `lines`; Shift block if `lines.length !== range.length`. |
-| `edit.op: "replace"` with empty `lines` | Reject: `[E_BAD_SHAPE] op:"replace" requires a non-empty "lines" array. Use op:"del" to delete.` |
+| `edit.op: "ins"` | `lines: ["a"]` after `anchor_start` line N inserts at position N+1; the anchor line itself is unchanged; Shift block shows the +1 below. |
+| `edit.op: "ins"` with `anchor_end` set | Not rejected (lenient): warning `edits[i].op:"ins" ignores anchor_end — ins inserts after anchor_start; drop the field.` |
+| `edit.op: "ins"` with empty `lines` | Reject: `[E_BAD_SHAPE] edits[i].op:"ins" requires a non-empty "lines" array of strings to insert.` |
+| `edit.op: "del"` single line | `anchor_start` line is removed; Shift block shows the -1 below. |
+| `edit.op: "del"` range | `anchor_start..anchor_end` lines are removed; Shift block shows the -range. |
+| `edit.op: "del"` with `lines` set | Reject: `[E_BAD_SHAPE] edits[i].op:"del" does not accept "lines"; use op:"replace" with lines:[""] to clear a single line.` |
+| `edit.op: "replace"` single line | `anchor_start` line is replaced with `lines` (both anchors passed); no Shift block (net line count 0). |
+| `edit.op: "replace"` range | `anchor_start..anchor_end` lines are replaced with `lines`; Shift block if `lines.length !== range.length`. |
+| `edit.op: "replace"` with empty `lines` | Reject: `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.` |
 | `edit.op: "replace"` with `lines: [""]` | Accepted: the line becomes empty (still exists in the file). |
-| `edit` with mixed `edits` (ins + del + replace) | All applied in order; each produces its own Shift block. |
+| `edit` with mixed `edits` (ins + del + replace) | All hunks resolve against the same original snapshot (overlaps rejected); each produces its own Shift block. |
 | `edit` with no top-level `path` and per-item `path` | Per-item `path` wins; the file used by each edit matches the per-item path. |
 | `edit` with neither top-level nor per-item `path` | Reject: `[E_BAD_SHAPE] edits[i] requires a "path" string.` |
 | T1: whitespace-only reformat | Before T1: hash rotates, anchor rejects. After T1: hash stable, edit succeeds. |
@@ -440,11 +440,13 @@ sees the file state after `edits[i-1]`):
    against `remove_from` / `remove_to` / `replacement_text` will emit
    the old shape. Mitigations:
    - The new `EDIT_DESCRIPTION` in the prompt section is explicit about
-     `op` / `from` / `to` / `lines`.
+     `op` / `anchor_start` / `anchor_end` / `lines`.
    - The schema description is informative enough that a model that
      reads the tool schema will use the new shape.
-   - For one release cycle, we can soft-reject the old shape with a
-     clear `[E_BAD_SHAPE] edit was refactored; use {op, from, lines?}`.
+   - The old field names (`from` / `to` / `remove_from` / `remove_to` /
+     `replacement_text`) are rejected as unknown fields
+     (`additionalProperties: false`), with the spec + prompt section as
+     the recovery path.
 4. **Bumping to 0.4.0 is correct.** Anything model-observable is a
    minor-version bump per `CLAUDE.md` guidance. T1+T2+T5 individually
    could ship as 0.3.x (no model break), but bundling them with the

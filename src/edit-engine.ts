@@ -248,11 +248,13 @@ export interface ApplyOneResult {
 
 /**
  * Resolve an `op: "ins"` edit into the range + replacement it really means.
- * `ins` inserts the given lines AFTER the `from` line while preserving the
- * `from` line itself — so the effective edit is a single-line replace of the
- * `from` line with `[<fromLineContent>, ...insertedLines]`. `to` is never
- * accepted for `ins` (validated at the contract layer); `removeTo` here is
- * the `from` again. The `from` line's content is read from `content` via the
+ * `ins` inserts the given lines AFTER the `anchor_start` line while
+ * preserving the `anchor_start` line itself — so the effective edit is a
+ * single-line replace of the `anchor_start` line with
+ * `[<anchorLineContent>, ...insertedLines]`. `anchor_end` is never accepted
+ * for `ins` (validated at the contract layer); `removeTo` here is
+ * `anchor_start` again. The anchor line's content is read from `content`
+ * via the hash's position.
  * hash's position.
  */
 export function resolveIns(
