@@ -28,9 +28,9 @@ describe("readAndServe", () => {
 			expect(text).toMatch(/^ANCHOR:FILELINE[^\n]*\n/);
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}:\s*one$/);
-			expect(lines[2]).toMatch(/^2#[A-Za-z0-9]{3}:\s*two$/);
-			expect(lines[3]).toMatch(/^3#[A-Za-z0-9]{3}:\s*three$/);
+			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\s*one$/);
+			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\s*two$/);
+			expect(lines[3]).toMatch(/^[A-Za-z0-9]{2,8}:\s*three$/);
 
 			const stored = await loadServed(sessionKey, path);
 			expect(stored).toHaveLength(3);
@@ -51,8 +51,8 @@ describe("readAndServe", () => {
 
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[1]).toMatch(/^2#[A-Za-z0-9]{3}:\s*two$/);
-			expect(lines[2]).toMatch(/^3#[A-Za-z0-9]{3}:\s*three$/);
+			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\s*two$/);
+			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\s*three$/);
 			expect(text).toContain("[Showing lines 2-3 of 4");
 
 			const stored = await loadServed(sessionKey, path);

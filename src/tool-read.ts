@@ -17,7 +17,12 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { normalizeRequest as normReq, assertReadRequest, pathSchema } from "./contract.js";
+import {
+	normalizeRequest as normReq,
+	assertReadRequest,
+	pathSchema,
+	lineNumbersSchema,
+} from "./contract.js";
 
 import { readAndServe } from "./read-and-serve.js";
 import { readDescription } from "./prompts.js";
@@ -54,11 +59,14 @@ export function buildReadTool(io: FileIO) {
 				type: "number",
 				description: "Line number to start reading from (1-indexed)",
 			},
-			limit: {
-				type: "number",
-				description: "Maximum number of lines to read",
-			},
+		limit: {
+			type: "number",
+			description: "Maximum number of lines to read",
 		},
+		line_numbers: {
+			...lineNumbersSchema,
+		},
+	},
 		output: {
 			schema: {
 				type: "object",
@@ -175,6 +183,7 @@ export function buildReadTool(io: FileIO) {
 							signal,
 							offset: canonical.offset,
 							limit: canonical.limit,
+							lineNumbers: canonical.line_numbers === true,
 						},
 					);
 				} catch (err) {

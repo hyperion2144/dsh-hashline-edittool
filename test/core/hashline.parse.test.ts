@@ -2,26 +2,34 @@ import { describe, expect, it } from "vitest";
 import { parseText, parseHashRef } from "../../src/hashline/index.js";
 
 describe("parseHashRef", () => {
-	it("rejects a bare-hash anchor (line#hash only)", () => {
-		expect(() => parseHashRef("aB3")).toThrow(/Invalid anchor/);
+	it("accepts a bare anchor (v2 canonical)", () => {
+		expect(parseHashRef("aB3")).toEqual({ anchor: "aB3" });
 	});
 
-	it("parses a line#hash anchor", () => {
-		const ref = parseHashRef("12#aB3");
-		expect(ref).toEqual({ line: 12, hash: "aB3" });
+	it("accepts variable-length anchors (2-8 chars)", () => {
+		expect(parseHashRef("aB")).toEqual({ anchor: "aB" });
+		expect(parseHashRef("aB3")).toEqual({ anchor: "aB3" });
+		expect(parseHashRef("aB3xY")).toEqual({ anchor: "aB3xY" });
+	});
+
+	it("parses a line:hint anchor (weak positional hint)", () => {
+		const ref = parseHashRef("12:aB3");
+		expect(ref).toEqual({ anchor: "aB3", line: 12 });
+	});
+
+	it("rejects the legacy line#hash form (E_BAD_REF, legacy marker)", () => {
+		expect(() => parseHashRef("12#aB3")).toThrow(/legacy line#hash form is no longer supported/);
+		expect(() => parseHashRef("#aB3")).toThrow(/legacy line#hash form is no longer supported/);
 	});
 
 	it("rejects trailing content after the anchor", () => {
-		expect(() => parseHashRef("aB3:const x = 1;")).toThrow(
-			/must start with/,
-		);
+		expect(() => parseHashRef("aB3:const x = 1;")).toThrow(/E_BAD_REF/);
 	});
 
 	it("rejects a full HASH:content line copied into remove_from/remove_to", () => {
-	expect(() => parseHashRef("aB3:const x = 1;")).toThrow(
-		/must start with/,
-	);
+		expect(() => parseHashRef("aB3:const x = 1;")).toThrow(/E_BAD_REF/);
 	});
+
 	it("rejects leading >>> markers (strict mode: no marker stripping)", () => {
 		expect(() => parseHashRef(">>> aB3")).toThrow(/E_BAD_REF/);
 	});
@@ -29,34 +37,27 @@ describe("parseHashRef", () => {
 	it("rejects + and - diff markers (strict mode: anchor only)", () => {
 		expect(() => parseHashRef("+aB3")).toThrow(/E_BAD_REF/);
 		expect(() => parseHashRef("-aB3")).toThrow(/E_BAD_REF/);
-		expect(() => parseHashRef("-#aB3")).toThrow(/E_BAD_REF/);
 	});
 
 	it("rejects - and _ anywhere in the anchor (not in the alphabet)", () => {
 		expect(() => parseHashRef("-qk")).toThrow(/E_BAD_REF/);
 		expect(() => parseHashRef("-_-")).toThrow(/E_BAD_REF/);
-		expect(() => parseHashRef("---")).toThrow(/E_BAD_REF/);
 		expect(() => parseHashRef("aB_")).toThrow(/E_BAD_REF/);
 		expect(() => parseHashRef("aB-")).toThrow(/E_BAD_REF/);
 	});
 
 	it("rejects + as a hash body character (not in alphabet)", () => {
 		expect(() => parseHashRef("+qk")).toThrow(/E_BAD_REF/);
-		expect(() => parseHashRef("#+qk")).toThrow(/E_BAD_REF/);
 	});
 
 	it("rejects malformed anchors with E_BAD_REF", () => {
-		expect(() => parseHashRef("invalid")).toThrow(/^\[E_BAD_REF\]/);
+		expect(() => parseHashRef("invalid!")).toThrow(/^\[E_BAD_REF\]/);
+		expect(() => parseHashRef("")).toThrow(/^\[E_BAD_REF\]/);
+		expect(() => parseHashRef("@aB3")).toThrow(/^\[E_BAD_REF\]/);
 	});
 
-	it("accepts line#hash (legacy LINE#HASH form is now the canonical anchor)", () => {
-		expect(parseHashRef("5#aB3")).toEqual({ line: 5, hash: "aB3" });
-	});
-
-	it("rejects wrong-length anchors", () => {
-		expect(() => parseHashRef("aB")).toThrow(/E_BAD_REF/);
-		expect(() => parseHashRef("aB3x")).toThrow(/E_BAD_REF/);
-		expect(() => parseHashRef("#aB3x")).toThrow(/E_BAD_REF/);
+	it("accepts a legacy bare 3-char hash (now canonical bare anchor)", () => {
+		expect(parseHashRef("5aB")).toEqual({ anchor: "5aB" });
 	});
 
 	it("rejects anchors with invalid alphabet", () => {

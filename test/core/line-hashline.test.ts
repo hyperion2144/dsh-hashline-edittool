@@ -21,17 +21,17 @@ import {
 beforeAll(async () => {
 });
 
-describe("parseRef — line#hash form", () => {
-	it("parses line#hash", () => {
-		expect(parseHashRef("12#aB3")).toEqual({ line: 12, hash: "aB3" });
+describe("parseRef — v2 anchor forms", () => {
+	it("parses a bare anchor", () => {
+		expect(parseHashRef("aB3")).toEqual({ anchor: "aB3" });
 	});
 
-	it("parses line#hash with multi-digit line", () => {
-		expect(parseHashRef("123#xyz")).toEqual({ line: 123, hash: "xyz" });
+	it("parses a line:hint anchor", () => {
+		expect(parseHashRef("123:xyz")).toEqual({ anchor: "xyz", line: 123 });
 	});
 
-	it("rejects bare hash (line#hash is the only valid anchor)", () => {
-		expect(() => parseHashRef("aB3")).toThrow(/Invalid anchor/);
+	it("rejects the legacy line#hash form", () => {
+		expect(() => parseHashRef("12#aB3")).toThrow(/legacy line#hash form is no longer supported/);
 	});
 });
 
@@ -43,8 +43,8 @@ describe("read — header line", () => {
 			const text = getText(res);
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[1]).toMatch(/^1#[A-Za-z0-9]{3}:\s*alpha$/);
-			expect(lines[2]).toMatch(/^2#[A-Za-z0-9]{3}:beta$/);
+			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\s*alpha$/);
+			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:beta$/);
 		});
 	});
 });
@@ -55,8 +55,8 @@ describe("edit — remove_to optional", () => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "single.ts" }, undefined, undefined, ctx);
 			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
-			// Extract line#hash of line 2 ("two")
-			const lineMarker = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
+			// Extract the bare anchor of line 2 ("two")
+			const lineMarker = lines[1]!.match(/^([A-Za-z0-9]{2,8})/)![1]!;
 
 			await editTool.execute(
 				"e",
@@ -75,62 +75,30 @@ describe("edit — remove_to optional", () => {
 	});
 });
 
-describe("edit — Shift block", () => {
-	it("emits a Shift block naming the hunk's original and final range", async () => {
+describe("edit — no Shift block in v2.0", () => {
+	it("post-edit response has no Shift block; diff rows carry bare anchors", async () => {
 		await withTempFile("shift.ts", "a\nb\nc\nd\ne\n", async ({ cwd }) => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "shift.ts" }, undefined, undefined, ctx);
 			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
-			// Replace line 2 ("b") with two lines.
-			const lineMarker = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
+			const lineMarker = lines[1]!.match(/^([A-Za-z0-9]{2,8})/)![1]!;
 			const res = await editTool.execute(
 				"e",
 				{
 					path: "shift.ts",
-					edits: [{ op: "replace", anchor_start: lineMarker, anchor_end: lineMarker, lines: ["B"] }, { op: "ins", anchor_start: lineMarker, lines: ["B2"] }],
+					edits: [{ op: "replace", anchor_start: lineMarker, anchor_end: lineMarker, lines: ["B", "B2"] }],
 				},
 				undefined,
 				undefined,
 				ctx,
 			);
 			const out = getText(res);
-			expect(out).toMatch(/Shift: edits\[1\] line 2 moved to lines 2\.\.3 \(\+1\)/);
-		});
-	});
-
-	it("emits cumulative Shift blocks per hunk in a batch", async () => {
-		await withTempFile("two.ts", "a\nb\nc\nd\ne\nf\ng\nh\n", async ({ cwd }) => {
-			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
-			const read = await readTool.execute("r", { path: "two.ts" }, undefined, undefined, ctx);
-			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
-			const line2 = lines[1]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
-			const line5 = lines[4]!.match(/^(\d+#[A-Za-z0-9]{3})/)![1]!;
-			const res = await editTool.execute(
-				"be",
-				{
-					path: "two.ts",
-					edits: [
-						// Snapshot semantics: BOTH hunks use ORIGINAL anchors; the
-						// engine resolves them against the same snapshot and rejects
-						// overlaps, then emits per-hunk original→final Shift blocks.
-						{ op: "replace", anchor_start: line2, anchor_end: line2, lines: ["B"] }, { op: "ins", anchor_start: line2, lines: ["B2"] },
-						{ op: "replace", anchor_start: line5, anchor_end: line5, lines: ["E"] }, { op: "ins", anchor_start: line5, lines: ["E2"] },
-					],
-				},
-				undefined,
-				undefined,
-				ctx,
-			);
-			const out = getText(res);
-			// Both hunks replace one line with two (+1 each); Shift blocks name
-			// each hunk's original → final range.
-			expect(out).toMatch(/Shift: edits\[1\] line 2 moved to lines 2\.\.3 \(\+1\)/);
-			expect(out).toMatch(/Shift: edits\[3\] line 5 moved to lines 6\.\.7 \(\+1\)/);
-			// Multi-hunk batches end with one end-of-file cumulative Shift block.
-			expect(out).toMatch(/Shift: end of file moved from 8 lines to 10 lines \(\+2 total\)\./);
+			expect(out).not.toContain("Shift:");
+			expect(out).toMatch(/\+[A-Za-z0-9]{2,8}:B2/);
 		});
 	});
 });
+
 
 describe("stale anchor echo — read format", () => {
 	it("emits the resolved anchor's line in read format with ±3 context", async () => {
@@ -144,8 +112,8 @@ describe("stale anchor echo — read format", () => {
 			applyEdit(
 				content,
 				resEdit({
-					remove_from: `3#${hashes[2]!}`,
-					remove_to: `3#${hashes[2]!}`,
+					remove_from: `3:${hashes[2]!}`,
+					remove_to: `3:${hashes[2]!}`,
 					replacement_text: "X",
 				}),
 				undefined,
@@ -165,9 +133,8 @@ describe("stale anchor echo — read format", () => {
 			caught = error as Error;
 		}
 		expect(caught).toBeDefined();
-		expect(caught!.message).toMatch(/E_STALE_ANCHOR/);
-		expect(caught!.message).toMatch(/Echo of the line you tried/);
-		expect(caught!.message).toMatch(/ANCHOR:FILELINE/);
+		expect(caught!.message).toMatch(/E_STALE|E_RANGE_UNVERIFIED/);
+		expect(caught!.message).toMatch(/Echo of the line you tried|fresh anchors/);
 	});
 });
 
@@ -192,7 +159,7 @@ describe("grep — line#hash output", () => {
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^--- .*g\.txt ---$/);
 			expect(lines[1]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[2]).toMatch(/^1#\w{3}:\s*alpha$/);
+			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\s*alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
 			expect(lines.some((l) => l.includes("gamma"))).toBe(false);
 			expect(value.files.length).toBe(1);
@@ -218,12 +185,12 @@ describe("grep — line#hash output", () => {
 			)) as { modelText: string };
 			const text = value.modelText;
 			// Should include c (line 3), b (line 2), d (line 4)
-			expect(text).toMatch(/\d+#\w{3}:\s*b/);
-			expect(text).toMatch(/\d+#\w{3}:\s*c/);
-			expect(text).toMatch(/\d+#\w{3}:\s*d/);
+			expect(text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
+			expect(text).toMatch(/[A-Za-z0-9]{2,8}:\s*c/);
+			expect(text).toMatch(/[A-Za-z0-9]{2,8}:\s*d/);
 			// Should not include a (line 1) or e (line 5)
-			expect(text).not.toMatch(/\d+#\w{3}:a/);
-			expect(text).not.toMatch(/\d+#\w{3}:e/);
+			expect(text).not.toMatch(/[A-Za-z0-9]{2,8}:a/);
+			expect(text).not.toMatch(/[A-Za-z0-9]{2,8}:e/);
 		});
 	});
 

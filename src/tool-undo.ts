@@ -15,8 +15,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { toLF, stripBOM, genDiff, restoreEndings } from "./edit-diff.js";
 import { cntDiff, splitLines } from "./utils.js";
-import { assertUndoRequest } from "./contract.js";
-import { normalizeRequest as normReq } from "./contract.js";
+import { assertUndoRequest, normalizeRequest as normReq, lineNumbersSchema } from "./contract.js";
 import { upsertSnapshotFor } from "./hash-store.js";
 import { contentChecksum, contextLinesCfg } from "./hashline/hash-assign.js";
 import { lineHashes } from "./hashline/hash.js";
@@ -61,6 +60,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				type: "string",
 				required: true,
 				description: "Path to the file to undo",
+			},
+			line_numbers: {
+				...lineNumbersSchema,
 			},
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
@@ -113,10 +115,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			const canonical = normReq(args);
 			assertUndoRequest(canonical);
+			const lineNumbers = canonical.line_numbers === true;
 			const path = canonical.path;
 			const absolutePath = await io.resolve(path, cwd, signal);
 			const sandboxPolicy = await sandbox.resolvePolicy("undo_last_edit", canonical as unknown as FsEscalationArgs, exec);
-
 			const undo = await getUndo(absolutePath);
 			if (!undo) {
 				return {
@@ -174,6 +176,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				contextLinesCfg(),
 				undefined,
 				undo.hashes,
+				lineNumbers,
 			);
 			const linesAddedByEdit = cntDiff(diffResult.diff, "+");
 			const linesRemovedByEdit = cntDiff(diffResult.diff, "-");
@@ -183,6 +186,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				1,
 				undo.hashes,
 				currentHashes,
+				lineNumbers,
 			);
 			const undoDiff = undoDiffResult.diff;
 			const restoredRange = changedRange(currentNormalized, undo.content);
@@ -226,10 +230,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			);
 
 			if (undoDiffResult.servedRows.length > 0) {
-				await recordServedTruncated(
-					sessionKey,
+await recordServedTruncated(
+				sessionKey,
 					absolutePath,
-					undoDiffResult.servedRows,
+					undoDiffResult.servedRows.map((r) => ({ position: r.position, anchor: r.anchor })),
 					splitLines(undo.content).length,
 					restoredRange?.firstChangedLine ?? 0,
 				);

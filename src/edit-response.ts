@@ -65,6 +65,8 @@ export interface SuccessInput {
 	snapshotId?: string;
 	editMeta: RMeta;
 	driftNotice?: string;
+	/** v2.0: render diff rows as `<line>:<anchor>` (informational only). */
+	lineNumbers?: boolean;
 }
 
 export function buildMetrics(args: {
@@ -140,28 +142,6 @@ function driftBlock(driftNotice: string | undefined): string {
  * cumulative shift through this hunk; `originalLineCount` is the total file
  * length at edit-time.
  */
-function shiftBlockForHunk(args: {
-	startLine: number;
-	firstStableLineNew: number;
-	delta: number;
-	originalLineCount: number;
-	resultLineCount: number;
-}): string {
-	const { firstStableLineNew, delta, originalLineCount, resultLineCount } = args;
-	if (delta === 0) return "";
-	if (firstStableLineNew > resultLineCount) return "";
-	if (firstStableLineNew > originalLineCount && delta > 0) return "";
-	// The first unchanged row sits at line `firstStableLineNew` in the new file;
-	// its old-line = firstStableLineNew − delta (clamped to ≥ 1).
-	const oldFirstStable = Math.max(1, firstStableLineNew - delta);
-	const sign = delta > 0 ? "+" : "";
-	const verb = delta > 0 ? "shift" : "shift";
-	const tail =
-		oldFirstStable > 1
-			? ` (original line ${oldFirstStable} now at line ${firstStableLineNew}, original line ${originalLineCount} now at line ${resultLineCount}).`
-			: ` (the entire tail below moved by ${delta}).`;
-	return `\n\nShift: lines > ${firstStableLineNew - 1} ${verb} by ${sign}${delta}.${tail}\nUse newLine=${firstStableLineNew}${LINE_HASH_SEP}<oldHash> to edit the row immediately below without re-reading — copy the hash from the next "unchanged" diff row if one was rendered.`;
-}
 
 export function buildNoop(input: NoopInput): TResult {
 	const { path, noopEdit, snapshotId, editMeta, warnings, driftNotice } = input;
@@ -212,6 +192,7 @@ export function buildChanged(input: SuccessInput): TResult {
 		contextLinesCfg(),
 		resultHashes,
 		originalHashes,
+		input.lineNumbers === true,
 	);
 	const addedLines = editMeta.addedLines;
 	const removedLines = editMeta.removedLines;
@@ -222,23 +203,11 @@ export function buildChanged(input: SuccessInput): TResult {
 			? ` Added ${addedLines} line(s), removed ${removedLines} line(s).`
 			: "";
 	const noticeBlock = driftBlock(driftNotice);
-	// Single-edit path: build a synthetic shift entry from the diff range.
-	const startLine =
-		editMeta.firstChangedLine ?? diffResult.firstChangedLine ?? 1;
-	const replacedRows = Math.max(0, addedLines);
-	const firstStableLineNew = startLine + replacedRows;
-	const shiftBlock = shiftBlockForHunk({
-		startLine,
-		firstStableLineNew,
-		delta: addedLines - removedLines,
-		originalLineCount: visLines(originalNormalized).length,
-		resultLineCount: resultLines.length,
-	});
 	const diffBody = diffResult.diff ? `${hashlineHeader()}\n${diffResult.diff}` : "";
 	const text =
 		resultLines.length === 0
 			? "File is empty. Use edit to insert content." + noticeBlock
-			: `${diffBody}${shiftBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${noticeBlock}`;
+			: `${diffBody}\n\n${successPrefix}${lineSummary}${warningsBlock}${noticeBlock}`;
 
 	const metrics = buildMetrics({
 		classification: "applied",
@@ -329,25 +298,8 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			s.resultHashes,
 			s.originalHashes,
 		);
-		const originalLineCount = visLines(s.originalNormalized).length;
-		const resultLineCount = visLines(s.result).length;
-		// Per-hunk shift blocks — each hunk in this file gets its own
-		// "Shift: lines > N shift by +K" line whose K is cumulative through
-		// that hunk (matches runFileEdits semantics).
-		const hunkShiftBlocks = (s.hunkShifts ?? [])
-			.map((hunk) =>
-				shiftBlockForHunk({
-					startLine: 0,
-					firstStableLineNew: hunk.firstStableLineNew,
-					delta: hunk.delta,
-					originalLineCount,
-					resultLineCount,
-				}),
-			)
-			.filter((block) => block.length > 0)
-			.join("");
 		diffParts.push(
-			`--- ${s.path} ---\n${hashlineHeader()}\n${diffResult.diff}${hunkShiftBlocks}`,
+			`--- ${s.path} ---\n${hashlineHeader()}\n${diffResult.diff}`
 		);
 		if (diffResult.servedRows.length > 0) {
 			servedByPath.push({ path: s.path, servedRows: diffResult.servedRows });

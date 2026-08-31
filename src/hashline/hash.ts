@@ -1,46 +1,27 @@
 /**
- * Hash persistence — deep persistence wrapper for HashAssign.
- * Private to HashAssign seam; use `from "./hash-assign.js"` for pure APIs
- * and `from "./hash.js"` only for persistence-aware lineHashes.
+ * Anchor acquisition seam — v2.0 dynamic hashline.
  *
- * Hashes are deterministic content signatures, so after an edit the new
- * hashes are a plain recomputation — no stable-mapping pass, no previous
- * snapshot to carry over. The hash store only caches per-path snapshots to
- * skip repeated O(n) recomputation across tool calls.
+ * The v1.0-style pure content hash (fixed 3-char, deterministic per line) is
+ * replaced by allocated variable-length anchors. Session state lives in
+ * session-anchors.ts: per-path snapshots keyed by content checksum, held in
+ * memory only (spec §4.4 — no disk persistence; cross-session consistency
+ * comes from deterministic recomputation, not from a stored mapping).
+ *
+ * The legacy `store` / `persist` parameters are accepted for call-site
+ * compatibility and ignored: the old on-disk hash-store snapshots (fixed
+ * 3-char hashes under the same checksum key) are deliberately NOT consulted —
+ * the allocation format changed and stale rows would be wrong.
  *
  * @module dsh-hashline-edittool/hashline/hash
  */
-import { splitLines } from "../utils.js";
-import { loadHashStore, type HashStore } from "../hash-store.js";
-import { contentChecksum, lineHashesPure } from "./hash-assign.js";
+import { anchorsFor, anchorsPure } from "./session-anchors.js";
 
 export async function lineHashes(
 	content: string,
 	path?: string,
-	store?: HashStore,
-	persist?: boolean,
+	_store?: unknown,
+	_persist?: boolean,
 ): Promise<string[]> {
-	if (!path) return lineHashesPure(content);
-	const hashStore = store ?? (await loadHashStore());
-	let cached: string[] | undefined;
-	try {
-		cached = hashStore.getSnapshot(path, content, persist !== false);
-	} catch (e) {
-		console.error("Failed to read hash store snapshot:", e);
-	}
-	if (cached) return cached;
-	const newHashes = lineHashesPure(content);
-	if (persist !== false) {
-		try {
-			hashStore.upsertSnapshot(
-				path,
-				contentChecksum(content),
-				splitLines(content).length,
-				newHashes,
-			);
-		} catch (e) {
-			console.error("Failed to persist hash snapshot:", e);
-		}
-	}
-	return newHashes;
+	if (!path) return anchorsPure(content);
+	return anchorsFor(path, content);
 }
