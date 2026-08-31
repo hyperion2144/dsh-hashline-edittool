@@ -1,0 +1,20 @@
+{
+  "corpusPath": "/Users/mutou/vault/projects/dsh-hashline-edittool/benchmark/corpus/shopping-cart.ts",
+  "lineCount": 103,
+  "fixed3": {
+    "meanAnchorLen": 3,
+    "totalBytes": 3394
+  },
+  "variable2First": {
+    "meanAnchorLen": 2,
+    "totalBytes": 3291
+  },
+  "variable2FirstWithAtPrefix": {
+    "meanAnchorLen": 3,
+    "totalBytes": 3394
+  },
+  "bytesSaved_variable_vs_fixed": 103,
+  "pctSaved_variable_vs_fixed": 3.0347672362993516,
+  "bytesSavedAtPrefix": 0,
+  "pctSavedAtPrefix": 0
+}
