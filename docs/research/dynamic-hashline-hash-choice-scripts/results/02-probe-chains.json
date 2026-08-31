@@ -1,0 +1,126 @@
+{
+  "cyrb53": {
+    "3844": {
+      "label": "3844 lines (just fills 2-char)",
+      "allocated": 3844,
+      "depth2Count": 3842,
+      "depth3Count": 2,
+      "probes": {
+        "count": 3844,
+        "mean": 910.7601456815817,
+        "min": 1,
+        "p50": 3,
+        "p95": 3452,
+        "p99": 3768,
+        "max": 3841
+      }
+    },
+    "3845": {
+      "label": "3845 lines (first 3-char spillover)",
+      "allocated": 3845,
+      "depth2Count": 3843,
+      "depth3Count": 2,
+      "probes": {
+        "count": 3845,
+        "mean": 911.5227568270482,
+        "min": 1,
+        "p50": 3,
+        "p95": 3456,
+        "p99": 3769,
+        "max": 3843
+      }
+    },
+    "5000": {
+      "label": "5000 lines (mid)",
+      "allocated": 5000,
+      "depth2Count": 3844,
+      "depth3Count": 1156,
+      "probes": {
+        "count": 5000,
+        "mean": 835.0168,
+        "min": 1,
+        "p50": 317,
+        "p95": 3325,
+        "p99": 3745,
+        "max": 3844
+      }
+    },
+    "10000": {
+      "label": "10000 lines (typical upper bound)",
+      "allocated": 10000,
+      "depth2Count": 3844,
+      "depth3Count": 6156,
+      "probes": {
+        "count": 10000,
+        "mean": 2244.7584,
+        "min": 1,
+        "p50": 2028,
+        "p95": 5655,
+        "p99": 6055,
+        "max": 6154
+      }
+    }
+  },
+  "blake2b64": {
+    "3844": {
+      "label": "3844 lines (just fills 2-char)",
+      "allocated": 3844,
+      "depth2Count": 2054,
+      "depth3Count": 1790,
+      "probes": {
+        "count": 3844,
+        "mean": 417.76014568158166,
+        "min": 1,
+        "p50": 3,
+        "p95": 1598,
+        "p99": 1752,
+        "max": 1790
+      }
+    },
+    "3845": {
+      "label": "3845 lines (first 3-char spillover)",
+      "allocated": 3845,
+      "depth2Count": 2054,
+      "depth3Count": 1791,
+      "probes": {
+        "count": 3845,
+        "mean": 418.11729518855657,
+        "min": 1,
+        "p50": 3,
+        "p95": 1599,
+        "p99": 1753,
+        "max": 1791
+      }
+    },
+    "5000": {
+      "label": "5000 lines (mid)",
+      "allocated": 5000,
+      "depth2Count": 2054,
+      "depth3Count": 2946,
+      "probes": {
+        "count": 5000,
+        "mean": 868.7712,
+        "min": 1,
+        "p50": 447,
+        "p95": 2697,
+        "p99": 2897,
+        "max": 2946
+      }
+    },
+    "10000": {
+      "label": "10000 lines (typical upper bound)",
+      "allocated": 10000,
+      "depth2Count": 2054,
+      "depth3Count": 7946,
+      "probes": {
+        "count": 10000,
+        "mean": 3157.6356,
+        "min": 1,
+        "p50": 2947,
+        "p95": 7447,
+        "p99": 7847,
+        "max": 7946
+      }
+    }
+  }
+}
