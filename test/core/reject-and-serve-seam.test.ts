@@ -22,8 +22,8 @@ describe("recordEchoServes — serve-record policy", () => {
 				"sessionA",
 				path,
 				[
-					{ position: 0, hash: "h00" },
-					{ position: 1, hash: "X01" },
+					{ position: 0, anchor: "h00", contentKey: "k0" },
+					{ position: 1, anchor: "X01", contentKey: "k1" },
 				],
 				"live",
 			);
@@ -34,7 +34,7 @@ describe("recordEchoServes — serve-record policy", () => {
 	it("records nothing when the policy is preview", async () => {
 		await withTempHome(async () => {
 			const path = "/a.ts";
-			await recordEchoServes("sessionA", path, [{ position: 0, hash: "h00" }], "preview");
+			await recordEchoServes("sessionA", path, [{ position: 0, anchor: "h00", contentKey: "k0" }], "preview");
 			expect(await loadServed("sessionA", path)).toEqual([]);
 		});
 	});
@@ -50,7 +50,7 @@ describe("applyEdit — stale range beats would-empty", () => {
 			applyEdit(
 				content,
 				{
-					hash_bounds: [{ line: 1, hash: hashes[0]! }, { line: 3, hash: hashes[2]! }],
+					hash_bounds: [{ anchor: hashes[0]! }, { anchor: hashes[2]! }],
 					content_lines: [],
 				},
 				undefined,
@@ -71,7 +71,7 @@ describe("finalizeToolResult", () => {
 			diff: "+a\n-b",
 			warnings: ["W1"],
 			driftNotice: "Drift notice: 1 line(s) outside the edited range drifted.",
-			servedRows: [{ position: 0, hash: "abc" }],
+			servedRows: [{ position: 0, anchor: "abc", contentKey: "k" }],
 		});
 		expect(result.content).toEqual([
 			{
@@ -79,7 +79,7 @@ describe("finalizeToolResult", () => {
 				text: "+a\n-b\n\nWarnings:\nW1\n\nDrift notice: 1 line(s) outside the edited range drifted.",
 			},
 		]);
-		expect(result.servedRows).toEqual([{ position: 0, hash: "abc" }]);
+		expect(result.servedRows).toEqual([{ position: 0, anchor: "abc", contentKey: "k" }]);
 	});
 
 	it("omits served rows and blocks when absent", () => {
@@ -94,7 +94,7 @@ describe("applyEdit — resolved range geometry", () => {
 		const content = "aaa\nbbb\nccc";
 		const hashes = lineHashesPure(content);
 		const edit: HEdit = {
-			hash_bounds: [{ line: 2, hash: hashes[1]! }, { line: 2, hash: hashes[1]! }],
+			hash_bounds: [{ anchor: hashes[1]! }, { anchor: hashes[1]! }],
 			content_lines: ["BBB", "B2"],
 		};
 		const result = applyEdit(content, edit);
@@ -111,12 +111,12 @@ describe("applyEdit — resolved range geometry", () => {
 		const content = "aaa\nbbb\nccc";
 		const hashes = lineHashesPure(content);
 		const noop = applyEdit(content, {
-			hash_bounds: [{ line: 2, hash: hashes[1]! }, { line: 2, hash: hashes[1]! }],
+			hash_bounds: [{ anchor: hashes[1]! }, { anchor: hashes[1]! }],
 			content_lines: ["bbb"],
 		});
 		expect(noop.range.delta).toBe(0);
 		const deleted = applyEdit(content, {
-			hash_bounds: [{ line: 2, hash: hashes[1]! }, { line: 2, hash: hashes[1]! }],
+			hash_bounds: [{ anchor: hashes[1]! }, { anchor: hashes[1]! }],
 			content_lines: [],
 		});
 		expect(deleted.range.delta).toBe(-1);

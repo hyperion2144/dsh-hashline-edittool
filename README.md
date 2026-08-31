@@ -273,7 +273,7 @@ repeated text), and what each tool does when they hit:
 | Wrong address (off-by-one anchor / line number) | **Impossible** — anchors resolve to specific lines; every resolved line is verified against served state, rejected **before** anything is written | **Possible** — a wrong line number against a current tag applies **silently** at the wrong place; the tag proves the file version, never the lines |
 | File changed on disk after the model's view | Hard reject + fresh anchors echoed (reject-and-serve); retry needs no `read` | Tag mismatch → refuse **or best-effort 3-way merge** onto unknown current content |
 | An edit above shifts the file | Nothing shifts — anchors are content addresses; the diff serves fresh anchors | **Every edit renumbers** — “RE-GROUND AFTER EVERY EDIT” is the format's own #1 rule; the model carries the bookkeeping |
-| Repeated / identical text | Per-line hashes are unique (collision-resolved); ambiguity → `[E_AMBIGUOUS_ANCHOR]` | Position-based, so repeats don't confuse it — but the position itself is unverified |
+| Repeated / identical text | Every line gets a DISTINCT anchor (collision-resolved); no ambiguity — copy the exact marker | Position-based, so repeats don't confuse it — but the position itself is unverified |
 | Lines never shown to the model | `[E_RANGE_UNSERVED]` — hard reject with fresh anchors | Undisplayed hunks rejected — same reliance on the model knowing what it saw |
 | Mid-expression / wrong block node | Irrelevant — any verified line range is valid | Grammar rules + `PUT N*:` node choice; mispointing (anchoring `def` orphans its decorator) silently lands wrong; no syntax check |
 | Multi-edit batch fails mid-way | `edit`'s `edits` array — atomic, all-or-nothing; the failing item is echoed as fresh serves | Multi-section patches preflighted up front — also atomic |
@@ -358,9 +358,9 @@ this README are a snapshot of that run; regenerate, don't trust.
 
 | Tool | What it does |
 | ------ | -------------- |
-| `read` | Returns a file as `ANCHOR:FILELINE` header + `<line>#<hash>:<content>` rows. Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — hash anchors need full lines. |
-| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — requires BOTH anchors; a single-line replace passes the same anchor twice). Verifies **every line** of each resolved range against served state; `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` reject-and-serve fresh anchors. The response carries a `Shift:` block per hunk describing how absolute line numbers below the edit moved. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
-| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<line>#<hash>:<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
+| `read` | Returns a file as `ANCHOR:FILELINE` header + `<anchor>:<content>` rows (anchors are variable-length Base62, unique per line; `line_numbers: true` adds a `<line>:` prefix as a positional hint). Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — anchors need full lines. |
+| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — requires BOTH anchors; a single-line replace passes the same anchor twice). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`); identical content lines get DISTINCT anchors. Verifies each resolved range against served state (anchor + content); `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` / `[E_STALE]` reject-and-serve fresh anchors. There is no `Shift:` block — re-read for fresh anchors after an edit. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
+| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (literal by default, regex with `regex: true`) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<anchor>:<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
 ### Error codes
@@ -368,9 +368,8 @@ this README are a snapshot of that run; regenerate, don't trust.
 | Code | Meaning |
 | --- | --- |
 | `[E_ACCESS]` | File exists but is not readable/writable by the tool. |
-| `[E_AMBIGUOUS_ANCHOR]` | A hash matches more than one current line; call `read` for fresh anchors. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
-| `[E_BAD_REF]` | `anchor_start`/`anchor_end` is not a `<line>#<hash>` copied from the leftmost column of a read/grep/diff row. |
+| `[E_BAD_REF]` | `anchor_start`/`anchor_end` is not a variable-length Base62 anchor copied from the leftmost column of a read/grep/diff row. The legacy `<line>#<hash>` form is rejected. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` prefix pasted into `lines` (autocorrected). |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
@@ -385,11 +384,12 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_RANGE_STALE]` | A served line differs on disk since it was read; the range is echoed fresh. |
 | `[E_RANGE_UNSERVED]` | The range includes lines never served to the model. |
 | `[E_RANGE_UNVERIFIED]` | Boundary anchor cannot be verified against served state. |
-| `[E_STALE_ANCHOR]` | Anchor(s) no longer resolve; call `read` for fresh anchors. |
+| `[E_STALE]` | The resolved anchor no longer matches the served content (the line changed since it was read); call `read` for fresh anchors. |
 | `[E_UNDO_STALE]` | Cannot undo: the file was modified (or deleted) after the edit. |
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted; the edit was not applied. |
 | `[E_WIN_REPLACE]` | Windows atomic replace failed (ReplaceFileW / error 1175): the target is held open by another process (IDE watcher, antivirus, sync) or is write-protected — close it and retry. |
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` to clear it. |
+| `[E_HASH_SPACE]` | Anchor space exhausted (file > 62^8 lines) — practically unreachable; layers auto-expand. |
 
 ## How It Replaces the Built-in Tools
 

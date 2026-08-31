@@ -57,16 +57,22 @@ export interface EditParams {
 	 */
 	path?: string;
 	edits: EditItemParams[];
+	/** Optional: render diff rows with `<line>:<anchor>` markers (default false). */
+	line_numbers?: boolean;
 }
 
 export interface ReadParams {
 	path: string;
 	offset?: number;
 	limit?: number;
+	/** Optional: render rows with `<line>:<anchor>` markers (default false). */
+	line_numbers?: boolean;
 }
 
 export interface UndoParams {
 	path: string;
+	/** Optional: render restored diff rows with `<line>:<anchor>` markers (default false). */
+	line_numbers?: boolean;
 }
 
 // ---- filed sets (declared once) ---------------------------------------------
@@ -74,6 +80,7 @@ export interface UndoParams {
 const EDIT_KS = new Set([
 	"path",
 	"edits",
+	"line_numbers",
 	"sandbox_permissions",
 	"justification",
 ]);
@@ -86,7 +93,7 @@ const EDIT_ITEM_KS = new Set([
 	"path",
 ]);
 
-const READ_KS = new Set(["path", "offset", "limit"]);
+const READ_KS = new Set(["path", "offset", "limit", "line_numbers"]);
 
 // ---- normalization -----------------------------------------------------------
 
@@ -263,12 +270,12 @@ export const editItemSchema = {
 			type: "string",
 			required: true,
 			description:
-				'Required. Anchor (line#hash from a read/grep/diff row) of the FIRST line of the range. For `op:"ins"`, the lines land AFTER this line.',
+				'Required. Anchor (variable-length Base62 from a read/grep/diff row; `<line>:<anchor>` with the line_numbers option is accepted, anchor authoritative) of the FIRST line of the range. For `op:"ins"`, the lines land AFTER this line.'
 		},
 		anchor_end: {
 			type: "string",
 			description:
-					'Anchor of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).',
+				'Anchor (variable-length Base62) of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
 		},
 		lines: {
 			type: "array",
@@ -287,7 +294,7 @@ export const editItemSchema = {
 export const editsSchema = {
 	type: "array",
 	description:
-		"Ordered list of edits to apply atomically in one file (or across files when per-item `path` overrides). Edits apply in order against evolving content; each one sees the file state after the previous edit in the same call. After the call, a per-hunk `Shift:` block tells the model how the absolute line numbers below the edits moved, so the next edit can chain via `newLine=<N>#<oldHash>` from the next unchanged diff row (if rendered), or read for fresh anchors.",
+		"Ordered list of edits to apply atomically. Edits apply in order against evolving content; each one sees the file state after the previous edit in the same call. All anchors come from one read (original snapshot) — re-read for fresh anchors after an edit (there is no `Shift:` block in v2.0).",
 	items: editItemSchema,
 } as const;
 
@@ -295,6 +302,13 @@ export const pathSchema = {
 	type: "string",
 	description:
 		"Default path for the edits. Required unless every item carries its own `path`. Accepts the built-in `file_path` spelling too.",
+} as const;
+
+/** Optional line-number output toggle shared by read/grep/edit/undo. */
+export const lineNumbersSchema = {
+	type: "boolean",
+	description:
+		"When true, each output row's marker is prefixed with its 1-indexed line as `<line>:<anchor>` (informational positional hint only — the anchor is authoritative; markers remain editable either form). Default false.",
 } as const;
 
 /** @deprecated — kept for backward compat with the pre-0.4 contract. */

@@ -153,7 +153,7 @@ describe("hash-store — migration from legacy hash-store.json", () => {
 	it("skips legacy snapshots with malformed hashes so they re-hash on next read", async () => {
 		await withTempHome(async (home) => {
 			await writeLegacyStore(home, {
-				"/bad.ts": { content: "x\n", hashes: ["ZZ", "ZZZZ"] },
+				"/bad.ts": { content: "x\n", hashes: ["ZZ!", "ab-c"] },
 				"/valid.ts": { content: "ok\n", hashes: ["ABC"] },
 			});
 

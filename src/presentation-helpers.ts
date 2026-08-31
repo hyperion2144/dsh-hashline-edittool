@@ -181,7 +181,7 @@ export function buildReadPresentation(
 	}
 
 	const body = lineRenders
-		.map(({ number, hash, text }) => `${number}${LINE_HASH_SEP}${hash}${hashSep()}${text}`)
+		.map(({ hash, text }) => `${hash}${hashSep()}${text}`)
 		.join("\n");
 	const modelText = `${hashlineHeader()}\n${body}\n\n${footer}`;
 
@@ -385,7 +385,7 @@ function splitLines(content: string): string[] {
 /** Parse the leading `<line>#<hash>` from a `remove_from` / `remove_to` argument. */
 export function parseLineFromHash(ref: string): number | undefined {
 	if (typeof ref !== "string") return undefined;
-	const idx = ref.indexOf(LINE_HASH_SEP);
+	const idx = ref.indexOf(":");
 	if (idx <= 0) return undefined;
 	const n = Number.parseInt(ref.slice(0, idx), 10);
 	return Number.isInteger(n) && n >= 1 ? n : undefined;
@@ -407,7 +407,7 @@ export function buildReadJson(
 	const endIdx = Math.min(startIdx + limit, totalLines);
 	const lines: Record<string, string> = {};
 	for (let i = startIdx; i < endIdx; i++) {
-		const anchor = `${i + 1}${LINE_HASH_SEP}${hashes[i] ?? ""}`;
+		const anchor = `${hashes[i] ?? ""}`;
 		lines[anchor] = allLines[i] ?? "";
 	}
 	return {
