@@ -1,0 +1,26 @@
+{
+  "N": 200000,
+  "slots": 3844,
+  "cyrb53": {
+    "chiSquare": 3850.126119999994,
+    "maxLoad": 83,
+    "minLoad": 27,
+    "expected": 52.02913631633715,
+    "p50": 52,
+    "p95": 64,
+    "p99": 69,
+    "throughputOpsPerSec": 15788633,
+    "oneShotMs": 26.041792
+  },
+  "blake2b64": {
+    "chiSquare": 3826.7161599999836,
+    "maxLoad": 80,
+    "minLoad": 27,
+    "expected": 52.02913631633715,
+    "p50": 52,
+    "p95": 64,
+    "p99": 69,
+    "throughputOpsPerSec": 1224285,
+    "oneShotMs": 186.414708
+  }
+}

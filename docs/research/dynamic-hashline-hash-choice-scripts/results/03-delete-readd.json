@@ -1,0 +1,64 @@
+{
+  "initialLines": 3000,
+  "rounds": 500,
+  "cyrb53": {
+    "withContentMap": {
+      "rounds": 500,
+      "trackContent": true,
+      "anchorChanges": 3,
+      "changeRate": 0.006,
+      "reAddProbes": {
+        "count": 500,
+        "mean": 1.128,
+        "min": 1,
+        "p50": 1,
+        "p95": 2,
+        "max": 11
+      }
+    },
+    "withoutContentMap": {
+      "rounds": 500,
+      "trackContent": false,
+      "anchorChanges": 3,
+      "changeRate": 0.006,
+      "reAddProbes": {
+        "count": 500,
+        "mean": 1.128,
+        "min": 1,
+        "p50": 1,
+        "p95": 2,
+        "max": 11
+      }
+    }
+  },
+  "blake2b64": {
+    "withContentMap": {
+      "rounds": 500,
+      "trackContent": true,
+      "anchorChanges": 2,
+      "changeRate": 0.004,
+      "reAddProbes": {
+        "count": 500,
+        "mean": 1.124,
+        "min": 1,
+        "p50": 1,
+        "p95": 2,
+        "max": 10
+      }
+    },
+    "withoutContentMap": {
+      "rounds": 500,
+      "trackContent": false,
+      "anchorChanges": 2,
+      "changeRate": 0.004,
+      "reAddProbes": {
+        "count": 500,
+        "mean": 1.124,
+        "min": 1,
+        "p50": 1,
+        "p95": 2,
+        "max": 10
+      }
+    }
+  }
+}
