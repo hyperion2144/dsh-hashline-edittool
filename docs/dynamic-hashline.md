@@ -1,8 +1,9 @@
-# HashLine 动态锚点分配方案设计文档
+# HashLine 动态锚点分配方案设计文档（v1.0 设计稿）
 
-**版本**：v1.0  
+> **Superseded by [`docs/dynamic-hashline-spec.md`](./dynamic-hashline-spec.md)（v2.0 定案，2026-08-31）** —— 本文为变更前设计稿，保留作历史记录；其中「步长函数」「content_map 内容共享」「分层水位线」等机制已被定案修正（探测步长互素修正、每行唯一锚、served 内容校验命中规则），与 v2.0 冲突之处一律以 v2.0 为准。
+
+**版本**：v1.0
 **适用场景**：AI Agent 文件行级读写/编辑工具（HashLine）
-
 ---
 
 ## 1. 背景与目标
