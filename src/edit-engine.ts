@@ -59,13 +59,14 @@ import type { FsSandboxController } from "./sandbox.js";
 // ---------------------------------------------------------------------------
 // shared helpers
 
-/** Pin optional Anchor.line fields by resolving anchors against fileAnchors
- *  when no hint is supplied. Returns a new HEdit whose bounds always carry a
- *  numeric .line (or -1 if the anchor is not in the file — applyEdit will reject).
- *  v2.0 contract: line is a weak hint; the authoritative line is recovered by
- *  indexOf(fileAnchors, anchor). */
+/** Resolve each bound's AUTHORITATIVE line by anchor lookup. A supplied
+ *  `<line>:<anchor>` hint is informational only (issue #66/B6): an unverified
+ *  hint that leaked into the batch hunk bookkeeping desynced the incremental
+ *  anchor update (undefined.replace crash on out-of-range rows). The anchor
+ *  is authoritative, so the resolved position always wins; a disagreeing
+ *  hint is surfaced later as a warning by the resolver. A missing anchor
+ *  maps to -1 and is rejected downstream by applyEdit. */
 function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
-	if (bound.line !== undefined) return bound;
 	const idx = fileAnchors.indexOf(bound.anchor);
 	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : -1 };
 }
@@ -399,7 +400,7 @@ export async function applyOne(
 		edit,
 		input.countHashes ?? input.hashes,
 		noop,
-		anchorResult.autoFixes?.length ?? 0,
+		0, // removedAutoFixes: always 0 since #66/B7 (no built-in content mutation)
 	);
 
 	return {
