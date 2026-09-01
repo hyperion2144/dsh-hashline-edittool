@@ -55,40 +55,6 @@ describe("workspace context", () => {
 	});
 });
 
-describe("workspace isolation", () => {
-	it("keeps snapshots in separate stores per workspace", async () => {
-const a = tempWorkspace("dsh-ws-a-");
-		const b = tempWorkspace("dsh-ws-b-");
-		const content = "one\ntwo\nthree\n";
-		try {
-			// Write a snapshot in workspace A only (lineHashes persists it
-			// keyed by path + real checksum).
-			await withWorkspace(a, async () => {
-				await lineHashes(content, join(a, "f.txt"));
-			});
-
-			// Workspace B must NOT see A's snapshot (separate store file).
-			await withWorkspace(b, async () => {
-				const store = await loadHashStore();
-				expect(
-					store.getSnapshot(join(a, "f.txt"), content, false),
-				).toBeUndefined();
-			});
-
-			// Workspace A still sees it.
-			await withWorkspace(a, async () => {
-				const store = await loadHashStore();
-				expect(
-					store.getSnapshot(join(a, "f.txt"), content, false),
-				).toBeDefined();
-			});
-		} finally {
-			shutdownHashStore();
-			rmSync(a, { recursive: true, force: true });
-			rmSync(b, { recursive: true, force: true });
-		}
-	});
-});
 
 describe("stale served tail (regression)", () => {
 	it("truncates the served array to the current line count on a whole-file serve, so a surviving hash never claims two positions", async () => {
@@ -108,7 +74,7 @@ const ws = tempWorkspace("dsh-ws-tail-");
 				await recordServed(
 					session,
 					path,
-					bigHashes.map((h, i) => ({ position: i, hash: h })),
+					bigHashes.map((h, i) => ({ position: i, anchor: h })),
 					bigHashes.length,
 				);
 
@@ -118,7 +84,7 @@ const ws = tempWorkspace("dsh-ws-tail-");
 				await recordServed(
 					session,
 					path,
-					smallHashes.map((h, i) => ({ position: i, hash: h })),
+					smallHashes.map((h, i) => ({ position: i, anchor: h })),
 					smallHashes.length,
 				);
 

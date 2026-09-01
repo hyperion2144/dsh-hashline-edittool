@@ -1,6 +1,7 @@
 import * as Diff from "diff";
-import { lineHashesPure, LINE_HASH_SEP, hashSep, hashLength, contextLinesCfg } from "./hashline/index.js";
+import { lineHashesPure, LINE_HASH_SEP, hashSep, contextLinesCfg } from "./hashline/index.js";
 import type { ServedRow } from "./hashline/served.js";
+import { canon, contentChecksum } from "./hashline/hash-assign.js";
 
 export type LineEnding = "\r\n" | "\n" | "\r";
 
@@ -32,12 +33,9 @@ export function stripBOM(content: string): { bom: string; text: string } {
 
 /**
  * Render one diff row. `prefix` is the diff marker (`+`/`-`/space); the second
- * column is the absolute 1-indexed line number; the third column is the 3-char
- * content hash (or a space-filled placeholder when the hash is unknown, e.g.
- * for a line removed in the OLD file that no longer has a hash in the NEW
- * hashes array — the original hash is preferred via `oldContentHashes`).
- * `lineNumber` is required for new-file rows; old-file rows default to the
- * same line number (when both old and new hashes happen to be present).
+ * column is the anchor (variable-length Base62, or a space-filled placeholder
+ * when unknown — the original anchor is preferred via `oldHash`). With
+ * `lineNumbers` the anchor is prefixed `<line>:<anchor>` (informational only).
  */
 function fmtDiffLine(
 	prefix: " " | "+" | "-",
@@ -45,14 +43,14 @@ function fmtDiffLine(
 	hash: string | undefined,
 	lineNumber: number,
 	oldHash: string | undefined = undefined,
+	lineNumbers = false,
 ): string {
+	const anchor = oldHash ?? hash ?? " ".repeat(4);
+	const marker = lineNumbers ? `${lineNumber}:${anchor}` : anchor;
 	if (prefix === "-" && oldHash !== undefined) {
-		return `${prefix}${lineNumber}${LINE_HASH_SEP}${oldHash}${hashSep()}${line}`;
+		return `${prefix}${marker}${hashSep()}${line}`;
 	}
-	if (hash === undefined) {
-		return `${prefix}${lineNumber}${LINE_HASH_SEP}${" ".repeat(hashLength())}${hashSep()}${line}`;
-	}
-	return `${prefix}${lineNumber}${LINE_HASH_SEP}${hash}${hashSep()}${line}`;
+	return `${prefix}${marker}${hashSep()}${line}`;
 }
 
 const ELLIPSIS_MARKER: unique symbol = Symbol("ellipsis");
@@ -73,6 +71,7 @@ export function genDiff(
 	contextLines = contextLinesCfg(),
 	newContentHashes?: string[],
 	oldContentHashes?: string[],
+	lineNumbers = false,
 ): {
 	diff: string;
 	rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string }>;
@@ -102,7 +101,7 @@ export function genDiff(
 					const hash = effectiveNewHashes[newLineNum - 1];
 					output.push({ prefix: "+", line: displayLines[k]!, hash, lineNumber: newLineNum });
 					if (hash !== undefined) {
-						servedRows.push({ position: newLineNum - 1, hash });
+					servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChecksum(canon(displayLines[k]!)) });
 					}
 					newLineNum++;
 				} else {
@@ -152,7 +151,7 @@ export function genDiff(
 				const hash = effectiveNewHashes[newLineNum - 1];
 				output.push({ prefix: " ", line, hash, lineNumber: newLineNum });
 				if (hash !== undefined) {
-					servedRows.push({ position: newLineNum - 1, hash });
+servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChecksum(canon(line)) });
 				}
 				newLineNum++;
 				oldLineNum++;
@@ -166,19 +165,23 @@ export function genDiff(
 
 	// Right-align the anchor column across the whole diff block so the left
 	// marker is a stable visual column (copy boundary for the model). Built
-	// from the structured fields — anchored on the LIVE shape (hash length /
+	// from the structured fields — anchored on the LIVE shape (anchor length /
 	// separator), no regex parsing of rendered rows.
+	const markerFor = (row: DiffRow): string =>
+		lineNumbers
+			? `${row.lineNumber}:${row.oldHash ?? row.hash ?? " ".repeat(4)}`
+			: `${row.oldHash ?? row.hash ?? " ".repeat(4)}`;
 	let anchorWidth = 0;
 	const rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string }> = [];
 	for (const row of output) {
 		if (typeof row === "string") continue;
-		const anchor = `${row.lineNumber}${LINE_HASH_SEP}${row.oldHash ?? row.hash ?? " ".repeat(hashLength())}`;
+		const anchor = markerFor(row);
 		if (anchor.length > anchorWidth) anchorWidth = anchor.length;
 		rows.push({ kind: row.prefix, anchor, content: row.line });
 	}
 	const aligned = output.map((row) => {
 		if (typeof row === "string") return row; // " ..." ellipsis rows etc.
-		const anchor = `${row.lineNumber}${LINE_HASH_SEP}${row.oldHash ?? row.hash ?? " ".repeat(hashLength())}`;
+		const anchor = markerFor(row);
 		return `${row.prefix}${anchor.padStart(anchorWidth)}${hashSep()}${row.line}`;
 	});
 	return { diff: aligned.join("\n"), rows, firstChangedLine, servedRows };

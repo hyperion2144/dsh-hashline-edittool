@@ -40,9 +40,9 @@ describe("perfect hashing", () => {
 	it("returns one hash per line, indexed 0-based by line number", async () => {
 		const hashes = await lineHashes("alpha\nbeta\ngamma", home.testPath);
 		expect(hashes).toHaveLength(3);
-		expect(hashes[0]).toMatch(/^[A-Za-z0-9]{3}$/);
-		expect(hashes[1]).toMatch(/^[A-Za-z0-9]{3}$/);
-		expect(hashes[2]).toMatch(/^[A-Za-z0-9]{3}$/);
+		expect(hashes[0]).toMatch(/^[A-Za-z0-9]{2,8}$/);
+		expect(hashes[1]).toMatch(/^[A-Za-z0-9]{2,8}$/);
+		expect(hashes[2]).toMatch(/^[A-Za-z0-9]{2,8}$/);
 	});
 
 	
@@ -56,22 +56,21 @@ describe("perfect hashing", () => {
 			"const x = 1;",
 		].join("\n");
 		const hashes = await lineHashes(file, home.testPath);
-		const result = applyEdit(file, { hash_bounds: [{ line: 3, hash: hashes[2]! }, { line: 3, hash: hashes[2]! }], content_lines: ["const x = 999;"] });
-    expect(result.content).toBe("const x = 1;\nconst y = 2;\nconst x = 999;");
+		const result = applyEdit(file, { hash_bounds: [{ anchor: hashes[2]! }, { anchor: hashes[2]! }], content_lines: ["const x = 999;"] });
+		expect(result.content).toBe("const x = 1;\nconst y = 2;\nconst x = 999;");
 	});
-
 	it("stale-anchor error shows the file's current state for context", () => {
 		const file = ["const x = 1;", "const y = 2;", "const x = 1;"].join("\n");
-		const staleHash = "ZZZZ";
+		const staleAnchor = "ZZZZ";
 		let caught: Error | undefined;
 		try {
-			applyEdit(file, { hash_bounds: [{ line: 1, hash: staleHash }, { line: 1, hash: staleHash }], content_lines: ["X"] });
-    } catch (e) {
+			applyEdit(file, { hash_bounds: [{ anchor: staleAnchor }, { anchor: staleAnchor }], content_lines: ["X"] });
+		} catch (e) {
 			caught = e as Error;
 		}
 		expect(caught).toBeDefined();
-		expect(caught!.message).toMatch(/E_STALE_ANCHOR/);
-		expect(caught!.message).toMatch(/Re-read for fresh anchors/);
+		expect(caught!.message).toMatch(/E_STALE|E_RANGE_UNVERIFIED/);
+		expect(caught!.message).toMatch(/fresh anchors/);
 	});
 
 	it("rejects out-of-range line anchors with hard read-required message", async () => {

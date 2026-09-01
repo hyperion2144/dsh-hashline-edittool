@@ -290,8 +290,10 @@ export async function makeTag(
 	content: string,
 	line: number,
 	path: string,
-): Promise<{ line: number; hash: string }> {
+): Promise<{ anchor: string; line?: number }> {
 	const { lineHashes } = await import("../../src/hashline/index.js");
 	const hashes = await lineHashes(content, path);
-	return { line, hash: hashes[line - 1]! };
+	// v2.0: anchors are {anchor, line?} — the line is an optional positional
+	// hint, never the identity. Return the bare anchor form.
+	return { anchor: hashes[line - 1]! };
 }

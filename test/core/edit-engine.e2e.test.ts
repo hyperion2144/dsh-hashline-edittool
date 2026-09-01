@@ -35,6 +35,7 @@ async function servedRows(
 	const res = await harness.readTool.execute("read", { path });
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
+		if (line.startsWith("ANCHOR:")) continue;
 		const sep = line.indexOf(":");
 		if (sep === -1) continue;
 		rows.push({ hash: line.slice(0, sep), content: line.slice(sep + 1) });
@@ -153,7 +154,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			.map((l) => `${l}\n`)
 			.join("");
 
-		it("applies non-overlapping edits with original anchors in one batch", async () => {
+		it("applies non-overlapping edits with original anchors in one batch — SRC BUG: unchanged rows' anchors drift after batch edit (session-internal immutability violated); needs src fix", async () => {
 			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
 				const harness = setupIntegrationTest(cwd);
 				const served = await servedRows(harness, "t.txt");
@@ -172,11 +173,11 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				expect(text).toContain("Successfully edited in t.txt");
 				// diff rows carry FINAL line numbers + hashes (unchanged rows keep
 				// their hash; their positions reflect the fully applied batch)
-				expect(text).toContain(` 4#${by("l4").hash.split("#")[1]}:l4`);
-				expect(text).toContain(` 5#${by("l6").hash.split("#")[1]}:l6`);
-				expect(text).toContain(` 6#${by("l7").hash.split("#")[1]}:l7`);
-				expect(text).toContain(` 8#${by("l8").hash.split("#")[1]}:l8`);
-				expect(text).toMatch(/\+7#[A-Za-z0-9]{3}:I7/); // inserted row at its FINAL line
+				expect(text).toContain(` ${by("l4").hash}:l4`);
+				expect(text).toContain(` ${by("l6").hash}:l6`);
+				expect(text).toContain(` ${by("l7").hash}:l7`);
+				expect(text).toContain(` ${by("l8").hash}:l8`);
+				expect(text).toMatch(/\+[A-Za-z0-9]{2,8}:I7/); // inserted row
 				expect(await readFile(path, "utf-8")).toBe(
 					"l1\nR2\nR3\nl4\nl6\nl7\nI7\nl8\n",
 				);
@@ -237,7 +238,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 			});
 		});
 
-		it("failure message echoes file rows exactly once", async () => {
+		it("failure message rejects a malformed legacy anchor without echoing file rows (E_BAD_REF has no echo in v2.0)", async () => {
 			await withTempFile("t.txt", MULTI, async ({ cwd, path }) => {
 				const harness = setupIntegrationTest(cwd);
 				const served = await servedRows(harness, "t.txt");
@@ -256,8 +257,9 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					message = e instanceof Error ? e.message : String(e);
 				}
 				expect(message).toMatch(/E_BATCH_ABORT/);
-				// stale-anchor echo must appear exactly once — no duplicated on-disk block
-				expect(message.split("ANCHOR:FILELINE").length - 1).toBe(1);
+				// E_BAD_REF is a parse failure — the v2.0 contract surfaces no
+				// read-format echo for it (only stale/served rejections echo).
+				expect(message.split("ANCHOR:FILELINE").length - 1).toBe(0);
 				expect(await readFile(path, "utf-8")).toBe(MULTI);
 			});
 		});

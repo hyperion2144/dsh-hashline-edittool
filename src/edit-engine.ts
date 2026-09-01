@@ -24,6 +24,7 @@ import {
 	resEdit,
 	parseHashRef,
 	parseText,
+	type Anchor,
 	type HEdit,
 	type NEdit,
 } from "./hashline/anchor-pipeline.js";
@@ -44,6 +45,7 @@ import {
 	type ServedRow,
 } from "./hashline/anchor-pipeline.js";
 import { findSnapshotPathsByHashes } from "./hash-store.js";
+import { updateAnchorsAfterEdit } from "./hashline/session-anchors.js";
 import { saveUndo } from "./undo-edit.js";
 import {
 	clearNoopLoop,
@@ -53,6 +55,28 @@ import {
 import { NOOP_LOOP_THRESHOLD } from "./constants.js";
 import { abortIf, splitLines } from "./utils.js";
 import type { FsSandboxController } from "./sandbox.js";
+
+// ---------------------------------------------------------------------------
+// shared helpers
+
+/** Pin optional Anchor.line fields by resolving anchors against fileAnchors
+ *  when no hint is supplied. Returns a new HEdit whose bounds always carry a
+ *  numeric .line (or -1 if the anchor is not in the file — applyEdit will reject).
+ *  v2.0 contract: line is a weak hint; the authoritative line is recovered by
+ *  indexOf(fileAnchors, anchor). */
+function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
+	if (bound.line !== undefined) return bound;
+	const idx = fileAnchors.indexOf(bound.anchor);
+	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : -1 };
+}
+
+/** See pinBound. */
+function pinBounds(edit: HEdit, fileAnchors: string[]): HEdit {
+	return {
+		content_lines: edit.content_lines,
+		hash_bounds: [pinBound(edit.hash_bounds[0], fileAnchors), pinBound(edit.hash_bounds[1], fileAnchors)],
+	};
+}
 
 // ---------------------------------------------------------------------------
 // shared types
@@ -125,7 +149,7 @@ export interface FileEditResult {
 	/** Lines around the union range that should be marked as served (echo rows
 	 *  for the post-edit serve mirror). Synthesized from the diff hunks by
 	 *  `runFileEdits`. */
-	servedRows: { position: number; hash: string }[];
+servedRows: { position: number; anchor: string }[];
 	/** First / last changed line in the union range (for `firstChangedLine` /
 	 *  `lastChangedLine` in the canonical value). Synthesized by `runFileEdits`. */
 	firstChangedLine?: number;
@@ -147,10 +171,10 @@ export async function resolveMissingPath(
 	const from = request.remove_from;
 	const to = request.remove_to;
 	if (typeof from !== "string" || typeof to !== "string") return undefined;
-	const hashes: string[] = [];
+const hashes: string[] = [];
 	for (const ref of [from, to]) {
 		try {
-			hashes.push(parseHashRef(ref).hash);
+			hashes.push(parseHashRef(ref).anchor);
 		} catch {
 			return undefined;
 		}
@@ -183,10 +207,10 @@ export function countLineChanges(
 	isNoop: boolean,
 	removedAutoFixes: number,
 ): { totalAddedLines: number; totalRemovedLines: number } {
-	if (isNoop) return { totalAddedLines: 0, totalRemovedLines: 0 };
+if (isNoop) return { totalAddedLines: 0, totalRemovedLines: 0 };
 	let totalRemovedLines = 0;
-	const startLine = edit.hash_bounds[0].line - 1;
-	const endLine = edit.hash_bounds[1].line - 1;
+	const startLine = (edit.hash_bounds[0].line ?? -1) - 1;
+	const endLine = (edit.hash_bounds[1].line ?? -1) - 1;
 	if (startLine >= 0 && endLine >= 0) {
 		totalRemovedLines = Math.abs(endLine - startLine) + 1;
 	}
@@ -264,28 +288,26 @@ export function resolveIns(
 	replacementText: string,
 	warnings: string[],
 ): { removeTo: string; replacementText: string } {
-	// Resolve removeFrom by the ANCHOR (claimed line + hash), never by bare
-	// hash lookup: the line identifies the row, the hash only verifies it
-	// (identical hashes may legitimately collide — 62^len space). A hash
-	// lookup would pick the FIRST row sharing the hash and paste THAT row's
-	// content into the insert.
+	// Resolve removeFrom by its anchor. A bare anchor is globally unique in
+	// v2.0 (identical content lines get DISTINCT anchors), so indexOf is
+	// unambiguous; a `<line>:<anchor>` hint is verified when present.
 	let fromLine = -1;
 	try {
 		const ref = parseHashRef(removeFrom);
-		if (
-			ref.line >= 1 &&
-			ref.line <= hashes.length &&
-			hashes[ref.line - 1] === ref.hash
-		) {
-			fromLine = ref.line - 1;
-		}
+		const hintLine = ref.line;
+		const hintValid =
+			hintLine !== undefined &&
+			hintLine >= 1 &&
+			hintLine <= hashes.length &&
+			hashes[hintLine - 1] === ref.anchor;
+		fromLine = hintValid ? hintLine - 1 : hashes.indexOf(ref.anchor);
 	} catch {
 		// Let resEdit surface the anchor error with the right code.
 		return { removeTo: removeFrom, replacementText };
 	}
 	if (fromLine < 0) {
-		// Anchor does not verify at the claimed line — let resEdit/applyEdit
-		// surface [E_STALE_ANCHOR] / [E_RANGE_UNVERIFIED].
+		// Anchor does not verify — let resEdit/applyEdit surface
+		// [E_STALE] / [E_RANGE_UNVERIFIED].
 		return { removeTo: removeFrom, replacementText };
 	}
 	const lines = splitLines(content);
@@ -439,10 +461,11 @@ export async function enforceNoopLoop(
 
 	if (index === undefined) {
 		if (count >= NOOP_LOOP_THRESHOLD) {
-			const echoRows = buildRangeEcho(
+const echoRows = buildRangeEcho(
 				opts.range!.startLine,
 				opts.range!.endLine,
 				originalHashes,
+				splitLines(opts.originalNormalized),
 			);
 			const echo = fmtServedRows(
 				echoRows,
@@ -496,13 +519,14 @@ export async function enforceNoopLoop(
 function echoRowsForItem(
 	edit: HEdit,
 	originalHashes: string[],
+	fileLines: string[],
 ): ServedRow[] | undefined {
-	const startHash = edit.hash_bounds[0].hash;
-	const endHash = edit.hash_bounds[1].hash;
-	const s = originalHashes.indexOf(startHash);
-	const e = originalHashes.indexOf(endHash);
+	const startAnchor = edit.hash_bounds[0].anchor;
+	const endAnchor = edit.hash_bounds[1].anchor;
+	const s = originalHashes.indexOf(startAnchor);
+	const e = originalHashes.indexOf(endAnchor);
 	if (s < 0 || e < 0) return undefined;
-	return buildRangeEcho(Math.min(s, e) + 1, Math.max(s, e) + 1, originalHashes);
+	return buildRangeEcho(Math.min(s, e) + 1, Math.max(s, e) + 1, originalHashes, fileLines);
 }
 
 /**
@@ -575,29 +599,30 @@ export async function runFileEdits(
 					"The whole batch was rejected and NOTHING was written — no file changed and earlier items in the batch were NOT applied.",
 			);
 		}
-		resolvedEdits.push({ item, edit, isIns: item.op === "ins" });
+resolvedEdits.push({ item, edit: pinBounds(edit, originalHashes), isIns: item.op === "ins" });
 	}
 
 	// --- Phase 2: conflict detection on original coordinates. ---
 	// Hunks whose anchors do not match the original snapshot are excluded:
 	// their true positions are unknown, and applyOne reports them as stale
 	// (with the ±3 echo + fresh marker) instead of a misleading overlap.
-	const anchorMatchesSnapshot = (edit: HEdit): boolean =>
+const anchorMatchesSnapshot = (edit: HEdit): boolean =>
 		edit.hash_bounds.every(
 			(b) =>
+				b.line !== undefined &&
 				b.line >= 1 &&
 				b.line <= originalHashes.length &&
-				originalHashes[b.line - 1] === b.hash,
+				originalHashes[b.line - 1] === b.anchor,
 		);
 	// replace swaps the whole range for `lines` of ANY length (the range
 	// count is not constrained) — only the dual-anchor requirement is
 	// contractual.
-	const edges: RangeEdge[] = resolvedEdits
+const edges: RangeEdge[] = resolvedEdits
 		.filter(({ edit }) => anchorMatchesSnapshot(edit))
 		.map(({ item, edit, isIns }) => ({
 			index: item.index,
-			startLine: edit.hash_bounds[0].line,
-			endLine: edit.hash_bounds[1].line,
+			startLine: edit.hash_bounds[0].line!,
+			endLine: edit.hash_bounds[1].line!,
 			isIns,
 		}));
 	const conflicting = detectRangeConflicts(edges);
@@ -614,13 +639,13 @@ export async function runFileEdits(
 	// walking hunks in ascending original order with an accumulating offset.
 	const finalPositions = new Map<number, { finalStart: number; finalEnd: number }>();
 	{
-		const asc = [...resolvedEdits].sort(
-			(a, b) => a.edit.hash_bounds[0].line - b.edit.hash_bounds[0].line,
+const asc = [...resolvedEdits].sort(
+			(a, b) => a.edit.hash_bounds[0].line! - b.edit.hash_bounds[0].line!,
 		);
 		let offset = 0;
 		for (const entry of asc) {
-			const startLine = entry.edit.hash_bounds[0].line;
-			const endLine = entry.edit.hash_bounds[1].line;
+			const startLine = entry.edit.hash_bounds[0].line!;
+			const endLine = entry.edit.hash_bounds[1].line!;
 			const rows = entry.edit.content_lines.length;
 			const finalStart = startLine + offset;
 			finalPositions.set(entry.item.index, {
@@ -638,9 +663,9 @@ export async function runFileEdits(
 	// Descending by original start line; same anchor line: the ins (gap
 	// insert) runs FIRST so a replace on that line still finds its original
 	// hash — the ins never rewrites its anchor line.
-	const ordered = [...resolvedEdits].sort(
+const ordered = [...resolvedEdits].sort(
 		(a, b) =>
-			b.edit.hash_bounds[0].line - a.edit.hash_bounds[0].line ||
+			b.edit.hash_bounds[0].line! - a.edit.hash_bounds[0].line! ||
 			Number(b.isIns) - Number(a.isIns),
 	);
 
@@ -747,7 +772,7 @@ export async function runFileEdits(
 				sessionKey: opts.sessionKey,
 				originalHashes,
 				originalNormalized,
-				echoRows: echoRowsForItem(applied.edit, originalHashes),
+echoRows: echoRowsForItem(applied.edit, originalHashes, splitLines(originalNormalized)),
 			});
 			if (notice) warnings.push(notice);
 			warnings.push(
@@ -761,15 +786,15 @@ export async function runFileEdits(
 		appliedCount += 1;
 		totalAddedLines += applied.totalAddedLines;
 		totalRemovedLines += applied.totalRemovedLines;
-		const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
+const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 		const fp = finalPositions.get(item.index)!;
 		hunkShifts.push({
 			index: item.index,
 			delta: hunkDelta,
 			firstStableLineNew: fp.finalEnd + 1,
 			lastChangedLine: fp.finalEnd,
-			originalStartLine: edit.hash_bounds[0].line,
-			originalEndLine: edit.hash_bounds[1].line,
+			originalStartLine: edit.hash_bounds[0].line!,
+			originalEndLine: edit.hash_bounds[1].line!,
 			finalStartLine: fp.finalStart,
 			finalEndLine: fp.finalEnd,
 		});
@@ -789,7 +814,20 @@ export async function runFileEdits(
 	const result = currentContent;
 	let resultHashes = currentHashes;
 	if (appliedCount > 0) {
-		resultHashes = await lineHashes(result, absolutePath, undefined, true);
+		// v2.0 incremental anchor update (not a full recompute): unchanged
+		// lines keep their anchors across the whole batch.
+		resultHashes = updateAnchorsAfterEdit({
+			path: absolutePath,
+			oldContent: originalNormalized,
+			newContent: result,
+			oldAnchors: originalHashes,
+			hunks: hunkShifts.map((s) => ({
+				oldStart1: s.originalStartLine,
+				oldEnd1: s.originalEndLine,
+				finalStart1: s.finalStartLine,
+				finalEnd1: s.finalEndLine,
+			})),
+		});
 	}
 
 	if (hadUtf8DecodeErrors) {
@@ -871,8 +909,8 @@ function buildServedRowsFromDiff(
 	before: string,
 	after: string,
 	resultHashes: string[],
-): { position: number; hash: string }[] {
-	const rows: { position: number; hash: string }[] = [];
+): { position: number; anchor: string }[] {
+	const rows: { position: number; anchor: string }[] = [];
 	const seen = new Set<number>();
 	const resultLines = splitLines(after);
 	const beforeLines = splitLines(before);
@@ -890,7 +928,7 @@ function buildServedRowsFromDiff(
 	const push = (pos: number) => {
 		if (pos < 0 || pos >= resultHashes.length || seen.has(pos)) return;
 		seen.add(pos);
-		rows.push({ position: pos, hash: resultHashes[pos]! });
+		rows.push({ position: pos, anchor: resultHashes[pos]! });
 	};
 	if (firstDiff === -1) return rows;
 	const lastDiff = (() => {

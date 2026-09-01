@@ -34,13 +34,14 @@ import {
 	assertEditRequest,
 	pathSchema,
 	editsSchema,
+	lineNumbersSchema,
 } from "./contract.js";
-import { abortIf, isRec, visLines, formatLineRange } from "./utils.js";
+import { abortIf, isRec, visLines } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
-import { LINE_HASH_SEP, contextLinesCfg } from "./hashline/hash-assign.js";
+import { contextLinesCfg } from "./hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "./mutation.js";
-import { runFileEdits, type PreparedItem, type FileEditResult, type HunkShift } from "./edit-engine.js";
+import { runFileEdits, type PreparedItem, type FileEditResult } from "./edit-engine.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -137,7 +138,7 @@ function extractFailure(message: string): { code: string; message: string } {
 		.replace(/^\[E_BATCH_ABORT\]\s*edits\[\d+\]\s*\([^)]*\)\s*failed:\s*/i, "")
 		.replace(/\nThe whole batch was rejected[\s\S]*$/, "")
 		.trim();
-	// The inner error repeats the code at its head (`[E_STALE_ANCHOR] 2 stale...`);
+	// The inner error repeats the code at its head (`[E_STALE] 2 stale...`);
 	// the fail block composes "Edit for <path> failed: <code> <message>", so drop
 	// the leading code from message to avoid duplicating it.
 	if (inner.startsWith(code)) inner = inner.slice(code.length).trim();
@@ -156,9 +157,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 	return defineTool({
 		name: "edit",
 		description: editDescription(getEffectiveConfig()),
-		parameters: {
+	parameters: {
 			path: { ...pathSchema },
 			edits: { ...editsSchema, required: true },
+			line_numbers: { ...lineNumbersSchema },
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
 		output: {
@@ -237,6 +239,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					canonical.path = resolution.path;
 				}
 				assertEditRequest(canonical);
+				const lineNumbers = canonical.line_numbers === true;
 				if (resolution) {
 					// Preserve the path-resolution warning at the top of the warnings list.
 					(canonical as { _pathWarning?: string })._pathWarning = resolution.warning;
@@ -302,7 +305,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						absolutePath,
 						sessionKey,
 					});
-					const canonicalValue = buildCanonicalFromFileResult(file, displayPath);
+					const canonicalValue = buildCanonicalFromFileResult(file, displayPath, lineNumbers);
 					return isJsonOutput()
 						? {
 							...canonicalValue,
@@ -371,7 +374,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						`${noopTotal > 0 ? ` (${noopTotal} noop)` : ""}.`;
 					const blocks = outcomes.map((o) =>
 						o.ok
-							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath)}`
+							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath, lineNumbers)}`
 							: `Edit for ${o.displayPath} failed: ${o.code} ${o.message}`,
 					);
 					return { success, fail, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
@@ -523,6 +526,7 @@ function enforceNoopLoopSync(opts: {
 function buildCanonicalFromFileResult(
 	file: FileEditResult,
 	displayPath: string,
+	lineNumbers = false,
 ): EditCanonicalValue {
 	const result = {
 		path: displayPath,
@@ -535,7 +539,7 @@ function buildCanonicalFromFileResult(
 		warnings: file.warnings,
 		...(file.driftNotice !== undefined ? { driftNotice: file.driftNotice } : {}),
 		noop: file.appliedCount === 0,
-		modelText: buildChangedModelText(file, displayPath),
+		modelText: buildChangedModelText(file, displayPath, lineNumbers),
 	} as EditCanonicalValue;
 	return result;
 }
@@ -549,7 +553,11 @@ function buildCanonicalFromFileResult(
  *    4. Trailing success prefix + line summary
  *    5. Trailing warnings / drift notice
  *  Kept inline so this tool file owns the projection end-to-end. */
-function buildChangedModelText(file: FileEditResult, displayPath: string): string {
+function buildChangedModelText(
+	file: FileEditResult,
+	displayPath: string,
+	lineNumbers = false,
+): string {
 	if (file.appliedCount === 0) {
 		const warningsBlock =
 			file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
@@ -564,20 +572,9 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 		contextLinesCfg(),
 		file.resultHashes,
 		file.originalHashes,
+		lineNumbers,
 	);
 	const diffBody = diffResult.diff ? `${hashlineHeader()}\n${diffResult.diff}` : "";
-	const shiftBlocks = (file.hunkShifts ?? [])
-		.map((hunk) => shiftBlockForHunk(hunk))
-		.filter((b) => b.length > 0)
-		.join("");
-	// End-of-file cumulative Shift block for multi-hunk batches: tells the
-	// model how the file's total length moved (spec §3.4). Omitted when only
-	// one hunk produced a block — the per-hunk block already covers it.
-	const totalDelta = linesAdded - linesRemoved;
-	const totalShiftBlock =
-		shiftBlocks.length > 1 && totalDelta !== 0
-			? `\n\nShift: end of file moved from ${visLines(file.originalNormalized).length} lines to ${visLines(file.result).length} lines (${totalDelta > 0 ? "+" : ""}${totalDelta} total).`
-			: "";
 	const successPrefix = `Successfully edited in ${displayPath}.`;
 	const lineSummary =
 		linesAdded > 0 || linesRemoved > 0
@@ -586,23 +583,9 @@ function buildChangedModelText(file: FileEditResult, displayPath: string): strin
 	const warningsBlock =
 		file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
 	const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
-	return `${diffBody}${shiftBlocks}${totalShiftBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
-}
+	return `${diffBody}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 
-function shiftBlockForHunk(hunk: HunkShift): string {
-	const {
-		index,
-		originalStartLine,
-		originalEndLine,
-		finalStartLine,
-		finalEndLine,
-		delta,
-	} = hunk;
-	// No movement at all (neither this hunk's own delta nor drift from
-	// earlier hunks) — nothing to tell the model.
-	if (delta === 0 && finalStartLine === originalStartLine) return "";
-	const sign = delta > 0 ? "+" : "";
-	return `\n\nShift: edits[${index}] ${formatLineRange(originalStartLine, originalEndLine)} moved to ${formatLineRange(finalStartLine, finalEndLine)} (${sign}${delta}). Rows below this hunk shifted by ${sign}${delta}; use the final line#hash markers from the diff rows above for follow-up edits.`;
+
 }
 
 /**

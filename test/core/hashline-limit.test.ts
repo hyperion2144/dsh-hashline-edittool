@@ -4,29 +4,20 @@ import {
 	lineHashes,
 	hashOf,
 	canon,
-	HASH_SPACE,
 } from "../../src/hashline/index.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
 
-describe("hashline size limits — removed", () => {
-	it("derives the encoding space from the alphabet and hash length", () => {
-		// HASH_SPACE remains the folding modulus; it is NOT a line-count limit.
-		expect(HASH_SPACE).toBe(62 ** 3);
-	});
-
+describe("hashline size limits — removed in v2.0", () => {
 	it("hashes far more lines than the old 62^3 ceiling without error", () => {
-		// The old unique-allocation design capped files at HASH_SPACE lines;
-		// deterministic content signatures have no ceiling.
+		// v2.0 has no fixed line-count ceiling; layers auto-expand.
 		const line = "const x = 1; // padding padding padding padding";
-		const content = Array.from({ length: HASH_SPACE + 5 }, () => line).join(
-			"\n",
-		);
+		const content = Array.from({ length: 62 ** 3 + 5 }, () => line).join("\n");
 		const hashes = lineHashesPure(content);
-		expect(hashes).toHaveLength(HASH_SPACE + 5);
-		// Identical lines share one deterministic hash — repetition is fine.
-		expect(new Set(hashes).size).toBe(1);
+		expect(hashes).toHaveLength(62 ** 3 + 5);
+		// Identical lines get DISTINCT anchors (Q2-A) — uniqueness at scale.
+		expect(new Set(hashes).size).toBe(hashes.length);
 	});
 
 	it("does not throw E_FILE_TOO_LARGE through the persistence path", async () => {
@@ -34,10 +25,11 @@ describe("hashline size limits — removed", () => {
 		const content = Array.from({ length: 300_000 }, () => line).join("\n");
 		const hashes = await lineHashes(content, home.testPath);
 		expect(hashes).toHaveLength(300_000);
+		expect(new Set(hashes).size).toBe(300_000);
 	});
 });
 
-describe("deterministic content hashing", () => {
+describe("legacy content hashing (hashOf — retained for compat)", () => {
 	it("maps identical content to the identical hash", () => {
 		const a = hashOf(canon("function foo() {"));
 		const b = hashOf(canon("function foo() {"));

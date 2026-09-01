@@ -18,6 +18,7 @@
  */
 
 import { readdir, lstat } from "node:fs/promises";
+import { lineNumbersSchema } from "./contract.js";
 import { minimatch } from "minimatch";
 import { basename, join, relative } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
@@ -31,7 +32,6 @@ import { withWorkspace } from "./session-view.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
 import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
-import { HASH_SPACE } from "./hashline/hash-assign.js";
 import { visLines, abortIf, clipLine } from "./utils.js";
 import { grepDescription } from "./prompts.js";
 import {
@@ -42,7 +42,7 @@ import {
 /** One row in a grep section's context set (with hash + content, used to render the model text). */
 export interface GrepSectionRow {
 	position: number;
-	hash: string;
+anchor: string;
 	content: string;
 }
 
@@ -60,6 +60,8 @@ export interface GrepToolOptions {
 	context?: number;
 	/** If true, `pattern` is treated as a JavaScript regex. Default false. */
 	regex?: boolean;
+	/** v2.0: prefix every context/match row marker with `<line>:<anchor>`. */
+	lineNumbers?: boolean;
 }
 
 const DEFAULT_LIMIT = 100;
@@ -105,28 +107,28 @@ export async function grepFileContent(
 			contextSet.add(k);
 		}
 	}
-	const contextRows: GrepSectionRow[] = [...contextSet]
+const contextRows: GrepSectionRow[] = [...contextSet]
 		.sort((a, b) => a - b)
 		.map((position) => ({
 			position,
-			hash: hashes[position]!,
+			anchor: hashes[position]!,
 			content: lines[position]!,
 		}));
 	return {
 		path,
-		matches: matchPositions.map((position) => ({
+matches: matchPositions.map((position) => ({
 			position,
-			hash: hashes[position]!,
+			anchor: hashes[position]!,
 			content: lines[position]!,
 		})),
 		contextRows,
 	};
 }
 
-function renderSection(path: string, section: GrepFileSection): string {
+function renderSection(path: string, section: GrepFileSection, lineNumbers = false): string {
 	const headerLines: string[] = [`--- ${path} ---`, hashlineHeader()];
-	const anchors = section.contextRows.map(
-		(row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}`,
+	const anchors = section.contextRows.map((row) =>
+		lineNumbers ? `${row.position + 1}:${row.anchor}` : row.anchor,
 	);
 	const width = anchorWidth(anchors);
 	for (const [i, row] of section.contextRows.entries()) {
@@ -136,8 +138,12 @@ function renderSection(path: string, section: GrepFileSection): string {
 }
 
 /** Build the model-facing text for one file section (reused by `render`). */
-function buildSectionModelText(path: string, section: GrepFileSection): string {
-	return renderSection(path, section);
+function buildSectionModelText(
+	path: string,
+	section: GrepFileSection,
+	lineNumbers = false,
+): string {
+	return renderSection(path, section, lineNumbers);
 }
 
 interface GrepCanonicalValue {
@@ -181,12 +187,15 @@ export function buildGrepTool(io: FileIO) {
 				type: "number",
 				description:
 					"Number of context rows above and below each match (default 0).",
-			},
-			limit: {
-				type: "number",
-				description: "Cap on matches per file (default 100).",
-			},
 		},
+		limit: {
+			type: "number",
+			description: "Cap on matches per file (default 100).",
+		},
+		line_numbers: {
+			...lineNumbersSchema,
+		},
+	},
 		output: {
 			schema: {
 				type: "object",
@@ -283,6 +292,7 @@ export function buildGrepTool(io: FileIO) {
 					limit: typeof params.limit === "number" ? params.limit : undefined,
 					context: typeof params.context === "number" ? params.context : undefined,
 					regex: params.regex === true,
+					lineNumbers: params.line_numbers === true,
 				};
 				// Pre-build matcher so a bad regex fails before any IO.
 				buildMatcher(params.pattern, opts.regex === true);
@@ -312,7 +322,7 @@ export function buildGrepTool(io: FileIO) {
 					path: string;
 					matches: Record<string, string>;
 				}> = [];
-				const allServed: Array<{ path: string; rows: { position: number; hash: string }[] }> = [];
+const allServed: Array<{ path: string; rows: { position: number; anchor: string }[] }> = [];
 				const allSeen: Array<{ path: string }> = [];
 				let totalMatches = 0;
 				let truncated = false;
@@ -336,28 +346,33 @@ export function buildGrepTool(io: FileIO) {
 					// src/deep.txt under a directory root; the bare basename when
 					// the root IS the file.
 					const displayPath = relative(root, file) || basename(file);
-					fileSections.push(buildSectionModelText(displayPath, section));
+					fileSections.push(buildSectionModelText(displayPath, section, opts.lineNumbers));
 					cardFiles.push({
 						path: displayPath,
 						matches: section.contextRows.map((row) => ({
 							lineNumber: row.position + 1,
-							// The card's `line` is the pre-rendered `<line>#hash>content` row.
-							line: renderSection(displayPath, section).split("\n").slice(2).join("\n"),
+							// The card's `line` is the pre-rendered `<line>:<anchor>:content` row.
+							line: renderSection(displayPath, section, opts.lineNumbers)
+								.split("\n")
+								.slice(2)
+								.join("\n"),
 						})),
 					});
 					if (jsonOutput) {
-						const context = opts.context ?? contextLinesCfg();
 						// matches is ONE anchor-keyed dict like read's lines: match
-						// rows and their context rows live together, key = line#hash,
+						// rows and their context rows live together, key = line:anchor,
 						// value = verbatim content (no separate before/after fields).
+						const context = opts.context ?? contextLinesCfg();
 						const matches: Record<string, string> = {};
-						const rowsByPos = new Map<number, { hash: string; content: string }>(
+						const rowsByPos = new Map<number, GrepSectionRow>(
 							section.contextRows.map((r) => [r.position, r]),
 						);
+						const anchorAt = (pos: number) =>
+							opts.lineNumbers
+								? `${pos + 1}:${rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? ""}`
+								: (rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? "");
 						for (const m of section.matches) {
-							const anchorAt = (pos: number) =>
-								`${pos + 1}${LINE_HASH_SEP}${rowsByPos.get(pos)?.hash ?? hashes[pos] ?? ""}`;
-							matches[anchorAt(m.position)] =
+							matches[m.anchor ?? anchorAt(m.position)] =
 								rowsByPos.get(m.position)?.content ?? linesOf(raw)[m.position] ?? "";
 							for (let k = Math.max(0, m.position - context); k <= Math.min(linesOf(raw).length - 1, m.position + context); k++) {
 								if (k === m.position) continue;
@@ -378,8 +393,8 @@ export function buildGrepTool(io: FileIO) {
 					await recordServed(
 						sessionKey,
 						served.path,
-						served.rows,
-						HASH_SPACE,
+served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
+						62 ** 4, // anchor pool bound (v2.0; legacy HASH_SPACE removed)
 					);
 				}
 

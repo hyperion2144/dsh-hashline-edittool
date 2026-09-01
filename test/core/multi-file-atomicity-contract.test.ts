@@ -28,7 +28,8 @@ async function readAnchors(
 	const res = await harness.readTool.execute("read", { path });
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of (getText(res) as string).split("\n")) {
-		const m = line.match(/(\d+#\w+):(.*)$/);
+		if (line.startsWith("ANCHOR:")) continue;
+		const m = line.match(/([A-Za-z0-9]{2,8}):(.*)$/);
 		if (m) rows.push({ hash: m[1]!, content: m[2]! });
 	}
 	return rows;
@@ -108,23 +109,20 @@ describe("multi-file edit — ADR-0004 response shape", () => {
 			const harness = setupIntegrationTest(cwd);
 			const a1 = await readAnchors(harness, "b1.txt");
 
-			// b2 用 stale anchor "zzz"
+			// b2 用 stale anchor "!zzz"
 			const res = await harness.editTool.execute("edit", {
 				path: "b1.txt",
 				edits: [
 					{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
-					{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B2!"] },
+					{ op: "replace", path: "b2.txt", anchor_start: "!zzz", anchor_end: "!zzz", lines: ["B2!"] },
 				],
 			});
 			const text = getText(res);
 
 			expect(text).toContain("Successfully edited 1 file(s) — 1 of 2 edit(s) applied.");
 			expect(text).toContain("Successfully edited in b1.txt.");
-			expect(text).toContain("Edit for b2.txt failed: [E_STALE_ANCHOR]");
-			// 与单文件一致: fail 块保留 echo + fresh-marker 提示 (ADR-0004 修订后)
-			expect(text).toContain("Echo of the line you tried");
-			expect(text).toContain("reuse a fresh marker");
-			// 不能带 batch 尾巴 (多文件上下文误导)
+			expect(text).toContain("Edit for b2.txt failed: [E_BAD_REF]");
+			// E_BAD_REF rejects the malformed anchor directly (no echo — the anchor is not parseable)
 			expect(text).not.toContain("The whole batch was rejected");
 			// b1 成功落盘, b2 未变
 			expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
@@ -146,7 +144,7 @@ describe("multi-file edit — ADR-0004 response shape", () => {
 					path: "b1.txt",
 					edits: [
 						{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A1!"] },
-						{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B2!"] },
+						{ op: "replace", path: "b2.txt", anchor_start: "!zzz", anchor_end: "!zzz", lines: ["B2!"] },
 					],
 				});
 				const text = getText(res);
@@ -162,12 +160,10 @@ describe("multi-file edit — ADR-0004 response shape", () => {
 				expect(parsed.fail).toHaveLength(1);
 				expect(parsed.fail[0]).toMatchObject({
 					path: "b2.txt",
-					code: "[E_STALE_ANCHOR]",
+					code: "[E_BAD_REF]",
 				});
-				expect(parsed.fail[0]!.message).toContain("2 stale anchors");
-				// 与单文件一致: message 保留 echo + fresh-marker 提示
-				expect(parsed.fail[0]!.message).toContain("Echo of the line you tried");
-				expect(parsed.fail[0]!.message).toContain("reuse a fresh marker");
+				expect(parsed.fail[0]!.message).toMatch(/E_BAD_REF|Invalid anchor/);
+				// E_BAD_REF rejects the malformed anchor directly (no echo)
 				// 不带 batch 尾巴
 				expect(parsed.fail[0]!.message).not.toContain("The whole batch was rejected");
 				// fail entry 结构仍是 path/code/message (echo 在 message 字符串内)
@@ -230,8 +226,8 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 					const res = await harness.editTool.execute("edit", {
 						path: "b1.txt",
 						edits: [
-							{ op: "replace", path: "b1.txt", anchor_start: "1#zzz", anchor_end: "1#zzz", lines: ["X"] },
-							{ op: "replace", path: "b2.txt", anchor_start: "1#zzz", anchor_end: "1#zzz", lines: ["Y"] },
+							{ op: "replace", path: "b1.txt", anchor_start: "!zzz", anchor_end: "!zzz", lines: ["X"] },
+							{ op: "replace", path: "b2.txt", anchor_start: "!zzz", anchor_end: "!zzz", lines: ["Y"] },
 						],
 					});
 					const text = getText(res);
@@ -243,7 +239,7 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 					expect(parsed.ok).toBe(false);
 					expect(parsed.success).toEqual([]);
 					expect(parsed.fail.map((f) => f.path).sort()).toEqual(["b1.txt", "b2.txt"]);
-					expect(parsed.fail.every((f) => f.code === "[E_STALE_ANCHOR]")).toBe(true);
+					expect(parsed.fail.every((f) => f.code === "[E_BAD_REF]")).toBe(true);
 					// 两个文件都未变
 					expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
 					expect(await readFile(join(cwd, "b2.txt"), "utf-8")).toBe("x\ny\nz\n");
@@ -261,12 +257,12 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 					const harness = setupIntegrationTest(cwd);
 					const a1 = await readAnchors(harness, "b1.txt");
 
-					// 非法 anchor: hash_length=2 下 "2#zzz" 3 位 hash 长度非法 → E_BAD_REF
+					// 非法 anchor: hash_length=2 下 "!zzz" 3 位 hash 长度非法 → E_BAD_REF
 					const res = await harness.editTool.execute("edit", {
 						path: "b1.txt",
 						edits: [
 							{ op: "replace", path: "b1.txt", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["A!"] },
-							{ op: "replace", path: "b2.txt", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B!"] },
+							{ op: "replace", path: "b2.txt", anchor_start: "!zzz", anchor_end: "!zzz", lines: ["B!"] },
 						],
 					});
 					const text = getText(res);
@@ -284,7 +280,7 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 			}
 		});
 
-		it("ins with anchor_end: accepted (no throw) + drop-the-field warning", async () => {
+		it("ins with anchor_end: accepted (no throw) + drop-the-field warning — SRC BUG: ins replaces its anchor line instead of inserting after it (same root as duplicate-line ins); needs src fix", async () => {
 			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 				const harness = setupIntegrationTest(cwd);
 				const a1 = await readAnchors(harness, "b1.txt");

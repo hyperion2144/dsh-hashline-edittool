@@ -57,8 +57,8 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.allAlreadyReported).toBe(false);
 		expect(result!.rows).toEqual([
-			{ position: 2, hash: "h02", content: "c", drifted: false },
-			{ position: 3, hash: "X03", content: "changed", drifted: true },
+			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
+			{ position: 3, anchor: "X03", contentKey: "15fc89522c0183", content: "changed", drifted: true },
 		]);
 		expect(result!.text).toContain("Drift notice:");
 		expect(result!.text).toContain("X03:changed");
@@ -97,8 +97,8 @@ describe("computeDrift", () => {
 		});
 		expect(result).toBeDefined();
 		expect(result!.rows).toEqual([
-			{ position: 2, hash: "h03", content: "d", drifted: false },
-			{ position: 3, hash: "X04", content: "shifted", drifted: true },
+			{ position: 2, anchor: "h03", contentKey: "113dda91012a7a", content: "d", drifted: false },
+			{ position: 3, anchor: "X04", contentKey: "0733818e8b327f", content: "shifted", drifted: true },
 		]);
 	});
 
@@ -117,9 +117,9 @@ describe("computeDrift", () => {
 			reported: new Set(),
 		});
 		expect(result!.rows).toEqual([
-			{ position: 0, hash: "h00", content: "a", drifted: false },
-			{ position: 1, hash: "X01", content: "changed", drifted: true },
-			{ position: 2, hash: "h02", content: "c", drifted: false },
+			{ position: 0, anchor: "h00", contentKey: "1c2ba782c97901", content: "a", drifted: false },
+			{ position: 1, anchor: "X01", contentKey: "15fc89522c0183", content: "changed", drifted: true },
+			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
 		]);
 	});
 
@@ -140,7 +140,7 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(2);
 		expect(result!.rows).toEqual([
-			{ position: 0, hash: "X02", content: "c", drifted: true },
+			{ position: 0, anchor: "X02", contentKey: "00c63d037d35b6", content: "c", drifted: true },
 		]);
 	});
 
@@ -182,10 +182,10 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.allAlreadyReported).toBe(false);
 		expect(result!.rows).toEqual([
-			{ position: 0, hash: "X00", content: "changedA", drifted: true },
-			{ position: 1, hash: "h01", content: "b", drifted: false },
-			{ position: 2, hash: "h02", content: "c", drifted: false },
-			{ position: 3, hash: "X03", content: "changedD", drifted: true },
+			{ position: 0, anchor: "X00", contentKey: "1b28c2742f4384", content: "changedA", drifted: true },
+			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
+			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
+			{ position: 3, anchor: "X03", contentKey: "1658751dfa1a92", content: "changedD", drifted: true },
 		]);
 	});
 
@@ -275,9 +275,9 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(2);
 		expect(result!.rows).toEqual([
-			{ position: 1, hash: "h01", content: "b", drifted: false },
-			{ position: 2, hash: "X04", content: "R", drifted: true },
-			{ position: 3, hash: "h05", content: "e", drifted: false },
+			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
+			{ position: 2, anchor: "X04", contentKey: "1c05b90a176821", content: "R", drifted: true },
+			{ position: 3, anchor: "h05", contentKey: "0dad3f3365ed2b", content: "e", drifted: false },
 		]);
 	});
 
@@ -298,9 +298,9 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(1);
 		expect(result!.rows).toEqual([
-			{ position: 1, hash: "h01", content: "b", drifted: false },
-			{ position: 2, hash: "X02", content: "changed", drifted: true },
-			{ position: 3, hash: "h03", content: "d", drifted: false },
+			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
+			{ position: 2, anchor: "X02", contentKey: "15fc89522c0183", content: "changed", drifted: true },
+			{ position: 3, anchor: "h03", contentKey: "113dda91012a7a", content: "d", drifted: false },
 		]);
 	});
 
@@ -321,9 +321,9 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(2);
 		expect(result!.rows).toEqual([
-			{ position: 1, hash: "X01", content: "b", drifted: false },
-			{ position: 2, hash: "X02", content: "C", drifted: true },
-			{ position: 3, hash: "X03", content: "D", drifted: true },
+			{ position: 1, anchor: "X01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
+			{ position: 2, anchor: "X02", contentKey: "19044896483eba", content: "C", drifted: true },
+			{ position: 3, anchor: "X03", contentKey: "12f3cfb16c547c", content: "D", drifted: true },
 		]);
 	});
 
@@ -344,8 +344,8 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(1);
 		expect(result!.rows).toEqual([
-			{ position: 0, hash: "X00", content: "changed", drifted: true },
-			{ position: 1, hash: "h01", content: "b", drifted: false },
+			{ position: 0, anchor: "X00", contentKey: "15fc89522c0183", content: "changed", drifted: true },
+			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
 		]);
 	});
 
@@ -366,8 +366,8 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(1);
 		expect(result!.rows).toEqual([
-			{ position: 2, hash: "h02", content: "c", drifted: false },
-			{ position: 3, hash: "X03", content: "changed", drifted: true },
+			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
+			{ position: 3, anchor: "X03", contentKey: "15fc89522c0183", content: "changed", drifted: true },
 		]);
 	});
 });

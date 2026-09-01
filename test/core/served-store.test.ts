@@ -27,9 +27,9 @@ describe("served state — record semantics", () => {
 	it("round-trips served entries per file and position", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/a.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 1, hash: "def" },
-				{ position: 2, hash: "ghi" },
+				{ position: 0, anchor: "abc" },
+				{ position: 1, anchor: "def" },
+				{ position: 2, anchor: "ghi" },
 			]);
 			expect(await loadServed("sessionA", "/a.ts")).toEqual(["abc", "def", "ghi"]);
 		});
@@ -44,8 +44,8 @@ describe("served state — record semantics", () => {
 	it("exposes interior gaps as never-served markers", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 2, hash: "def" },
+				{ position: 0, anchor: "abc" },
+				{ position: 2, anchor: "def" },
 			]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "def"]);
 		});
@@ -53,15 +53,15 @@ describe("served state — record semantics", () => {
 
 	it("exposes leading gaps as never-served markers", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 3, hash: "abc" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 3, anchor: "abc" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([null, null, null, "abc"]);
 		});
 	});
 
 	it("grows the record to the highest served position", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionA", "/p.ts", [{ position: 5, hash: "def" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 5, anchor: "def" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([
 				"abc",
 				null,
@@ -75,8 +75,8 @@ describe("served state — record semantics", () => {
 
 	it("overwrites a previously served position", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "def" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "def" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["def"]);
 		});
 	});
@@ -84,11 +84,11 @@ describe("served state — record semantics", () => {
 	it("marks a served position as never-served with a null hash", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 1, hash: "def" },
-				{ position: 2, hash: "ghi" },
+				{ position: 0, anchor: "abc" },
+				{ position: 1, anchor: "def" },
+				{ position: 2, anchor: "ghi" },
 			]);
-			await recordServed("sessionA", "/p.ts", [{ position: 1, hash: null }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 1, anchor: null }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "ghi"]);
 		});
 	});
@@ -102,10 +102,10 @@ describe("served state — record semantics", () => {
 
 	it("keeps unrelated served records intact when recording another path", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/a.ts", [{ position: 0, hash: "abc" }]);
+			await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
 			await recordServed("sessionA", "/b.ts", [
-				{ position: 0, hash: "def" },
-				{ position: 1, hash: "ghi" },
+				{ position: 0, anchor: "def" },
+				{ position: 1, anchor: "ghi" },
 			]);
 			expect(await loadServed("sessionA", "/a.ts")).toEqual(["abc"]);
 			expect(await loadServed("sessionA", "/b.ts")).toEqual(["def", "ghi"]);
@@ -115,8 +115,8 @@ describe("served state — record semantics", () => {
 	it("survives a hash-store shutdown and reopen", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 2, hash: "def" },
+				{ position: 0, anchor: "abc" },
+				{ position: 2, anchor: "def" },
 			]);
 			shutdownHashStore();
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "def"]);
@@ -128,15 +128,15 @@ describe("served state — merge helper (stale-tail invariant)", () => {
 	it("drops the stale tail when a serve truncates to the current line count", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 1, hash: "def" },
-				{ position: 2, hash: "ghi" },
+				{ position: 0, anchor: "abc" },
+				{ position: 1, anchor: "def" },
+				{ position: 2, anchor: "ghi" },
 			]);
 			// The file shrank to 1 line; the new serve must not keep the old
 			// tail — a hash held at a position beyond the line count is a
 			// stale claim that later makes boundary anchors look ambiguous
 			// (E_RANGE_UNVERIFIED, "served at N positions").
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }], 1);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }], 1);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc"]);
 		});
 	});
@@ -144,11 +144,11 @@ describe("served state — merge helper (stale-tail invariant)", () => {
 	it("never leaves a surviving hash at its old position after a truncating serve", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 1, hash: "def" },
+				{ position: 0, anchor: "abc" },
+				{ position: 1, anchor: "def" },
 			]);
 			// Post-mutation diff serve: file shrank to 1 line, only "abc" shown.
-			await recordServedTruncated("sessionA", "/p.ts", [{ position: 0, hash: "abc" }], 1, 0);
+			await recordServedTruncated("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }], 1, 0);
 			const served = await loadServed("sessionA", "/p.ts");
 			expect(served).toEqual(["abc"]);
 			expect(servedPositionsOf(served, "abc")).toEqual([0]);
@@ -158,14 +158,14 @@ describe("served state — merge helper (stale-tail invariant)", () => {
 	it("clears re-shaped positions from clearFrom before diff rows land", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "aaa" },
-				{ position: 1, hash: "bbb" },
-				{ position: 2, hash: "ccc" },
-				{ position: 3, hash: "ddd" },
+				{ position: 0, anchor: "aaa" },
+				{ position: 1, anchor: "bbb" },
+				{ position: 2, anchor: "ccc" },
+				{ position: 3, anchor: "ddd" },
 			]);
 			// The edit's first changed line is 1 (0-indexed): the model's
 			// view of everything at/after it no longer holds.
-			await recordServedTruncated("sessionA", "/p.ts", [{ position: 2, hash: "xxx" }], 4, 1);
+			await recordServedTruncated("sessionA", "/p.ts", [{ position: 2, anchor: "xxx" }], 4, 1);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["aaa", null, "xxx"]);
 		});
 	});
@@ -174,31 +174,31 @@ describe("served state — merge helper (stale-tail invariant)", () => {
 		await withTempHome(async () => {
 			expect(() =>
 				_mergeServedRows([], [
-					{ position: 0, hash: "abc" },
-					{ position: 1, hash: "ZZZZ" },
+					{ position: 0, anchor: "abc" },
+					{ position: 1, anchor: "ZZ!Z" },
 				]),
-			).toThrow(/Invalid served hash/);
+			).toThrow(/Invalid served anchor/);
 			expect(() =>
-				_mergeServedRows([], [{ position: -1, hash: "abc" }]),
+				_mergeServedRows([], [{ position: -1, anchor: "abc" }]),
 			).toThrow(/Invalid served position/);
 			// The async seam swallows store failures; an invalid batch must be
 			// a no-op, never a partial write.
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "ZZZZ" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "ZZ!Z" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
 		});
 	});
 
 	it("trims trailing never-served markers", () => {
 		expect(_mergeServedRows([null, null], [])).toEqual([]);
-		expect(_mergeServedRows(["abc", null, null], [{ position: 0, hash: "def" }])).toEqual(["def"]);
+		expect(_mergeServedRows(["abc", null, null], [{ position: 0, anchor: "def" }])).toEqual(["def"]);
 	});
 });
 
 describe("served state — session isolation", () => {
 	it("keeps two sessions' served records for the same path independent", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionB", "/p.ts", [{ position: 0, hash: "def" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
+			await recordServed("sessionB", "/p.ts", [{ position: 0, anchor: "def" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc"]);
 			expect(await loadServed("sessionB", "/p.ts")).toEqual(["def"]);
 		});
@@ -206,8 +206,8 @@ describe("served state — session isolation", () => {
 
 	it("wipes only the targeted session's served records", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/a.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionB", "/a.ts", [{ position: 0, hash: "def" }]);
+			await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
+			await recordServed("sessionB", "/a.ts", [{ position: 0, anchor: "def" }]);
 			await wipeServedState("sessionA");
 			expect(await loadServed("sessionA", "/a.ts")).toEqual([]);
 			expect(await loadServed("sessionB", "/a.ts")).toEqual(["def"]);
@@ -225,7 +225,7 @@ describe("served state — session isolation", () => {
 
 	it("sees no served rows for a session that recorded nothing", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
 			expect(await loadServed("sessionB", "/p.ts")).toEqual([]);
 		});
 	});
@@ -235,8 +235,8 @@ describe("served state — session wipe keeps snapshots and undo", () => {
 	it("removes all served records while keeping snapshots and undo", async () => {
 		await withTempHome(async () => {
 			const store = await loadHashStore();
-			await recordServed("sessionA", "/a.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionA", "/b.ts", [{ position: 1, hash: "def" }]);
+			await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
+			await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
 			store.upsertSnapshot("/a.ts", contentChecksum("a\n"), 1, ["abc"]);
 			store.upsertUndo("/u.ts", {
 				content: "old",
@@ -272,7 +272,7 @@ describe("served state — corrupt row handling", () => {
 
 	it("treats a row with unparseable hashes as an empty record and deletes it", async () => {
 		await withTempHome(async (home) => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "AAA" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "AAA" }]);
 			await corruptServed(home, "sessionA", "/p.ts", "not json");
 			shutdownHashStore();
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
@@ -291,7 +291,7 @@ describe("served state — corrupt row handling", () => {
 
 	it("treats a row with malformed hash strings as an empty record and deletes it", async () => {
 		await withTempHome(async (home) => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "AAA" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "AAA" }]);
 			await corruptServed(home, "sessionA", "/p.ts", '["ZZ", "ZZZZ", "a!b"]');
 			shutdownHashStore();
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
@@ -310,7 +310,7 @@ describe("served state — corrupt row handling", () => {
 
 	it("treats a row with non-string entries as an empty record and deletes it", async () => {
 		await withTempHome(async (home) => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "AAA" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "AAA" }]);
 			await corruptServed(home, "sessionA", "/p.ts", "[42]");
 			shutdownHashStore();
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
@@ -332,7 +332,7 @@ describe("served state — schema versioning", () => {
 	it("clears served state alongside snapshots and undo when the stored version differs", async () => {
 		await withTempHome(async (home) => {
 			const store = await loadHashStore();
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "XYZ" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "XYZ" }]);
 			store.upsertSnapshot("/p.ts", contentChecksum("x\n"), 1, ["XYZ"]);
 			store.upsertUndo("/u.ts", {
 				content: "old",
@@ -386,7 +386,7 @@ describe("served state — pruneMissing", () => {
 	it("removes served records for files that no longer exist", async () => {
 		await withTempHome(async () => {
 			const store = await loadHashStore();
-			await recordServed("sessionA", "/gone.ts", [{ position: 0, hash: "ZZZ" }]);
+			await recordServed("sessionA", "/gone.ts", [{ position: 0, anchor: "ZZZ" }]);
 			await store.pruneMissing();
 			expect(await loadServed("sessionA", "/gone.ts")).toEqual([]);
 		});
@@ -397,7 +397,7 @@ describe("served state — pruneMissing", () => {
 			const existing = join(home, "keep.ts");
 			await writeFile(existing, "keep\n", "utf-8");
 			const store = await loadHashStore();
-			await recordServed("sessionA", existing, [{ position: 0, hash: "KEP" }]);
+			await recordServed("sessionA", existing, [{ position: 0, anchor: "KEP" }]);
 			await store.pruneMissing();
 			expect(await loadServed("sessionA", existing)).toEqual(["KEP"]);
 		});
@@ -406,7 +406,7 @@ describe("served state — pruneMissing", () => {
 	it("prunes served-only records for files with no snapshot or undo row", async () => {
 		await withTempHome(async () => {
 			const store = await loadHashStore();
-			await recordServed("sessionA", "/orphan.ts", [{ position: 0, hash: "ORG" }]);
+			await recordServed("sessionA", "/orphan.ts", [{ position: 0, anchor: "ORG" }]);
 			await store.pruneMissing();
 			expect(await loadServed("sessionA", "/orphan.ts")).toEqual([]);
 		});
@@ -417,8 +417,8 @@ describe("served state — pruneMissing", () => {
 			const existing = join(home, "keep.ts");
 			await writeFile(existing, "keep\n", "utf-8");
 			const store = await loadHashStore();
-			await recordServed("sessionA", existing, [{ position: 0, hash: "KEP" }]);
-			await recordServed("sessionA", "/gone.ts", [{ position: 0, hash: "GON" }]);
+			await recordServed("sessionA", existing, [{ position: 0, anchor: "KEP" }]);
+			await recordServed("sessionA", "/gone.ts", [{ position: 0, anchor: "GON" }]);
 			store.upsertSnapshot(existing, contentChecksum("keep\n"), 1, ["KEP"]);
 			store.upsertSnapshot("/gone.ts", contentChecksum("gone\n"), 1, ["GON"]);
 			store.upsertUndo(existing, {
@@ -531,8 +531,8 @@ describe("served state — TTL sweep", () => {
 	it("prunes served rows older than the TTL on store open", async () => {
 		await withTempHome(async (home) => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 2, hash: "def" },
+				{ position: 0, anchor: "abc" },
+				{ position: 2, anchor: "def" },
 			]);
 			shutdownHashStore();
 			await ageServedRow(home, "sessionA", "/p.ts", Date.now() - SERVED_TTL_MS - 1000);
@@ -553,8 +553,8 @@ describe("served state — TTL sweep", () => {
 	it("keeps a fresh served row across a close/reopen cycle so a pi -c continuation can verify against it", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 2, hash: "def" },
+				{ position: 0, anchor: "abc" },
+				{ position: 2, anchor: "def" },
 			]);
 			shutdownHashStore();
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "def"]);
@@ -563,8 +563,8 @@ describe("served state — TTL sweep", () => {
 
 	it("prunes an old row of one session while keeping another session's fresh row", async () => {
 		await withTempHome(async (home) => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionB", "/p.ts", [{ position: 0, hash: "def" }]);
+			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
+			await recordServed("sessionB", "/p.ts", [{ position: 0, anchor: "def" }]);
 			shutdownHashStore();
 			await ageServedRow(home, "sessionA", "/p.ts", Date.now() - SERVED_TTL_MS - 1000);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);

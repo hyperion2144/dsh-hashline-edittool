@@ -24,7 +24,7 @@ import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "./constants.js";
 import { lineHashes, fmtRegion, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
-import { hashlineHeader, hashSep } from "./hashline/hash-assign.js";
+import { hashlineHeader, hashSep, canon, contentChecksum } from "./hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "./utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "./edit-diff.js";
 import { resolveTarget, toCwd } from "./paths.js";
@@ -470,7 +470,12 @@ export function formatPaginationHint(
 
 export async function fmtReadPreview(
   text: string,
-  options: { offset?: number; limit?: number },
+	options: {
+		offset?: number;
+		limit?: number;
+		/** v2.0: prefix every row marker with `<line>:<anchor>`. */
+		lineNumbers?: boolean;
+	},
   precomputedHashes?: string[],
   path?: string,
   maxLineBytes = MAX_READ_LINE_BYTES,
@@ -486,16 +491,16 @@ export async function fmtReadPreview(
   const startLine = normPosInt(options.offset, 'offset') ?? 1;
   if (totalLines === 0) {
     if (startLine === 1) {
-      const allHashes =
+const allHashes =
         precomputedHashes ??
         (await (path ? lineHashes(text, path) : lineHashes(text)));
       const emptyLineHash = allHashes[0]!;
       return {
-        text: `${hashlineHeader()}\n1${LINE_HASH_SEP}${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
-        served: [{ position: 0, hash: emptyLineHash }],
-      };
-    }
-    return {
+		text: `${hashlineHeader()}\n${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
+		served: [{ position: 0, anchor: emptyLineHash, contentKey: contentChecksum(canon("")) }],
+	};
+	}
+return {
       text: `Offset ${startLine} is beyond end of file (0 lines total). The file is empty. Use edit to insert content.`,
       served: [],
     };
@@ -515,7 +520,7 @@ export async function fmtReadPreview(
     precomputedHashes ??
     (await (path ? lineHashes(text, path) : lineHashes(text)));
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
-  const formatted = `${hashlineHeader()}\n${fmtRegion(selectedHashes, selected, startLine)}`;
+	const formatted = `${hashlineHeader()}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers === true })}`;
   const maxBytes = maxLineBytes;
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
@@ -529,7 +534,7 @@ export async function fmtReadPreview(
     const rows = rowSizes.map((row, index) =>
       row.bytes > maxBytes
         ? `[Line ${row.lineNumber} is ${formatSize(row.bytes)}, exceeds ${formatSize(maxBytes)}; content not shown. Use bash: sed -n '${row.lineNumber}p' <path> | head -c ${maxBytes}]`
-        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber),
+        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber, { lineNumbers: options.lineNumbers === true }),
     );
     const skippedTruncation = truncateHead(rows.join('\n'), {
       maxBytes,
@@ -558,13 +563,14 @@ export async function fmtReadPreview(
       preview = `${hashlineHeader()}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
     } else {
       preview = `${hashlineHeader()}\n${preview}\n\n${warning}`;
-    }
+}
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {
       if (rowSizes[index]!.bytes <= maxBytes) {
         served.push({
           position: startLine - 1 + index,
-          hash: selectedHashes[index]!,
+          anchor: selectedHashes[index]!,
+          contentKey: contentChecksum(canon(selected[index]!)),
         });
       }
     }
@@ -595,12 +601,13 @@ export async function fmtReadPreview(
   } else if (endIdx < totalLines) {
     nextOffset = endIdx + 1;
     preview += `\n\n${formatPaginationHint(startLine, endIdx, totalLines, nextOffset)}`;
-  }
+}
   const served: ServedRow[] = [];
   for (let index = 0; index < truncation.outputLines; index++) {
     served.push({
       position: startLine - 1 + index,
-      hash: selectedHashes[index]!,
+      anchor: selectedHashes[index]!,
+      contentKey: contentChecksum(canon(selected[index]!)),
     });
   }
   return {
@@ -627,8 +634,10 @@ export interface FileView {
 }
 
 export interface PreviewOpts {
-  offset?: number;
-  limit?: number;
+	/** v2.0: prefix every read/diff row marker with `<line>:<anchor>`. */
+	lineNumbers?: boolean;
+	offset?: number;
+	limit?: number;
 }
 
 export interface ReadViewOpts extends PreviewOpts {

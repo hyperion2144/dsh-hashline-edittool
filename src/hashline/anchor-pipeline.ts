@@ -7,90 +7,116 @@
  * Detection (valEdit → boundaryDups[]) and correction (splice + second valEdit)
  * were split across resolve.ts / apply.ts with an implicit coupling.
  * This seam co-locates that invariant. Public surface is two functions:
- *   resEdit  — pre-validation (tool-layer, no file state)
- *   applyEdit — full pipeline (file + hashes + served verification)
+ *   resEdit   — pre-validation (tool-layer, no file state)
+ *   applyEdit — full pipeline (file + anchors + served verification)
+ *
+ * v2.0 dynamic-hashline contract (docs/dynamic-hashline-spec.md): variable-length
+ * Base62 anchors (shortest-first, layered); the line number is OUT of the anchor.
+ * `line:anchor` is a weak input hint, not authoritative. Line numbers may appear
+ * in rendered output as an optional column (per-call, default off). The served
+ * mirror tracks `(anchor, contentKey)` per row; verifyServedRange validates both
+ * layers when servedContent is supplied.
  *
  * Private to this seam (not re-exported): stripBarePrefixes, stripDiffPrefixes,
  * swapReversedRanges, valEdit, boundaryDups helpers, warnUnicodeEsc, findNewEdge,
- * resAnchorFromMap, assertAligned, etc. They remain exported from resolve.ts
- * for backwards compat but are marked @internal and should be imported via this
- * module only.
+ * resAnchorFromMap, assertAligned, pickFallbackCenter, isRealMarkerLine.
  *
  * @module dsh-hashline-edittool/hashline/anchor-pipeline
  */
-
-import { abortIf, splitLines, rejectUnknownFields, firstNonEmptyIndex, lastNonEmptyIndex, clipLine } from "../utils.js";
 import {
-  ALPH_RE,
-  LINE_HASH_SEP,
-  contextLinesCfg,
-  canon,
-  lineHashesPure,
-  lineHashRe,
-  hashSep,
-  hashClassSource,
-  hashlineHeader,
-  hlBarePrefixRe,
-  hlPrefixPlusRe,
-  hlPrefixMinusRe,
+	abortIf,
+	splitLines,
+	rejectUnknownFields,
+	firstNonEmptyIndex,
+	lastNonEmptyIndex,
+	clipLine,
+} from "../utils.js";
+import {
+	canon,
+	contentChecksum,
+	hashSep,
+	hashlineHeader,
+	fmtHashlineRow,
+	anchorWidth,
+	hashRe,
+	lineAnchorRe,
+	hlRowAnchorRe,
+	contextLinesCfg,
+	lineHashesPure,
 } from "./hash-assign.js";
-import { recordServed, servedPositionsOf } from "../served-store.js";
-import { fmtHashlineRow, anchorWidth } from "./hash-assign.js";
+import { recordServed } from "../served-store.js";
 import { SERVED_ECHO_CAP } from "../constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../constants.js";
 
-export type Anchor = { line: number; hash: string };
+/**
+ * Anchor — the parsed form of a single remove_from / remove_to token.
+ *
+ * `anchor` is the variable-length Base62 marker (unique per file row when
+ * allocated by the v2.0 allocator). `line` is OPTIONAL: present only when the
+ * model supplied a `line:anchor` hint. The hint is informational only — the
+ * authoritative row position is the one assigned by the allocator, recovered
+ * by indexOf(fileAnchors, anchor).
+ */
+export type Anchor = { anchor: string; line?: number };
 
 function diagRef(ref: string): string {
 	const trimmed = ref.trim();
 
 	if (!trimmed.length) {
-		return `[E_BAD_REF] Invalid anchor. Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
+		return `[E_BAD_REF] Invalid anchor. Expected a variable-length Base62 marker (e.g. "aB3"), copied from the leftmost column of a read/grep/diff row.`;
 	}
 
-	if (trimmed.includes(":") || trimmed.includes("│")) {
-		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". If you pasted a full read row, it must start with "<line>${LINE_HASH_SEP}<hash>${hashSep()}" (e.g. "12#aB3${hashSep()}"); or pass just the marker "12#aB3".`;
+	// Legacy `line#hash` form: explicit diagnostic to call out the schema change.
+	if (trimmed.includes("#")) {
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". The legacy line#hash form is no longer supported — anchors are variable-length Base62 (e.g. "aB3"), copied from the leftmost column; do not use the line#hash form.`;
+	}
+	if (trimmed.includes("│")) {
+		return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Legacy pipe-separated rows are not supported; copy just the marker (e.g. "aB3") from the leftmost column.`;
 	}
 
-	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected "<line>${LINE_HASH_SEP}<hash>" (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`;
+	return `[E_BAD_REF] Invalid anchor "${clipLine(trimmed, 60)}". Expected a variable-length Base62 marker (e.g. "aB3"), copied from the leftmost column of a read/grep/diff row.`;
 }
 
 function parseRef(ref: string): Anchor {
 	const trimmed = ref.trim();
 
-	const lineMatch = lineHashRe().exec(trimmed);
+	const lineMatch = lineAnchorRe().exec(trimmed);
 	if (lineMatch) {
 		const lineStr = lineMatch[1]!;
 		const line = Number.parseInt(lineStr, 10);
 		if (!Number.isInteger(line) || line < 1) {
 			throw new Error(diagRef(ref));
 		}
-		return { line, hash: lineMatch[2]! };
+		return { anchor: lineMatch[2]!, line };
 	}
-	// Bare-hash form is rejected: line#hash is the only valid anchor because
-	// the line number is what disambiguates positions with identical content
-	// (e.g. several blank lines), and the hash alone can't tell us whether
-	// the file drifted since the read.
+
+	const bareMatch = hashRe().exec(trimmed);
+	if (bareMatch) {
+		return { anchor: bareMatch[0]! };
+	}
+
 	throw new Error(diagRef(ref));
 }
 
 export const parseHashRef = parseRef;
 
 export function parseText(edit: string): string[] {
-  if (typeof edit !== "string") {
-    throw new Error(NEW_CONTENT_NOT_STRING_MSG);
-  }
-  const normalized = edit.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  if (normalized === "") return [];
-  if (/^\n+$/.test(normalized)) return new Array(normalized.length).fill("");
-  return normalized.split("\n");
+	if (typeof edit !== "string") {
+		throw new Error(NEW_CONTENT_NOT_STRING_MSG);
+	}
+	const normalized = edit.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	if (normalized === "") return [];
+	if (/^\n+$/.test(normalized)) return new Array(normalized.length).fill("");
+	return normalized.split("\n");
 }
 
-
 export type RAnchor = {
+	anchor: string;
 	line: number;
-	hash: string;
 	hashMatched: boolean;
+	/** Set when the agent supplied a `line:anchor` hint that didn't match the
+	 *  resolved position. Weak hint only — the resolved line is authoritative. */
+	lineHintMismatch?: boolean;
 };
 
 export type HEdit = { content_lines: string[]; hash_bounds: [Anchor, Anchor] };
@@ -101,8 +127,7 @@ export type RHEdit = {
 
 interface HMismatch {
 	ref: Anchor;
-	kind: "not_found" | "ambiguous";
-	candidates?: number[];
+	kind: "not_found";
 	context?: RAnchor;
 }
 
@@ -128,43 +153,44 @@ export type HTEdit = {
 	remove_to: string;
 };
 
+/**
+ * Resolve `ref.anchor` against the per-line anchor array (fileAnchors[i] is the
+ * unique anchor for line i+1). Anchors are globally unique per file (the v2.0
+ * allocator guarantees this), so indexOf is unambiguous. Returns not_found
+ * when the anchor is not currently allocated (slot freed, never existed, or
+ * the agent mistyped it).
+ *
+ * If `ref.line` is set (line:anchor input form), it's recorded as
+ * lineHintMismatch when it disagrees with the resolved position; the resolved
+ * line is still used for downstream logic. The mismatch is informational — it
+ * never rejects.
+ */
 function resAnchorFromMap(
 	ref: Anchor,
-	fileHashes: string[],
+	fileAnchors: string[],
 ): RAnchor | HMismatch {
-	// The anchor carries both the agent's claimed line AND the hash. The line
-	// is what identifies the position; the hash is the drift detector. We
-	// resolve at exactly the claimed line, never by hash lookup — even when
-	// the same hash appears elsewhere, only the line#hash pair uniquely
-	// identifies a row. (See parseRef: bare-hash anchors are rejected.)
-	const claimed = ref.line;
-	if (!Number.isInteger(claimed) || claimed < 1 || claimed > fileHashes.length) {
+	const idx = fileAnchors.indexOf(ref.anchor);
+	if (idx < 0) {
 		return { ref, kind: "not_found" };
 	}
-	const actualHash = fileHashes[claimed - 1]!;
-	if (actualHash !== ref.hash) {
-		// The hash at the claimed line is different. Surface both: the agent's
-		// hash and the actual hash at that line. `fmtMismatchWithServes`
-		// uses `actualHash` (the resolved `RAnchor.hash`) to echo the fresh
-		// marker; we carry the original ref so the agent can see what they
-		// sent vs. what's actually there.
-		return { ref, kind: "not_found" };
-	}
+	const line = idx + 1;
+	const lineHintMismatch = ref.line !== undefined && ref.line !== line;
 	return {
-		line: claimed,
-		hash: ref.hash,
+		anchor: ref.anchor,
+		line,
 		hashMatched: true,
+		...(lineHintMismatch ? { lineHintMismatch: true } : {}),
 	};
 }
 
 function assertAligned(
 	fileLines: string[],
-	fileHashes: string[],
+	fileAnchors: string[],
 	ctx: string,
 ): void {
-	if (fileHashes.length !== fileLines.length) {
+	if (fileAnchors.length !== fileLines.length) {
 		throw new Error(
-			`${ctx}: fileHashes.length (${fileHashes.length}) must match fileLines.length (${fileLines.length}).`,
+			`${ctx}: fileAnchors.length (${fileAnchors.length}) must match fileLines.length (${fileLines.length}).`,
 		);
 	}
 }
@@ -172,10 +198,10 @@ function assertAligned(
 function fmtMismatchWithServes(
 	mismatches: HMismatch[],
 	fileLines: string[],
-	fileHashes: string[],
+	fileAnchors: string[],
 	filePath?: string,
 ): { message: string; servedRows: ServedRow[] } {
-	assertAligned(fileLines, fileHashes, "fmtMismatch");
+	assertAligned(fileLines, fileAnchors, "fmtMismatch");
 
 	const out: string[] = [];
 	const servedRows: ServedRow[] = [];
@@ -185,15 +211,19 @@ function fmtMismatchWithServes(
 		const position = ln - 1;
 		if (seen.has(position)) return;
 		seen.add(position);
-		servedRows.push({ position, hash: fileHashes[ln - 1]! });
+		const line = fileLines[position] ?? "";
+		servedRows.push({
+			position,
+			anchor: fileAnchors[position]!,
+			contentKey: contentChecksum(canon(line)),
+		});
 	};
 	const notFound = mismatches.filter((m) => m.kind === "not_found");
-	const ambiguous = mismatches.filter((m) => m.kind === "ambiguous");
 
-	const refList = notFound.map((m) => `"${m.ref.hash}"`).join(", ");
+	const refList = notFound.map((m) => `"${m.ref.anchor}"`).join(", ");
 	if (notFound.length > 0) {
 		out.push(
-			`[E_STALE_ANCHOR] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
+			`[E_STALE] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
 		);
 		// Echo windows: single-line edits carry the same anchor in both
 		// remove_from and remove_to, and from/to that are BOTH stale and
@@ -202,14 +232,10 @@ function fmtMismatchWithServes(
 		// region is echoed once; the header above still reports every stale
 		// anchor and the merged block lists every fresh marker.
 		const centers = notFound.map((m) => {
-			// Echo center: prefer the OTHER anchor's resolved position (when one
-			// anchor resolved and the other didn't), fall back to the agent's
-			// claimed line.
-			const ctx = m.context ?? {
-				line: m.ref.line,
-				hash: fileHashes[m.ref.line - 1] ?? "?",
-				hashMatched: false,
-			};
+			// Echo center: prefer the OTHER anchor's resolved position (when
+			// one anchor resolved and the other didn't), fall back to a
+			// sensible line derived from the hint if any, else line 1.
+			const ctx = m.context ?? pickFallbackCenter(m.ref, fileAnchors);
 			return { m, center: Math.max(1, Math.min(fileLines.length, ctx.line)) };
 		});
 		centers.sort((a, b) => a.center - b.center);
@@ -233,13 +259,16 @@ function fmtMismatchWithServes(
 			);
 			const echoLines: string[] = [];
 			for (let ln = from; ln <= to; ln++) {
-				const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
-				echoLines.push(`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`);
+				const marker = `${fileAnchors[ln - 1]}`;
+				echoLines.push(
+					`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`,
+				);
 				pushRow(ln);
 			}
-			const markers = group.map(
-				(c) => `${c.m.ref.line}${LINE_HASH_SEP}${fileHashes[c.m.ref.line - 1] ?? "?"}`,
-			);
+			const markers = group.map((c) => {
+				const centerLine = c.center;
+				return `${fileAnchors[centerLine - 1] ?? "?"}`;
+			});
 			const hint =
 				markers.length === 1
 					? `reuse the fresh marker ${markers[0]}`
@@ -250,31 +279,27 @@ function fmtMismatchWithServes(
 			);
 		}
 	}
-	if (ambiguous.length > 0) {
-		if (out.length > 0) out.push("");
-		out.push(
-			`[E_AMBIGUOUS_ANCHOR] ${ambiguous.length} ambiguous anchor${ambiguous.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}. Re-read for fresh anchors.`,
-		);
-		for (const m of ambiguous) {
-			const sample = (m.candidates ?? []).slice(0, 5);
-			const more =
-				(m.candidates?.length ?? 0) > sample.length
-					? `, ... (+${(m.candidates?.length ?? 0) - sample.length} more)`
-					: "";
-			const lines = sample
-				.map((line) => {
-					const content = clipLine(fileLines[line - 1] ?? "");
-					pushRow(line);
-					return `    ${line}${LINE_HASH_SEP}${fileHashes[line - 1]}${hashSep()}${content}`;
-				})
-				.join("\n");
-			out.push(
-				`  Hash "${m.ref.hash}" matches lines ${sample.join(", ")}${more}.\n${lines}`,
-			);
-		}
-	}
 
 	return { message: out.join("\n"), servedRows };
+}
+
+function pickFallbackCenter(ref: Anchor, fileAnchors: string[]): RAnchor {
+	if (
+		ref.line !== undefined &&
+		ref.line >= 1 &&
+		ref.line <= fileAnchors.length
+	) {
+		return {
+			anchor: fileAnchors[ref.line - 1]!,
+			line: ref.line,
+			hashMatched: false,
+		};
+	}
+	return {
+		anchor: fileAnchors[0] ?? "?",
+		line: 1,
+		hashMatched: false,
+	};
 }
 
 const ITEM_KS = new Set(["replacement_text", "remove_from", "remove_to"]);
@@ -289,12 +314,12 @@ function assertItem(edit: Record<string, unknown>): void {
 
 	if ("remove_from" in edit && typeof edit.remove_from !== "string") {
 		throw new Error(
-			`[E_BAD_SHAPE] Field "remove_from" must be a "<line>#<hash>" anchor string (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`,
+			`[E_BAD_SHAPE] Field "remove_from" must be an anchor string (variable-length Base62, e.g. "aB3c"), copied from the leftmost column of a read/grep/diff row.`,
 		);
 	}
 	if ("remove_to" in edit && typeof edit.remove_to !== "string") {
 		throw new Error(
-			`[E_BAD_SHAPE] Field "remove_to" must be a "<line>#<hash>" anchor string (e.g. "12#aB3"), copied from the leftmost column of a read/grep/diff row.`,
+			`[E_BAD_SHAPE] Field "remove_to" must be an anchor string (variable-length Base62, e.g. "aB3c"), copied from the leftmost column of a read/grep/diff row.`,
 		);
 	}
 	if (!("replacement_text" in edit)) {
@@ -310,50 +335,47 @@ function assertItem(edit: Record<string, unknown>): void {
 		typeof edit.remove_to !== "string"
 	) {
 		throw new Error(
-			`[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" "<line>#<hash>" anchor strings copied from read output.`,
+			`[E_BAD_SHAPE] The edit requires "remove_from" and "remove_to" anchor strings copied from read output.`,
 		);
 	}
 }
 
-// Accepts read/grep/diff output rows pasted into remove_from/remove_to:
-//   "12#aB3:const x = 1;"  → anchor "12#aB3" (trailing content dropped)
-//   "+12#aB3:..."          → anchor "12#aB3" (diff "+" dropped)
-//   "-12#aB3:..."          → anchor "12#aB3" (diff "-" dropped)
-// Group 1 = diff marker, group 2 = line number (optional), group 3 = hash.
-const ANCHOR_ROW_RE = () => new RegExp(`^([+-]?)(?:(\\d+)#)?(${hashClassSource()})\\s*[${hashSep()}│]`);
-
+/**
+ * Accepts read/grep/diff output rows pasted into remove_from/remove_to:
+ *   "12:aB3:const x = 1;" → anchor "aB3" (line hint dropped, trailing content dropped)
+ *   "+12:aB3:..."         → anchor "aB3" (diff "+" dropped)
+ *   "-12:aB3:..."         → anchor "aB3" (diff "-" dropped)
+ *   "aB3:..."             → anchor "aB3" (bare anchor, trailing content dropped)
+ * Group 1 = diff marker, group 2 = line number (optional), group 3 = anchor.
+ */
 export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
 
 	const editLines = parseText(edit.replacement_text);
 	const bounds = [edit.remove_from, edit.remove_to].map((ref) => {
 		const trimmed = ref.trim();
-		const match = trimmed.match(ANCHOR_ROW_RE());
+		// Already a valid reference form (bare anchor or `<line>:<anchor>` hint) —
+		// keep it verbatim so the line hint survives to parseHashRef. The row
+		// regex below would greedily eat `4:lA` as anchor "4" + separator ":".
+		if (hashRe().test(trimmed) || lineAnchorRe().test(trimmed)) return trimmed;
+		const match = trimmed.match(hlRowAnchorRe());
 		if (!match) return ref;
-		if (!match[2]) {
-			// A bare `hash│content` row cannot be salvaged: the design requires
-			// line#hash (the line disambiguates positions whose content is
-			// identical, e.g. blank lines). Show only a clipped hint, never the
-			// whole pasted line/block (T5: terse notices, lean prompts).
-			throw new Error(
-				`[E_BAD_REF] anchor row lacks a line number — pass the marker "12${LINE_HASH_SEP}aB3" copied from the leftmost column, not "${clipLine(trimmed, 60)}".`
-			);
-		}
-		const anchor = `${match[2]}${LINE_HASH_SEP}${match[3]!}`;
+		const linePart = match[2] !== undefined ? `${match[2]}:` : "";
+		const anchor = match[3]!;
 		const rest = trimmed.slice(match[0].length);
-		if (!rest) return anchor; // "12#aB3│" → clean full row, nothing to strip
+		if (!rest) return `${linePart}${anchor}`; // "aB3│" / "12:aB3│" → clean marker
 		let message: string;
 		if (/[\r\n]/.test(rest)) {
 			message = `[E_BAD_REF] remove_from/remove_to got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
 		} else if (match[1] === "+") {
-			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
 		} else if (match[1] === "-") {
-			message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+			message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
 		} else {
-			message = `[E_BAD_REF] stripped trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+			message = `[E_BAD_REF] stripped trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
 		}
 		warnings?.push(message);
-		return anchor;
+		return `${linePart}${anchor}`;
 	}) as [string, string];
 	return {
 		content_lines: editLines,
@@ -372,45 +394,53 @@ function warnUnicodeEsc(edit: HEdit, warnings: string[]): void {
 /** @internal — private to anchor-pipeline seam; do not import directly, use anchor-pipeline.ts */
 function stripBarePrefixes(
 	edit: HEdit,
-	fileHashes: string[],
+	fileAnchors: string[],
 	warnings: string[],
 ): HEdit {
-	// Strip ONLY when the `line#hash:` prefix is a REAL file marker: the line
-	// number is in range and that line's hash equals the prefix hash. Model
-	// pasted read rows always satisfy this; file content that merely LOOKS
-	// like `12#aB3:...` almost never does (the line's real hash would have to
-	// equal the prefix by chance), so such content is kept verbatim.
+	// Strip ONLY when the `line:anchor:` prefix is a REAL file marker: the line
+	// number is in range and that line's anchor equals the prefix anchor. Model
+	// pasted read rows always satisfy this; file content that merely LOOKS like
+	// `12:aB3:...` almost never does (the line's real anchor would have to
+	// equal the prefix by chance), so such content is kept verbatim. Bare-anchor
+	// rows (no line number) are NEVER stripped — they can't be verified.
 	const stripped: { lineIndex: number }[] = [];
 	const skipped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
-		const match = line.match(hlBarePrefixRe());
-		if (!match) return line;
-		const lineNum = Number.parseInt(match[1]!, 10) - 1;
-		const hash = match[2]!;
+		const m = hlRowAnchorRe().exec(line);
+		if (!m) return line;
+		if (m[1] !== "") return line; // diff-marked rows handled by stripDiffPrefixes
+		if (m[2] === undefined) {
+			skipped.push(lineIndex);
+			return line;
+		}
+		const lineNum = Number.parseInt(m[2]!, 10) - 1;
+		const anchor = m[3]!;
 		const isRealMarker =
 			Number.isInteger(lineNum) &&
 			lineNum >= 0 &&
-			lineNum < fileHashes.length &&
-			fileHashes[lineNum] === hash;
+			lineNum < fileAnchors.length &&
+			fileAnchors[lineNum] === anchor;
 		if (!isRealMarker) {
 			skipped.push(lineIndex);
-			return line; // literal content — never corrupt it
+			return line;
 		}
 		stripped.push({ lineIndex });
-		return line.slice(match[0].length);
+		return line.slice(m[0].length);
 	});
 	if (stripped.length > 0) {
 		const locations = stripped
 			.map((s) => `replacement_text line ${s.lineIndex + 1}`)
 			.join(", ");
 		warnings.push(
-			`[E_BARE_HASH_PREFIX] stripped "line#hash:" prefix from ${locations}.`,
+			`[E_BARE_HASH_PREFIX] stripped "line:anchor:" prefix from ${locations}.`,
 		);
 	}
 	if (skipped.length > 0) {
-		const locations = skipped.map((i) => `replacement_text line ${i + 1}`).join(", ");
+		const locations = skipped
+			.map((i) => `replacement_text line ${i + 1}`)
+			.join(", ");
 		warnings.push(
-			`[E_BARE_HASH_PREFIX] prefix on ${locations} does not match the file's hashes; kept verbatim as literal content.`,
+			`[E_BARE_HASH_PREFIX] prefix on ${locations} does not match the file's anchors; kept verbatim as literal content.`,
 		);
 	}
 	return { ...edit, content_lines: contentLines };
@@ -419,22 +449,17 @@ function stripBarePrefixes(
 /** @internal — private to anchor-pipeline seam */
 function stripDiffPrefixes(
 	edit: HEdit,
-	fileHashes: string[],
+	fileAnchors: string[],
 	warnings: string[],
 ): HEdit {
 	const stripped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
-		const plus = line.match(hlPrefixPlusRe());
-		if (plus && isRealMarkerLine(plus[0], fileHashes)) {
-			stripped.push(lineIndex);
-			return line.slice(plus[0].length);
-		}
-		const minus = line.match(hlPrefixMinusRe());
-		if (minus && isRealMarkerLine(minus[0], fileHashes)) {
-			stripped.push(lineIndex);
-			return line.slice(minus[0].length);
-		}
-		return line;
+		const m = hlRowAnchorRe().exec(line);
+		if (!m) return line;
+		if (m[1] === "") return line; // no diff marker, handled by stripBarePrefixes
+		if (!isRealMarkerLine(m[0], fileAnchors)) return line;
+		stripped.push(lineIndex);
+		return line.slice(m[0].length);
 	});
 	if (stripped.length === 0) return edit;
 	const locations = stripped
@@ -451,15 +476,18 @@ function swapReversedRanges(
 	edit: HEdit,
 	warnings: string[],
 ): HEdit {
-	// The line is the locator (deterministic hashes may repeat), so reversed
-	// detection compares LINES directly — a hash-to-line lookup would be
-	// ambiguous for duplicate content.
+	// Reversed detection compares the resolved LINE NUMBERS. Anchors are
+	// unique per line, so line-to-line comparison is unambiguous. For bare
+	// anchors with no line hint, the swap is meaningless — both bounds
+	// resolve to the same line and the edit is a no-op or single-line edit.
 	const [startRef, endRef] = edit.hash_bounds;
-	if (startRef.line <= endRef.line) {
+	const startLine = startRef.line ?? Number.NaN;
+	const endLine = endRef.line ?? Number.NaN;
+	if (!(startLine > endLine)) {
 		return edit;
 	}
 	warnings.push(
-		`[E_BAD_OP] reversed remove_from/remove_to (${startRef.hash} after ${endRef.hash}); swapped.`
+		`[E_BAD_OP] reversed remove_from/remove_to (${startRef.anchor} after ${endRef.anchor}); swapped.`,
 	);
 	return { ...edit, hash_bounds: [endRef, startRef] as [Anchor, Anchor] };
 }
@@ -609,7 +637,7 @@ export function findNewEdge(
 function valEdit(
 	edit: HEdit,
 	fileLines: string[],
-	fileHashes: string[],
+	fileAnchors: string[],
 	warnings: string[],
 	signal: AbortSignal | undefined,
 ): {
@@ -617,12 +645,12 @@ function valEdit(
 	mismatches: HMismatch[];
 	boundaryDups: BDup[];
 } {
-	assertAligned(fileLines, fileHashes, "valEdit");
+	assertAligned(fileLines, fileAnchors, "valEdit");
 	const mismatches: HMismatch[] = [];
 	const boundaryDups: BDup[] = [];
 
 	const tryResolve = (ref: Anchor): RAnchor | undefined => {
-		const result = resAnchorFromMap(ref, fileHashes);
+		const result = resAnchorFromMap(ref, fileAnchors);
 		if ("kind" in result) {
 			mismatches.push(result);
 			return undefined;
@@ -631,65 +659,69 @@ function valEdit(
 	};
 
 	abortIf(signal);
-	// Out-of-range check first: if either anchor points past EOF, we want
-	// the hard "[E_RANGE_UNVERIFIED] ... out of range ... call read()" UX
-	// rather than [E_STALE_ANCHOR]. The hash is irrelevant when the line
-	// doesn't exist; the model must re-read to learn the file's size.
+
 	const startRef = edit.hash_bounds[0];
 	const endRef = edit.hash_bounds[1];
+	const startResolved = tryResolve(startRef);
+	const endResolved = tryResolve(endRef);
+
+	// Out-of-range check uses the resolved line (authoritative) when
+	// available, otherwise the hint line. Force a hard out-of-range error
+	// even when bounds are bare anchors: if the resolved line falls outside
+	// the file, the agent must re-read to learn the file's size.
+	const startClaimedLine = startResolved?.line ?? startRef.line ?? -1;
+	const endClaimedLine = endResolved?.line ?? endRef.line ?? -1;
 	const startOOB =
-		startRef.line < 1 || startRef.line > fileLines.length;
-	const endOOB = endRef.line < 1 || endRef.line > fileLines.length;
-	const backwards = startRef.line > endRef.line;
+		startClaimedLine < 1 || startClaimedLine > fileLines.length;
+	const endOOB = endClaimedLine < 1 || endClaimedLine > fileLines.length;
+	const backwards =
+		startResolved !== undefined &&
+		endResolved !== undefined &&
+		startResolved.line > endResolved.line;
 	if (startOOB || endOOB || backwards) {
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
-				`[E_RANGE_UNVERIFIED] — line ${startRef.line}..${endRef.line} is out of range ` +
+				`[E_RANGE_UNVERIFIED] — line ${startClaimedLine}..${endClaimedLine} is out of range ` +
 				`(file has ${fileLines.length} line${fileLines.length === 1 ? "" : "s"}). ` +
 				`Call read() to get the current line count and fresh anchors.`,
 			servedRows: [],
 		});
 	}
-	const startResolved = tryResolve(edit.hash_bounds[0]);
-	const endResolved = tryResolve(edit.hash_bounds[1]);
 	if (!startResolved || !endResolved) {
 		// Single-anchor fail: the OTHER resolved anchor gives us a "context"
 		// (a real line in the file) so the error UX can echo ±N around it.
 		// We carry the resolved RAnchor so fmtMismatchWithServes can use its
-		// line + hash to render the fresh marker.
+		// line + anchor to render the fresh marker.
 		if (!startResolved && endResolved) {
 			const startMismatch = mismatches.findLast(
-				(m) => m.ref === edit.hash_bounds[0],
+				(m) => m.ref === startRef,
 			);
-			if (startMismatch && startMismatch.kind === "not_found")
-				startMismatch.context = endResolved;
+			if (startMismatch) startMismatch.context = endResolved;
 		} else if (startResolved && !endResolved) {
-			const endMismatch = mismatches.findLast(
-				(m) => m.ref === edit.hash_bounds[1],
-			);
-			if (endMismatch && endMismatch.kind === "not_found")
-				endMismatch.context = startResolved;
+			const endMismatch = mismatches.findLast((m) => m.ref === endRef);
+			if (endMismatch) endMismatch.context = startResolved;
 		}
 		return { resolved: undefined, mismatches, boundaryDups };
 	}
 	if (startResolved.line > endResolved.line) {
 		throw new Error(
-			`[E_BAD_OP] Range start line ${startResolved.line} must be <= end line ${endResolved.line} (anchors ${edit.hash_bounds[0].line}#${edit.hash_bounds[0].hash} and ${edit.hash_bounds[1].line}#${edit.hash_bounds[1].hash}).`,
+			`[E_BAD_OP] Range start line ${startResolved.line} must be <= end line ${endResolved.line} (anchors ${startRef.anchor} and ${endRef.anchor}).`,
 		);
 	}
 	const endLine = endResolved.line;
-	const rangeLines = fileLines.slice(startResolved.line - 1, endLine);
+	const startLine = startResolved.line;
+	const rangeLines = fileLines.slice(startLine - 1, endLine);
 	const canonLines = fileLines.map((line) => canon(line));
 	boundaryDups.push(
 		...trailingDups(edit.content_lines, fileLines, endLine),
-		...leadingDups(edit.content_lines, fileLines, startResolved.line),
+		...leadingDups(edit.content_lines, fileLines, startLine),
 		...firstNewAfterDups(edit.content_lines, rangeLines, canonLines, endLine),
 		...lastNewBeforeDups(
 			edit.content_lines,
 			rangeLines,
 			canonLines,
-			startResolved.line,
+			startLine,
 		),
 	);
 
@@ -705,7 +737,6 @@ function valEdit(
 
 export { warnUnicodeEsc };
 
-
 export type ServedCode =
 	| "E_RANGE_STALE"
 	| "E_RANGE_UNSERVED"
@@ -713,7 +744,10 @@ export type ServedCode =
 
 export interface ServedRow {
 	position: number;
-	hash: string;
+	anchor: string;
+	/** contentChecksum(canon(line)) at serve time — used by verifyServedRange
+	 *  to detect content drift between read and edit. */
+	contentKey: string;
 }
 
 export class ServedRejectionError extends Error {
@@ -758,20 +792,27 @@ export function isAnchorMismatch(error: unknown): error is AnchorMismatchError {
 export function buildRangeEcho(
 	startLine: number,
 	endLine: number,
-	fileHashes: string[],
+	fileAnchors: string[],
+	fileLines: string[],
 ): ServedRow[] {
 	const total = endLine - startLine + 1;
 	const shown = Math.min(total, SERVED_ECHO_CAP);
 	const rows: ServedRow[] = [];
 	for (let ln = startLine; ln < startLine + shown; ln++) {
-		rows.push({ position: ln - 1, hash: fileHashes[ln - 1]! });
+		const position = ln - 1;
+		const line = fileLines[position] ?? "";
+		rows.push({
+			position,
+			anchor: fileAnchors[position]!,
+			contentKey: contentChecksum(canon(line)),
+		});
 	}
 	return rows;
 }
 
 export function fmtServedRows(rows: ServedRow[], fileLines: string[]): string {
 	return rows
-		.map((row) => `${row.position + 1}${LINE_HASH_SEP}${row.hash}${hashSep()}${fileLines[row.position] ?? ""}`)
+		.map((row) => `${row.anchor}${hashSep()}${fileLines[row.position] ?? ""}`)
 		.join("\n");
 }
 
@@ -785,21 +826,25 @@ function paginationHint(nextOffset: number, more: number): string {
 
 export function verifyServedRange(args: {
 	served: (string | null)[];
-	startHash: string;
-	endHash: string;
+	/** Optional contentKey mirror (contentChecksum(canon(line))) — when provided,
+	 *  per-row content drift is also rejected (E_RANGE_UNVERIFIED). */
+	servedContent?: (string | null)[];
+	startAnchor: string;
+	endAnchor: string;
 	startLine: number;
 	endLine: number;
-	fileHashes: string[];
+	fileAnchors: string[];
 	fileLines: string[];
 	filePath?: string;
 }): void {
 	const {
 		served,
-		startHash,
-		endHash,
+		servedContent,
+		startAnchor,
+		endAnchor,
 		startLine,
 		endLine,
-		fileHashes,
+		fileAnchors,
 		fileLines,
 		filePath,
 	} = args;
@@ -824,50 +869,91 @@ export function verifyServedRange(args: {
 		});
 	}
 
-	// Strict line-by-line check at the agent's claimed positions. The hash's
-	// only role here is to verify the line content hasn't drifted since the
-	// read — we never fall back to "find any position with this hash", which
-	// would silently override the agent's stated line. Each position in
-	// served[] independently tracks its hash (line#hash is unique per row,
-	// even when hashes repeat across rows).
+	// Strict line-by-line check at the agent's claimed positions. The anchor
+	// verifies the row hasn't drifted since the read (the allocator guarantees
+	// uniqueness, so we never fall back to "find any position with this
+	// anchor", which would silently override the agent's intent). Each
+	// position in served[] independently tracks its anchor (anchors are
+	// unique per row, even when content repeats).
 	const currentLen = endLine - startLine + 1;
 	const firstMismatch: number | undefined = (() => {
 		for (let k = 0; k < currentLen; k++) {
 			const position = startLine - 1 + k;
-			const expectedHash =
+			const expectedAnchor =
 				currentLen === 1
-					? startHash
+					? startAnchor
 					: k === 0
-						? startHash
+						? startAnchor
 						: k === currentLen - 1
-							? endHash
-							: fileHashes[position];
-			const servedHash = served[position];
-			if (servedHash === null) return position;
-			if (servedHash !== expectedHash) return position;
+							? endAnchor
+							: fileAnchors[position];
+			const servedAnchor = served[position];
+			if (servedAnchor === null) return position;
+			if (servedAnchor !== expectedAnchor) return position;
+			if (servedContent) {
+				const expectedContentKey = contentChecksum(
+					canon(fileLines[position]!),
+				);
+				const servedContentKey = servedContent[position];
+				if (
+					servedContentKey === null ||
+					servedContentKey !== expectedContentKey
+				) {
+					return position;
+				}
+			}
 		}
 		return undefined;
 	})();
 
 	if (firstMismatch !== undefined) {
 		const mismatchLine = firstMismatch + 1;
-		const expectedHash = fileHashes[firstMismatch]!;
+		const expectedAnchor = fileAnchors[firstMismatch]!;
 		const ctxFrom = Math.max(1, mismatchLine - contextLinesCfg());
-		const ctxTo = Math.min(fileLines.length, mismatchLine + contextLinesCfg());
+		const ctxTo = Math.min(
+			fileLines.length,
+			mismatchLine + contextLinesCfg(),
+		);
 		const ctxEchoLines: string[] = [];
 		const ctxServedRows: ServedRow[] = [];
 		for (let ln = ctxFrom; ln <= ctxTo; ln++) {
-			const marker = `${ln}${LINE_HASH_SEP}${fileHashes[ln - 1]}`;
-			ctxEchoLines.push(`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`);
-			ctxServedRows.push({ position: ln - 1, hash: fileHashes[ln - 1]! });
+			const marker = `${fileAnchors[ln - 1]}`;
+			ctxEchoLines.push(
+				`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`,
+			);
+			ctxServedRows.push({
+				position: ln - 1,
+				anchor: fileAnchors[ln - 1]!,
+				contentKey: contentChecksum(canon(fileLines[ln - 1] ?? "")),
+			});
 		}
 		const ctxEcho = `${hashlineHeader()}\n${ctxEchoLines.join("\n")}`;
-		const freshMarker = `${mismatchLine}${LINE_HASH_SEP}${expectedHash}`;
+		const freshMarker = `${expectedAnchor}`;
 		const servedAtLine = served[firstMismatch];
-		const staleMsg =
-			servedAtLine === null
-				? `line ${mismatchLine} was never served to the model`
-				: `served mirror at line ${mismatchLine} is stale (has hash ${servedAtLine}, file has ${expectedHash})`;
+		const servedContentAtLine = servedContent?.[firstMismatch] ?? null;
+		let staleMsg: string;
+		let contentLocations: string | undefined;
+		if (servedAtLine === null) {
+			staleMsg = `line ${mismatchLine} was never served to the model`;
+		} else {
+			staleMsg = `served mirror at line ${mismatchLine} is stale (served anchor ${servedAtLine}, file now has ${expectedAnchor})`;
+			// Content-mismatch portion: locate where the served content currently
+			// appears in the file. Empty list = the served content has been deleted.
+			if (servedContent && servedContentAtLine !== null) {
+				const target = servedContentAtLine;
+				const linesWithServedContent: number[] = [];
+				for (let i = 0; i < fileLines.length; i++) {
+					if (contentChecksum(canon(fileLines[i]!)) === target) {
+						linesWithServedContent.push(i + 1);
+					}
+				}
+				if (linesWithServedContent.length > 0) {
+					contentLocations = `The served content currently appears at lines: ${linesWithServedContent.join(", ")}`;
+				} else {
+					contentLocations = `The served content no longer appears in the file.`;
+				}
+			}
+		}
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
@@ -876,6 +962,7 @@ export function verifyServedRange(args: {
 				`A full read() will re-sync, but if the line below is what you meant, you can reuse the fresh marker instead.\n` +
 				`Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
 				`If this is the line you meant, reuse the fresh marker ${freshMarker} without calling read.\n` +
+				(contentLocations ? `${contentLocations}\n` : "") +
 				`If not, call read() to find the correct line.`,
 			servedRows: ctxServedRows,
 		});
@@ -900,9 +987,8 @@ export async function recordEchoServes(
 	lineCount?: number,
 ): Promise<void> {
 	if (policy !== "live") return;
-	await recordServed(sessionKey, path, rows, lineCount);
+await recordServed(sessionKey, path, rows.map((r) => ({ position: r.position, anchor: r.anchor })), lineCount);
 }
-
 
 type LIdx = {
 	fileLines: string[];
@@ -940,6 +1026,7 @@ type NoopSpan = {
 	loc: string;
 	currentContent: string;
 };
+
 function assertNotEmpty(originalContent: string, result: string): void {
 	if (originalContent.length > 0 && result.length === 0) {
 		throw new Error(
@@ -966,7 +1053,7 @@ function resToSpan(
 	) {
 		return {
 			kind: "noop",
-			loc: edit.hash_bounds[0].hash,
+			loc: edit.hash_bounds[0].anchor,
 			currentContent: originalLines.join("\n"),
 		};
 	}
@@ -1034,7 +1121,7 @@ export function applyEdit(
 	content: string,
 	edit: HEdit,
 	signal?: AbortSignal,
-	precomputedHashes?: string[],
+	precomputedAnchors?: string[],
 	filePath?: string,
 	served?: (string | null)[],
 ): {
@@ -1049,13 +1136,13 @@ export function applyEdit(
 	abortIf(signal);
 
 	const lineIndex = buildIdx(content);
-	const fileHashes = precomputedHashes ?? lineHashesPure(content);
+	const fileAnchors = precomputedAnchors ?? lineHashesPure(content);
 	const warnings: string[] = [];
 
 	const rangeFixed = swapReversedRanges(edit, warnings);
 	const prefixFixed = stripDiffPrefixes(
-		stripBarePrefixes(rangeFixed, fileHashes, warnings),
-		fileHashes,
+		stripBarePrefixes(rangeFixed, fileAnchors, warnings),
+		fileAnchors,
 		warnings,
 	);
 
@@ -1063,12 +1150,18 @@ export function applyEdit(
 		resolved: initialResolved,
 		mismatches,
 		boundaryDups,
-	} = valEdit(prefixFixed, lineIndex.fileLines, fileHashes, warnings, signal);
+	} = valEdit(
+		prefixFixed,
+		lineIndex.fileLines,
+		fileAnchors,
+		warnings,
+		signal,
+	);
 	if (mismatches.length || !initialResolved) {
 		const { message, servedRows } = fmtMismatchWithServes(
 			mismatches,
 			lineIndex.fileLines,
-			fileHashes,
+			fileAnchors,
 			filePath,
 		);
 		throw new AnchorMismatchError(message, servedRows);
@@ -1107,7 +1200,7 @@ export function applyEdit(
 		const correctedResult = valEdit(
 			correctedEdit,
 			lineIndex.fileLines,
-			fileHashes,
+			fileAnchors,
 			warnings,
 			signal,
 		);
@@ -1115,7 +1208,7 @@ export function applyEdit(
 			const { message, servedRows } = fmtMismatchWithServes(
 				correctedResult.mismatches,
 				lineIndex.fileLines,
-				fileHashes,
+				fileAnchors,
 				filePath,
 			);
 			throw new AnchorMismatchError(message, servedRows);
@@ -1128,11 +1221,11 @@ export function applyEdit(
 		const endAnchor = resolved.hash_bounds[1];
 		verifyServedRange({
 			served,
-			startHash: startAnchor.hash,
-			endHash: endAnchor.hash,
+			startAnchor: startAnchor.anchor,
+			endAnchor: endAnchor.anchor,
 			startLine: startAnchor.line,
 			endLine: endAnchor.line,
-			fileHashes,
+			fileAnchors,
 			fileLines: lineIndex.fileLines,
 			filePath,
 		});
@@ -1172,35 +1265,44 @@ function resolvedRange(resolved: RHEdit): ResolvedRange {
 	return {
 		startLine: start.line,
 		endLine: end.line,
-		startHash: start.hash,
-		endHash: end.hash,
+		startHash: start.anchor,
+		endHash: end.anchor,
 		delta:
 			resolved.content_lines.length - (Math.abs(end.line - start.line) + 1),
 	};
 }
 
 /**
- * Render `line#hash│content` rows for a slice of the file. `startLine` is the
+ * Render `anchor:content` rows for a slice of the file. `startLine` is the
  * 1-indexed absolute line number of `lines[0]`. Defaults to 1 — the common case
- * when the whole file is being formatted.
+ * when the whole file is being formatted. With `opts.lineNumbers`, each row is
+ * rendered as `line:anchor:content` so the column carries line context.
  */
 export function fmtRegion(
-	hashes: string[],
+	anchors: string[],
 	lines: string[],
 	startLine: number = 1,
+	opts?: { lineNumbers?: boolean },
 ): string {
-	if (hashes.length !== lines.length) {
+	if (anchors.length !== lines.length) {
 		throw new Error(
-			`fmtRegion: hashes.length (${hashes.length}) must match lines.length (${lines.length}).`,
+			`fmtRegion: anchors.length (${anchors.length}) must match lines.length (${lines.length}).`,
 		);
 	}
 	if (!Number.isInteger(startLine) || startLine < 1) {
-		throw new Error(`fmtRegion: startLine (${startLine}) must be a positive integer.`);
+		throw new Error(
+			`fmtRegion: startLine (${startLine}) must be a positive integer.`,
+		);
 	}
-	const anchors = lines.map((_, index) => `${startLine + index}${LINE_HASH_SEP}${hashes[index]}`);
-	const width = anchorWidth(anchors);
+	const lineNumbers = opts?.lineNumbers === true;
+	const markers = lines.map((_, index) =>
+		lineNumbers
+			? `${startLine + index}${hashSep()}${anchors[index]}`
+			: anchors[index]!,
+	);
+	const width = anchorWidth(markers);
 	return lines
-		.map((line, index) => fmtHashlineRow("", anchors[index]!, line, width))
+		.map((line, index) => fmtHashlineRow("", markers[index]!, line, width))
 		.join("\n");
 }
 
@@ -1248,23 +1350,21 @@ export function changedRange(
 	};
 }
 
-
 /**
- * `+12#aB3:...` / `-12#aB3:...` (or `-12#   :` placeholder-hash rows) are
- * stripped only when the prefix is a real file marker; anything else stays
- * literal. The placeholder form (unknown old hash in a diff row the model
- * copied) is stripped when the line number exists, since such a prefix
- * cannot be legitimate file content.
+ * `+12:aB3:...` / `-12:aB3:...` are stripped only when the prefix is a real
+ * file marker; anything else stays literal. (Bare-anchor rows without a line
+ * number cannot be verified — they're treated as literal content.)
  */
-function isRealMarkerLine(prefix: string, fileHashes: string[]): boolean {
-	const m = /^(?:[+-])(\d+)#([A-Za-z0-9]{3}| {3})\s*[:│]$/.exec(prefix);
+function isRealMarkerLine(prefix: string, fileAnchors: string[]): boolean {
+	const m = /^([+-])?(\d+):([A-Za-z0-9]{1,8})\s*[:│]$/.exec(prefix);
 	if (!m) return false;
-	const lineNum = Number.parseInt(m[1]!, 10) - 1;
-	if (!Number.isInteger(lineNum) || lineNum < 0 || lineNum >= fileHashes.length) {
+	const lineNum = Number.parseInt(m[2]!, 10) - 1;
+	if (
+		!Number.isInteger(lineNum) ||
+		lineNum < 0 ||
+		lineNum >= fileAnchors.length
+	) {
 		return false;
 	}
-	const hash = m[2]!;
-	if (hash.trim() === "") return true; // placeholder: line exists is enough
-	return fileHashes[lineNum] === hash;
+	return fileAnchors[lineNum] === m[3]!;
 }
-
