@@ -246,7 +246,7 @@ describe("undo-store — raw entries", () => {
 		});
 		const db = new DatabaseSync(hashStorePath(), { defensive: false } as any);
 		db.prepare("UPDATE undo SET hashes = ? WHERE path = ?").run(
-			'["ZZ", "ZZZZ"]',
+			'["ZZ!", "ab-c"]',
 			"/a.ts",
 		);
 		db.close();

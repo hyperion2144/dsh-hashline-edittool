@@ -17,24 +17,22 @@ afterEach(() => {
 });
 
 describe("hashline settings / effective config", () => {
-	it("defaults to ':' / 3 / text", () => {
+	it("defaults to ':' / text", () => {
 		const cfg = getEffectiveConfig();
 		expect(cfg.separator).toBe(":");
-		expect(cfg.hashLength).toBe(3);
 		expect(cfg.outputFormat).toBe("text");
+		expect(cfg.contextLines).toBe(3);
 	});
 
-	it("applies separator + hash_length + output_format", () => {
-		applyEffective({ separator: "|", hash_length: 4, output_format: "json" });
+
+	it("applies separator + output_format (hash_length removed in v2.0)", () => {
+		applyEffective({ separator: "|", output_format: "json" });
 		const cfg: EffectiveHashlineConfig = getEffectiveConfig();
 		expect(cfg.separator).toBe("|");
-		expect(cfg.hashLength).toBe(4);
 		expect(cfg.outputFormat).toBe("json");
-		expect(getHashlineShape()).toEqual({ hashLength: 4, separator: "|", contextLines: 3 });
-		// hash length feeds the generator
-		const hashes = lineHashesPure("a\nbb\n");
-		expect(hashes[0]).toMatch(/^[A-Za-z0-9]{4}$/);
+		expect(getHashlineShape()).toEqual({ separator: "|", contextLines: 3 });
 	});
+
 
 	it("applies context_lines", () => {
 		applyEffective({ context_lines: 5 });
@@ -47,45 +45,45 @@ describe("hashline settings / effective config", () => {
 	it("falls back to defaults on invalid values", () => {
 		applyEffective({
 			separator: "",
-			hash_length: 99,
 			output_format: "yaml" as never,
 		});
 		const cfg = getEffectiveConfig();
 		expect(cfg.separator).toBe(":");
-		expect(cfg.hashLength).toBe(3);
 		expect(cfg.outputFormat).toBe("text");
 	});
+
 });
 
-describe("configurable separator + hash length end-to-end", () => {
-	it("parses anchors and strips markers under a custom separator/length", async () => {
-		applyEffective({ separator: "|", hash_length: 4 });
+describe("configurable separator end-to-end", () => {
+	it("parses anchors and strips markers under a custom separator", async () => {
+		applyEffective({ separator: "|" });
 		const content = "alpha\nbeta\ngamma";
 		const hashes = lineHashesPure(content);
-		expect(hashes[1]).toMatch(/^[A-Za-z0-9]{4}$/);
-		// anchor field accepts "line#hash" with the custom separator pasted row
+		expect(hashes[1]).toMatch(/^[A-Za-z0-9]{2,8}$/);
+		// anchor field accepts the bare anchor pasted row under custom separator
 		const edit = {
-			remove_from: `${1}#${hashes[0]}|alpha`,
-			remove_to: `${1}#${hashes[0]}|alpha`,
+			remove_from: `${hashes[0]}|alpha`,
+			remove_to: `${hashes[0]}|alpha`,
 			replacement_text: "ALPHA",
 		} as const;
 		const resolved = resEdit(edit as never);
-		expect(resolved.hash_bounds[0]).toEqual({ line: 1, hash: hashes[0] });
+		expect(resolved.hash_bounds[0]).toEqual({ anchor: hashes[0] });
 		const result = applyEdit(content, resolved);
 		expect(result.content).toBe("ALPHA\nbeta\ngamma");
 	});
 
+
 	it("keeps legacy │ rows parseable under the custom separator", () => {
-		applyEffective({ separator: "|", hash_length: 3 });
+		applyEffective({ separator: "|" });
 		const content = "a\nb\n";
 		const hashes = lineHashesPure(content);
 		const edit = {
-			remove_from: `2#${hashes[1]}│b`,
-			remove_to: `2#${hashes[1]}│b`,
+			remove_from: `${hashes[1]}│b`,
+			remove_to: `${hashes[1]}│b`,
 			replacement_text: "B",
 		} as const;
 		const resolved = resEdit(edit as never);
-		expect(resolved.hash_bounds[0]).toEqual({ line: 2, hash: hashes[1] });
+		expect(resolved.hash_bounds[0]).toEqual({ anchor: hashes[1] });
 	});
 });
 
@@ -100,10 +98,10 @@ describe("read json view", () => {
 		expect(json.offset).toBe(1);
 		expect(json.totalLines).toBe(4);
 		expect(json.lines).toEqual({
-			"1#aB3": "one",
-			"2#xY7": "two",
-			"3#zQ9": "",
-			"4#mN0": "four",
+			"aB3": "one",
+			"xY7": "two",
+			"zQ9": "",
+			"mN0": "four",
 		});
 	});
 
@@ -115,7 +113,7 @@ describe("read json view", () => {
 			lines: Record<string, string>;
 		};
 		expect(json.offset).toBe(4);
-		expect(Object.keys(json.lines)).toEqual(["4#3ab", "5#4ab"]);
+		expect(Object.keys(json.lines)).toEqual(["3ab", "4ab"]);
 	});
 });
 
@@ -128,15 +126,14 @@ describe("settings file provider document", () => {
 			"  defaultRole: researcher",
 			"hashline:",
 			"  separator: \"|\"",
-			"  hash_length: 4",
 			"  output_format: json",
 		].join("\n"));
 		expect(doc.hashline).toEqual({
 			separator: "|",
-			hash_length: 4,
 			output_format: "json",
 		});
 		expect(typeof doc["subagent-pro"]).toBe("string"); // passthrough
+
 	});
 });
 

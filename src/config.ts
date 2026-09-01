@@ -33,7 +33,6 @@ export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
 export interface HashlineSettings {
 	separator?: string;
-	hash_length?: number;
 	output_format?: "text" | "json";
 	context_lines?: number;
 }
@@ -42,24 +41,24 @@ export interface HashlineSettings {
 export const HashlineSettingsSchema: z<HashlineSettings> = z
 	.object({
 		separator: z.string().min(1).max(4),
-		hash_length: z.number().min(1).max(6),
 		output_format: z.union(["text", "json"]),
 		context_lines: z.number().min(0).max(20),
 	})
 	.loose() as unknown as z<HashlineSettings>;
+	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
+	// deliberately IGNORED — v2.0 anchors are variable-length by construction
+	// (spec §7); existing settings survive without error.
 
 export type OutputFormat = "text" | "json";
 
 export interface EffectiveHashlineConfig {
 	separator: string;
-	hashLength: number;
 	outputFormat: OutputFormat;
 	contextLines: number;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	separator: ":",
-	hashLength: 3,
 	outputFormat: "text",
 	contextLines: 3,
 };
@@ -81,13 +80,6 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		typeof settings?.separator === "string" && settings.separator.length > 0
 			? settings.separator
 			: DEFAULT_CONFIG.separator;
-	const len =
-		typeof settings?.hash_length === "number" &&
-		Number.isInteger(settings.hash_length) &&
-		settings.hash_length >= 1 &&
-		settings.hash_length <= 6
-			? settings.hash_length
-			: DEFAULT_CONFIG.hashLength;
 	const fmt =
 		settings?.output_format === "json" ? "json" : DEFAULT_CONFIG.outputFormat;
 	const nctx =
@@ -97,8 +89,8 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		settings.context_lines <= 20
 			? settings.context_lines
 			: DEFAULT_CONFIG.contextLines;
-	effective = { separator: sep, hashLength: len, outputFormat: fmt, contextLines: nctx };
-	applyHashlineShape({ hashLength: len, separator: sep, contextLines: nctx });
+	effective = { separator: sep, outputFormat: fmt, contextLines: nctx };
+	applyHashlineShape({ separator: sep, contextLines: nctx });
 }
 
 /** Default settings.yaml location (same file the dsh settings layer uses). */
@@ -142,16 +134,18 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 		value = value.replace(/\s+#.*$/, "").replace(/^["']|["']$/g, "").trim();
 		if (value === "") continue;
 		if (key === "separator") out.separator = value;
-		else if (key === "hash_length") {
-			const n = Number(value);
-			if (Number.isInteger(n)) out.hash_length = n;
-		} else if (key === "output_format") {
+		else if (key === "output_format") {
 			if (value === "json" || value === "text") {
 				out.output_format = value;
 			}
 		}
+		// NOTE: legacy `hash_length` key is parsed but ignored (v2.0 variable-length).
+		else if (key === "context_lines") {
+			const n = Number(value);
+			if (Number.isInteger(n) && n >= 0 && n <= 20) out.context_lines = n;
+		}
 	}
-	return out;
+return out;
 }
 
 

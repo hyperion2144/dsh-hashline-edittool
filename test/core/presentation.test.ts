@@ -48,7 +48,7 @@ describe("tool-read structured presentation", () => {
 			expect(value.lines).toHaveLength(3);
 			expect(value.lines[0]).toEqual({ number: 1, text: "alpha" });
 			expect(value.lines[1]).toEqual({ number: 2, text: "beta" });
-			expect(value.hashlines[0]?.hash).toMatch(/^[A-Za-z0-9]{3}$/);
+			expect(value.hashlines[0]?.hash).toMatch(/^[A-Za-z0-9]{2,8}$/);
 			expect(value.hashlines[0]?.number).toBe(1);
 			expect(value.modelText).toMatch(/^ANCHOR:FILELINE/);
 		});
@@ -145,7 +145,7 @@ describe("edit / undo structured value shape", () => {
 					arguments: args,
 				}) as never;
 			const readValue = (await read.execute({ path: "e.txt" }, exec({}))) as { lines: { number: number; hash: string }[]; hashlines: { number: number; hash: string }[] };
-			const lineMarker = `${readValue.hashlines[1]?.number}#${readValue.hashlines[1]?.hash}`;
+			const lineMarker = `${readValue.hashlines[1]?.hash}`;
 			const value = (await edit.execute(
 				{ path: "e.txt", edits: [{ op: "replace", anchor_start: lineMarker, anchor_end: lineMarker, lines: ["B!"] }] },
 				exec({}),
@@ -166,7 +166,7 @@ describe("edit / undo structured value shape", () => {
 			// Shift block is suppressed. The model text carries the new
 			// ANCHOR:FILELINE block instead of a unified diff.
 			expect(value.modelText).toMatch(/Successfully edited in e\.txt/);
-			expect(value.modelText).toMatch(/2#[A-Za-z0-9]{3}:B!/);
+			expect(value.modelText).toMatch(/[A-Za-z0-9]{2,8}:B!/);
 		});
 	});
 
@@ -191,8 +191,8 @@ describe("edit / undo structured value shape", () => {
 				}) as never;
 			const readB1 = (await read.execute({ path: "b1.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
 			const readB2 = (await read.execute({ path: "b2.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
-			const m1 = `${readB1.hashlines[1]?.number}#${readB1.hashlines[1]?.hash}`;
-			const m2 = `${readB2.hashlines[1]?.number}#${readB2.hashlines[1]?.hash}`;
+			const m1 = `${readB1.hashlines[1]?.hash}`;
+			const m2 = `${readB2.hashlines[1]?.hash}`;
 			// Per-item path overrides let one `edit` call target multiple files.
 			await edit.execute(
 				{

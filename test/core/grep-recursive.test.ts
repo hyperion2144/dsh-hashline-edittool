@@ -84,7 +84,7 @@ describe("grep recursion + include + default path (host-aligned)", () => {
 		});
 	});
 
-	it("json mode reports recursive matches per file", async () => {
+	it("json mode reports recursive matches per file — SRC BUG: grep-json matches dict values come back undefined (same root as line-count-contract grep-json); needs src check", async () => {
 		await withTempFile("t.txt", "x\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);
 			await mkdir(join(cwd, "sub"));

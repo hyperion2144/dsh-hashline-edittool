@@ -23,9 +23,9 @@ describe("served-state — record semantics", () => {
 	it("records served rows that load back by path and position", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/a.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 1, hash: "def" },
-				{ position: 2, hash: "ghi" },
+				{ position: 0, anchor: "abc" },
+				{ position: 1, anchor: "def" },
+				{ position: 2, anchor: "ghi" },
 			]);
 			expect(await loadServed("sessionA", "/a.ts")).toEqual(["abc", "def", "ghi"]);
 		});
@@ -40,8 +40,8 @@ describe("served-state — record semantics", () => {
 	it("exposes interior gaps as never-served markers", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 2, hash: "def" },
+				{ position: 0, anchor: "abc" },
+				{ position: 2, anchor: "def" },
 			]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "def"]);
 		});
@@ -49,8 +49,8 @@ describe("served-state — record semantics", () => {
 
 	it("overwrites a previously served position", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "def" }]);
+		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
+		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "def" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["def"]);
 		});
 	});
@@ -58,21 +58,21 @@ describe("served-state — record semantics", () => {
 	it("marks a served position as never-served with a null hash", async () => {
 		await withTempHome(async () => {
 			await recordServed("sessionA", "/p.ts", [
-				{ position: 0, hash: "abc" },
-				{ position: 1, hash: "def" },
-				{ position: 2, hash: "ghi" },
+				{ position: 0, anchor: "abc" },
+				{ position: 1, anchor: "def" },
+				{ position: 2, anchor: "ghi" },
 			]);
-			await recordServed("sessionA", "/p.ts", [{ position: 1, hash: null }]);
+		await recordServed("sessionA", "/p.ts", [{ position: 1, anchor: null }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "ghi"]);
 		});
 	});
 
 	it("keeps unrelated served records intact when recording another path", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/a.ts", [{ position: 0, hash: "abc" }]);
+		await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
 			await recordServed("sessionA", "/b.ts", [
-				{ position: 0, hash: "def" },
-				{ position: 1, hash: "ghi" },
+				{ position: 0, anchor: "def" },
+				{ position: 1, anchor: "ghi" },
 			]);
 			expect(await loadServed("sessionA", "/a.ts")).toEqual(["abc"]);
 			expect(await loadServed("sessionA", "/b.ts")).toEqual(["def", "ghi"]);
@@ -83,7 +83,7 @@ describe("served-state — record semantics", () => {
 describe("served-state — session isolation", () => {
 	it("keeps one session's rows invisible to another session", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
+		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc"]);
 			expect(await loadServed("sessionB", "/p.ts")).toEqual([]);
 		});
@@ -91,8 +91,8 @@ describe("served-state — session isolation", () => {
 
 	it("wipes only the targeted session's served state", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/p.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionB", "/p.ts", [{ position: 0, hash: "def" }]);
+		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
+		await recordServed("sessionB", "/p.ts", [{ position: 0, anchor: "def" }]);
 			await wipeServedState("sessionA");
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
 			expect(await loadServed("sessionB", "/p.ts")).toEqual(["def"]);
@@ -143,8 +143,8 @@ describe("served-state — reported drift set policy", () => {
 describe("served-state — session wipe", () => {
 	it("removes the session's served records and reported sets", async () => {
 		await withTempHome(async () => {
-			await recordServed("sessionA", "/a.ts", [{ position: 0, hash: "abc" }]);
-			await recordServed("sessionA", "/b.ts", [{ position: 1, hash: "def" }]);
+		await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
+		await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
 			await markDriftReported("sessionA", "/a.ts", ["abc"]);
 			await wipeServedState("sessionA");
 			expect(await loadServed("sessionA", "/a.ts")).toEqual([]);

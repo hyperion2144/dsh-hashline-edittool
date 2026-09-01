@@ -26,15 +26,13 @@
  * @module dsh-hashline-edittool/hashline/hash-assign
  */
 import { splitLines } from "../utils.js";
+import { assignAnchors } from "./alloc.js";
 
 // --- alphabet ---
 export const ALPH =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const ALPH_SAFE = ALPH.replace(/-/g, "\\-");
 
-function placeholderSpaces(len: number): string {
-	return " ".repeat(len);
-}
 
 export const ALPH_RE = new RegExp(`^[${ALPH_SAFE}]+$`);
 
@@ -45,27 +43,23 @@ export const STALE_CONTEXT_LINES = 3;
 
 // --- shape (live-configurable) ---
 export interface HashlineShape {
-	/** Hash length in characters (default 3; hash space = 62^len). */
-	hashLength: number;
 	/** Column separator between marker and content (default ":"). */
 	separator: string;
 	/** Context rows echoed around a stale/ambiguous anchor (default 3); also the default diff/grep context. */
 	contextLines: number;
 }
 
-const DEFAULT_SHAPE: HashlineShape = { hashLength: 3, separator: ":", contextLines: 3 };
+const DEFAULT_SHAPE: HashlineShape = { separator: ":", contextLines: 3 };
 
 let shape: HashlineShape = { ...DEFAULT_SHAPE };
 let compiled: CompiledShape | undefined;
 
 interface CompiledShape {
-	hashClassSource: string; // "[A-Za-z0-9]{4}"
+	hashClassSource: string; // "[A-Za-z0-9]{1,8}" (variable-length anchor)
 	hashRe: RegExp;
-	lineHashRe: RegExp;
+	lineAnchorRe: RegExp;
+	rowRe: RegExp;
 	hashSpace: number;
-	plusRe: RegExp;
-	minusRe: RegExp;
-	bareRe: RegExp;
 	header: string;
 }
 
@@ -75,24 +69,19 @@ function escapeReChar(ch: string): string {
 
 function compileShape(s: HashlineShape): CompiledShape {
 	const sepSafe = escapeReChar(s.separator);
-	const hashClassSource = `[${ALPH_SAFE}]{${s.hashLength}}`;
+	// Variable-length Base62 anchor: 2 chars first, layers up to 8
+	// defensively (spec: depth cap 4 ≈ 14.77M lines; layers above are
+	// unreachable in practice but stay parseable).
+	const anchorClass = `[${ALPH_SAFE}]{1,8}`;
 	const seps = `[${sepSafe}│]`; // legacy '│' rows still parse
-	const placeholder = " ".repeat(s.hashLength);
 	return {
-		hashClassSource,
-		hashRe: new RegExp(`^${hashClassSource}$`),
-		lineHashRe: new RegExp(
-			`^(\\d+)${LINE_HASH_SEP}([A-Za-z0-9]{${s.hashLength}})$`,
-		),
-		hashSpace: ALPH.length ** s.hashLength,
-		plusRe: new RegExp(`^\\+\\d+${LINE_HASH_SEP}${hashClassSource}\\s*${seps}`),
-		minusRe: new RegExp(
-			`^-(?:\\d+${LINE_HASH_SEP}${hashClassSource}\\s*${seps}|\\d+${LINE_HASH_SEP}${placeholder}\\s*${seps})`,
-		),
-		bareRe: new RegExp(
-			`^\\s*(\\d+${LINE_HASH_SEP})(${hashClassSource})\\s*${seps}`,
-		),
-		header: `ANCHOR${s.separator}FILELINE — each row is <line>${LINE_HASH_SEP}<hash>${s.separator}<content>; edit uses the LEFT "line${LINE_HASH_SEP}hash" marker as its anchor; everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part.`,
+		hashClassSource: anchorClass,
+		hashRe: new RegExp(`^${anchorClass}$`),
+		lineAnchorRe: new RegExp(`^(\\d+):(${anchorClass})$`),
+		rowRe: new RegExp(`^([+-]?)(?:(\\d+):)?(${anchorClass})\\s*${seps}`),
+		hashSpace: 62 ** 8,
+		header:
+			`ANCHOR${s.separator}FILELINE — each row is <anchor>${s.separator}<content>; edit uses the LEFT "<anchor>" marker as its anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors); everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part. With the line-numbers option on, rows read <line>${s.separator}<anchor>${s.separator}<content> and a marker may be passed back with or without its line part — the anchor is authoritative.`
 	};
 }
 
@@ -113,9 +102,6 @@ export function getHashlineShape(): HashlineShape {
 }
 
 // --- shape-dependent exports (functions; see module doc) ---
-export function hashLength(): number {
-	return shape.hashLength;
-}
 export function hashSep(): string {
 	return shape.separator;
 }
@@ -128,44 +114,25 @@ export function hashClassSource(): string {
 export function hashRe(): RegExp {
 	return getCompiled().hashRe;
 }
-export function lineHashRe(): RegExp {
-	return getCompiled().lineHashRe;
+/** `^\\d+:<anchor>$` — optional weak line-number hint form accepted on input. */
+export function lineAnchorRe(): RegExp {
+	return getCompiled().lineAnchorRe;
 }
-export function hashSpace(): number {
-	return getCompiled().hashSpace;
+/** Row-prefix regex used to strip pasted read/grep/diff rows: `[+-]?[line:]anchor:`. */
+export function hlRowAnchorRe(): RegExp {
+	return getCompiled().rowRe;
 }
 export function hashlineHeader(): string {
 	return getCompiled().header;
 }
-export function hlPrefixPlusRe(): RegExp {
-	return getCompiled().plusRe;
-}
-export function hlPrefixMinusRe(): RegExp {
-	return getCompiled().minusRe;
-}
-export function hlBarePrefixRe(): RegExp {
-	return getCompiled().bareRe;
-}
 
 // --- default-shape compatibility constants ---
-// Static values for the DEFAULT shape (3 chars, ':'). Dynamic code paths
-// (rendering, parsing, validation) must use the shape-aware FUNCTIONS above;
-// these constants exist for legacy consumers and tests running on defaults.
+// Legacy constants for the pre-0.5 (`line#hash`) contract and tests running
+// on defaults. Dynamic code paths must use the shape-aware FUNCTIONS above.
 export const HASH_SEP = DEFAULT_SHAPE.separator;
-export const HASH_LEN = DEFAULT_SHAPE.hashLength;
-export const ANCHOR_LEN = HASH_LEN;
-export const HASH_SPACE = ALPH.length ** HASH_LEN;
-export const HASH_CLASS = `[${ALPH_SAFE}]{${HASH_LEN}}`;
-export const HASH_RE = new RegExp(`^${HASH_CLASS}$`);
+export const HASH_LEN = 3; // legacy fixed length
 export const LINE_HASH_RE = /^(\d+)#([A-Za-z0-9]{3})$/;
-export const HASHLINE_HEADER = `ANCHOR${HASH_SEP}FILELINE — each row is <line>${LINE_HASH_SEP}<hash>${HASH_SEP}<content>; edit uses the LEFT "line${LINE_HASH_SEP}hash" marker as its anchor; everything after "${HASH_SEP}" is the verbatim file content; to modify the file, pass the content after "${HASH_SEP}" — never the anchor part.`;
-export const HL_PREFIX_PLUS_RE = new RegExp(`^\\+\\d+${LINE_HASH_SEP}${HASH_CLASS}\\s*[:│]`);
-export const HL_PREFIX_MINUS_RE = new RegExp(
-	`^-(?:\\d+${LINE_HASH_SEP}${HASH_CLASS}\\s*[:│]|\\d+${LINE_HASH_SEP} ${placeholderSpaces(HASH_LEN)}\\s*[:│])`,
-);
-export const HL_BARE_PREFIX_RE = new RegExp(
-	`^\\s*(\\d+${LINE_HASH_SEP})(${HASH_CLASS})\\s*[:│]`,
-);
+export const HASH_CLASS = `[${ALPH_SAFE}]{1,8}`;
 
 // --- hashing (private) ---
 /**
@@ -199,10 +166,9 @@ function idxToHash(idx: number, len: number): string {
 	return out;
 }
 
-/** Hash of one canonicalized line under the CURRENT shape's hash length. */
+/** Legacy fixed-length (3-char) content hash; retained for deprecated consumers only. */
 export function hashOf(canonLine: string): string {
-	const c = getCompiled();
-	return idxToHash(cyrb53(canonLine) % c.hashSpace, shape.hashLength);
+	return idxToHash(cyrb53(canonLine) % (62 ** 3), 3);
 }
 
 /** Whole-content fingerprint (hash-store snapshot key). 53-bit → 14 hex. */
@@ -223,26 +189,14 @@ export function canon(line: string): string {
 }
 
 /**
- * Memoized canon keyed by the raw input string. One cache lives per
- * `lineHashesPure` call; entries are discarded when the call returns.
+ * Deterministic per-line anchors for whole content via the v2.0 allocator
+ * (variable-length, shortest-first; identical lines get distinct anchors).
+ * O(n), with the allocation state deterministically rebuilt from content
+ * alone — no cross-session state required. Session snapshots live in
+ * session-anchors.ts.
  */
-function getCanon(cache: Map<string, string>, line: string): string {
-	const cached = cache.get(line);
-	if (cached !== undefined) return cached;
-	const v = canon(line);
-	cache.set(line, v);
-	return v;
-}
-
-/** Deterministic per-line hashes for whole content. O(n), no allocation state. */
 export function lineHashesPure(content: string): string[] {
-	const lines = splitLines(content);
-	const hashes = new Array<string>(lines.length);
-	const canonCache = new Map<string, string>();
-	for (let i = 0; i < lines.length; i++) {
-		hashes[i] = hashOf(getCanon(canonCache, lines[i]!));
-	}
-	return hashes;
+	return assignAnchors(splitLines(content));
 }
 
 /**

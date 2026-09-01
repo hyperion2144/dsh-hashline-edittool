@@ -1,51 +1,54 @@
 import { describe, expect, it } from "vitest";
 import { lineHashesPure, applyEdit } from "../../src/hashline/index.js";
 
-// Duplicate-content semantics under deterministic content signatures:
-// identical lines SHARE one hash. The line number inside `line#hash` is the
-// locator, so sharing a hash is safe — the hash only verifies content.
+// v2.0 duplicate-content semantics: identical lines get DISTINCT anchors
+// (Q2-A). The allocator guarantees per-line uniqueness; content identity is
+// NOT the anchor identity.
 
 const SAMPLE =
 	"function a() {\n  return 1;\n}\n\nfunction b() {\n  return 2;\n}\n";
 
-describe("deterministic hashing with duplicate content lines", () => {
-	it("gives identical lines the same hash", () => {
+describe("deterministic anchors with duplicate content lines", () => {
+	it("gives identical lines DISTINCT anchors", () => {
 		const hashes = lineHashesPure(SAMPLE);
-		// the two closers `}` lines share one hash
-		expect(hashes[2]).toBe(hashes[6]);
-		// the two openers differ (function a vs function b) and thus hash differently
-		expect(hashes[0]).not.toBe(hashes[4]);
+		// the two closers `}` lines get different anchors
+		expect(hashes[2]).not.toBe(hashes[6]);
+		// every anchor is unique across the file
+		expect(new Set(hashes).size).toBe(hashes.length);
 	});
 
-	it("preserves the shared hash for an untouched duplicate after an edit", () => {
+	it("preserves an untouched duplicate's anchor after an edit", () => {
 		const content = "a\nx\nb\nx\nc\n";
 		const before = lineHashesPure(content);
 		const edit = {
 			hash_bounds: [
-				{ line: 1, hash: before[0]! },
-				{ line: 1, hash: before[0]! },
+				{ anchor: before[0]! },
+				{ anchor: before[0]! },
 			],
 			content_lines: ["A"],
 		} as const;
 		const result = applyEdit(content, edit as never);
 		const after = lineHashesPure(result.content);
-		// the untouched `x` line keeps its hash
+		// the untouched `x` lines keep their anchors (deterministic + session-stable)
 		expect(after[1]).toBe(before[1]);
+		expect(after[2]).toBe(before[2]);
 	});
 
-	it("keeps duplicate hashes identical in the edited file", () => {
+	it("keeps duplicate anchors distinct in the edited file", () => {
 		const content = "x\ny\nx\n";
 		const before = lineHashesPure(content);
 		const edit = {
 			hash_bounds: [
-				{ line: 2, hash: before[1]! },
-				{ line: 2, hash: before[1]! },
+				{ anchor: before[1]! },
+				{ anchor: before[1]! },
 			],
 			content_lines: ["Y2"],
 		} as const;
 		const result = applyEdit(content, edit as never);
 		const after = lineHashesPure(result.content);
-		expect(after[0]).toBe(after[2]); // both `x` lines still share a hash
-		expect(after[0]).not.toBe(after[1]);
+		// the two `x` lines keep their distinct anchors
+		expect(after[0]).toBe(before[0]);
+		expect(after[2]).toBe(before[2]);
+		expect(after[0]).not.toBe(after[2]);
 	});
 });

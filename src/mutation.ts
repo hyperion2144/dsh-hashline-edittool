@@ -43,6 +43,7 @@ import {
 import { loadServed, sessionKeyFor, scanDrift } from "./session-view.js";
 import { abortIf, splitLines } from "./utils.js";
 import { applyOne } from "./edit-engine.js";
+import { updateAnchorsAfterEdit } from "./hashline/session-anchors.js";
 import {
   runFileEdits,
   resolveMissingPath,
@@ -193,21 +194,8 @@ export async function execPipeline(
 	const isNoop = applied.noop
 	const warnings = [...editWarnings, ...(applied.anchorWarnings ?? [])]
 
-	let driftNotice: string | undefined
-	if (options?.noPersist !== true) {
-		try {
-			driftNotice = await scanDrift({
-				sessionKey,
-				served,
-				resultHashes: applied.hashes,
-				resultLines: splitLines(result),
-				range: applied.range,
-				path: absolutePath,
-			})
-		} catch (error) {
-			console.error('Failed to compute drift notice:', error)
-		}
-	}
+let driftNotice: string | undefined
+
 
 	// Synthetic single-hunk shift entry — the batch path builds the same shape
 	// per hunk, and the response renderer formats them uniformly.
@@ -228,6 +216,39 @@ export async function execPipeline(
 		});
 	}
 
+	// v2.0 incremental anchor update: preserve unchanged lines' anchors
+	// (session-internal immutability), release removed, allocate inserted.
+	const resultHashes = isNoop
+		? applied.hashes
+		: updateAnchorsAfterEdit({
+				path: absolutePath,
+				oldContent: originalNormalized,
+				newContent: result,
+				oldAnchors: originalHashes,
+				hunks: hunkShifts.map((s) => ({
+					oldStart1: s.originalStartLine,
+					oldEnd1: s.originalEndLine,
+					finalStart1: s.finalStartLine,
+					finalEnd1: s.finalEndLine,
+				})),
+			})
+
+	if (options?.noPersist !== true) {
+		try {
+			driftNotice = await scanDrift({
+				sessionKey,
+				served,
+				resultHashes,
+				resultLines: splitLines(result),
+				range: applied.range,
+				path: absolutePath,
+			})
+		} catch (error) {
+			console.error('Failed to compute drift notice:', error)
+		}
+	}
+
+
 	return {
 		path,
 		absolutePath,
@@ -241,7 +262,7 @@ export async function execPipeline(
 		firstChangedLine: applied.firstChangedLine,
 		lastChangedLine: applied.lastChangedLine,
 		originalHashes,
-		resultHashes: applied.hashes,
+		resultHashes,
 		totalAddedLines: applied.totalAddedLines,
 		totalRemovedLines: applied.totalRemovedLines,
 		driftNotice,

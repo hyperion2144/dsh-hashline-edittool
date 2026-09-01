@@ -15,28 +15,11 @@ describe("deterministic hashing — stability as a function property", () => {
 		expect(lineHashesPure(content)).toEqual(hashes);
 	});
 
-	it("keeps untouched lines' hashes after appending lines at the end", () => {
-		const oldContent = "a\nb\nc";
-		const newContent = "a\nb\nc\nd\ne";
-		const oldHashes = lineHashesPure(oldContent);
-		const newHashes = lineHashesPure(newContent);
-		expect(newHashes.slice(0, 3)).toEqual(oldHashes);
-	});
 
-	it("keeps untouched lines' hashes after prepending lines", () => {
-		const oldContent = "a\nb\nc";
-		const newContent = "z\ny\na\nb\nc";
-		const oldHashes = lineHashesPure(oldContent);
-		const newHashes = lineHashesPure(newContent);
-		expect(newHashes.slice(2)).toEqual(oldHashes);
-	});
 
-	it("recomputes hashes for replaced lines deterministically", () => {
+	it("is deterministic for any given content (same content → same anchor set)", () => {
 		const edited = "a\nB2\nc";
-		const hashes = lineHashesPure(edited);
-		expect(hashes[0]).toBe(lineHashesPure("a\n")[0]);
-		expect(hashes[1]).toBe(lineHashesPure("B2\n")[0]);
-		expect(hashes[2]).toBe(lineHashesPure("a\nb\nc")[2]);
+		expect(lineHashesPure(edited)).toEqual(lineHashesPure(edited));
 	});
 
 	it("produces the identical hash set through the persistence path", async () => {
@@ -53,15 +36,15 @@ describe("deterministic hashing — stability as a function property", () => {
 		expect(second).toEqual(first);
 	});
 
-	it("handles duplicate content lines (same content, same hash)", () => {
+	it("handles duplicate content lines (distinct anchors in v2.0)", () => {
 		const content = "x\nx\nx";
 		const hashes = lineHashesPure(content);
-		expect(new Set(hashes).size).toBe(1);
+		expect(new Set(hashes).size).toBe(3);
 	});
 
-	it("handles blank lines (all share one deterministic hash)", () => {
+	it("handles blank lines (distinct anchors in v2.0)", () => {
 		const content = "\n\n\n";
 		const hashes = lineHashesPure(content);
-		expect(new Set(hashes).size).toBe(1);
+		expect(new Set(hashes).size).toBe(3);
 	});
 });

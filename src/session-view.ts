@@ -31,7 +31,7 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
-import { hashRe } from "./hashline/hash-assign.js";
+import { hashRe, canon, contentChecksum } from "./hashline/hash-assign.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "./constants.js";
 import type { ServedRow, ResolvedRange } from "./hashline/served.js";
@@ -74,7 +74,7 @@ export { loadHashStore, shutdownHashStore, withStore } from "./hash-store.js";
 export type { HashStore } from "./hash-store.js";
 
 // --- served state (owned here) ---
-export type ServedEntry = { position: number; hash: string | null };
+export type ServedEntry = { position: number; anchor: string | null };
 
 /**
  * Migrate a served mirror after an edit, preserving entries for lines whose
@@ -186,16 +186,16 @@ export function _mergeServedRows(
   if (options?.clearFrom !== undefined) {
     for (let i = options.clearFrom; i < updated.length; i++) updated[i] = null;
   }
-  for (const entry of rows) {
-    if (!Number.isInteger(entry.position) || entry.position < 0) {
-      throw new TypeError(`Invalid served position: ${entry.position}`);
-    }
-    if (entry.hash !== null && (typeof entry.hash !== "string" || !hashRe().test(entry.hash))) {
-      throw new TypeError(`Invalid served hash: ${String(entry.hash)}`);
-    }
-    while (updated.length <= entry.position) updated.push(null);
-    updated[entry.position] = entry.hash;
-  }
+	for (const entry of rows) {
+		if (!Number.isInteger(entry.position) || entry.position < 0) {
+			throw new TypeError(`Invalid served position: ${entry.position}`);
+		}
+		if (entry.anchor !== null && (typeof entry.anchor !== "string" || !hashRe().test(entry.anchor))) {
+			throw new TypeError(`Invalid served anchor: ${String(entry.anchor)}`);
+		}
+		while (updated.length <= entry.position) updated.push(null);
+		updated[entry.position] = entry.anchor;
+	}
   while (updated.length > 0 && updated[updated.length - 1] === null) updated.pop();
   return updated;
 }
@@ -407,12 +407,13 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
       if (w >= 0 && w < resultLines.length) windowSet.add(w);
     }
   }
-  const windowPositions = [...windowSet].sort((a, b) => a - b);
+const windowPositions = [...windowSet].sort((a, b) => a - b);
   const shownPositions = windowPositions.slice(0, cap);
   unshown += windowPositions.length - shownPositions.length;
   const rows: DriftRow[] = shownPositions.map((position) => ({
     position,
-    hash: resultHashes[position]!,
+    anchor: resultHashes[position]!,
+    contentKey: contentChecksum(canon(resultLines[position]!)),
     content: resultLines[position]!,
     drifted: driftedSet.has(position),
   }));
@@ -428,9 +429,9 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
 
 export async function scanDrift(input: { sessionKey: string; served: (string | null)[]; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; path: string }): Promise<string | undefined> {
   const reported = await driftReported(input.sessionKey, input.path);
-  const result = computeDrift({ ...input, reported });
+const result = computeDrift({ ...input, reported });
   if (!result || result.allAlreadyReported) return result?.text;
-  await recordServed(input.sessionKey, input.path, result.rows.map((row) => ({ position: row.position, hash: row.hash })), input.resultLines.length);
-  await markDriftReported(input.sessionKey, input.path, result.rows.filter((row) => row.drifted).map((row) => row.hash));
+  await recordServed(input.sessionKey, input.path, result.rows.map((row) => ({ position: row.position, anchor: row.anchor })), input.resultLines.length);
+  await markDriftReported(input.sessionKey, input.path, result.rows.filter((row) => row.drifted).map((row) => row.anchor));
   return result.text;
 }

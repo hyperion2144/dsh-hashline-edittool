@@ -25,6 +25,8 @@ export interface ReadAndServeOptions {
 	/** Pagination for the rendered preview (undefined = from the start). */
 	offset?: number;
 	limit?: number;
+	/** v2.0: prefix every row marker with `<line>:<anchor>`. */
+	lineNumbers?: boolean;
 }
 
 export interface ReadAndServeResult {
@@ -67,13 +69,14 @@ export async function readAndServe(
 	const view = await readView(io, rawPath, cwd, {
 		offset: options.offset,
 		limit: options.limit,
+		lineNumbers: options.lineNumbers,
 		signal,
 	});
 	if (view.served.length > 0) {
 		await recordServed(
 			sessionKey,
 			view.absolutePath,
-			view.served,
+			view.served.map((r) => ({ position: r.position, anchor: r.anchor })),
 			view.hashes.length,
 		);
 	}
