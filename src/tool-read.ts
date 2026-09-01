@@ -27,6 +27,7 @@ import {
 import { readAndServe } from "./read-and-serve.js";
 import { readDescription } from "./prompts.js";
 import { DEFAULT_MAX_LINES } from "./file-view.js";
+import { splitLines } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import {
 	buildReadPresentation,
@@ -220,34 +221,47 @@ export function buildReadTool(io: FileIO) {
 
 				const presentation = isJsonOutput()
 					? (() => {
-						const jsonView = buildReadJson(
-							result.normalized,
-							result.hashes,
-							canonical.offset ?? 1,
-							canonical.limit ?? DEFAULT_MAX_LINES,
-							rawPath,
-						) as { path: string; offset: number; totalLines: number; lines: Record<string, string> };
-						// The tool schema still requires the structured ReadValue fields
-						// (path/offset/totalLines/lines/hashlines); modelText carries the
-						// pure-JSON view the model parses.
-						const hashlines = Object.entries(jsonView.lines).map(([anchor, text]) => {
-							const sep = anchor.indexOf("#");
-							return {
-								number: Number(anchor.slice(0, sep)),
-								hash: anchor.slice(sep + 1),
-								text,
-							};
-						});
+						// v2.0 (#66/B1): rebuild the pure-JSON view on the bare-anchor
+						// contract. The legacy branch split dict keys on '#' (v1.0
+						// <number>#<hash> form); with v2.0 bare anchors there is no '#',
+						// number parsing produced NaN, and NaN is not lossless JSON —
+						// every read in json mode failed output validation.
+						const allLines = splitLines(result.normalized);
+						const start = Math.max(1, canonical.offset ?? 1);
+						const startIdx = start - 1;
+						const endIdx = Math.min(
+							startIdx + (canonical.limit ?? DEFAULT_MAX_LINES),
+							allLines.length,
+						);
+						const lines: Array<{ number: number; text: string }> = [];
+						const hashlines: Array<{ number: number; hash: string; text: string }> = [];
+						const lineDict: Record<string, string> = {};
+						for (let i = startIdx; i < endIdx; i++) {
+							const number = i + 1;
+							const text = allLines[i] ?? "";
+							const hash = result.hashes[i] ?? "";
+							lines.push({ number, text });
+							hashlines.push({ number, hash, text });
+							// anchor-keyed dict (grep/edit symmetry); with line_numbers on
+							// the key renders as <line>:<anchor> like the text rows.
+							lineDict[canonical.line_numbers === true ? `${number}:${hash}` : hash] = text;
+						}
+						const modelView = {
+							path: rawPath,
+							offset: start,
+							totalLines: allLines.length,
+							lines: lineDict,
+						};
 						return {
-							path: jsonView.path,
-							offset: jsonView.offset,
-							totalLines: jsonView.totalLines,
-							lines: hashlines.map(({ number, text }) => ({ number, text })),
+							path: rawPath,
+							offset: start,
+							totalLines: allLines.length,
+							lines,
 							hashlines,
-							modelText: JSON.stringify(jsonView),
+							modelText: JSON.stringify(modelView),
 						} as ReadValue & { modelText: string };
 					})()
-					: buildReadPresentation(
+: buildReadPresentation(
 							result.normalized,
 							result.hashes,
 							canonical.offset ?? 1,

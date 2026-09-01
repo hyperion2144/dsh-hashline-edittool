@@ -4,26 +4,27 @@ import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
 
-describe("indentation difference in boundary auto-fix", () => {
-  it("auto-fixes leading duplication when indentation matches exactly", async () => {
+describe("indentation-difference boundary rows (#66/B7 — warning-only)", () => {
+  it("keeps a leading-duplicate replacement row when indentation matches, with warning", async () => {
     const file = "  foo\nbar\n  baz";
     const hashes = await lineHashes(file, home.testPath);
     const result = applyEdit(file, resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[1]!}`, replacement_text: "  foo\n  bar" },
     ));
-    expect(result.content).toBe("  foo\n  bar\n  baz");
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("leading");
+    // #66/B7: kept verbatim — the tool never silently strips content.
+    expect(result.content).toBe("  foo\n  foo\n  bar\n  baz");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
-  it("auto-fixes leading duplication when both indentation and content match exactly", async () => {
+  it("keeps a leading-duplicate row (indent+content match) with warning", async () => {
     const file = "  foo\n  bar\n  baz";
     const hashes = await lineHashes(file, home.testPath);
     const result = applyEdit(file, resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[1]!}`, replacement_text: "  foo\n  new" },
     ));
-    expect(result.content).toBe("  foo\n  new\n  baz");
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("leading");
+    expect(result.content).toBe("  foo\n  foo\n  new\n  baz");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 });

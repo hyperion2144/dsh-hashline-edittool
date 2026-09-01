@@ -56,7 +56,14 @@ function upsert(path: string, checksum: string, anchors: string[]) {
 export function anchorsFor(path: string, content: string): string[] {
   const checksum = contentChecksum(content);
   const st = store.get(path);
-  if (st && st.checksum === checksum) return st.anchors;
+  if (st && st.checksum === checksum) {
+    // issue #66/B4: a poisoned snapshot (length drift vs the actual lines) used
+    // to be trusted forever, surfacing later as "fileAnchors.length must match
+    // fileLines.length" on the next edit. Length-mismatch ⇒ treat as stale and
+    // deterministically recompute; the session anchor-preservation promise only
+    // holds for consistent snapshots anyway.
+    if (st.anchors.length === splitLines(content).length) return st.anchors;
+  }
   const anchors = assignAnchors(splitLines(content));
   upsert(path, checksum, anchors);
   return anchors;
@@ -98,6 +105,13 @@ export function updateAnchorsAfterEdit(args: {
 	for (const h of ordered) {
 		merged.push(...oldAnchors.slice(cursor, h.oldStart1 - 1));
 		for (let k = h.finalStart1 - 1; k < h.finalEnd1; k++) {
+			// issue #66/B4: defensively skip out-of-range rows instead of
+			// dereferencing undefined into canon() ("cannot read properties of
+			// undefined (reading 'replace')"). With correct bookkeeping these
+			// hunks always land inside the file; a bad hunk now degrades to a
+			// length-mismatched snapshot that anchorsFor() recomputes instead of
+			// crashing the next edit.
+			if (k >= newLines.length) continue;
 			const key = contentKey(newLines[k]!);
 			let gc = cursorByKey.get(key);
 			if (!gc) {
