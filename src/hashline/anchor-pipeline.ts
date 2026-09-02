@@ -21,7 +21,7 @@
  *
  * Private to this seam (not re-exported): stripBarePrefixes, stripDiffPrefixes,
  * swapReversedRanges, valEdit, boundaryDups helpers, warnUnicodeEsc, findNewEdge,
- * resAnchorFromMap, assertAligned, pickFallbackCenter, isRealMarkerLine.
+ * resAnchorFromMap, assertAligned, pickFallbackCenter.
  *
  * @module dsh-hashline-edittool/hashline/anchor-pipeline
  */
@@ -417,15 +417,28 @@ function stripBarePrefixes(
 	// (Anchor-existence, not unconditional stripping, keeps the fidelity
 	// constraint: the tool must not rewrite literal content it cannot verify.)
 	const stripped: { lineIndex: number }[] = [];
+	const kept: string[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
 		const m = hlRowAnchorRe().exec(line);
 		if (!m) return line;
 		if (m[1] !== '') return line; // diff-marked rows handled by stripDiffPrefixes
 		const prefixAnchor = m[3]!;
-		if (!fileAnchors.includes(prefixAnchor)) return line;
+		if (!fileAnchors.includes(prefixAnchor)) {
+			kept.push(`"${prefixAnchor}" (line ${lineIndex + 1})`);
+			return line;
+		}
 		stripped.push({ lineIndex });
 		return line.slice(m[0].length);
 	});
+	if (kept.length > 0) {
+		// The row LOOKS like a pasted read/diff row but its prefix anchor is not
+		// allocated in this file — most likely a stale/foreign view. Keep the
+		// content verbatim (fidelity) but TELL the model, so a silently-polluted
+		// file is not a surprise.
+		warnings.push(
+			`[E_BARE_HASH_PREFIX] row(s) with an anchor prefix not allocated in this file kept verbatim: ${kept.join(", ")}. If these are pasted read/diff rows from an outdated view, re-read for fresh anchors and re-send.`,
+		);
+	}
 	if (stripped.length > 0) {
 		const locations = stripped
 			.map((s) => `replacement_text line ${s.lineIndex + 1}`)
@@ -448,7 +461,14 @@ function stripDiffPrefixes(
 		const m = hlRowAnchorRe().exec(line);
 		if (!m) return line;
 		if (m[1] === "") return line; // no diff marker, handled by stripBarePrefixes
-		if (!isRealMarkerLine(m[0], fileAnchors)) return line;
+		// issue #66/B2 follow-up (ins variant): diff-marked pasted rows strip on
+		// anchor EXISTENCE, same as stripBarePrefixes — NOT on the old
+		// isRealMarkerLine double-check (line number in range AND that line's
+		// CURRENT anchor equals the prefix anchor). Rows pasted from a post-edit
+		// diff carry fresh anchors at STALE line numbers (the ins anchor line
+		// shifted them), so the double-check almost never held and such rows
+		// landed VERBATIM in the file, silently, with zero warning.
+		if (!fileAnchors.includes(m[3]!)) return line;
 		stripped.push(lineIndex);
 		return line.slice(m[0].length);
 	});

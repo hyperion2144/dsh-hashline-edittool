@@ -82,7 +82,12 @@ function compileShape(s: HashlineShape): CompiledShape {
 		hashClassSource: anchorClass,
 		hashRe: new RegExp(`^${anchorClass}$`),
 		lineAnchorRe: new RegExp(`^(\\d+):(${anchorClass})$`),
-		rowRe: new RegExp(`^([+-]?)(?:(\\d+):)?(${anchorClass})\\s*${seps}`),
+		// issue #66/B2 follow-up: pasted rows often keep the LEADING INDENTATION of
+		// the destination code block (the model copies the row into its patch with
+		// the indent it plans to insert at), so the row prefix may not be at line
+		// start. Allow leading horizontal whitespace before the marker; the strip
+		// preserves it (only the marker prefix is removed, indent stays).
+		rowRe: new RegExp(`^[\\t ]*([+-]?)(?:(\\d+):)?(${anchorClass})\\s*${seps}`),
 		hashSpace: 62 ** 8,
 		header:
 			`ANCHOR${s.separator}FILELINE — each row is <anchor>${s.separator}<content>; edit uses the LEFT "<anchor>" marker as its anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors); everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part. With the line-numbers option on, rows read <line>${s.separator}<anchor>${s.separator}<content> and a marker may be passed back with or without its line part — the anchor is authoritative.`
