@@ -4,6 +4,20 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Changed — v2.0 dynamic anchors（dynamic hashline，wayfinder #56）
+
+- **变长动态锚点（v2.0 契约，PR #65）**：锚点为变长 Base62（最短优先 2 位起步——2 字符层覆盖 3,844 行；分层上浮、删除回收复用、会话内跨编辑稳定）；行号退出锚点，旧 `line#hash` 格式直接 `[E_BAD_REF]` 拒绝；可选 `line_numbers` 输出参数（默认关闭）渲染 `<line>:<anchor>`；`hash_length` 配置删除；`Shift:` 块删除（编辑后从 diff 行取新锚点）；served 内容校验防线（`ServedRow {position, anchor, contentKey}`）。
+- **真机冒烟缺陷修复（PR #67，wayfinder #66）**：
+  - **B1** — json 输出模式的 read 视图按 v2.0 裸锚契约重建（旧分支按 `<number>#<hash>` 拆键产生 NaN，违反 lossless JSON 校验导致 json 模式全挂）。
+  - **B2** — 粘贴行锚点前缀剥离：条件为「前缀锚存在于当前文件的锚集合」（post-edit diff 行可剥离；`sep: "|"` 等字面冒号行永不被改写）；行锚正则分隔符感知（`:` 并入），`:`/`|` 形态对称。
+  - **B3** — grep 多文件命中时 `ANCHOR:FILELINE` 格式 header 仅出现 1 次（原先每文件一次）。
+  - **B4** — 锚快照投毒自愈：`anchorsFor` 对缓存快照做长度校验（checksum 命中不再信任长度漂移的锚数组，失配即确定性重算）；增量锚更新对越界行防御性跳过（原 `undefined.replace` 崩溃路径）。
+  - **B5** — `line_numbers` 参数在 read 全链路生效（`readView` 透传 + 工具层 `buildReadPresentation` 渲染，此前参数被静默忽略）。
+  - **B6** — 带行号 hint 的锚一律按锚解析权威行号（`pinBound`；未验证 hint 流入批量簿记曾导致 `canon(undefined).replace` 崩溃）；hint 与解析结果不符时新增 `[E_LINE_HINT]` warning（不符仅提示，不拒绝）。
+  - **B7（保真契约）** — 边界重复检测降级为 `[E_PASTE_DUP]` warning-only：删除了把「新内容与相邻行相同」的替换行静默 splice 掉的 auto-fix（该行为会把合法替换变成删除且零提示，并使增量锚簿记错位）。**除锚点前缀剥离（且仅当锚点真实存在）外，工具对模型提交的内容零修改。**
+- 新错误码：`[E_LINE_HINT]`、`[E_PASTE_DUP]`（README 错误码表同步，`E_BARE_HASH_PREFIX`/`E_INVALID_PATCH` 措辞更新为新语义）。
+- 文档：README / README.zh 全面向 v2.0 契约迁移（变长锚点、无 Shift 块、line_numbers、json 形状）；配置示例移除 `hash_length`；指南种子文件（`<preset>/*.md`）重播种。
+
 ## [0.4.1] - 2026-08-30
 
 ### Added
