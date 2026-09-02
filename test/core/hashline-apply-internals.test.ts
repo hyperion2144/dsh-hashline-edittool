@@ -42,18 +42,18 @@ resEdit(
 	});
 });
 
-describe("checkBoundaryDup (via applyEdit) — auto-fix", () => {
-  it("auto-fixes trailing duplication", async () => {
+describe("checkBoundaryDup (via applyEdit) — detection (issue #66/B7: warning-only)", () => {
+  it("detects trailing duplication but keeps the row, with a warning", async () => {
     const content = "a\nb\nc\nd";
     const hashes = await lineHashes(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nd" },
     ));
-    expect(result.content).toBe("a\nX\nd");
-    expect(result.autoFixes).toBeDefined();
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("trailing");
+    // #66/B7: the duplicated "d" is KEPT (old behavior silently dropped it).
+    expect(result.content).toBe("a\nX\nd\nd");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
   it("auto-fixes leading duplication", async () => {
@@ -63,9 +63,8 @@ resEdit(
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "a\nX" },
     ));
-    expect(result.content).toBe("a\nX\nd");
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("leading");
+    expect(result.content).toBe("a\na\nX\nd");
+    expect(result.autoFixes).toBeUndefined();
   });
 
   it("does not auto-fix when replacement does not duplicate adjacent lines", async () => {
@@ -95,10 +94,8 @@ resEdit(
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `X\nd\n` },
     ));
-    expect(result.content).toBe("a\nX\n\nd");
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("trailing");
-    expect(result.autoFixes![0]!.removedLine).toBe("d");
+    expect(result.content).toBe("a\nX\nd\n\nd");
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
   it("auto-fixes leading duplication when content_lines has leading empty lines", async () => {
@@ -108,10 +105,9 @@ resEdit(
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `\na\nX` },
     ));
-    expect(result.content).toBe("a\n\nX\nd");
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("leading");
-    expect(result.autoFixes![0]!.removedLine).toBe("a");
+    expect(result.content).toBe("a\n\na\nX\nd");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
   it("auto-fixes both trailing and leading in one edit", async () => {
@@ -121,8 +117,21 @@ resEdit(
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "a\nd" },
     ));
-    expect(result.content).toBe("a\nd");
-    expect(result.autoFixes).toHaveLength(2);
+    expect(result.content).toBe("a\na\nd\nd");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
+  });
+
+  it("keeps a non-unique adjacent duplicate row (old auto-fix case) with a warning", async () => {
+    const content = "if (a) {\n  x();\n}\nif (b) {\n  y();\n}\n";
+    const hashes = await lineHashes(content, home.testPath);
+    const result = applyEdit(content, resEdit(
+      { remove_from: `${hashes[3]!}`, remove_to: `${hashes[4]!}`, replacement_text: "if (b) {\n  yNew();\n}" },
+    ));
+    // v2.0 #66/B7: the "if (b) {" row the old auto-fixer swallowed is kept.
+    expect(result.content).toBe("if (a) {\n  x();\n}\nif (b) {\n  yNew();\n}\n}\n");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 });
 
@@ -231,7 +240,7 @@ resEdit(
   });
 });
 
-describe("auto-fix via applyEdit", () => {
+describe("auto-fix via applyEdit — legacy cases under #66/B7 warning-only contract", () => {
   it("auto-fixes trailing duplication", async () => {
     const content = "before\nold one\nold two\nafter";
     const hashes = await lineHashes(content, home.testPath);
@@ -239,10 +248,9 @@ describe("auto-fix via applyEdit", () => {
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `new one\nnew two\nafter` },
     ));
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("trailing");
-    expect(result.autoFixes![0]!.removedLine).toBe("after");
-    expect(result.content).toBe("before\nnew one\nnew two\nafter");
+    expect(result.content).toBe("before\nnew one\nnew two\nafter\nafter");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
   it("auto-fixes leading duplication", async () => {
@@ -252,10 +260,9 @@ resEdit(
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `before\nnew one\nnew two` },
     ));
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("leading");
-    expect(result.autoFixes![0]!.removedLine).toBe("before");
-    expect(result.content).toBe("before\nnew one\nnew two\nafter");
+    expect(result.content).toBe("before\nbefore\nnew one\nnew two\nafter");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
   it("auto-fixes both leading and trailing in one edit", async () => {
@@ -265,62 +272,50 @@ resEdit(
 resEdit(
       { remove_from: `${hashes[2]!}`, remove_to: `${hashes[3]!}`, replacement_text: `ctx2\ndup\ndup\nctx3` },
     ));
-    expect(result.autoFixes).toBeDefined();
-    expect(result.autoFixes).toHaveLength(2);
-    expect(result.content).toBe("ctx1\nctx2\ndup\ndup\nctx3\nctx4");
+    expect(result.content).toBe("ctx1\nctx2\nctx2\ndup\ndup\nctx3\nctx3\nctx4");
+    expect(result.autoFixes).toBeUndefined();
   });
 });
 
-describe("boundary-dup autocorrection (via applyEdit)", () => {
-  it("strips a trailing duplicate without a warning", async () => {
+describe("boundary-dup detection (issue #66/B7 — warning-only, content preserved)", () => {
+  it("keeps a replacement line that matches the line after the range, with a warning", async () => {
     const content = "a\nb\nc\nd";
     const hashes = await lineHashes(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nd" },
     ));
-    expect(result.content).toBe("a\nX\nd");
-    expect(result.warnings).toBeUndefined();
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("trailing");
-    expect(result.autoFixes![0]!.removedLineIndex).toBe(1);
+    // v2.0 #66/B7: the "d" must be KEPT (the old behavior silently dropped it).
+    expect(result.content).toBe("a\nX\nd\nd");
+    expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
-  it("strips a new line duplicating a unique line after the range (noop)", async () => {
+  it("keeps an edge-duplicated full-range replacement and reports a noop with a warning", async () => {
     const content = "class A {\n  x = 1;\n\n  constructor() {}\n}\n";
     const hashes = await lineHashes(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[0]!}`, remove_to: `${hashes[2]!}`, replacement_text: "class A {\n  x = 1;\n\n  constructor() {}\n}" },
     ));
-    expect(result.content).toBe(content);
-    expect(result.noopEdit).toBeDefined();
-    expect(result.warnings).toBeUndefined();
+    // v2.0 #66/B7: boundary rows are kept verbatim (no silent dedup), so the
+    // replacement appends a duplicate tail — observable via warning, not magic.
+    expect(result.content).toBe(content + "  constructor() {}\n}\n");
+    expect(result.noopEdit).toBeUndefined();
     expect(result.autoFixes).toBeUndefined();
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 
-  it("strips a new line duplicating a unique line before the range (noop)", async () => {
+  it("keeps a leading boundary duplicate (noop) instead of stripping it", async () => {
     const content = "foo();\nbar();\nbaz();\n";
     const hashes = await lineHashes(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "bar();\nbaz();\nfoo();" },
     ));
-    expect(result.content).toBe(content);
-    expect(result.noopEdit).toBeDefined();
+    // v2.0 #66/B7: kept verbatim — foo(); is appended again + warning.
+    expect(result.content).toBe("foo();\nbar();\nbaz();\nfoo();\n");
     expect(result.autoFixes).toBeUndefined();
-  });
-
-  it("does not strip new-line duplicates when the adjacent line is not unique in the file", async () => {
-    const content = "if (a) {\n  x();\n}\nif (b) {\n  y();\n}\n";
-    const hashes = await lineHashes(content, home.testPath);
-    const result = applyEdit(content, 
-resEdit(
-      { remove_from: `${hashes[3]!}`, remove_to: `${hashes[4]!}`, replacement_text: "if (b) {\n  yNew();\n}" },
-    ));
-    expect(result.content).toBe("if (a) {\n  x();\n}\nif (b) {\n  yNew();\n}\n");
-    expect(result.warnings).toBeUndefined();
-    expect(result.autoFixes).toHaveLength(1);
-    expect(result.autoFixes![0]!.kind).toBe("trailing");
+    expect(result.warnings?.join("\n")).toMatch(/\[E_PASTE_DUP\]/);
   });
 });

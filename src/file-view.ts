@@ -676,9 +676,9 @@ export async function readView(
     });
   const r = await fmtReadPreview(
     normalized,
-    { offset: opts.offset, limit: opts.limit },
-    fileHashes,
-    absolutePath,
+		{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers === true }, // issue #66/B5: was dropped — lineNumbers never reached the renderer
+		fileHashes,
+		absolutePath,
   );
   return {
     text: r.text,
