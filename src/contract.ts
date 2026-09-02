@@ -166,12 +166,9 @@ export function assertEditItem(
 				`[E_MISSING_ANCHOR_END] edits[${index}].op:"replace" with ${lineCount} replacement lines requires BOTH anchor_start and anchor_end — omit anchor_end only for a SINGLE-line replace (or pass the same anchor twice). For multi-line ranges, anchor_end is the verified boundary; the tool will not guess it from the replacement length.`,
 			);
 		}
-		// single-line replace without anchor_end: fold end = start
-		item.anchor_end = item.anchor_start;
-	}
-	if (item.op === "del" && item.anchor_end === undefined) {
-		// Same default: single-line delete (consistent "one anchor = one line").
-		item.anchor_end = item.anchor_start;
+		// single-line replace / del without anchor_end: the fold end = start is
+		// applied downstream (buildPreparedItem / assertItem) — args may be
+		// frozen by the host runner, so validation must not mutate them.
 	}
 	if (item.op === "ins" || item.op === "replace") {
 		if (

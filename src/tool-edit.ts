@@ -100,6 +100,10 @@ function buildPreparedItem(
 	absolutePath: string,
 ): PreparedItem {
 	const itemPath = item.path ?? topLevelPath;
+	// v2.0.3: anchor_end optional — omitted defaults to the anchor_start line
+	// (single-line replace/delete). A multi-line replace without anchor_end was
+	// already rejected by assertEditItem (the host runner may pass frozen args,
+	// so the fold happens here by CONSTRUCTING the PreparedItem, not mutating).
 	const toResolved = item.anchor_end ?? item.anchor_start;
 	const replacementText =
 		item.op === "del"
