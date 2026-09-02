@@ -37,7 +37,7 @@ export interface EditItemParams {
 	/** Required. Anchor of the FIRST line of the affected range. */
 	anchor_start: string;
 	/**
-	 * Anchor of the LAST line. REQUIRED for `replace` (single-line replace
+	 * Anchor of the LAST line. Optional for `replace` (omit = single-line
 	 * passes the same anchor twice); optional for `del` (omit = one line);
 	 * forbidden for `ins`.
 	 */
@@ -153,9 +153,25 @@ export function assertEditItem(
 		}
 	}
 	if (item.op === "replace" && item.anchor_end === undefined) {
-		throw new Error(
-			`[E_MISSING_ANCHOR_END] edits[${index}].op:"replace" requires BOTH anchor_start and anchor_end — replace always swaps a whole range; for a single-line replace pass the same anchor twice (anchor_start === anchor_end). To insert lines, use op:"ins".`,
-		);
+		// v2.0.3 (#68-class DX): omitted anchor_end defaults to a SINGLE-LINE
+		// replace (range = start..start). The model forgetting to duplicate the
+		// anchor was the highest-frequency contract failure, and for single-line
+		// edits the end anchor is pure redundancy. A MULTI-line replacement
+		// still requires it explicitly: lines.length > 1 with no end anchor is
+		// an under-specified range declaration — reject rather than silently
+		// replacing one line and leaving the rest of the intended range behind.
+		const lineCount = Array.isArray(item.lines) ? item.lines.length : 0;
+		if (lineCount > 1) {
+			throw new Error(
+				`[E_MISSING_ANCHOR_END] edits[${index}].op:"replace" with ${lineCount} replacement lines requires BOTH anchor_start and anchor_end — omit anchor_end only for a SINGLE-line replace (or pass the same anchor twice). For multi-line ranges, anchor_end is the verified boundary; the tool will not guess it from the replacement length.`,
+			);
+		}
+		// single-line replace without anchor_end: fold end = start
+		item.anchor_end = item.anchor_start;
+	}
+	if (item.op === "del" && item.anchor_end === undefined) {
+		// Same default: single-line delete (consistent "one anchor = one line").
+		item.anchor_end = item.anchor_start;
 	}
 	if (item.op === "ins" || item.op === "replace") {
 		if (
@@ -275,7 +291,7 @@ export const editItemSchema = {
 		anchor_end: {
 			type: "string",
 			description:
-				'Anchor (variable-length Base62) of the LAST line of the range. REQUIRED for `op:"replace"` (single-line replace passes the same anchor twice); optional for `del` (omit = one line). Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
+				'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line replace/delete (range = anchor_start only). REQUIRED when the replacement has more than one line (`lines.length > 1`): the tool will not guess a multi-line range from the replacement length. Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
 		},
 		lines: {
 			type: "array",

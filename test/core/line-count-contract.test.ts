@@ -42,16 +42,46 @@ afterEach(() => {
 });
 
 describe("exact line-count edit contract", () => {
-	it("rejects a replace without anchor_end (E_MISSING_ANCHOR_END)", async () => {
+	it("defaults a replace without anchor_end to a SINGLE-line replace", async () => {
+		// v2.0.3: omitted anchor_end = range start..start. Forgetting to
+		// duplicate the anchor was the highest-frequency model failure.
+		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd, path }) => {
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, "t.txt");
+			await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [{ op: "replace", anchor_start: served[0]!.hash, lines: ["A"] }],
+			});
+			const after = await readFile(path, "utf-8");
+			expect(after).toBe("A\nb\nc\n"); // only line 1 replaced
+		});
+	});
+
+	it("still rejects a MULTI-line replace without anchor_end (E_MISSING_ANCHOR_END)", async () => {
 		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
 			await expect(
 				editTool(harness).execute("edit", {
 					path: "t.txt",
-					edits: [{ op: "replace", anchor_start: served[0]!.hash, lines: ["A"] }],
+					edits: [
+						{ op: "replace", anchor_start: served[0]!.hash, lines: ["A", "B"] },
+					],
 				}),
 			).rejects.toThrow(/E_MISSING_ANCHOR_END/);
+		});
+	});
+
+	it("defaults a del without anchor_end to a SINGLE-line delete", async () => {
+		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd, path }) => {
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, "t.txt");
+			await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [{ op: "del", anchor_start: served[1]!.hash }],
+			});
+			const after = await readFile(path, "utf-8");
+			expect(after).toBe("a\nc\n"); // only line 2 removed
 		});
 	});
 
@@ -215,7 +245,9 @@ describe("exact line-count edit contract", () => {
 			await expect(
 				editTool(harness).execute("edit", {
 					path: "t.txt",
-					edits: [{ op: "replace", anchor_start: served[0]!.hash, lines: ["A"] }],
+					edits: [
+						{ op: "replace", anchor_start: served[0]!.hash, lines: ["A", "B"] },
+					],
 				}),
 			).rejects.toThrow(/E_MISSING_ANCHOR_END/);
 		});

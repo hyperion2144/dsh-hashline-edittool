@@ -84,7 +84,7 @@ ANCHOR:FILELINE
 ```
 
 `edit` targets one or more ranges of anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). The contract is **exact**:
-- `replace` requires **both** anchors; a single-line replace passes the same marker twice (`anchor_start === anchor_end`). `lines` has **any length** — the whole range is swapped for it (shrink and expand are single-hunk `replace`s).
+- `replace` takes `anchor_end` **optionally**: omitting it defaults to a **single-line replace** (range = the `anchor_start` line); passing the same marker twice is still valid. `lines` has **any length** — the whole range is swapped for it (shrink and expand are single-hunk `replace`s). **A multi-line replacement (`lines.length > 1`) MUST pass `anchor_end`** — the tool will not guess the range from the replacement length.
 - `ins` inserts into the **gap after** its anchor line (the anchor line's content is untouched) and may anchor on **another hunk's range END line** (half-open `N ∉ [hs, he)`) — never its start or interior.
 - `del` deletes the range (lines must be empty).
 
@@ -94,7 +94,7 @@ A single-line replace:
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "anchor_start": "4fK", "anchor_end": "4fK", "lines": ["  console.log('hi');"] }
+    { "op": "replace", "anchor_start": "4fK", "lines": ["  console.log('hi');"] }
   ]
 }
 ```
@@ -347,7 +347,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | Tool | What it does |
 | ------ | -------------- |
 | `read` | Returns a file as `ANCHOR:FILELINE` header + `<anchor>:<content>` rows (anchors are variable-length Base62, unique per line; `line_numbers: true` adds a `<line>:` prefix as a positional hint). Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — anchors need full lines. |
-| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — requires BOTH anchors; a single-line replace passes the same anchor twice). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`); identical content lines get DISTINCT anchors. Verifies each resolved range against served state (anchor + content); `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` / `[E_STALE]` reject-and-serve fresh anchors. There is no `Shift:` block — re-read for fresh anchors after an edit. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
+| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — `anchor_end` optional, defaults to the single `anchor_start` line; REQUIRED when `lines` has more than one line). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`); identical content lines get DISTINCT anchors. Verifies each resolved range against served state (anchor + content); `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` / `[E_STALE]` reject-and-serve fresh anchors. There is no `Shift:` block — re-read for fresh anchors after an edit. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
 | `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (JavaScript-flavre regex by default; `regex: false` for literal substring) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<anchor>:<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
@@ -362,7 +362,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row pasted into `lines` (e.g. a `<line>:<anchor>:content` read/diff row); the prefix is stripped when the anchor exists in the file — with a warning. Literal look-alike content is never rewritten. |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
-| `[E_MISSING_ANCHOR_END]` | `op:"replace"` requires both `anchor_start` and `anchor_end` (single-line: pass the same anchor twice). |
+| `[E_MISSING_ANCHOR_END]` | `op:"replace"` with a multi-line `lines` array omits `anchor_end` — multi-line replaces must declare the verified end boundary explicitly (single-line replaces may omit it). |
 | `[E_LINE_HINT]` | A `<line>:<anchor>` hint disagreed with the anchor's resolved position; the anchor is authoritative and the edit proceeds. |
 | `[E_PASTE_DUP]` | A replacement line exactly matches an adjacent file line (possible pasted read/diff row); the line is KEPT verbatim and the edit proceeds — the tool never silently drops content. |
 | `[E_INVALID_PATCH]` | Diff-preview `+`/`-` markers pasted into `lines`; the marker prefix is stripped with a warning. |

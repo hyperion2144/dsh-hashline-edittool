@@ -319,7 +319,13 @@ function assertItem(edit: Record<string, unknown>): void {
 			`[E_BAD_SHAPE] Field "remove_from" must be an anchor string (variable-length Base62, e.g. "aB3c"), copied from the leftmost column of a read/grep/diff row.`,
 		);
 	}
-	if ("remove_to" in edit && typeof edit.remove_to !== "string") {
+	// v2.0.3: remove_to is optional — omitted (or explicitly undefined) means a
+	// single-line range; fold it to remove_from BEFORE the type check so both
+	// the contract layer and legacy callers that omit the field work.
+	if (edit.remove_to === undefined) {
+		edit.remove_to = edit.remove_from;
+	}
+	if (typeof edit.remove_to !== "string") {
 		throw new Error(
 			`[E_BAD_SHAPE] Field "remove_to" must be an anchor string (variable-length Base62, e.g. "aB3c"), copied from the leftmost column of a read/grep/diff row.`,
 		);

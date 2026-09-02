@@ -78,7 +78,7 @@ dsh --profile <name> --dump-config   # 会显示 "# == dsh-hashline-edittool" �
 
 `edit` 通过 `edits:[]` 数组按锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。契约是**精确**的：
 
-- `replace` 必须同时给出**两个锚点**；单行替换把同一标记传两次（`anchor_start === anchor_end`）。`lines` **行数任意**——整个范围被整体替换（收缩与展开都是单 hunk `replace`）。
+- `replace` 的 `anchor_end` **可选**：省略时默认为**单行替换**（范围 = `anchor_start` 行本身）；也可显式传同一锚两次。`lines` **行数任意**——整个范围被整体替换（收缩与展开都是单 hunk `replace`）。**多行替换（`lines.length > 1`）必须显式给出 `anchor_end`**——工具不会从替换内容的行数推断范围。
 - `ins` 在锚点行的**行后间隙**插入（锚点行内容原样保留），且允许锚定在**其它 hunk 范围的 END 行**上（半开规则 `N ∉ [hs, he)`），但不允许锚定在范围的起始行或中间行。
 - `del` 删除范围（`lines` 必须为空）。
 
@@ -88,7 +88,7 @@ dsh --profile <name> --dump-config   # 会显示 "# == dsh-hashline-edittool" �
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "anchor_start": "4fK", "anchor_end": "4fK", "lines": ["  console.log('hi');"] }
+    { "op": "replace", "anchor_start": "4fK", "lines": ["  console.log('hi');"] }
   ]
 }
 ```
