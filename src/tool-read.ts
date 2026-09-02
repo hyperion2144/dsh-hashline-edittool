@@ -267,6 +267,7 @@ export function buildReadTool(io: FileIO) {
 							canonical.offset ?? 1,
 							canonical.limit ?? DEFAULT_MAX_LINES,
 							rawPath,
+							{ lineNumbers: canonical.line_numbers === true },
 						);
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the
