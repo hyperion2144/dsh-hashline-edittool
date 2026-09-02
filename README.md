@@ -282,15 +282,16 @@ repeated text), and what each tool does when they hit:
 
 Measured on the same 103-line file with the same 12 replacements (8 single-line, 4 multi-line of
 3/6/10/15 lines), tokenized with the pinned `js-tiktoken` `cl100k_base`. Three arms emit the same
-replacements: this plugin's `edit` (two variable-length anchors), a `str_replace` tool (old
-text echoed verbatim), and [`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline)
-in both of its modes — one `[path#tag]` section per edit (`seq`) and one multi-hunk batch
-document (`batch`):
+replacements: this plugin's `edit` in its **v2.0 payload shape** (`edits:[{op, anchor_start,
+anchor_end, lines}]` with two BARE variable-length anchors — exactly 2 chars each at this corpus
+size), a `str_replace` tool (old text echoed verbatim), and
+[`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline) in both of its modes —
+one `[path#tag]` section per edit (`seq`) and one multi-hunk batch document (`batch`):
 
 | Criterion | hashline | str_replace | oh-my-pi seq / batch |
 | ----------- | :---: | :---: | :---: |
 | Replaced text sent over the wire | ✅ never | ❌ every edit | ✅ never |
-| Output tokens saved (12-edit session) | ✅ measured on v1.0 anchors; v2.0 re-run pending (shorter anchors ⇒ ≥ v1.0) | ❌ 0% | ✅ **42% / 53%** |
+| Output tokens saved (12-edit session) | ✅ **26% (v2.0 measured)** | ❌ 0% | ✅ **42% / 53%** |
 | Multi-line range savings (3–15 lines) | ✅ **29–47%** | ❌ 0% | ✅ **40–53%** |
 | Effective cost at 5× output pricing | ✅ **~1.4× less** | ❌ 1× | ✅ **~1.7× / ~2.1× less** |
 | Ranges verified against served state | ✅ 100% | ❌ none | ~ file version only |
@@ -303,13 +304,13 @@ The numbers above are **deterministic and you can reproduce them locally** — `
 
 | Scenario | Lines | hashline | str_replace | oh-my-pi seq | oh-my-pi batch |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| single-line ×8 | 1 | 341 | 324 | 241 | — |
-| multi-line ×4 | 3–15 | 408 | 691 | 349 | — |
-| **TOTAL ×12** | | **749** | **1015** | **590** | **480** |
+| single-line ×8 | 1 | 349 | 324 | 241 | — |
+| multi-line ×4 | 3–15 | 404 | 691 | 349 | — |
+| **TOTAL ×12** | | **753** | **1015** | **590** | **480** |
 
-Saved vs `str_replace`: v1.0 anchors measured **266 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch **535 (53%)**. (v2.0 variable-length anchors are shorter than the fixed 3-char form — re-measurement pending.)
+Saved vs `str_replace`: hashline (v2.0 variable-length anchors) **262 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch **535 (53%)**. (The v1.0 fixed 3-char form measured 266/26% — v2.0's `edits[]` envelope costs a few tokens more while the anchors themselves are shorter; net, a wash.)
 
-> The numbers above were measured on the v1.0 fixed 3-char anchor form (702 → 749 incl. anchor overhead). The v2.0 variable-length anchors are shorter (2 chars for files under 3,844 lines), so the v2.0 overhead is lower; a re-run is pending. The qualitative conclusion holds: hashline wins comfortably on multi-line ranges and is comparable to `str_replace` on the shortest single-line edits, while remaining the only arm that verifies every resolved line against the served state and never lands a wrong-line edit silently. See [`benchmark/README.md`](benchmark/README.md) for the per-scenario breakdown and methodology.
+> The numbers above are measured on the **v2.0 variable-length anchor contract** (every anchor is 2 chars at this corpus size; payloads use the `edits[]` shape). The qualitative conclusion: hashline saves 24–45% on multi-line ranges and is roughly at parity with `str_replace` on the shortest single-line edits (the fixed `edits[]` envelope dominates there), while remaining the only arm that verifies every resolved range against the served state and never lands a wrong-line edit silently. See [`benchmark/README.md`](benchmark/README.md) for the per-scenario breakdown and methodology.
 
 ### Output-format overhead: `text` vs `json` (model input tokens)
 
@@ -317,14 +318,14 @@ Saved vs `str_replace`: v1.0 anchors measured **266 (26%)** · oh-my-pi per-edit
 
 | scenario | text | json | json/text |
 |---|---|---|---|
-| read · whole file (104 lines) | 1,307 | 1,493 | 1.14× |
-| read · 50-line window | 662 | 725 | 1.10× |
-| read · 10-line window | 210 | 177 | 0.84× |
-| edit · 1→1 single line | 157 | 165 | 1.05× |
-| edit · shrink 10→2 | 239 | 278 | 1.16× |
-| edit · expand 2→10 | 248 | 232 | 0.94× |
+| read · whole file (104 lines) | 1,087 | 1,225 | 1.13× |
+| read · 50-line window | 578 | 593 | 1.03× |
+| read · 10-line window | 233 | 152 | 0.65× |
+| edit · 1→1 single line | 180 | 143 | 0.79× |
+| edit · shrink 10→2 | 243 | 138 | 0.57× |
+| edit · expand 2→10 | 244 | 174 | 0.71× |
 
-json's read dict repeats each anchor key per line (large windows +10–14%); small read windows win for json (no header overhead). json edit responses carry per-row `{kind, anchor, content}` objects (+40–70%) in exchange for the text-identical diff view with structured anchors.
+json's read dict repeats each anchor key per line (large windows +3–13%); small read windows and ALL edit responses win for json (edits 21–43% cheaper — no header teaching overhead, and the diff dict is keyed by anchor directly).
 
 The script is deterministic by construction: a frozen corpus, a content-addressed edit script that
 self-checks (a reformatted corpus throws instead of silently changing what's measured), a pinned

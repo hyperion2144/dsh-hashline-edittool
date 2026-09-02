@@ -6,9 +6,10 @@
  * the SAME file with the SAME replacement text:
  *
  *   1. hashline    — hash-anchored edit tool (this plugin):
- *                    { path, remove_from, remove_to, replacement_text }
- *                    the tool call carries only 2×3-char anchors + the
- *                    replacement; the replaced text is never echoed.
+ *                    { path, edits: [{ op, anchor_start, anchor_end, lines }] }
+ *                    the tool call carries only two bare variable-length
+ *                    anchors (2 chars each for files under 3,844 lines) +
+ *                    the replacement; the replaced text is never echoed.
  *
  *   2. str_replace — traditional search-and-replace (Claude Code / most
  *                    agent edit tools):
@@ -77,44 +78,97 @@ const TOKENIZER_NAME = tokenizer
 	: "chars/4 heuristic (js-tiktoken not installed)";
 
 // ---------------------------------------------------------------------------
-// 3. Deterministic 3-char line hashes (62-char alphabet, collision-free
-//    within a file). The payload comparison is hash-algorithm-agnostic —
-//    anchors are always exactly 3 chars — so any collision-free hash works.
+// 3. v2.0 variable-length anchor allocation (62-char alphabet): shortest-first
+//    layers (2 chars covers 3,844 lines), DISTINCT per line even for identical
+//    content, release-pool reuse across edits. The payload comparison is
+//    hash-algorithm-agnostic — anchors are exactly 2 chars at this corpus
+//    size — but the ALLOCATION follows the v2.0 contract.
 // ---------------------------------------------------------------------------
 const ALPHABET =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-const SPACE = 238328; // 62^3
-const collisionMap = new Set();
+// v2.0 variable-length anchor allocator (mirrors src/hashline/alloc.ts):
+// shortest-first Base62 — the 2-char layer holds 3,844 lines, then layers of
+// 62^d — with per-line probing (every line gets a DISTINCT anchor, even when
+// the CONTENT is identical) and release-pool reuse: a removed line's anchor is
+// immediately reusable, so unchanged lines keep theirs across edits.
+const LAYER_BASE = 3844; // 62^2 — lines covered by 2-char anchors
+const PER_LAYER = 62; // multiplier per depth
+const taken = new Set(); // anchors in use (per-path session state)
+const released = []; // freed anchors, reused shortest-first (v2.0 spec 4.5)
 
-function hashLine(content) {
-	let h = 2166136261;
-	for (let i = 0; i < content.length; i++) {
-		h ^= content.charCodeAt(i);
-		h = Math.imul(h, 16777619);
+function anchorLen(n) {
+	// smallest d such that the capacity of layers 2..d covers n distinct lines
+	let cap = LAYER_BASE;
+	let d = 2;
+	while (n > cap) {
+		cap *= PER_LAYER;
+		d++;
 	}
-	// fold into 3 chars, probing forward on collision
-	let c = (h >>> 0) % SPACE;
-	for (let k = 0; k < SPACE; k++) {
-		const ch =
-			ALPHABET[c % 62] +
-			ALPHABET[Math.floor(c / 62) % 62] +
-			ALPHABET[Math.floor(c / 3844) % 62];
-		if (!collisionMap.has(ch)) return ch;
-		c = (c + 1) % SPACE;
-	}
-	throw new Error("hash space exhausted (impossible for < 238k lines)");
+	return d;
 }
 
-// content -> hash. Mimics the real store's mapStableHashes: unchanged content
-// keeps its hash across edits (position-independent addressing).
-let previousHashes = new Map();
-
-function rehash(lines) {
-	const out = new Array(lines.length);
-	for (let i = 0; i < lines.length; i++) {
-		const prev = previousHashes.get(lines[i]);
-		out[i] = prev === undefined ? hashLine(lines[i]) : prev;
+function encode62(n, len) {
+	let out = "";
+	for (let k = 0; k < len; k++) {
+		out = ALPHABET[n % 62] + out;
+		n = Math.floor(n / 62);
 	}
+	return out;
+}
+
+function allocateLineAnchor() {
+	// v2.0 allocation: reuse a released anchor first (shortest-first), else
+	// take the next free slot scanning layers shortest-first.
+	if (released.length > 0) {
+		const reuse = released.shift();
+		taken.add(reuse);
+		return reuse;
+	}
+	let n = 0;
+	for (;;) {
+		const len = anchorLen(n + 1);
+		const a = encode62(n, len);
+		if (!taken.has(a)) {
+			taken.add(a);
+			return a;
+		}
+		n++;
+	}
+}
+
+function releaseAnchor(a) {
+	taken.delete(a);
+	released.push(a);
+}
+
+// Mimics the real session anchor state: unchanged lines keep their anchor;
+// removed lines release; inserted lines allocate fresh (pool reuse first).
+// Anchors are per LINE, not per content — identical content lines get
+// DISTINCT anchors (the v2.0 vs v1.0 core difference).
+let lineAnchors = [];
+
+function rehashAnchors(lines) {
+	const out = new Array(lines.length);
+	const usedNow = new Set();
+	// first pass: keep each surviving line's existing anchor (position-stable)
+	for (let i = 0; i < lines.length; i++) {
+		const prev = lineAnchors[i];
+		if (prev !== undefined && taken.has(prev)) {
+			out[i] = prev;
+			usedNow.add(prev);
+		} else {
+			out[i] = null;
+		}
+	}
+	// release anchors that no line kept
+	for (const a of [...taken]) {
+		if (!usedNow.has(a)) releaseAnchor(a);
+	}
+	// allocate for the nulls (pool reuse first)
+	for (let i = 0; i < lines.length; i++) {
+		if (out[i] === null) out[i] = allocateLineAnchor();
+	}
+	lineAnchors = out;
 	return out;
 }
 
@@ -263,11 +317,12 @@ function findRange(lines, e, i) {
 }
 
 function run() {
-	collisionMap.clear();
-	previousHashes = new Map();
+	taken.clear();
+	released.length = 0;
+	lineAnchors = [];
 
 	const lines = CORPUS.split("\n");
-	let hashes = rehash(lines);
+	let anchors = rehashAnchors(lines);
 	const PATH = "src/shopping-cart.ts";
 	const originalLines = CORPUS.split("\n");
 
@@ -295,15 +350,23 @@ function run() {
 			old_string: rangeText,
 			new_string: replacementText,
 		});
-		// hashline carries only the two boundary line#hash anchors + the replacement.
-		// Both anchors use the FULL `<line>#<hash>` form — the canonical post-rename
-		// contract. (The bare-hash fallback for "file unchanged above" exists but
-		// is the optimistic case; the worst-case token cost is the full form.)
+		// v2.0 payload: the 0.4+ edits[] shape with BARE variable-length anchors
+		// (2 chars for any file under 3,844 lines). No line numbers, no '#',
+		// no replacement_text wrapper — lines go in the item.
+		//
+		// Worst-case fairness: every payload uses the FULL bare-anchor form with
+		// the session's CURRENT anchors, exactly what the tool contract prescribes
+		// (there is no shorter fallback form in v2.0).
 		const hlReq = JSON.stringify({
 			path: PATH,
-			remove_from: `${start + 1}#${hashes[start]}`,
-			remove_to: `${end + 1}#${hashes[end]}`,
-			replacement_text: replacementText,
+			edits: [
+				{
+					op: "replace",
+					anchor_start: anchors[start],
+					anchor_end: anchors[end],
+					lines: e.replacement,
+				},
+			],
 		});
 
 		const hlTok = tokens(hlReq);
@@ -330,11 +393,11 @@ function run() {
 			ambiguity: amb,
 		});
 
-		// apply the edit: replacement lines get fresh hashes, untouched content
-		// keeps its hash (position-independent — the core hashline property)
-		for (const r of e.replacement) previousHashes.set(r, null); // force fresh hash
+		// apply the edit: unchanged lines KEEP their anchors (session stability),
+		// replaced lines get fresh allocations from the release pool
+		// (replaced lines' old anchors are released inside rehashAnchors)
 		lines.splice(start, end - start + 1, ...e.replacement);
-		hashes = rehash(lines);
+		anchors = rehashAnchors(lines);
 	}
 
 	// oh-my-pi/hashline — one batch document: all hunks sorted ascending by

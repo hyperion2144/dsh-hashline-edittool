@@ -5,9 +5,9 @@ with the same 12 replacements**:
 
 | | hashline (`dsh-hashline-edittool`) | str_replace (traditional) | @oh-my-pi/hashline (patch) |
 | --- | --- | --- | --- |
-| request | `{ path, remove_from, remove_to, replacement_text }` (`<line>#<hash>` anchors) | `{ path, old_string, new_string }` | `[PATH#TAG]` + `PUT N.=M:` + `+TEXT` rows |
-| old text echoed? | **never** — 2× `<line>#<hash>` anchors | **verbatim** (`old_string`) | **never** — the range deletes, body is final content |
-| lines addressed by | absolute line + content hash | text match | **number** + full-file content-hash tag |
+| request | `{ path, edits: [{ op, anchor_start, anchor_end, lines }] }` (bare variable-length anchors — 2 chars at this corpus size) | `{ path, old_string, new_string }` | `[PATH#TAG]` + `PUT N.=M:` + `+TEXT` rows |
+| old text echoed? | **never** — 2 bare anchors | **verbatim** (`old_string`) | **never** — the range deletes, body is final content |
+| lines addressed by | content anchors (variable-length, distinct per line) | text match | **number** + full-file content-hash tag |
 
 An edit that replaces `L` lines sends `O(L)` fewer tokens than `str_replace` for every arm that
 skips `old_string`. That saving is the whole point of the [hashline edit
@@ -67,43 +67,45 @@ fixed 4-hex placeholder (`a1b2`), because any 4-hex value tokenizes identically.
 - **Correctness proxy** — for each str_replace edit, how many times does `old_string` occur in the
   file? `0` = the patch fails (no match, needs a re-read), `>1` = ambiguous (the patch lands on the
   first occurrence, which may be the wrong one). hashline's equivalent failure mode is a hard
-  rejection with fresh `<line>#<hash>` anchors — a retry needs no re-read.
+  rejection with fresh bare anchors — a retry needs no re-read.
 
 ## Results (cl100k_base, js-tiktoken)
 
-> **Reproduced against the `line#hash` contract** (`dsh-hashline-edittool` ≥ 0.3). The
-> `line#` prefix adds ~3 chars per anchor × 2 anchors × 12 edits vs the pre-`line#hash`
-> contract; absolute tokens grew by ~6.5% (702 → 749), but the qualitative conclusion —
-> a wide margin over `str_replace` that compounds on multi-line ranges — is unchanged.
+> **Measured on the v2.0 variable-length anchor contract** (`dsh-hashline-edittool` ≥ 0.5,
+> PR #65). Every anchor is BARE (no line-number prefix — 2 chars each at this corpus size)
+> and the payload uses the `edits[]` shape. The v1.0 `line#hash` form measured 749; v2.0
+> measures 753 — the shorter anchors nearly cancel the envelope cost, and the qualitative
+> conclusion — a wide margin over `str_replace` that compounds on multi-line ranges — is
+> unchanged.
 
 | scenario | lines | hashline | str_replace | oh-my-pi seq | oh-my-pi batch |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| single · constant | 1 | 41 | 37 | 27 | — |
-| single · comment | 1 | 43 | 39 | 29 | — |
-| single · assignment | 1 | 40 | 38 | 28 | — |
-| single · signature | 1 | 44 | 43 | 32 | — |
-| single · guard | 1 | 47 | 46 | 35 | — |
-| single · expression | 1 | 44 | 45 | 32 | — |
-| single · getter | 1 | 37 | 32 | 25 | — |
-| single · export fn | 1 | 45 | 44 | 33 | — |
+| single · constant | 1 | 40 | 37 | 27 | — |
+| single · comment | 1 | 42 | 39 | 29 | — |
+| single · assignment | 1 | 41 | 38 | 28 | — |
+| single · signature | 1 | 47 | 43 | 32 | — |
+| single · guard | 1 | 48 | 46 | 35 | — |
+| single · expression | 1 | 47 | 45 | 32 | — |
+| single · getter | 1 | 38 | 32 | 25 | — |
+| single · export fn | 1 | 46 | 44 | 33 | — |
 | multi · 3-line if-block | 3 | 64 | 84 | 50 | — |
-| multi · 6-line helper body | 6 | 77 | 128 | 63 | — |
-| multi · 10-line loop block | 10 | 82 | 149 | 70 | — |
-| multi · 15-line method body | 15 | 185 | 330 | 166 | — |
-| **single-line ×8** | | **341** | **324** | **241** | — |
-| **multi-line ×4** | | **408** | **691** | **349** | — |
-| **TOTAL ×12** | | **749** | **1015** | **590** | **480** |
+| multi · 6-line helper body | 6 | 76 | 128 | 63 | — |
+| multi · 10-line loop block | 10 | 84 | 149 | 70 | — |
+| multi · 15-line method body | 15 | 180 | 330 | 166 | — |
+| **single-line ×8** | | **349** | **324** | **241** | — |
+| **multi-line ×4** | | **404** | **691** | **349** | — |
+| **TOTAL ×12** | | **753** | **1015** | **590** | **480** |
 
-Saved vs `str_replace`: hashline **266 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch
+Saved vs `str_replace`: hashline (v2.0) **262 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch
 **535 (53%)**.
 
 - **hashline vs str_replace** — **slightly negative** on the shortest single lines (the two
-  `<line>#<hash>` anchors plus key-name overhead now exceed a one-line `old_string` for
-  very small targets — the `getter` row shows hashline at 37 vs str_replace at 32), but
+  anchors plus the `edits[]` key-name overhead now exceed a one-line `old_string` for
+  very small targets — the `getter` row shows hashline at 38 vs str_replace at 32), but
   **24–45% on multi-line ranges** — savings scale with the size of the replaced text. The
-  pre-`line#hash` numbers (309 vs 324 on single lines, 702 vs 1015 total) were taken with
-  bare 3-char anchors; the new contract trades a few tokens for chainable Shift blocks
-  that skip the re-read entirely on multi-edit sessions.
+  v1.0 `line#hash` form measured 341/408/749 (vs 1015 total); v2.0's shorter bare anchors
+  nearly cancel the `edits[]` envelope cost (349/404/753) — and unlike v1.0, no Shift
+  block is emitted, the post-edit diff itself serves fresh anchors.
 - **oh-my-pi vs str_replace** — 26% on single lines (no JSON envelope), 40–53% on multi-line
   ranges. The payload is *lighter* than this plugin's tool call: a patch language skips JSON keys,
   braces, and escaping. That is a real property of the format, and this README does not hide it.
@@ -119,10 +121,10 @@ The token headline over `str_replace` belongs to the *pattern*, not to any one i
 `@oh-my-pi/hashline`'s payload is lighter still. The differences that matter are not in this table:
 
 - **What the model must track between edits.** hashline anchors are content addresses: edit one part
-  of a file and the hashes of the rest stay put, and the diff serves fresh anchors plus a `Shift:`
-  block (cumulative added-minus-removed through each hunk). The model chains the next edit via
-  `newLine#oldHash` without a re-read. A line-numbered format requires the model to renumber and
-  re-fetch the file tag after **every** edit (its own prompt: "RE-GROUND AFTER EVERY EDIT").
+  of a file and unchanged lines KEEP their anchors (session-stable), and the post-edit diff serves
+  fresh anchors for the replaced lines. The model chains the next edit straight from the diff
+  without a re-read. A line-numbered format requires the model to renumber and re-fetch the file
+  tag after **every** edit (its own prompt: "RE-GROUND AFTER EVERY EDIT").
 - **What can land silently on the wrong line.** hashline verifies **every resolved line** against
   the served state — a stale, never-served, or ambiguous range is hard-rejected before anything is
   written. The `[E_STALE_ANCHOR]` rejection echoes the target line in read format (±3 context) and
@@ -144,7 +146,7 @@ The token headline over `str_replace` belongs to the *pattern*, not to any one i
   [harness-problem blog](https://stencil.so/blog/the-harness-problem) reported 46–51% patch failure
   rates for several models with replace-style edits, and a 61% output-token reduction after
   switching to anchored edits. Every such failure costs a re-read plus a retry; hashline's
-  reject-and-serve rejects *before* writing and hands the model fresh `<line>#<hash>` anchors.
+  reject-and-serve rejects *before* writing and hands the model fresh bare anchors.
 - **Renumber/tag-chase cost.** The 590/480 oh-my-pi numbers assume the model gets the *right*
   line numbers and tag every round, for free. Getting them wrong costs a re-read or a merge.
 - **Block ops.** `PUT N*:` resolves a whole syntactic block in one hunk; this benchmark's edits

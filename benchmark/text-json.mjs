@@ -7,7 +7,7 @@
  * lib renderers:
  *
  *   read — buildReadPresentation (text rows) vs buildReadJson (lines dict)
- *   edit — text response (header + diff rows + Shift) vs json envelope
+ *   edit — text response (header + diff rows, fresh anchors) vs json envelope
  *          (ok/files/applied/finalLines/hints/warnings/errors)
  *
  * Deterministic: fixed corpus, fixed windows, js-tiktoken cl100k_base when
@@ -64,7 +64,7 @@ function readJson(content, offset, limit) {
 }
 
 // --- edit arms ---------------------------------------------------------------
-// Text: header + diff rows (genDiff) + a Shift hint. Json: the envelope with
+// Text: header + diff rows (genDiff, fresh anchors). Json: the envelope with
 // finalLines window + applied before/after.
 function editText(content, start, end, newLines) {
 	const result = [
@@ -72,9 +72,9 @@ function editText(content, start, end, newLines) {
 		...newLines,
 		...content.split("\n").slice(end),
 	].join("\n");
+	// v2.0: no Shift block — the post-edit diff rows carry fresh anchors.
 	const diff = genDiff(content, result, 2, undefined, undefined);
-	const shifts = `Shift: lines > ${end} shift by ${newLines.length - (end - start + 1) >= 0 ? "+" : ""}${newLines.length - (end - start + 1)}.`;
-	return `${hashlineHeader()}\n${diff.diff}${shifts ? `\n${shifts}` : ""}`;
+	return `${hashlineHeader()}\n${diff.diff}`;
 }
 function editJson(content, start, end, newLines) {
 	const result = [
@@ -157,10 +157,10 @@ for (const r of rows) {
 		`${pad(r.label, 28)} | ${cell(r.text, 7)} | ${cell(r.json, 7)} | ${cell(`${r.delta >= 0 ? "+" : ""}${r.delta}`, 11)} | ${cell(r.ratio, 9)} |`,
 	);
 }
-console.log(`\nread rows: json keys repeat the anchor ('N#h:') per line; text rows repeat it
+console.log(`\nread rows: json keys repeat the anchor per line; text rows repeat it
 too, but json adds object punctuation + totalLines/offset fields, while text adds
-the header teaching suffix once. Edit responses: text keeps diff rows + Shift;
-json keeps the envelope (applied/finalLines dicts). Both are model-INPUT
+the header teaching suffix once. Edit responses: text keeps diff rows with
+fresh anchors; json keeps the envelope (diff dict, hints, warnings). Both are model-INPUT
 tokens (tool results), not the model's output tokens.\n`);
 
 function basename(p) {
