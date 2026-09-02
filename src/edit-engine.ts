@@ -64,15 +64,18 @@ import type { FsSandboxController } from "./sandbox.js";
  *  hint that leaked into the batch hunk bookkeeping desynced the incremental
  *  anchor update (undefined.replace crash on out-of-range rows). The anchor
  *  is authoritative, so the resolved position always wins; a disagreeing
- *  hint is surfaced later as a warning by the resolver. A missing anchor
- *  maps to -1 and is rejected downstream by applyEdit. */
+ *  hint is surfaced later as a warning by the resolver. An unknown anchor
+ *  keeps line UNDEFINED (no line claim) — applyEdit's mismatch renderer owns
+ *  that case ([E_STALE] + echo); a fabricated -1 here reads as a real
+ *  out-of-range line claim to valEdit's gate and leaked
+ *  "line -1..-1 is out of range" into the error message.
+ */
 function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
 	const idx = fileAnchors.indexOf(bound.anchor);
-	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : -1 };
+	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : undefined };
 }
 
-/** See pinBound. */
-/** See pinBound. Returns the pinned edit plus a warning list for hints that
+/** Returns the pinned edit plus a warning list for hints that
  *  disagreed with the resolved position (#59/#66: mismatch is informational). */
 function pinBounds(
 	edit: HEdit,
