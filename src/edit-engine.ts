@@ -72,10 +72,30 @@ function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
 }
 
 /** See pinBound. */
-function pinBounds(edit: HEdit, fileAnchors: string[]): HEdit {
+/** See pinBound. Returns the pinned edit plus a warning list for hints that
+ *  disagreed with the resolved position (#59/#66: mismatch is informational). */
+function pinBounds(
+	edit: HEdit,
+	fileAnchors: string[],
+	warnings: string[],
+): HEdit {
+	const pin = (bound: Anchor): Anchor => {
+		const pinned = pinBound(bound, fileAnchors);
+		if (
+			bound.line !== undefined &&
+			pinned.line !== undefined &&
+			pinned.line >= 0 &&
+			bound.line !== pinned.line
+		) {
+			warnings.push(
+				`[E_LINE_HINT] line hint ${bound.line} does not match anchor ${bound.anchor} (resolved to line ${pinned.line}); anchor is authoritative, edit proceeds.`,
+			);
+		}
+		return pinned;
+	};
 	return {
 		content_lines: edit.content_lines,
-		hash_bounds: [pinBound(edit.hash_bounds[0], fileAnchors), pinBound(edit.hash_bounds[1], fileAnchors)],
+		hash_bounds: [pin(edit.hash_bounds[0]), pin(edit.hash_bounds[1])],
 	};
 }
 
@@ -600,7 +620,7 @@ export async function runFileEdits(
 					"The whole batch was rejected and NOTHING was written — no file changed and earlier items in the batch were NOT applied.",
 			);
 		}
-resolvedEdits.push({ item, edit: pinBounds(edit, originalHashes), isIns: item.op === "ins" });
+		resolvedEdits.push({ item, edit: pinBounds(edit, originalHashes, warnings), isIns: item.op === "ins" });
 	}
 
 	// --- Phase 2: conflict detection on original coordinates. ---
