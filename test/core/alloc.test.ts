@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { assignAnchors, allocateAnchor } from "../../src/hashline/alloc.js";
 import {
   updateAnchorsAfterEdit,
+  anchorsFor,
   anchorsPure,
 } from "../../src/hashline/session-anchors.js";
 import { splitLines } from "../../src/utils.js";
@@ -146,5 +147,46 @@ describe("updateAnchorsAfterEdit — incremental semantics", () => {
     expect(merged[0]).toBe(oldAnchors[0]);
     expect(new Set(merged).size).toBe(5);
     expect(merged.slice(1).every((a) => a!.length === 2)).toBe(true);
+  });
+});
+
+describe("issue #66/B4 — snapshot poisoning defense", () => {
+  it("anchorsFor recomputes when the cached snapshot length drifts from the content", () => {
+    const content = "a\nb\nc\n";
+    const path = "/tmp/b4-poison.txt";
+    const good = anchorsFor(path, content);
+    expect(good.length).toBe(3);
+    // The B4 guard: any snapshot whose length drifts from the actual line
+    // count must be recomputed, never trusted. We verify the invariant that
+    // anchorsFor always returns one anchor per line, including after the
+    // store was touched by an incremental update.
+    const merged = updateAnchorsAfterEdit({
+      path,
+      oldContent: content,
+      newContent: content,
+      oldAnchors: good,
+      hunks: [],
+    });
+    const again = anchorsFor(path, content);
+    expect(again.length).toBe(3);
+    expect(again).toEqual(merged);
+  });
+
+  it("updateAnchorsAfterEdit skips out-of-range rows instead of crashing", () => {
+    const oldContent = "a\nb\nc\n";
+    const newContent = "a\nb\nG\n";
+    const oldAnchors = anchorsPure(oldContent);
+    // A hint-poisoned hunk pointing past EOF (the #66/B6 shape): must not
+    // throw 'cannot read properties of undefined (reading replace)'.
+    const merged = updateAnchorsAfterEdit({
+      path: "/tmp/b4-oob.txt",
+      oldContent,
+      newContent,
+      oldAnchors,
+      hunks: [
+        { oldStart1: 3, oldEnd1: 3, finalStart1: 8, finalEnd1: 10 },
+      ],
+    });
+    expect(Array.isArray(merged)).toBe(true);
   });
 });

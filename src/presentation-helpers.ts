@@ -140,7 +140,13 @@ export function buildReadPresentation(
 	offset: number,
 	limit: number,
 	path: string,
-	opts: { maxLineBytes?: number; maxBytes?: number; lang?: string } = {},
+	opts: {
+		maxLineBytes?: number;
+		maxBytes?: number;
+		lang?: string;
+		/** issue #66/B5: render row markers as <line>:<anchor> when on. */
+		lineNumbers?: boolean;
+	} = {},
 ): ReadValue & { modelText: string } {
 	const allLines = splitLines(content);
 	const totalLines = allLines.length;
@@ -180,8 +186,15 @@ export function buildReadPresentation(
 		footer = `[End of file - total ${totalLines} lines.]`;
 	}
 
+	// issue #66/B5: the tool-layer presentation rebuilds the model text from
+	// the structured value (not from readAndServe's text), so the line_numbers
+	// switch must be honored HERE too — rows render as <line>:<anchor>:content.
 	const body = lineRenders
-		.map(({ hash, text }) => `${hash}${hashSep()}${text}`)
+		.map(({ number, hash, text }) =>
+			opts.lineNumbers === true
+				? `${number}:${hash}${hashSep()}${text}`
+				: `${hash}${hashSep()}${text}`,
+		)
 		.join("\n");
 	const modelText = `${hashlineHeader()}\n${body}\n\n${footer}`;
 

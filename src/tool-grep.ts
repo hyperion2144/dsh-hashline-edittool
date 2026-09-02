@@ -125,8 +125,17 @@ matches: matchPositions.map((position) => ({
 	};
 }
 
-function renderSection(path: string, section: GrepFileSection, lineNumbers = false): string {
-	const headerLines: string[] = [`--- ${path} ---`, hashlineHeader()];
+function renderSection(
+	path: string,
+	section: GrepFileSection,
+	lineNumbers = false,
+	// issue #66/B3: the ANCHOR:FILELINE format header used to repeat once per
+	// matching file; a single grep call must print it at most ONCE. The first
+	// section carries it, the rest get only the --- path --- separator.
+	includeFormatHeader = true,
+): string {
+	const headerLines: string[] = [`--- ${path} ---`];
+	if (includeFormatHeader) headerLines.push(hashlineHeader());
 	const anchors = section.contextRows.map((row) =>
 		lineNumbers ? `${row.position + 1}:${row.anchor}` : row.anchor,
 	);
@@ -142,8 +151,9 @@ function buildSectionModelText(
 	path: string,
 	section: GrepFileSection,
 	lineNumbers = false,
+	includeFormatHeader = true,
 ): string {
-	return renderSection(path, section, lineNumbers);
+	return renderSection(path, section, lineNumbers, includeFormatHeader);
 }
 
 interface GrepCanonicalValue {
@@ -346,16 +356,27 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string 
 					// src/deep.txt under a directory root; the bare basename when
 					// the root IS the file.
 					const displayPath = relative(root, file) || basename(file);
-					fileSections.push(buildSectionModelText(displayPath, section, opts.lineNumbers));
+					// issue #66/B3: format header on the FIRST section only — one grep
+					// call prints the ANCHOR:FILELINE explainer at most once.
+					fileSections.push(
+						buildSectionModelText(displayPath, section, opts.lineNumbers, fileSections.length === 0),
+					);
+					// issue #66/B3: the card's `line` is the pre-rendered
+					// `<line>:<anchor>:content` rows; they begin after `--- path ---` +
+					// (format header on the FIRST section only), so skip 3 for the
+					// first file and 2 for the rest.
+					const cardSection = buildSectionModelText(
+						displayPath,
+						section,
+						opts.lineNumbers,
+						fileSections.length === 0,
+					);
+					const skip = fileSections.length === 0 ? 3 : 2;
 					cardFiles.push({
 						path: displayPath,
 						matches: section.contextRows.map((row) => ({
 							lineNumber: row.position + 1,
-							// The card's `line` is the pre-rendered `<line>:<anchor>:content` row.
-							line: renderSection(displayPath, section, opts.lineNumbers)
-								.split("\n")
-								.slice(2)
-								.join("\n"),
+							line: cardSection.split("\n").slice(skip).join("\n"),
 						})),
 					});
 					if (jsonOutput) {

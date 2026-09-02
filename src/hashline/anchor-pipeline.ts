@@ -2,10 +2,12 @@
  * AnchorPipeline — deep module owning the anchor autofix chain.
  *
  * Single ordering invariant (private):
- *   swapReversed → stripBare → stripDiff → valEdit → boundaryDups splice → valEdit → verifyServed → resToSpan
+ *   swapReversed → stripBare → stripDiff → valEdit → verifyServed → resToSpan
  *
- * Detection (valEdit → boundaryDups[]) and correction (splice + second valEdit)
- * were split across resolve.ts / apply.ts with an implicit coupling.
+ * boundary-dup detection (valEdit → boundaryDups[]) emits an [E_PASTE_DUP]
+ * warning only since issue #66/B7: the tool never mutates the model's
+ * replacement content beyond stripping anchor prefixes — fidelity over
+ * cleverness. The old silent splice desynced anchor bookkeeping (#66/B4).
  * This seam co-locates that invariant. Public surface is two functions:
  *   resEdit   — pre-validation (tool-layer, no file state)
  *   applyEdit — full pipeline (file + anchors + served verification)
@@ -363,18 +365,25 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 		const linePart = match[2] !== undefined ? `${match[2]}:` : "";
 		const anchor = match[3]!;
 		const rest = trimmed.slice(match[0].length);
-		if (!rest) return `${linePart}${anchor}`; // "aB3│" / "12:aB3│" → clean marker
-		let message: string;
-		if (/[\r\n]/.test(rest)) {
-			message = `[E_BAD_REF] remove_from/remove_to got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
-		} else if (match[1] === "+") {
-			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
-		} else if (match[1] === "-") {
-			message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
-		} else {
-			message = `[E_BAD_REF] stripped trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+		if (rest) {
+			// issue #66/B2: any pasted row prefix (diff marker / line hint / anchor
+			// + separator + content) is stripped UNCONDITIONALLY, with a warning.
+			// The v2.0-era isRealMarker check (line number in range AND that
+			// line's current anchor equals the prefix anchor) almost never held
+			// for rows pasted from a post-edit diff (fresh anchors) — such rows
+			// landed verbatim in the file, polluting it with anchor junk.
+			let message: string;
+			if (/\r\n?|\n/.test(rest)) {
+				message = `[E_BAD_REF] remove_from/remove_to got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
+			} else if (match[1] === "+") {
+				message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+			} else if (match[1] === "-") {
+				message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+			} else {
+				message = `[E_BAD_REF] stripped trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+			}
+			warnings?.push(message);
 		}
-		warnings?.push(message);
 		return `${linePart}${anchor}`;
 	}) as [string, string];
 	return {
@@ -397,50 +406,32 @@ function stripBarePrefixes(
 	fileAnchors: string[],
 	warnings: string[],
 ): HEdit {
-	// Strip ONLY when the `line:anchor:` prefix is a REAL file marker: the line
-	// number is in range and that line's anchor equals the prefix anchor. Model
-	// pasted read rows always satisfy this; file content that merely LOOKS like
-	// `12:aB3:...` almost never does (the line's real anchor would have to
-	// equal the prefix by chance), so such content is kept verbatim. Bare-anchor
-	// rows (no line number) are NEVER stripped — they can't be verified.
+	// issue #66/B2: pasted anchor-prefix rows in the replacement content are
+	// stripped (prefix = [line?]:anchor<sep>). The old isRealMarker check (line
+	// number in range AND that line's CURRENT anchor equals the prefix anchor)
+	// almost never held for rows pasted from a post-edit diff (fresh anchors),
+	// so anchor junk landed verbatim in files. The strip condition is anchor
+	// EXISTENCE: the prefix anchor must be an anchor currently allocated in
+	// this file — always true for rows pasted from this file's read/diff
+	// output, and astronomically unlikely for literal content like "sep:".
+	// (Anchor-existence, not unconditional stripping, keeps the fidelity
+	// constraint: the tool must not rewrite literal content it cannot verify.)
 	const stripped: { lineIndex: number }[] = [];
-	const skipped: number[] = [];
 	const contentLines = edit.content_lines.map((line, lineIndex) => {
 		const m = hlRowAnchorRe().exec(line);
 		if (!m) return line;
-		if (m[1] !== "") return line; // diff-marked rows handled by stripDiffPrefixes
-		if (m[2] === undefined) {
-			skipped.push(lineIndex);
-			return line;
-		}
-		const lineNum = Number.parseInt(m[2]!, 10) - 1;
-		const anchor = m[3]!;
-		const isRealMarker =
-			Number.isInteger(lineNum) &&
-			lineNum >= 0 &&
-			lineNum < fileAnchors.length &&
-			fileAnchors[lineNum] === anchor;
-		if (!isRealMarker) {
-			skipped.push(lineIndex);
-			return line;
-		}
+		if (m[1] !== '') return line; // diff-marked rows handled by stripDiffPrefixes
+		const prefixAnchor = m[3]!;
+		if (!fileAnchors.includes(prefixAnchor)) return line;
 		stripped.push({ lineIndex });
 		return line.slice(m[0].length);
 	});
 	if (stripped.length > 0) {
 		const locations = stripped
 			.map((s) => `replacement_text line ${s.lineIndex + 1}`)
-			.join(", ");
+			.join(', ');
 		warnings.push(
-			`[E_BARE_HASH_PREFIX] stripped "line:anchor:" prefix from ${locations}.`,
-		);
-	}
-	if (skipped.length > 0) {
-		const locations = skipped
-			.map((i) => `replacement_text line ${i + 1}`)
-			.join(", ");
-		warnings.push(
-			`[E_BARE_HASH_PREFIX] prefix on ${locations} does not match the file's anchors; kept verbatim as literal content.`,
+			`[E_BARE_HASH_PREFIX] stripped anchor prefix from ${locations}. If these lines are literal content, re-send without the anchor prefixes.`,
 		);
 	}
 	return { ...edit, content_lines: contentLines };
@@ -664,6 +655,18 @@ function valEdit(
 	const endRef = edit.hash_bounds[1];
 	const startResolved = tryResolve(startRef);
 	const endResolved = tryResolve(endRef);
+	// #59/#66: a disagreeing `<line>:<anchor>` hint is informational — surface
+	// it as a warning (the resolved anchor position always wins).
+	for (const [ref, r] of [
+		[startRef, startResolved],
+		[endRef, endResolved],
+	] as const) {
+		if (r?.lineHintMismatch) {
+			warnings.push(
+				`[E_LINE_HINT] line hint ${ref.line} does not match anchor ${r.anchor} (resolved to line ${r.line}); anchor is authoritative, edit proceeds.`,
+			);
+		}
+	}
 
 	// Out-of-range check uses the resolved line (authoritative) when
 	// available, otherwise the hint line. Force a hard out-of-range error
@@ -1170,50 +1173,19 @@ export function applyEdit(
 	warnUnicodeEsc(prefixFixed, warnings);
 
 	let resolved = initialResolved;
-	let autoFixes: AutoFix[] | undefined;
+	// Issue #66/B7: pasted-dup detection is now WARNING-ONLY. The previous
+	// behavior silently spliced the duplicated replacement lines out — a
+	// legitimate replacement (e.g. line "C" → "B" next to an existing "B")
+	// turned into a deletion with zero warning, silently losing data and
+	// desyncing the incremental anchor bookkeeping (issue #66/B4). The common
+	// accidental cause (pasted read/diff rows) is now handled upstream by the
+	// unconditional anchor-prefix strip in resEdit, so the detection only
+	// remains here as an observability warning; content is NEVER mutated.
 	if (boundaryDups.length > 0) {
-		autoFixes = [];
-		const correctedEdit: HEdit = {
-			...prefixFixed,
-			content_lines: [...prefixFixed.content_lines],
-		};
-		const seen = new Set<number>();
-		const uniqueDups: BDup[] = [];
-		for (const dup of boundaryDups) {
-			if (seen.has(dup.replacementLineIndex)) continue;
-			seen.add(dup.replacementLineIndex);
-			uniqueDups.push(dup);
-		}
-		const dupsByIndex = uniqueDups.sort(
-			(a, b) => b.replacementLineIndex - a.replacementLineIndex,
+		const kinds = new Set(boundaryDups.map((d) => d.kind));
+		warnings.push(
+			`[E_PASTE_DUP] ${boundaryDups.length} replacement line(s) exactly match adjacent file lines (${[...kinds].join(", ")}); kept verbatim. If you pasted read/diff rows, re-send WITHOUT the anchor prefixes.`,
 		);
-		for (const dup of dupsByIndex) {
-			const idx = dup.replacementLineIndex;
-			if (idx < 0 || idx >= correctedEdit.content_lines.length) continue;
-			const removed = correctedEdit.content_lines.splice(idx, 1)[0];
-			autoFixes.push({
-				kind: dup.kind,
-				removedLine: removed,
-				removedLineIndex: idx,
-			});
-		}
-		const correctedResult = valEdit(
-			correctedEdit,
-			lineIndex.fileLines,
-			fileAnchors,
-			warnings,
-			signal,
-		);
-		if (correctedResult.mismatches.length || !correctedResult.resolved) {
-			const { message, servedRows } = fmtMismatchWithServes(
-				correctedResult.mismatches,
-				lineIndex.fileLines,
-				fileAnchors,
-				filePath,
-			);
-			throw new AnchorMismatchError(message, servedRows);
-		}
-		resolved = correctedResult.resolved;
 	}
 
 	if (served) {
@@ -1256,7 +1228,8 @@ export function applyEdit(
 		lastChangedLine: changed?.lastChangedLine,
 		range: resolvedRange(resolved),
 		...(warnings.length ? { warnings } : {}),
-		...(autoFixes ? { autoFixes } : {}),
+		// (autoFixes removed with issue #66/B7 — dup handling is warning-only now)
+
 	};
 }
 
