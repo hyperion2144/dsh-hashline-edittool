@@ -668,15 +668,23 @@ function valEdit(
 		}
 	}
 
-	// Out-of-range check uses the resolved line (authoritative) when
-	// available, otherwise the hint line. Force a hard out-of-range error
-	// even when bounds are bare anchors: if the resolved line falls outside
-	// the file, the agent must re-read to learn the file's size.
+	// Out-of-range check uses the resolved line (authoritative) when available,
+	// otherwise the hint line. A BARE anchor that failed to resolve has NO line
+	// claim at all — fall through to the mismatch renderer below (which emits
+	// [E_STALE] with the ±context echo + fresh markers) instead of leaking the
+	// -1 sentinel into an "out of range" message. The gate therefore only fires
+	// when there is a REAL line claim (a resolved line, or an explicit
+	// <line>:<anchor> hint) that exceeds the file.
 	const startClaimedLine = startResolved?.line ?? startRef.line ?? -1;
 	const endClaimedLine = endResolved?.line ?? endRef.line ?? -1;
+	const hasLineClaim = (ref: Anchor, resolved: RAnchor | undefined): boolean =>
+		resolved !== undefined || ref.line !== undefined;
 	const startOOB =
-		startClaimedLine < 1 || startClaimedLine > fileLines.length;
-	const endOOB = endClaimedLine < 1 || endClaimedLine > fileLines.length;
+		hasLineClaim(startRef, startResolved) &&
+		(startClaimedLine < 1 || startClaimedLine > fileLines.length);
+	const endOOB =
+		hasLineClaim(endRef, endResolved) &&
+		(endClaimedLine < 1 || endClaimedLine > fileLines.length);
 	const backwards =
 		startResolved !== undefined &&
 		endResolved !== undefined &&

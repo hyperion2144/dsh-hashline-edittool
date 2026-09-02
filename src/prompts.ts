@@ -89,15 +89,15 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 /** Grep tool description, generated from the effective config (text/json). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Search files (literal by default, `regex: true` for regex); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are edit anchors (variable-length Base62), values are verbatim file content; matches are served so they can be edited directly.";
+		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are edit anchors (variable-length Base62), values are verbatim file content; matches are served so they can be edited directly.";
 	}
-	return "Search files (literal by default, `regex: true` for regex): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:content` rows, `line_numbers` supported); matches are served, so they can be edited directly.";
+	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:content` rows, `line_numbers` supported); matches are served, so they can be edited directly.";
 }
 
 export const GREP_GUIDANCE: ToolGuidance = {
 	intro: "Search files and obtain variable-length anchors in one step.",
 	lines: [
-		"`grep`: defaults to literal substring matching; pass `regex: true` for JavaScript-flavre regex (escape special chars when in doubt).",
+		"`grep`: defaults to JavaScript-flavre regex; pass `regex: false` for literal substring matching. Only set the flag when a literal pattern would mis-parse as regex (e.g. it contains (, [, *, +, ?).",
 		"`grep`: `-C N` (or `--context N`) adds N marker rows above and below each match — use a small N to keep context cheap; the rows still carry markers, so a hit from the context window is editable.",
 		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with `ANCHOR:FILELINE` and lists matches in file order.",
 		"`grep`: every file read is recorded as observed, so the matches can be edited without a separate `read` call.",

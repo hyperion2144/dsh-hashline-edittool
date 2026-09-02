@@ -26,19 +26,22 @@ resEdit(
 				resEdit(
 					{ remove_from: `ZZZZ`, remove_to: `ZZZZ`, replacement_text: "X" },
 				))
-		).toThrow(/E_RANGE_UNVERIFIED/);
+		// #59 contract: an anchor that does not resolve renders [E_STALE] with the
+		// ±context echo + fresh markers (the -1 sentinel no longer leaks into an
+		// "out of range" message).
+		).toThrow(/E_STALE/);
 	});
 
 	it("rejects an anchor whose hash doesn't match current content (stale drift)", async () => {
 		// v2.0: anchors are unique per row; a bare anchor that no longer exists
-		// (or was never served) is rejected via E_RANGE_UNVERIFIED.
+		// (or was never served) is rejected via [E_STALE] with an echo block.
 		const content = "a\nb\nc\nd\ne";
 		expect(() =>
 			applyEdit(content,
 				resEdit(
 					{ remove_from: `ZZZZ`, remove_to: `ZZZZ`, replacement_text: "X" },
 				))
-		).toThrow(/E_RANGE_UNVERIFIED/);
+		).toThrow(/E_STALE/);
 	});
 });
 
