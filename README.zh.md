@@ -1,8 +1,8 @@
 <h1 align="center">dsh-hashline-edittool</h1>
 
 <p align="center">
-  <strong>一个专为 DeepSeek Harness 而生的更好的编辑工具。<br>
-  底层基于 hash-anchored 定位——不依赖行号，也不靠字符串替换，更少的词源消耗，留出更多的上下文空间给真正的工作。</strong>
+  <strong>一个专为 DeepSeek Harness 而生的行锚编辑工具。<br>
+  底层基于变长内容锚点——不依赖行号、无需复述旧代码、更少 token，留出更多上下文空间给真正的工作。</strong>
 </p>
 
 <p align="center">
