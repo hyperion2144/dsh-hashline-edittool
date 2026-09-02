@@ -2,7 +2,6 @@
 
 <p align="center">
   <strong>Line-anchored edit tool for DeepSeek Harness<br>
-  <strong>Line-anchored edit tool for DeepSeek Harness<br>
   Powered by variable-length content anchors — no line numbers, no re-typing old code, fewer tokens, more context space for real work.</strong>
 </p>
 
@@ -39,7 +38,6 @@
 
 Most edit tools ask the model to echo the old code **token-for-token** before it can change anything
 — and that's exactly where agents fail: 46–51% patch-format failure rates for several models with
-replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a
 replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a
 unique variable-length Base62 anchor (shortest-first: 2 chars up to 3,844 lines, growing with file size), and edits target
 those markers. The old text is never echoed, anchors survive edits above (session-internal stability), and every
