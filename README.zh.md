@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.9-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.4.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-blueviolet.svg" alt="DeepSeek Harness Plugin">
   <img src="https://img.shields.io/npm/v/dsh-hashline-edittool" alt="npm version">
@@ -36,13 +36,13 @@
 > *"瓶颈在于 harness——而不是模型。"*
 > —— Can Bölük，[*The Harness Problem*](https://stencil.so/blog/the-harness-problem)
 
-大多数编辑工具要求模型在改动任何东西之前，先**逐 token** 复述旧代码——而这正是 Agent 最容易出错的地方：多个模型在 replace 式编辑下的补丁格式失败率高达 46–51%。**dsh-hashline-edittool** 走得更远。文件的每一行都分配一个唯一的 `<line>#<hash>` 标记（绝对行号 + 3 字符内容哈希），编辑时按此锚点定位。旧文本从不回显，哈希部分在编辑后依然有效，每个解析出的范围都会与模型实际看到的内容逐一核对——错行编辑不可能悄悄落盘，post-edit `Shift:` 块让模型链式编辑无需重读。
+大多数编辑工具要求模型在改动任何东西之前，先**逐 token** 复述旧代码——而这正是 Agent 最容易出错的地方：多个模型在 replace 式编辑下的补丁格式失败率高达 46–51%。**dsh-hashline-edittool** 走得更远。文件的每一行都分配一个唯一的变长 Base62 锚点（最短优先：3,844 行以内 2 字符，随文件规模增长），编辑时按此锚点定位。旧文本从不回显，锚点在会话内跨编辑保持稳定，每个解析出的范围都会与模型实际看到的内容逐一核对——错行编辑不可能悄悄落盘，post-edit diff 行携带全新锚点，链式编辑无需重读。
 
 ## 为什么需要它
 
 `str_replace` 会让模型逐字复述它要替换的代码——纯粹的转录成本（输出 token，按约 5-6 倍输入计费），也是 Agent 最容易出错的地方：真实模型补丁失败率高达 46–51%，块越大越糟，每次失败都要重新读取并重试。
 
-Hashline 用两个 `<line>#<hash>` 锚点代替旧文本——**编辑 token 减少 26%**（多行范围达 24–45%）——）并对照模型所见内容校验每个范围：编辑要么落在你想要的行的位置，要么响亮失败并回传新锚点。哈希部分是内容地址，上方编辑后依然有效；行号部分由 post-edit `Shift:` 块承担，下一次编辑用 `newLine#oldHash` 即可跳过重读。上下文更精简，模型的注意力也保持在代码上，而不是复述上。
+Hashline 用两个变长锚点代替旧文本——比 `str_replace` 更省编辑 token——并对照模型所见内容校验每个范围：编辑要么落在你想要的行的位置，要么响亮失败并回传新锚点。锚点是会话内稳定的内容地址；post-edit diff 直接服务下一次编辑所需的新标记。上下文更精简，模型的注意力也保持在代码上，而不是复述上。
 
 不适用于单行小改动（接近持平）或新建文件（用 `write`）。它的价值在长会话与结构性编辑中体现——任何不允许改错行的场景。
 
@@ -68,15 +68,15 @@ dsh --profile <name> --dump-config   # 会显示 "# == dsh-hashline-edittool" �
 | Profile | 一个 dsh profile（首次使用 `dsh plugin` 时初始化） |
 | 后端 | 支持沙箱/远程文件系统（写入经 `ctx.fs`） |
 
-`read` 返回的每一行都带有哈希前缀——哈希*就是*这一行的地址：
+`read` 返回的每一行都带锚点前缀——锚点*就是*这一行的地址（变长 Base62，分隔符可配置，默认 `:`）：
 
 ```text
-ve7:function hello() {
-szJ:  console.log("world");
-kQm:}
+3hA:function hello() {
+4fK:  console.log("world");
+5mR:}
 ```
 
-`edit` 通过 `edits:[]` 数组按 `line#hash` 锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。契约是**精确**的：
+`edit` 通过 `edits:[]` 数组按锚点定位一处或多处范围，每项带 `op` 语义（`ins` / `del` / `replace`）。契约是**精确**的：
 
 - `replace` 必须同时给出**两个锚点**；单行替换把同一标记传两次（`anchor_start === anchor_end`）。`lines` **行数任意**——整个范围被整体替换（收缩与展开都是单 hunk `replace`）。
 - `ins` 在锚点行的**行后间隙**插入（锚点行内容原样保留），且允许锚定在**其它 hunk 范围的 END 行**上（半开规则 `N ∉ [hs, he)`），但不允许锚定在范围的起始行或中间行。
@@ -88,7 +88,7 @@ kQm:}
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "anchor_start": "4#szJ", "anchor_end": "4#szJ", "lines": ["  console.log('hi');"] }
+    { "op": "replace", "anchor_start": "4fK", "anchor_end": "4fK", "lines": ["  console.log('hi');"] }
   ]
 }
 ```
@@ -100,7 +100,6 @@ kQm:}
 ```yaml
 hashline:
   separator: ":"         # 行分隔符（默认 ":"）
-  hash_length: 3         # 锚点 hash 长度 1..6（默认 3；空间 = 62^len）
   output_format: text    # "text"（hashline 行格式）| "json"（纯 JSON）
   context_lines: 3       # 上下文行数：stale 回显 / diff / grep 统一生效（默认 3，0..20）
 ```
@@ -109,27 +108,17 @@ hashline:
 
 ### text 输出（默认）
 
-每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、左侧 `line#hash` 编辑锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。
+每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、左侧变长锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。可选 `line_numbers` 开启时（每次调用），行渲染为 `<line>:<anchor>`——仅作提示，锚点仍是权威。
 
 ### json 输出
 
 设 `output_format: json` 后工具返回纯 JSON，模型直接解析：
 
-- **read** 返回 `{path, offset, totalLines, lines: {anchor: content}}`——每个 `lines` 键都是 `<line>#<hash>` 编辑锚点，值即文件原文。
+- **read** 返回 `{path, offset, totalLines, lines: {anchor: content}}`——每个 `lines` 键都是变长 Base62 编辑锚点，值即文件原文。
 - **grep** 返回 `{total, truncated, files: [{path, matches: {anchor: content}}]}`——与 read 的 `lines` 同构的单一锚点字典；命中行与上下文行（按 `context_lines`）同在一个字典，`total` 为命中数（与普通 grep 一致，行本身不标记命中/上下文）。
-- **edit** 成功返回 `{ok: true, path, diff: {key: content}, hints, warnings, errors: []}`——`diff` 是逐行锚点字典：删除行 key 为 `"-旧行号#旧hash"`，新增行 key 为 `"+最终行号#新hash"`，上下文行 key 为裸锚点（与 read 的 `lines` 对齐；上下文行数继承 `context_lines`）。**被拒绝的编辑在 json 模式与 text 模式一样显式失败（throw, isError）**——模型经由失败通道拿到 `E_` 代码与消息，不会伪装成成功调用。
+- **edit** 成功返回 `{ok: true, path, diff: {key: content}, hints, warnings, errors: []}`——`diff` 是逐行锚点字典：删除行 key 为 `"-<旧锚>"`，新增行 key 为 `"+<新锚>"`，上下文行 key 为裸锚点（与 read 的 `lines` 对齐；上下文行数继承 `context_lines`）。**被拒绝的编辑在 json 模式与 text 模式一样显式失败（throw, isError）**——模型经由失败通道拿到 `E_` 代码与消息，不会伪装成成功调用。
 
 旧 `│` 分隔的行在两种模式下仍可解析。
-
-并产生带全新锚点的 diff，让下一次编辑无需重新读取即可通过校验：
-
-```text
-ANCHOR:FILELINE
-+ 4#a3m:  console.log('hi');
-- 4#szJ:  console.log("world");
-
-Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
-```
 
 ## 按 preset 配置指引
 
@@ -190,15 +179,15 @@ preset 从来不是必需的。
 
 ## 为什么用 Hashline
 
-**省 token。** 一次编辑调用只携带 `anchor_start` / `anchor_end`（两个 `<line>#<hash>` 锚点）加替换文本——从不回显被替换的文本。`str_replace` 调用则必须逐字复现被替换的文本。在一个真实文件上的 12 次编辑会话中，这可以**减少 26% 的输出 token**（多行范围达 24–45%）——而且这些是*输出* token，按输入的约 5-6 倍计费。见[基准测试](#基准测试)。
+**省 token。** 一次编辑调用只携带 `anchor_start` / `anchor_end`（两个变长 Base62 锚点）加替换文本——从不回显被替换的文本。`str_replace` 调用则必须逐字复现被替换的文本——而且这些是*输出* token，按输入的约 5-6 倍计费。见[基准测试](#基准测试)。
 
-**但这从来不是“最省 token”。** 节省随被替换文本的规模增长——最短的单行微调时几乎持平——而且像 [@oh-my-pi/hashline](#对比) 这样的紧凑补丁语言还能发出更轻的负载（同一会话中 42–53%）。关键在于**正确形态**的编辑调用：不复述旧代码，模型只需跟踪两个稳定的内容地址——其中哈希部分跨编辑不变，行号部分则交给 post-edit `Shift:` 块，下一次编辑用 `newLine#oldHash` 即可。
+**但这从来不是“最省 token”。** 节省随被替换文本的规模增长——最短的单行微调时几乎持平——而且像 [@oh-my-pi/hashline](#对比) 这样的紧凑补丁语言还能发出更轻的负载（同一会话中 42–53%）。关键在于**正确形态**的编辑调用：不复述旧代码，模型只需跟踪两个稳定的内容地址——锚点在会话内跨编辑保持稳定，post-edit diff 服务下一次编辑所需的新标记。
 
 **正确性。** 每个解析出的编辑范围都会与模型实际看到的行逐行核对。过期、从未提供或歧义的范围会在**写入任何内容之前**被硬性拒绝，并把当前行以 read 格式（±3 上下文）回显为全新 `<line>#<hash>` 锚点（reject-and-serve）——重试无需 `read`。
 
-**一次调用 = 同一快照，且完全原子。** 一次 `edit` 调用内的所有锚点都基于**原始**文件快照解析——绝不使用前面 hunk 应用后偏移出的行号（不存在「上一项编辑之后」的坐标；响应里的 diff 行与 `Shift:` 块展示的是最终位置）。批量是**全有或全无**：任一 hunk 失败会拒绝整个调用（`[E_BATCH_ABORT]`）且**不写入任何内容**——已解析的其它 hunk 不会被应用，因此无需回退。
+**一次调用 = 同一快照，且完全原子。** 一次 `edit` 调用内的所有锚点都基于**原始**文件快照解析——绝不使用前面 hunk 应用后偏移出的行号（不存在「上一项编辑之后」的坐标；响应里的 diff 行展示的是最终位置）。批量是**全有或全无**：任一 hunk 失败会拒绝整个调用（`[E_BATCH_ABORT]`）且**不写入任何内容**——已解析的其它 hunk 不会被应用，因此无需回退。
 
-**面向 Agent 的现代编辑范式。** 内容地址（3 字符 hash）与行号搭配为 `<line>#<hash>`：一次 `edit` 调用内的每个 hunk 都基于同一文件快照解析锚点，多个不重叠的修改可以原子地一次应用；重叠范围会在写前被拒绝（`[E_BATCH_CONFLICT]`）。编辑后的 diff 行携带最终行号与 hash，每个 hunk 的 `Shift:` 块把原始范围映射到最终位置（`Shift: edits[1] lines 5..6 moved to lines 7..9 (+2)`），后续编辑直接从 diff 行复制标记即可。模型按行**是什么**（hash）+ **当前在哪**（line）来定位，而不是按它之前在第几行。
+**面向 Agent 的现代编辑范式。** 锚点是会话内稳定的内容地址：未变的行跨编辑保持锚点不变，连续编辑无需重读即可链式进行。一次 `edit` 调用内的每个 hunk 都基于同一文件快照解析锚点，多个不重叠的修改可以原子地一次应用；重叠范围会在写前被拒绝（`[E_BATCH_CONFLICT]`）。编辑后的 diff 行携带全新锚点，后续编辑直接从 diff 行复制标记即可。
 
 ### 对比
 
@@ -219,7 +208,7 @@ preset 从来不是必需的。
 
 > `~` = 偶尔/不稳定。`@oh-my-pi/hashline` 是一种紧凑的行锚定补丁语言（[npm](https://www.npmjs.com/package/@oh-my-pi/hashline)、[仓库](https://github.com/can1357/oh-my-pi/tree/main/packages/hashline)）：`[path#tag]` 头把每个 hunk 绑定到全文件内容哈希，`PUT N.=M:` 按行号定位；每次编辑都会重新编号——下一次的行号与标签取自编辑响应或重新 `read`。
 
-**不同的工作，同一条血脉。** 两者都源于 [harness-problem](https://stencil.so/blog/the-harness-problem) 的洞见：模型绝不该复述旧代码。`@oh-my-pi/hashline` 是**补丁语言库**——负载更轻（每次编辑省 42%，单个批量文档省 53%，见[基准测试](#基准测试)），支持语法块操作（`PUT N*:`）、寄存器、`REM`/`MV`、多 hunk 文档、可插拔文件系统（任何后端），以及标签过期时的会话感知三方合并恢复。本插件则是一对 **dsh 工具**：`read` 把 `<line>#<hash>` 锚点交给模型，`edit` / `edit`（含 `edits` 数组）取其中两个，并对解析出的每一行对照已提供状态校验——post-edit `Shift:` 块让模型链式编辑无需重新读取，`undo_last_edit` 重启后依然有效。代价：每次编辑的 JSON 外壳会多一点负载、没有块操作，并且它活在 dsh（Node）内部，而不是独立补丁器（Bun）。要跨后端的补丁格式选 hashline 库；要在 Agent 里做可校验、内容寻址的编辑，选 hashline 工具。
+**不同的工作，同一条血脉。** 两者都源于 [harness-problem](https://stencil.so/blog/the-harness-problem) 的洞见：模型绝不该复述旧代码。`@oh-my-pi/hashline` 是**补丁语言库**——负载更轻（每次编辑省 42%，单个批量文档省 53%，见[基准测试](#基准测试)），支持语法块操作（`PUT N*:`）、寄存器、`REM`/`MV`、多 hunk 文档、可插拔文件系统（任何后端），以及标签过期时的会话感知三方合并恢复。本插件则是一对 **dsh 工具**：`read` 把变长锚点交给模型，`edit` / `edit`（含 `edits` 数组）取其中两个，并对解析出的每一行对照已提供状态校验——post-edit diff 让模型链式编辑无需重新读取，`undo_last_edit` 重启后依然有效。代价：每次编辑的 JSON 外壳会多一点负载、没有块操作，并且它活在 dsh（Node）内部，而不是独立补丁器（Bun）。要跨后端的补丁格式选 hashline 库；要在 Agent 里做可校验、内容寻址的编辑，选 hashline 工具。
 
 ### 边界情况下的正确性
 
@@ -235,16 +224,16 @@ token 基准测试衡量的是模型发出的负载——它假设模型每次�
 | 表达式中间 / 错误的块节点 | 无关——任何已校验的行范围都合法 | 语法规则 + `PUT N*:` 节点选择；点错（锚在 `def` 会让装饰器变成孤儿）会悄悄落错；无语法检查 |
 | 多编辑批量中途失败 | `edit` 的 `edits` 数组——原子、全有或全无；失败项以新锚点回显 | 多段补丁先预检——同样原子 |
 
-> oh-my-pi 42–53% 的负载节省来自更轻的线格式；上表才是该格式反过来要求模型记在脑中的东西——重新编号、追标签、选节点——而这恰恰是最容易出错的组件（替换式编辑的补丁失败率 46–51%）。本插件 26% 的代价买来的是一个“错编辑落不了地、任何拒绝都不需要重读”的契约。
+> oh-my-pi 42–53% 的负载节省来自更轻的线格式；上表才是该格式反过来要求模型记在脑中的东西——重新编号、追标签、选节点——而这恰恰是最容易出错的组件（替换式编辑的补丁失败率 46–51%）。本插件的代价买来的是一个“错编辑落不了地、任何拒绝都不需要重读”的契约（v2.0 变长锚下的精确百分比待复测）。
 
 ## 基准测试
 
-在同一份 103 行文件上、用相同的 12 组替换（8 个单行、4 个 3/6/10/15 行多行），以固定的 `js-tiktoken` `cl100k_base` 词表测量。三个被测方发出相同的替换文本：本插件的 `edit`（两个 3 字符锚点）、`str_replace` 工具（逐字回显旧文本）、以及 [`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline) 的两种模式——每次编辑一个 `[path#tag]` 段（`seq`）和一个多 hunk 批量文档（`batch`）：
+在同一份 103 行文件上、用相同的 12 组替换（8 个单行、4 个 3/6/10/15 行多行），以固定的 `js-tiktoken` `cl100k_base` 词表测量。三个被测方发出相同的替换文本：本插件的 `edit`（两个变长锚点）、`str_replace` 工具（逐字回显旧文本）、以及 [`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline) 的两种模式——每次编辑一个 `[path#tag]` 段（`seq`）和一个多 hunk 批量文档（`batch`）：
 
 | 指标 | hashline | str_replace | oh-my-pi seq / batch |
 | ----------- | :---: | :---: | :---: |
 | 被替换文本是否上线 | ✅ 从不 | ❌ 每次编辑都发 | ✅ 从不 |
-| 输出 token 节省（12 次编辑） | ✅ **26%** | ❌ 0% | ✅ **42% / 53%** |
+| 输出 token 节省（12 次编辑） | ✅ v1.0 锚点实测值；v2.0 复测待做（更短锚点 ⇒ ≥ v1.0） | ❌ 0% | ✅ **42% / 53%** |
 | 多行范围节省（3–15 行） | ✅ **29–47%** | ❌ 0% | ✅ **40–53%** |
 | 按 5 倍输出计价的实际成本 | ✅ **低约 1.4 倍** | ❌ 1× | ✅ **低约 1.7 倍 / 2.1 倍** |
 | 范围对照已提供状态校验 | ✅ 100% | ❌ 无 | ~ 仅文件版本 |
@@ -276,7 +265,7 @@ json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗�
 | 多行 ×4 | 3–15 | 408 | 691 | 349 | — |
 | **合计 ×12** | | **749** | **1015** | **590** | **480** |
 
-相对 `str_replace` 的节省：hashline **266（26%）** · oh-my-pi 逐次 **425（42%）** · oh-my-pi 批量 **535（53%）**。
+相对 `str_replace` 的节省：v1.0 锚点实测 hashline **266（26%）** · oh-my-pi 逐次 **425（42%）** · oh-my-pi 批量 **535（53%）**。（v2.0 变长锚比固定 3 字符更短——复测待做。）
 
 脚本天然确定：固定语料、内容寻址且自带自检的编辑脚本（语料被重排会直接抛错，而不是悄悄改变测量对象）、固定版本的 tokenizer，且 oh-my-pi 负载在计数前会对照其发布的语法校验。因为一切都是固定的，`npm run benchmark` 对每个人都是同一个结果——本 README 里的数字就是该次运行的一个快照；重新生成，不要轻信。
 
@@ -286,9 +275,9 @@ json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗�
 
 | 工具 | 作用 |
 | ------ | ------ |
-| `read` | 以 `ANCHOR:FILELINE` 头部 + `<line>#<hash>:<content>` 行形式返回文件。参数：`offset`（1 起始）、`limit`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——哈希锚点需要完整行。 |
-| `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围）或 `replace`（**必须同时给出 `anchor_start`+`anchor_end`**，且 `lines` 行数与范围行数一一对应，否则 `E_LINE_COUNT_MISMATCH`）。对解析出的范围内**每一行**对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。响应为每个 hunk 携带 `Shift:` 块描述编辑后下方绝对行号如何移动。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
-| `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。 |
+| `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers: true` 时行前缀 `<line>:`，仅作位置提示）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
+| `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围，`lines` 禁用）或 `replace`（`lines` 行数**任意**——整个范围被整体替换，收缩与展开都是单 hunk）。锚点为变长 Base62（`<anchor>` 或 `<line>:<anchor>` 弱提示）；内容相同的行获得**互不相同**的锚点。对解析出的范围对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。没有 `Shift:` 块——编辑后从 diff 行取新锚点。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
+| `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。支持 `line_numbers`。 |
 
 ### 错误码
 
@@ -299,11 +288,11 @@ json 的 read 字典每行重复锚点键（大窗口 +10~14%）；小 read 窗�
 | `[E_BAD_OP]` | 范围结束先于范围开始（首尾颠倒时会自动纠正）。 |
 | `[E_BAD_REF]` | `anchor_start`/`anchor_end` 不是从 read/grep/diff 行最左列复制的 `<line>#<hash>`。 |
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
-| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` 前缀被粘贴进 `lines`（自动纠正）。 |
+| `[E_BARE_HASH_PREFIX]` | 粘贴进 `lines` 的锚点前缀行（如 read/diff 行的 `<line>:<anchor>:content`）；锚点在文件中存在时剥离前缀并提示 warning，字面相似内容永不被改写。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
 | `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠（`ins` 可锚定某范围的 END 行，但不允许起始行/中间行）；请拆分或合并，未写入任何内容。 |
 | `[E_MISSING_ANCHOR_END]` | `op:"replace"` 必须同时给出 `anchor_start` 与 `anchor_end`（单行替换两值相同）。 |
-| `[E_INVALID_PATCH]` | diff 预览标记被粘贴进 `replacement_text`（自动纠正）。 |
+| `[E_INVALID_PATCH]` | 粘贴进 `lines` 的 diff 预览 `+`/`-` 标记；剥离前缀并提示 warning。 |
 | `[E_NOOP_LOOP]` | 完全相同的编辑反复不产生任何变化；再次提交会被拒绝。 |
 | `[E_NOT_FOUND]` | 文件不存在。 |
 | `[E_NOT_OBSERVED]` | 该文件在本会话中尚未被观察（先读后写策略）；请先调用 `read`。 |
@@ -343,7 +332,7 @@ dsh 的工具注册表按作用域解析：agent 看到的是 `agent → preset 
 dsh-hashline-edittool/
 ├── src/
 :   ├── hashline/        # 哈希 + 已提供状态核心
-:   ├── tool-read.ts     # read  — line#hash:内容，offset/limit 分页
+:   ├── tool-read.ts     # read  — 锚点:内容，offset/limit 分页，line_numbers 可选
 :   ├── tool-edit.ts     # edit  — 按哈希范围、reject-and-serve
 :   ├── tool-batch-edit.ts
 :   ├── tool-undo.ts     # undo_last_edit
@@ -353,7 +342,7 @@ dsh-hashline-edittool/
 :   └── workspace.ts     # 会话 cwd 的 AsyncLocalStorage 载体
 ├── benchmark/           # 可复现的 hashline、str_replace 与 oh-my-pi token 基准测试
 :   └── corpus/          # 固定的 103 行语料
-├── test/                # 615 个测试
+├── test/                # 687 个测试
 ├── cordis.patch.yml     # bundle 补丁
 └── package.json         # dsh.bundle manifest
 ```
@@ -363,7 +352,7 @@ dsh-hashline-edittool/
 ```sh
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run（615 个测试）
+npm test            # vitest run（687 个测试）
 npm run build       # tsc → lib/
 npm run benchmark   # 可复现的 token 成本基准测试（benchmark/）
 ```
@@ -381,7 +370,7 @@ npm publish --registry https://registry.npmjs.org   # 版本未打 tag 前会被
 
 ## 路线图
 
-**当前状态（0.1.7）：** 615 个测试、按工作区存储、参与沙箱策略、served-tail 截断修复、可复现基准测试、中英双语 README、已发布 npm。
+**当前状态（v2.0）：** 变长内容锚点（2 字符层至 3,844 行、分层上浮、会话内跨编辑稳定）、可选 `line_numbers` 渲染、`grep` 工具、按工作区存储、参与沙箱策略、可复现基准测试、中英双语 README、已发布 npm。
 
 <details><summary>下一步</summary>
 
@@ -403,7 +392,7 @@ MIT License——详见 [LICENSE](LICENSE)。
 
 哈希锚定编辑源于 Can Bölük 的 [*The Harness Problem*](https://stencil.so/blog/the-harness-problem)——那篇文章证明了瓶颈在于 harness 而非模型，并证明锚定编辑优于搜索替换。本项目站在以下巨人的肩膀上：
 
-- [**pi-hashline-edit**](https://github.com/RimuruW/pi-hashline-edit)（RimuruW）——引入 3 字符哈希与冲突消解的原创 pi-coding-agent 扩展。
+- [**pi-hashline-edit**](https://github.com/RimuruW/pi-hashline-edit)（RimuruW）——引入内容哈希与冲突消解的原创 pi-coding-agent 扩展。
 - [**pi-hashline-edit-pro**](https://github.com/YuGiMob/pi-hashline-edit-pro)（YuGiMob）——本仓库 hashline 核心所移植自的加固版 fork。
 
 延伸阅读：[Hash anchors + Myers diff + single-token anchors（dirac.run）](https://dirac.run/posts/hash-anchors-myers-diff-single-token)（关于编辑调用 O(S+R) → O(R) 节省的设计评论）以及一个独立的 [hashline 与 replace 对比基准测试](https://nwyin.com/blogs/hashline-vs-replace-edit-bench.html)。

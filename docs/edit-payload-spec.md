@@ -1,6 +1,6 @@
 # Spec — Upstream cherry-picks + merged `edit` payload with `op` semantics
 
-> Status: **Implemented** — authoritative for the 0.4.x `edit` contract.
+> Status: **Superseded in part by `dynamic-hashline-spec.md`** — authoritative for the 0.4.x `edit` payload shape (op semantics, edits array, per-item path). The 0.5/v2.0 dynamic-anchor contract (variable-length Base62 anchors, no `line#hash`, no Shift blocks, optional `line_numbers`) is governed by [`dynamic-hashline-spec.md`](./dynamic-hashline-spec.md); where the two conflict, that spec wins.
 > Scope: (a) cherry-pick the non-breaking upstream T1+T2+T5 fixes into the
 > current line#hash codebase, (b) adopt a stronger version of upstream T3
 > (merged `edit` payload) that **removes `batch_edit` and adds an `op`

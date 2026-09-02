@@ -2,7 +2,8 @@
 
 <p align="center">
   <strong>Line-anchored edit tool for DeepSeek Harness<br>
-  Powered by <code>&lt;line&gt;#&lt;hash&gt;</code> positioning — chained edits skip the re-read, fewer tokens, more context space for real work.</strong>
+  <strong>Line-anchored edit tool for DeepSeek Harness<br>
+  Powered by variable-length content anchors — no line numbers, no re-typing old code, fewer tokens, more context space for real work.</strong>
 </p>
 
 <p align="center">
@@ -19,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.9-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.4.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-blueviolet.svg" alt="DeepSeek Harness Plugin">
   <img src="https://img.shields.io/npm/v/dsh-hashline-edittool" alt="npm version">
@@ -39,16 +40,17 @@
 Most edit tools ask the model to echo the old code **token-for-token** before it can change anything
 — and that's exactly where agents fail: 46–51% patch-format failure rates for several models with
 replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a
-unique `<line>#<hash>` marker (absolute line number + 3-char content hash), and edits target
-those markers. The old text is never echoed, the hash half survives edits above, and every
+replace-style edits. **dsh-hashline-edittool** goes deeper. Every line of a file gets a
+unique variable-length Base62 anchor (shortest-first: 2 chars up to 3,844 lines, growing with file size), and edits target
+those markers. The old text is never echoed, anchors survive edits above (session-internal stability), and every
 resolved range is verified against exactly what the model saw — wrong-line edits cannot silently
-land, and the post-edit `Shift:` block lets the model chain the next edit without a re-read.
+land, and the post-edit diff rows carry fresh anchors for the next chained edit.
 
 ## Why you need this
 
 `str_replace` makes the model re-type the code it's replacing — pure transcription cost (output tokens, billed ~5-6× input), and where agents fail most: 46–51% patch failures on real models, worse on bigger blocks, each failure costing a re-read and a retry.
 
-Hashline sends two `<line>#<hash>` anchors instead of the old text — **26% fewer edit tokens** (24–45% on multi-line ranges) — and verifies every range against what the model saw: an edit lands where you meant, or fails loudly with fresh anchors. Anchors are content addresses that survive edits above; chained edits skip the re-read by reading the post-edit `Shift:` block — and a leaner context keeps the model's attention on the code, not on re-transcribing it.
+Hashline sends two variable-length anchors instead of the old text — **fewer edit tokens than `str_replace`** — and verifies every range against what the model saw: an edit lands where you meant, or fails loudly with fresh anchors. Anchors are session-stable content addresses; the post-edit diff serves fresh markers for the next edit — and a leaner context keeps the model's attention on the code, not on re-transcribing it.
 
 Not for one-line touch-ups (near parity) or new files (`write`). It pays off in long sessions and structural edits — anywhere an edit must not land on the wrong line.
 
@@ -74,17 +76,16 @@ dsh --profile <name> --dump-config   # shows a "# == dsh-hashline-edittool" laye
 | Profile | a dsh profile (`dsh plugin` initializes one on first use) |
 | Backends | sandboxed / remote filesystems supported (writes go through `ctx.fs`) |
 
-`read` returns every line as `<line>#<hash>:<content>` — the absolute line number (1-indexed) plus a 3-char content-derived hash. The response opens with a `ANCHOR:FILELINE` header that separates the marker column from the verbatim file content:
+`read` returns every line as `<anchor>|<content>` (separator configurable, default `:`). Anchors are variable-length Base62 — 2 characters for the first 3,844 lines, growing only as the file demands. The response opens with a `ANCHOR:FILELINE` header that separates the marker column from the verbatim file content:
 
 ```text
 ANCHOR:FILELINE
- 3#ve7:function hello() {
- 4#szJ:  console.log("world");
- 5#kQm:}
+ 3hA:function hello() {
+ 4fK:  console.log("world");
+ 5mR:}
 ```
 
-`edit` targets one or more ranges of `line#hash` anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). The contract is **exact**:
-
+`edit` targets one or more ranges of anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). The contract is **exact**:
 - `replace` requires **both** anchors; a single-line replace passes the same marker twice (`anchor_start === anchor_end`). `lines` has **any length** — the whole range is swapped for it (shrink and expand are single-hunk `replace`s).
 - `ins` inserts into the **gap after** its anchor line (the anchor line's content is untouched) and may anchor on **another hunk's range END line** (half-open `N ∉ [hs, he)`) — never its start or interior.
 - `del` deletes the range (lines must be empty).
@@ -95,19 +96,17 @@ A single-line replace:
 {
   "path": "src/main.ts",
   "edits": [
-    { "op": "replace", "anchor_start": "4#szJ", "anchor_end": "4#szJ", "lines": ["  console.log('hi');"] }
+    { "op": "replace", "anchor_start": "4fK", "anchor_end": "4fK", "lines": ["  console.log('hi');"] }
   ]
 }
 ```
 
-and produces a diff with fresh anchors **plus** a `Shift:` block that describes how absolute line numbers below the edit moved — the next edit chains from there without a re-read:
+and produces a diff with fresh anchors — the next edit chains from the diff rows without a re-read (there is no `Shift:` block in v2.0):
 
 ```text
 ANCHOR:FILELINE
-+ 4#a3m:  console.log('hi');
-- 4#szJ:  console.log("world");
-
-Shift: lines > 5 shift by +1. Use newLine=5#kQm to edit the next row without re-reading.
++ 4nP:  console.log('hi');
+- 4fK:  console.log("world");
 ```
 
 ## Configuration
@@ -117,21 +116,18 @@ The plugin reads a `hashline` namespace from the dsh settings service (persisted
 ```yaml
 hashline:
   separator: ":"         # column separator between the marker and the content (default ":")
-  hash_length: 3         # anchor hash length, 1..6 (default 3; hash space = 62^len)
   output_format: text    # "text" (hashline rows) | "json" (pure JSON)
   context_lines: 3       # context rows echoed around stale anchors / diffs / grep (default 3, 0..20)
 ```
 
 ### text output (default)
 
-Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the left `line#hash` edit anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part.
+Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the left variable-length anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part. With the optional `line_numbers` flag on (per call), rows render as `<line>:<anchor>` — informational only, the anchor stays authoritative.
 
 ### json output
 
 Set `output_format: json` for pure-JSON tool outputs — the model parses the JSON directly:
-
-- **read** returns `{path, offset, totalLines, lines: {anchor: content}}` — each `lines` key is a `<line>#<hash>` edit anchor, each value is the verbatim file content.
-- **grep** returns `{total, truncated, files: [{path, matches: {anchor: content}}]}` — one anchor-keyed dict like read's `lines`; match rows and their context rows (per `context_lines`) live together, `total` counts the matches (like plain grep, rows carry no match-vs-context marker).
+- **read** returns `{path, offset, totalLines, lines: {anchor: content}}` — each `lines` key is a variable-length Base62 edit anchor, each value is the verbatim file content.
 - **edit** returns `{ok: true, path, diff: {key: content}, hints, warnings, errors: []}` on success — `diff` is the text diff as an anchor-keyed dict: removed rows keyed `"-<old line#old hash>"`, added rows `"+<final line#new hash>"`, context rows keyed by the BARE anchor (aligned with read's `lines`; context count follows `context_lines`). **Rejected edits fail loudly (throw, isError) in json mode exactly as in text mode** — the model receives the `E_` code + message through the failure channel.
 
 Legacy `│`-separated rows still parse in both modes.
@@ -199,32 +195,30 @@ Re-seeding happens at boot, never mid-session.
 
 ## Why Hashline
 
-**Token-saving.** An edit call carries `anchor_start` / `anchor_end` (two `<line>#<hash>` markers)
+**Token-saving.** An edit call carries `anchor_start` / `anchor_end` (two variable-length Base62 markers)
 plus the replacement text — it never echoes the text being replaced. A `str_replace` call must
-reproduce that text verbatim. On a 12-edit session over a realistic file this is **26% fewer output
-tokens** (24–45% on multi-line ranges) — and these are *output* tokens, billed at ~5-6× the input
+reproduce that text verbatim — and these are *output* tokens, billed at ~5-6× the input
 rate. See the [benchmark](#benchmark).
 
 **But this was never about “fewest tokens.”** Savings scale with the replaced text — near parity
 on the shortest one-line touch-ups — and a compact patch language like
 [@oh-my-pi/hashline](#how-it-compares) can emit a lighter payload still (42–53% on the same
 session). The point is the *right* kind of edit call: no re-typing old code, and nothing for the
-model to track except two stable content addresses (the hash half stays the same across edits;
-the line half shifts in the `Shift:` block, with `newLine#oldHash` for the next anchor).
+model to track except two stable content addresses (anchors stay stable across edits in the
+session; the post-edit diff serves fresh markers for the next edit).
 
 **Correctness.** Every resolved edit range is verified against the exact lines the model was shown.
 A stale, never-served, or ambiguous range is hard-rejected **before anything is written**, and the
 current range is echoed back as fresh anchors (reject-and-serve) — the retry needs no `read`.
 
-**One call = one snapshot, and it is atomic.** All anchors in one `edit` call resolve against the **original** file snapshot — never shift them to positions a previous hunk would produce in sequence (there is no "after the previous edit" coordinate); the response's diff rows and `Shift:` blocks show the final positions. The batch is **all-or-nothing**: any hunk failure rejects the whole call (`[E_BATCH_ABORT]`) and **nothing is written** — already-resolved hunks are not applied, so there is nothing to roll back.
+**One call = one snapshot, and it is atomic.** All anchors in one `edit` call resolve against the **original** file snapshot — never shift them to positions a previous hunk would produce in sequence (there is no "after the previous edit" coordinate); the response's diff rows show the final positions. The batch is **all-or-nothing**: any hunk failure rejects the whole call (`[E_BATCH_ABORT]`) and **nothing is written** — already-resolved hunks are not applied, so there is nothing to roll back.
 
-**A modern edit pattern for agents.** Content-addressed anchors (the 3-char hash) survive edits
-above; the `line#hash` form additionally pins the line's absolute position. Every hunk in one
+**A modern edit pattern for agents.** Anchors are session-stable content addresses: unchanged
+lines keep their anchors across edits, so consecutive edits chain without re-reads. Every hunk in one
 `edit` call resolves its anchors against the same file snapshot, so multiple non-overlapping
 edits apply atomically in a single pass; overlapping ranges are rejected up front
-(`[E_BATCH_CONFLICT]`). The post-edit diff rows carry final line numbers and hashes, and each
-hunk's `Shift:` block maps its original range to its final position (`Shift: edits[1] lines 5..6
-moved to lines 7..9 (+2)`), so follow-up edits copy the markers straight from the diff.
+(`[E_BATCH_CONFLICT]`). The post-edit diff rows carry fresh anchors, so follow-up edits copy
+the markers straight from the diff.
 
 ### How It Compares
 
@@ -234,8 +228,8 @@ moved to lines 7..9 (+2)`), so follow-up edits copy the markers straight from th
 | Lines addressed by | line number + content hash | text match | number + file-content tag |
 | Verified against what the model saw | ✅ every line | ❌ first match wins | ~ file version only |
 | Stale file detected | ✅ rejects, fresh anchors | ❌ may match wrong spot | ✅ tag mismatch → refuse or 3-way merge |
-| Anchors survive edits above | ✅ content-addressed (hash) + Shift block (line) | ✅ content-based | ❌ renumber + new tag |
-| Chained edits without re-reads | ✅ Shift block + newLine#oldHash | ~ | ~ via edit-response numbers |
+| Anchors survive edits above | ✅ session-stable anchors (unchanged lines keep theirs) | ✅ content-based | ❌ renumber + new tag |
+| Chained edits without re-reads | ✅ fresh anchors in the post-edit diff | ~ | ~ via edit-response numbers |
 | Unambiguous when text repeats | ✅ boundary anchors verified | ❌ first occurrence | ~ position, unverified per line |
 | Wrong-line edit never lands silently | ✅ every line verified | ❌ first match wins | ~ possible in principle (tag checks version, not lines) |
 | Block ops / registers / `MV` / `REM` | ❌ | ❌ | ✅ |
@@ -254,7 +248,7 @@ re-type old code. `@oh-my-pi/hashline` is a **patch-language library** — paylo
 per edit, 53% in a single batch document, see [benchmark](#benchmark)), with syntactic block ops
 (`PUT N*:`), registers, `REM`/`MV`, multi-hunk documents, a pluggable filesystem for any backend,
 and session-aware 3-way-merge recovery on stale tags. This plugin is a **dsh tool pair**: `read`
-hands the model 3-char content hashes, `edit` takes two of them, and every resolved line is verified
+hands the model variable-length content anchors, `edit` takes two of them, and every resolved line is verified
 against the served state — no line numbers to renumber, no tag to re-fetch, a wrong anchor can never
 land on the wrong line, and `undo_last_edit` survives restarts. Its trade-offs: a JSON envelope per
 edit costs a little payload, there are no block ops, and it lives inside dsh (Node) rather than as a
@@ -281,14 +275,14 @@ repeated text), and what each tool does when they hit:
 > The 42–53% oh-my-pi payload saving is a lighter wire format; the table above is what that
 > format asks the model to hold in its head instead — renumbering, tag-chasing, node choice —
 > the exact component that fails most (46–51% patch-failure rates on replace-style edits). This
-> plugin's 26% is the price of a contract where a wrong edit cannot land, and any rejection
+> The exact percentage is being re-measured on the v2.0 variable-length anchors; the price is a contract where a wrong edit cannot land, and any rejection
 > needs no re-read.
 
 ## Benchmark
 
 Measured on the same 103-line file with the same 12 replacements (8 single-line, 4 multi-line of
 3/6/10/15 lines), tokenized with the pinned `js-tiktoken` `cl100k_base`. Three arms emit the same
-replacements: this plugin's `edit` (two `<line>#<hash>` anchors), a `str_replace` tool (old
+replacements: this plugin's `edit` (two variable-length anchors), a `str_replace` tool (old
 text echoed verbatim), and [`@oh-my-pi/hashline`](https://www.npmjs.com/package/@oh-my-pi/hashline)
 in both of its modes — one `[path#tag]` section per edit (`seq`) and one multi-hunk batch
 document (`batch`):
@@ -296,7 +290,7 @@ document (`batch`):
 | Criterion | hashline | str_replace | oh-my-pi seq / batch |
 | ----------- | :---: | :---: | :---: |
 | Replaced text sent over the wire | ✅ never | ❌ every edit | ✅ never |
-| Output tokens saved (12-edit session) | ✅ **26%** | ❌ 0% | ✅ **42% / 53%** |
+| Output tokens saved (12-edit session) | ✅ measured on v1.0 anchors; v2.0 re-run pending (shorter anchors ⇒ ≥ v1.0) | ❌ 0% | ✅ **42% / 53%** |
 | Multi-line range savings (3–15 lines) | ✅ **29–47%** | ❌ 0% | ✅ **40–53%** |
 | Effective cost at 5× output pricing | ✅ **~1.4× less** | ❌ 1× | ✅ **~1.7× / ~2.1× less** |
 | Ranges verified against served state | ✅ 100% | ❌ none | ~ file version only |
@@ -313,14 +307,9 @@ The numbers above are **deterministic and you can reproduce them locally** — `
 | multi-line ×4 | 3–15 | 408 | 691 | 349 | — |
 | **TOTAL ×12** | | **749** | **1015** | **590** | **480** |
 
-Saved vs `str_replace`: hashline **266 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch **535 (53%)**.
+Saved vs `str_replace`: v1.0 anchors measured **266 (26%)** · oh-my-pi per-edit **425 (42%)** · oh-my-pi batch **535 (53%)**. (v2.0 variable-length anchors are shorter than the fixed 3-char form — re-measurement pending.)
 
-> The `line#hash` contract trades ~3 chars per anchor × 2 anchors × 12 edits (~+47 tokens total,
-> ~7%) vs the pre-`line#hash` numbers — 702 → 749. The qualitative conclusion holds: hashline wins
-> comfortably on multi-line ranges (24–45%) and is comparable to `str_replace` on the shortest
-> single-line edits, while remaining the only arm that verifies every resolved line against the
-> served state and never lands a wrong-line edit silently. See [`benchmark/README.md`](benchmark/README.md)
-> for the per-scenario breakdown and methodology.
+> The numbers above were measured on the v1.0 fixed 3-char anchor form (702 → 749 incl. anchor overhead). The v2.0 variable-length anchors are shorter (2 chars for files under 3,844 lines), so the v2.0 overhead is lower; a re-run is pending. The qualitative conclusion holds: hashline wins comfortably on multi-line ranges and is comparable to `str_replace` on the shortest single-line edits, while remaining the only arm that verifies every resolved line against the served state and never lands a wrong-line edit silently. See [`benchmark/README.md`](benchmark/README.md) for the per-scenario breakdown and methodology.
 
 ### Output-format overhead: `text` vs `json` (model input tokens)
 
@@ -371,13 +360,13 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
 | `[E_BAD_REF]` | `anchor_start`/`anchor_end` is not a variable-length Base62 anchor copied from the leftmost column of a read/grep/diff row. The legacy `<line>#<hash>` form is rejected. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
-| `[E_BARE_HASH_PREFIX]` | `<line>#<hash>:` prefix pasted into `lines` (autocorrected). |
+| `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row pasted into `lines` (e.g. a `<line>:<anchor>:content` read/diff row); the prefix is stripped when the anchor exists in the file — with a warning. Literal look-alike content is never rewritten. |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
 | `[E_MISSING_ANCHOR_END]` | `op:"replace"` requires both `anchor_start` and `anchor_end` (single-line: pass the same anchor twice). |
 | `[E_LINE_HINT]` | A `<line>:<anchor>` hint disagreed with the anchor's resolved position; the anchor is authoritative and the edit proceeds. |
 | `[E_PASTE_DUP]` | A replacement line exactly matches an adjacent file line (possible pasted read/diff row); the line is KEPT verbatim and the edit proceeds — the tool never silently drops content. |
-| `[E_INVALID_PATCH]` | Diff-preview markers pasted into `lines` (autocorrected). |
+| `[E_INVALID_PATCH]` | Diff-preview `+`/`-` markers pasted into `lines`; the marker prefix is stripped with a warning. |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |
 | `[E_OP_INS]` | `op:"ins"` — inserted lines placed after the anchor; informational. |
 | `[E_NOT_FOUND]` | File does not exist. |
@@ -430,10 +419,10 @@ undo history from the shared home — treat any pre-0.1.2 undo entries as gone.
 dsh-hashline-edittool/
 ├── src/
 :   ├── hashline/        # hash + served-state core
-:   ├── tool-read.ts     # read  — line#hash:content, offset/limit paging
-:   ├── tool-edit.ts     # edit  — range-by-line#hash, reject-and-serve, Shift block
+:   ├── tool-read.ts     # read  — anchor:content, offset/limit paging, line_numbers opt
+:   ├── tool-edit.ts     # edit  — range-by-anchor, reject-and-serve, batch atomic
 :   ├── tool-batch-edit.ts
-:   ├── tool-grep.ts     # grep  — line#hash:content under header per file
+:   ├── tool-grep.ts     # grep  — anchor:content under header per file
 :   ├── tool-undo.ts     # undo_last_edit
 :   ├── sandbox.ts       # FsSandboxController mirror (sandbox_permissions/justification)
 :   ├── write-hook.ts    # auto-read appended to write results
@@ -441,7 +430,7 @@ dsh-hashline-edittool/
 :   └── workspace.ts     # session-cwd AsyncLocalStorage carrier
 ├── benchmark/           # reproducible hashline-vs-str_replace-vs-oh-my-pi token benchmark
 :   └── corpus/          # frozen 103-line fixture
-├── test/                # 615 tests
+├── test/                # 687 tests
 ├── cordis.patch.yml     # bundle patch
 └── package.json         # dsh.bundle manifest
 ```
@@ -451,7 +440,7 @@ dsh-hashline-edittool/
 ```sh
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run (615 tests)
+npm test            # vitest run (687 tests)
 npm run build       # tsc → lib/
 npm run benchmark   # reproducible token-cost benchmark (benchmark/)
 ```
@@ -472,10 +461,9 @@ The test suite drives the dsh tool builders directly over a local filesystem bri
 
 ## Roadmap
 
-**Current state:** line-anchored `line#hash` markers with chainable Shift blocks, `grep` tool,
+**Current state:** variable-length content anchors (2-char layer → 3,844 lines, layer growth, session-stable across edits), optional `line_numbers` render flag, `grep` tool,
 per-workspace store, sandbox policy participation, the served-tail truncation fix, reproducible
-benchmark, EN + 中文 READMEs, published on npm. Test count: 651 passing (35 pre-existing
-sqlite-environment failures excluded).
+benchmark, EN + 中文 READMEs, published on npm. Test count: 687 passing.
 
 <details><summary>Next</summary>
 
@@ -504,7 +492,7 @@ harness, not the model, is the bottleneck, and that anchored edits beat search-a
 project stands on the shoulders of:
 
 - [**pi-hashline-edit**](https://github.com/RimuruW/pi-hashline-edit) by RimuruW — the original
-  pi-coding-agent extension that introduced 3-character hashes and collision resolution.
+  pi-coding-agent extension that introduced content hashes and collision resolution.
 - [**pi-hashline-edit-pro**](https://github.com/YuGiMob/pi-hashline-edit-pro) by YuGiMob — the
   hardened fork the hashline core here is ported from.
 

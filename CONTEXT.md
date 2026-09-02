@@ -31,7 +31,7 @@ One of `"ins"` | `"del"` | `"replace"` — the semantic of one `edits[i]` entry 
 _Avoid_: edit type, edit kind, action, edit mode
 
 **`anchor_start` / `anchor_end`**:
-The line-range anchors of one `edits[i]` entry — `line#hash` markers (`<line>#<hash>` like `12#ve7`) copied from the leftmost column of a read/grep/diff row, never hand-written or bare hashes. `anchor_start` is required; `anchor_end` is optional (single-line when omitted) and REQUIRED for `op: "replace"`.
+The line-range anchors of one `edits[i]` entry — variable-length Base62 markers (shortest-first: 2 chars up to 3,844 lines, `2:anchor` accepted as a weak line-number hint) copied from the leftmost column of a read/grep/diff row, never hand-written or line content. `anchor_start` is required; `anchor_end` is optional (single-line when omitted) and REQUIRED for `op: "replace"`. The legacy `line#hash` form (`12#ve7`) is rejected (`E_BAD_REF`).
 _Avoid_: `from` / `to` (design-era names), `remove_from` / `remove_to` (0.3-era names), standalone `start` / `end` (reserved for byte offsets elsewhere in the plugin)
 
 **`lines`**:
