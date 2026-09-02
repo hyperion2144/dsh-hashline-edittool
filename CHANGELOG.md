@@ -17,7 +17,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
   - **B7（保真契约）** — 边界重复检测降级为 `[E_PASTE_DUP]` warning-only：删除了把「新内容与相邻行相同」的替换行静默 splice 掉的 auto-fix（该行为会把合法替换变成删除且零提示，并使增量锚簿记错位）。**除锚点前缀剥离（且仅当锚点真实存在）外，工具对模型提交的内容零修改。**
 - 新错误码：`[E_LINE_HINT]`、`[E_PASTE_DUP]`（README 错误码表同步，`E_BARE_HASH_PREFIX`/`E_INVALID_PATCH` 措辞更新为新语义）。
 - 文档：README / README.zh 全面向 v2.0 契约迁移（变长锚点、无 Shift 块、line_numbers、json 形状）；配置示例移除 `hash_length`；指南种子文件（`<preset>/*.md`）重播种。
-
+- **grep `regex` 开关默认改为 true（v2.0.2）**：pattern 默认按 JavaScript 正则解析，`regex: false` 退回字面子串匹配（工具 schema / 描述 / guidance / README 同步）。
+- **错误 UX 修复**：失效裸锚不再把 `-1` 哨兵泄漏进 `line -1..-1 is out of range` 消息——改由 mismatch 渲染器输出 `[E_STALE]` + ±上下文回显 + fresh markers；越界闸门仅在存在真实行声明（解析行号或显式 `<line>:<anchor>` 提示）时触发。
 ## [0.4.1] - 2026-08-30
 
 ### Added

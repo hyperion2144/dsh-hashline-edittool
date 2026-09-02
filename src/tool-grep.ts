@@ -58,7 +58,7 @@ export interface GrepToolOptions {
 	limit?: number;
 	/** Number of context rows above and below each match. Default 0. */
 	context?: number;
-	/** If true, `pattern` is treated as a JavaScript regex. Default false. */
+	/** If true, `pattern` is treated as a JavaScript regex. Default TRUE (v2.0.2). */
 	regex?: boolean;
 	/** v2.0: prefix every context/match row marker with `<line>:<anchor>`. */
 	lineNumbers?: boolean;
@@ -90,7 +90,7 @@ export async function grepFileContent(
 	pattern: string,
 	opts: GrepToolOptions = {},
 ): Promise<GrepFileSection | undefined> {
-	const matcher = buildMatcher(pattern, opts.regex === true);
+	const matcher = buildMatcher(pattern, opts.regex !== false);
 	const lines = visLines(content);
 	if (lines.length === 0) return undefined;
 	const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -187,11 +187,11 @@ export function buildGrepTool(io: FileIO) {
 			pattern: {
 				type: "string",
 				description:
-					"Substring to match by default; pass `regex: true` to use a JavaScript-flavre regex.",
+					"Pattern to match; treated as a JavaScript-flavre regex by default. Pass `regex: false` for literal substring matching.",
 			},
 			regex: {
 				type: "boolean",
-				description: "Treat `pattern` as a regex (default false: literal).",
+				description: "Treat `pattern` as a JavaScript-flavre regex (default true). Pass `regex: false` for literal substring matching.",
 			},
 			context: {
 				type: "number",
@@ -301,7 +301,7 @@ export function buildGrepTool(io: FileIO) {
 				const opts: GrepToolOptions = {
 					limit: typeof params.limit === "number" ? params.limit : undefined,
 					context: typeof params.context === "number" ? params.context : undefined,
-					regex: params.regex === true,
+					regex: params.regex !== false,
 					lineNumbers: params.line_numbers === true,
 				};
 				// Pre-build matcher so a bad regex fails before any IO.
