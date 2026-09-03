@@ -24,6 +24,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
+import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { ensureSettingsService } from "./settings-provider.js";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
@@ -210,8 +211,9 @@ export function installHashlineSettings(ctx: Context): void {
 		hookedOnChange();
 		sync();
 	};
+	const settingsSvc = (ctx as unknown as { get(name: string): unknown }).get("settings") as SettingsProvider | undefined;
 	try {
-		ctx.settings.installSection(
+		settingsSvc?.installSection(
 			ctx,
 			HASHLINE_SETTINGS_NAMESPACE as never,
 			HashlineSettingsSchema,
