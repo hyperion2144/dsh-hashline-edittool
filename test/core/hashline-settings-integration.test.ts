@@ -25,6 +25,7 @@ import {
 	getEffectiveConfig,
 	installHashlineSettings,
 	isJsonOutput,
+	startDirectFileFallback,
 } from "../../src/config.js";
 import { getHashlineShape } from "../../src/hashline/hash-assign.js";
 
@@ -115,5 +116,21 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 		installHashlineSettings(ctx);
 		expect(getEffectiveConfig().separator).toBe("|");
 		expect(getHashlineShape().separator).toBe("|");
+	});
+
+	it("direct-file fallback applies json without any settings service (issue #69 restart finding)", () => {
+		const home = mkdtempSync(join(tmpdir(), "hashline-fallback-"));
+		writeFileSync(join(home, "settings.yaml"), "hashline:\n  output_format: json\n");
+		process.env.DSH_HOME = home;
+		const ctx = new Context();
+		// No provider registered anywhere: this is the topology where the
+		// service is unreachable (registered elsewhere but invisible). The
+		// fallback reads the file directly instead of registering a section.
+		startDirectFileFallback(ctx);
+		expect(isJsonOutput()).toBe(true);
+		// Absent file → defaults, silently.
+		process.env.DSH_HOME = join(home, "empty");
+		startDirectFileFallback(ctx);
+		expect(getEffectiveConfig().outputFormat).toBe("text");
 	});
 });

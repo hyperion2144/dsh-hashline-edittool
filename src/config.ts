@@ -20,7 +20,7 @@
  *
  * @module dsh-hashline-edittool/config
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, watch as watchFile } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
@@ -179,6 +179,50 @@ function createSnapshot(
  * available, otherwise by reading the settings file directly. Listens to
  * `settings/updated` so live edits take effect immediately.
  */
+/**
+ * Direct-file fallback for topologies where the settings service is
+ * registered but NOT visible from this context (issue #69: observed on a
+ * symlinked dev deployment with dual cordis instances / plugin double-mount).
+ * Reads `settings.yaml` once, applies it, then watches the file so live edits
+ * keep working without the host service. The watcher is disposed with ctx.
+ */
+export function startDirectFileFallback(ctx: Context): void {
+	const apply = (): void => {
+			try {
+				applyEffective(parseSettingsYaml(readFileSync(settingsYamlPath(), "utf-8")));
+			} catch (err) {
+				const code = (err as { code?: unknown })?.code;
+				if (code === "ENOENT") {
+					// Absent settings.yaml — defaults apply, nothing to log.
+					applyEffective({});
+					return;
+				}
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(`dsh-hashline-edittool: direct settings.yaml fallback failed: ${message}`);
+			}
+	};
+	apply();
+	let watcher: ReturnType<typeof watchFile> | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		watcher = watchFile(settingsYamlPath(), { persistent: false }, () => {
+			// chokidar-style debounce: editors write in multiple chunks.
+			if (timer !== undefined) clearTimeout(timer);
+			timer = setTimeout(apply, 100);
+		});
+	} catch {
+		// settings.yaml absent — defaults apply; no watch without a file.
+	}
+	try {
+		ctx.effect(() => () => {
+			watcher?.close();
+			if (timer !== undefined) clearTimeout(timer);
+		});
+	} catch {
+		// effect registration unavailable — leak the watcher; process-lifetime only.
+	}
+}
+
 export function installHashlineSettings(ctx: Context): void {
 	// The settings service must exist for installSection to run. If
 	// the host did not mount one (minimal profile / smoke), provide our own
@@ -213,14 +257,15 @@ export function installHashlineSettings(ctx: Context): void {
 	};
 	const settingsSvc = (ctx as unknown as { get(name: string): unknown }).get("settings") as SettingsProvider | undefined;
 	if (settingsSvc === undefined) {
-		// Never silent: the swallowed-failure mode is exactly what made the
-		// dsh 0.1.2 settings breakage (#69) hard to diagnose. If we get here,
-		// ensureSettingsService reported success but the service is not
-		// resolvable from this context — the hashline section is NOT
-		// registered and defaults apply.
+		// ensureSettingsService reported success (e.g. the "already registered"
+		// elsewhere" tolerance) but the service is not resolvable from THIS
+		// context. Never silent — and never dead: fall back to the documented
+		// direct settings.yaml reads so config still works in any topology.
 		console.error(
-			"dsh-hashline-edittool: settings service unavailable after ensureSettingsService — hashline settings NOT registered, defaults apply. Please report this.",
+			"dsh-hashline-edittool: settings service unreachable from this context — hashline section NOT registered; falling back to direct settings.yaml reads. Please report this.",
 		);
+		startDirectFileFallback(ctx);
+		return;
 	}
 	try {
 		settingsSvc?.installSection(
