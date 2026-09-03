@@ -50,7 +50,7 @@ import {
 import { commit, resolveMissingPath, snapshotIdFor } from "./mutation.js";
 import { recordServedTruncated, recordServedAfterEdit } from "./session-view.js";
 import { editDescription } from "./prompts.js";
-import type { JsonValue } from "@deepseek-ai/dsh-session";
+import type { JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,

@@ -25,7 +25,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
-import { installSettingsSection } from "@deepseek-ai/dsh-settings";
 import { ensureSettingsService } from "./settings-provider.js";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
 
@@ -180,7 +179,7 @@ function createSnapshot(
  * `settings/updated` so live edits take effect immediately.
  */
 export function installHashlineSettings(ctx: Context): void {
-	// The settings service must exist for installSettingsSection to run. If
+	// The settings service must exist for installSection to run. If
 	// the host did not mount one (minimal profile / smoke), provide our own
 	// read-only file-backed provider — the settings.yaml file is the source
 	// of truth in every deployment.
@@ -202,7 +201,7 @@ export function installHashlineSettings(ctx: Context): void {
 		}
 	};
 	const hooks = snapshot.hooks;
-	// installSettingsSection drives its inject callback ASYNCHRONOUSLY: our
+	// installSection drives its inject callback ASYNCHRONOUSLY: our
 	// own sync() below may run before the section ever pushes its value into
 	// the snapshot. Re-apply on every onChange (attach + every commit) so the
 	// resolved value always lands.
@@ -212,7 +211,7 @@ export function installHashlineSettings(ctx: Context): void {
 		sync();
 	};
 	try {
-		installSettingsSection(
+		ctx.settings.installSection(
 			ctx,
 			HASHLINE_SETTINGS_NAMESPACE as never,
 			HashlineSettingsSchema,
