@@ -57,9 +57,9 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 /** Read tool description, generated from the effective config (text/json). */
 export function readDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return `Read a file as pure JSON: {path, offset, totalLines, lines: {anchor: content}} — each "lines" key is a variable-length Base62 edit anchor; the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.`;
+		return `Read a file as pure JSON: pass \`file_path\` (\`path\` accepted). Returns {path, offset, totalLines, lines: {anchor: content}} inside a \`<path>/<type>/<content>\` envelope — each "lines" key is a variable-length Base62 edit anchor; the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.`;
 	}
-	return "Read a text file: each line is `<anchor>:content` under a `ANCHOR:FILELINE` header; the left marker is the edit anchor (variable-length Base62, unique per line). With `line_numbers: true`, rows read `<line>:<anchor>:content` — the line is informational only. Binary/directory rejected; pageable with offset/limit.";
+	return "Read a text file: pass `file_path` (`path` accepted). Each line is `<anchor>:content` under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the left marker is the edit anchor (variable-length Base62, unique per line). With `line_numbers: true`, rows read `<line>:<anchor>:content` — the line is informational only. Binary/directory rejected; pageable with offset/limit.";
 }
 
 export const READ_GUIDANCE: ToolGuidance = {

@@ -20,17 +20,19 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
 	normalizeRequest as normReq,
 	assertReadRequest,
-	pathSchema,
+	readFilePathSchema,
+	readPathAliasSchema,
 	lineNumbersSchema,
 } from "./contract.js";
 
-import { readAndServe } from "./read-and-serve.js";
+import { readAndServe, UTF8_REWRITE_NOTE } from "./read-and-serve.js";
 import { readDescription } from "./prompts.js";
 import { DEFAULT_MAX_LINES } from "./file-view.js";
 import { splitLines } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import {
 	buildReadPresentation,
+	envelopeReadText,
 	buildReadJson,
 	extractReadBody,
 	langFromPath,
@@ -55,7 +57,8 @@ export function buildReadTool(io: FileIO) {
 		name: "read",
 		description: readDescription(getEffectiveConfig()),
 		parameters: {
-			path: pathSchema,
+			file_path: readFilePathSchema,
+			path: readPathAliasSchema,
 			offset: {
 				type: "number",
 				description: "Line number to start reading from (1-indexed)",
@@ -124,7 +127,9 @@ export function buildReadTool(io: FileIO) {
 		presentCall: (args) => {
 			const offset = (args as { offset?: number }).offset;
 			const limit = (args as { limit?: number }).limit;
-			const path = (args as { path?: string }).path;
+			const path =
+				(args as { path?: unknown; file_path?: unknown }).path ??
+				(args as { file_path?: unknown }).file_path;
 			if (typeof path !== "string") return undefined;
 			const window =
 				limit !== undefined && limit > 0
@@ -215,7 +220,7 @@ export function buildReadTool(io: FileIO) {
 						totalLines: 0,
 						lines: [],
 						hashlines: [],
-						modelText: result.text,
+						modelText: envelopeReadText(rawPath, result.text),
 					} as ReadValue & { modelText: string };
 				}
 
@@ -272,9 +277,14 @@ export function buildReadTool(io: FileIO) {
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the
 				// structured value's modelText is faithful to the original contract.
-				const modelText = result.hadUtf8DecodeErrors
-					? `${presentation.modelText}\n\n[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]`
+				const body = result.hadUtf8DecodeErrors
+					? `${presentation.modelText}\n\n${UTF8_REWRITE_NOTE}`
 					: presentation.modelText;
+				// dsh 0.1.2 web parity: the web client derives the read card only
+				// from a result text matching the read envelope; the card renders
+				// from presentationMeta, and the model still sees the usual rows
+				// inside the envelope.
+				const modelText = envelopeReadText(rawPath, body);
 				return { ...presentation, modelText };
 			});
 		},

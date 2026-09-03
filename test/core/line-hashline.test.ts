@@ -42,9 +42,13 @@ describe("read — header line", () => {
 			const res = await readTool.execute("r", { path: "h.txt" }, undefined, undefined, ctx);
 			const text = getText(res);
 			const lines = text.split("\n");
-			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\s*alpha$/);
-			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:beta$/);
+			// dsh 0.1.2 web parity: the read text is enveloped; rows start after it.
+			expect(lines[0]).toMatch(/^<path>.*h\.txt<\/path>$/);
+			expect(lines[1]).toBe("<type>file</type>");
+			expect(lines[2]).toBe("<content>");
+			expect(lines[3]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[4]).toMatch(/^[A-Za-z0-9]{2,8}:\s*alpha$/);
+			expect(lines[5]).toMatch(/^[A-Za-z0-9]{2,8}:beta$/);
 		});
 	});
 });

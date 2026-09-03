@@ -212,6 +212,16 @@ export function installHashlineSettings(ctx: Context): void {
 		sync();
 	};
 	const settingsSvc = (ctx as unknown as { get(name: string): unknown }).get("settings") as SettingsProvider | undefined;
+	if (settingsSvc === undefined) {
+		// Never silent: the swallowed-failure mode is exactly what made the
+		// dsh 0.1.2 settings breakage (#69) hard to diagnose. If we get here,
+		// ensureSettingsService reported success but the service is not
+		// resolvable from this context — the hashline section is NOT
+		// registered and defaults apply.
+		console.error(
+			"dsh-hashline-edittool: settings service unavailable after ensureSettingsService — hashline settings NOT registered, defaults apply. Please report this.",
+		);
+	}
 	try {
 		settingsSvc?.installSection(
 			ctx,

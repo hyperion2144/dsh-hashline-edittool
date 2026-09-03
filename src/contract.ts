@@ -317,6 +317,25 @@ export const pathSchema = {
 		"Default path for the edits. Required unless every item carries its own `path`. Accepts the built-in `file_path` spelling too.",
 } as const;
 
+/**
+ * Read tool path spellings. `file_path` is the CANONICAL model-facing name:
+ * the dsh 0.1.2 web client validates the raw call args (`JSON.parse(argsRaw)`,
+ * before any normalize layer) against `file_path` to derive the read card, so
+ * the schema must declare it and the description must teach it. `path` stays
+ * accepted as an alias for existing callers; `normalizeRequest` folds either
+ * spelling into `path` before validation.
+ */
+export const readFilePathSchema = {
+	type: "string",
+	description:
+		"Path of the file to read. Preferred spelling (also what the web UI expects).",
+} as const;
+
+export const readPathAliasSchema = {
+	type: "string",
+	description: "Alias of `file_path` — accepted for compatibility; prefer `file_path`.",
+} as const;
+
 /** Optional line-number output toggle shared by read/grep/edit/undo. */
 export const lineNumbersSchema = {
 	type: "boolean",

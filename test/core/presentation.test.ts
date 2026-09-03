@@ -50,7 +50,10 @@ describe("tool-read structured presentation", () => {
 			expect(value.lines[1]).toEqual({ number: 2, text: "beta" });
 			expect(value.hashlines[0]?.hash).toMatch(/^[A-Za-z0-9]{2,8}$/);
 			expect(value.hashlines[0]?.number).toBe(1);
-			expect(value.modelText).toMatch(/^ANCHOR:FILELINE/);
+			// dsh 0.1.2 web parity: model text is enveloped; the hashline header
+			// opens the envelope body.
+			expect(value.modelText).toMatch(/^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\nANCHOR:FILELINE/);
+			expect(value.modelText.endsWith("\n</content>")).toBe(true);
 		});
 	});
 
@@ -66,7 +69,9 @@ describe("tool-read structured presentation", () => {
 					arguments: args,
 				}) as never;
 			const value = (await tool.execute({ path: "p2.txt" }, exec({}))) as { modelText: string; lines: { number: number }[] };
-			expect(value.modelText.startsWith("ANCHOR:FILELINE")).toBe(true);
+			expect(value.modelText.startsWith("<path>")).toBe(true);
+			expect(value.modelText).toContain("\n<type>file</type>\n<content>\nANCHOR:FILELINE");
+			expect(value.modelText.endsWith("\n</content>")).toBe(true);
 			expect(value.modelText).toMatch(/\[Showing lines 1-2000 of 2500/);
 			expect(value.lines).toHaveLength(2000);
 		});

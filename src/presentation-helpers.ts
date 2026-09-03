@@ -211,12 +211,38 @@ export function buildReadPresentation(
 	};
 }
 
+/**
+ * The dsh 0.1.2 web client derives the read card ONLY when the tool result's
+ * single text block matches this envelope shape (readCardModel's regex,
+ * byte-for-byte). The inner body is NOT validated — the card renders from
+ * presentationMeta — so wrapping the hashline rows / pure-JSON view in this
+ * envelope restores the web read card while the model still sees its usual
+ * rows, plus four wrapper lines.
+ */
+export const DSH_READ_ENVELOPE_RE =
+	/^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\n([\s\S]*)\n<\/content>$/u;
+
+/**
+ * Wrap a read result's model-facing text in the dsh read envelope.
+ * The body is passed through verbatim (hashline rows or the pure-JSON view).
+ */
+export function envelopeReadText(path: string, body: string): string {
+	return `<path>${path}</path>\n<type>file</type>\n<content>\n${body}\n</content>`;
+}
+
 /** Regex that strips the `ANCHOR:FILELINE` header for the read-card `content` fallback. */
 const READ_BODY_RE = new RegExp(
 	`^${hashlineHeader().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\n([\\s\\S]*)$`,
 );
 
+/**
+ * Strip the read transport wrapper and return the body shown to the model.
+ * Prefers the dsh read envelope (0.1.2 web parity); falls back to the legacy
+ * `ANCHOR:FILELINE` header strip for pre-envelope model texts.
+ */
 export function extractReadBody(modelText: string): string | undefined {
+	const envelope = DSH_READ_ENVELOPE_RE.exec(modelText);
+	if (envelope !== null) return envelope[1];
 	const m = READ_BODY_RE.exec(modelText);
 	return m?.[1];
 }

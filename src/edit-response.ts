@@ -1,7 +1,16 @@
 import type { ServedRow } from "./hashline/served.js";
 import { genDiff } from "./edit-diff.js";
 import { visLines, clipLine } from "./utils.js";
-import { hashlineHeader, LINE_HASH_SEP, contextLinesCfg } from "./hashline/index.js";
+import { LINE_HASH_SEP, contextLinesCfg } from "./hashline/index.js";
+
+/**
+ * Compact legend opening every edit diff block. Replaces the long
+ * `ANCHOR:FILELINE` header (issue #69 / A): the generic web card shows this
+ * text raw, so it must read like a diff at a glance, while still telling the
+ * model that + and context rows carry fresh edit anchors.
+ */
+export const EDIT_DIFF_LEGEND =
+	"Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.";
 import type { HunkShift } from "./edit-engine.js";
 
 
@@ -203,7 +212,7 @@ export function buildChanged(input: SuccessInput): TResult {
 			? ` Added ${addedLines} line(s), removed ${removedLines} line(s).`
 			: "";
 	const noticeBlock = driftBlock(driftNotice);
-	const diffBody = diffResult.diff ? `${hashlineHeader()}\n${diffResult.diff}` : "";
+	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
 	const text =
 		resultLines.length === 0
 			? "File is empty. Use edit to insert content." + noticeBlock
@@ -299,7 +308,7 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			s.originalHashes,
 		);
 		diffParts.push(
-			`--- ${s.path} ---\n${hashlineHeader()}\n${diffResult.diff}`
+			`--- ${s.path} ---\n${EDIT_DIFF_LEGEND}\n${diffResult.diff}`
 		);
 		if (diffResult.servedRows.length > 0) {
 			servedByPath.push({ path: s.path, servedRows: diffResult.servedRows });
