@@ -133,4 +133,11 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 		startDirectFileFallback(ctx);
 		expect(getEffectiveConfig().outputFormat).toBe("text");
 	});
+
+	// NOTE: the unreachable-service retry branch (scheduleSettingsRetry) cannot
+	// be exercised in a single-cordis-copy test process — it only triggers when
+	// the host registered the service somewhere ctx.get cannot see (dual
+	// instance / realm topologies, issue #69 restart finding). Verified by
+	// restart smoke test: fallback applies config, retry installs the section
+	// once the service becomes visible and logs "became visible".
 });

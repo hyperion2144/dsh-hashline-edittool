@@ -42,7 +42,7 @@ export interface EditItemParams {
 	 * forbidden for `ins`.
 	 */
 	anchor_end?: string;
-	/** Required for `ins` and `replace`; forbidden for `del`. New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
+	/** Required for `ins` and `replace`; ignored for `del` (deletion is anchor-defined). New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
 	lines?: string[];
 	/** Optional per-item path override (multi-file edits in one call). */
 	path?: string;
@@ -121,7 +121,7 @@ export const normReq = normalizeRequest;
  *   - `anchor_start` is required and a non-empty string (the anchor)
  *   - `anchor_end` is forbidden for `op: "ins"`, optional otherwise (required for `op: "replace"`)
  *   - `lines` is required and must be a non-empty string array for `ins` /
- *     `replace`, and forbidden for `del`
+ *     `replace`; on `del` it is accepted and IGNORED (anchor-defined deletion)
  *   - per-item `path`, if set, must be a non-empty string
  */
 export function assertEditItem(
@@ -182,11 +182,10 @@ export function assertEditItem(
 					: `[E_BAD_SHAPE] edits[${index}].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`,
 			);
 		}
-	} else if (item.lines !== undefined) {
-		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}].op:"del" does not accept "lines"; use op:"replace" with lines:[""] to clear a single line.`,
-		);
 	}
+	// op:"del" with `lines` set: accepted and IGNORED (issue #69 user feedback) —
+	// deletion is anchor-defined; the model sometimes carries lines from a
+	// copy-pasted replace pattern, and a hard reject forced a pointless retry.
 	if (item.path !== undefined) {
 		if (typeof item.path !== "string" || item.path.length === 0) {
 			throw new Error(
@@ -294,7 +293,7 @@ export const editItemSchema = {
 			type: "array",
 			items: { type: "string" },
 			description:
-				'Required and must be non-empty for `op:"ins"` and `op:"replace"`. Forbidden for `op:"del"`. For `ins`: lines to insert after `anchor_start`. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
+				'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. For `ins`: lines to insert after `anchor_start`. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
 		},
 		path: {
 			type: "string",
@@ -318,12 +317,13 @@ export const pathSchema = {
 } as const;
 
 /**
- * Read tool path spellings. `file_path` is the CANONICAL model-facing name:
+ * Read tool path spelling. `file_path` is the ONLY model-facing name:
  * the dsh 0.1.2 web client validates the raw call args (`JSON.parse(argsRaw)`,
  * before any normalize layer) against `file_path` to derive the read card, so
- * the schema must declare it and the description must teach it. `path` stays
- * accepted as an alias for existing callers; `normalizeRequest` folds either
- * spelling into `path` before validation.
+ * the schema declares exactly that spelling and the description teaches it.
+ * `path` is deliberately NOT a schema parameter anymore (removed in #69);
+ * `normalizeRequest` still folds a `path` key into `path` before validation,
+ * so direct API callers predating the rename keep working without a card.
  */
 export const readFilePathSchema = {
 	type: "string",
@@ -331,10 +331,6 @@ export const readFilePathSchema = {
 		"Path of the file to read. Preferred spelling (also what the web UI expects).",
 } as const;
 
-export const readPathAliasSchema = {
-	type: "string",
-	description: "Alias of `file_path` — accepted for compatibility; prefer `file_path`.",
-} as const;
 
 /** Optional line-number output toggle shared by read/grep/edit/undo. */
 export const lineNumbersSchema = {
