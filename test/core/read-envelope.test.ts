@@ -97,7 +97,9 @@ describe("read file_path spelling (raw args the web validates)", () => {
 			presentCall: (args: unknown) => { title: string } | undefined;
 		};
 		expect(tool.parameters.properties.file_path).toBeDefined();
-		expect(tool.parameters.properties.path).toBeDefined();
+		// `path` was removed from the schema (issue #69): file_path is the only
+		// model-facing spelling, so the raw args satisfy validReadCall.
+		expect(tool.parameters.properties.path).toBeUndefined();
 
 		// presentCall prefers the file_path spelling for the call-card title.
 		const card = tool.presentCall({ file_path: "a.txt", offset: 2 });

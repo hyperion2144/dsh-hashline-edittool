@@ -31,6 +31,9 @@ import { applyHashlineShape } from "./hashline/hash-assign.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
+/** Poll cadence / give-up window for the deferred settings-section install. */
+const RETRY_INTERVAL_MS = 200;
+const RETRY_GIVE_UP_MS = 30_000;
 export interface HashlineSettings {
 	separator?: string;
 	output_format?: "text" | "json";
@@ -186,7 +189,7 @@ function createSnapshot(
  * Reads `settings.yaml` once, applies it, then watches the file so live edits
  * keep working without the host service. The watcher is disposed with ctx.
  */
-export function startDirectFileFallback(ctx: Context): void {
+export function startDirectFileFallback(ctx: Context): () => void {
 	const apply = (): void => {
 			try {
 				applyEffective(parseSettingsYaml(readFileSync(settingsYamlPath(), "utf-8")));
@@ -220,6 +223,64 @@ export function startDirectFileFallback(ctx: Context): void {
 		});
 	} catch {
 		// effect registration unavailable — leak the watcher; process-lifetime only.
+	}
+	return () => {
+		watcher?.close();
+		if (timer !== undefined) clearTimeout(timer);
+	};
+}
+
+/**
+ * Background retry for the boot-order race (issue #69 restart finding): at
+ * plugin apply time the host settings provider may already be registered but
+ * its fiber not yet started, so `ctx.get("settings")` (strict on fiber state)
+ * returns undefined and the section cannot be installed yet. Until it becomes
+ * visible, the direct-file fallback keeps config alive; once visible, the
+ * managed section is installed and the fallback is retired.
+ */
+function scheduleSettingsRetry(
+	ctx: Context,
+	hooks: SettingsSnapshotHooks,
+	onAcquired: () => void,
+): void {
+	const startedAt = Date.now();
+	let attempts = 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const attempt = (): void => {
+		attempts += 1;
+		const svc = (ctx as unknown as { get(name: string): unknown }).get("settings") as
+			SettingsProvider | undefined;
+		if (svc !== undefined) {
+			try {
+				svc.installSection(
+					ctx,
+					HASHLINE_SETTINGS_NAMESPACE as never,
+					HashlineSettingsSchema,
+					{} as HashlineSettings,
+					hooks,
+				);
+				console.error(
+					`dsh-hashline-edittool: settings service became visible after ${Date.now() - startedAt}ms (${attempts} attempt(s)) — managed section installed, direct-file fallback retired. Please report this if it recurs every boot.`,
+				);
+				onAcquired();
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(
+					`dsh-hashline-edittool: deferred settings install failed (tolerated, direct-file fallback stays): ${message}`,
+				);
+			}
+			return;
+		}
+		if (Date.now() - startedAt >= RETRY_GIVE_UP_MS) return; // fallback keeps working forever
+		timer = setTimeout(attempt, RETRY_INTERVAL_MS);
+	};
+	timer = setTimeout(attempt, RETRY_INTERVAL_MS);
+	try {
+		ctx.effect(() => () => {
+			if (timer !== undefined) clearTimeout(timer);
+		});
+	} catch {
+		// effect registration unavailable — leak the timer; process-lifetime only.
 	}
 }
 
@@ -264,11 +325,12 @@ export function installHashlineSettings(ctx: Context): void {
 		console.error(
 			"dsh-hashline-edittool: settings service unreachable from this context — hashline section NOT registered; falling back to direct settings.yaml reads. Please report this.",
 		);
-		startDirectFileFallback(ctx);
+		const stopFallback = startDirectFileFallback(ctx);
+		scheduleSettingsRetry(ctx, hooks, () => stopFallback());
 		return;
 	}
 	try {
-		settingsSvc?.installSection(
+		settingsSvc.installSection(
 			ctx,
 			HASHLINE_SETTINGS_NAMESPACE as never,
 			HashlineSettingsSchema,

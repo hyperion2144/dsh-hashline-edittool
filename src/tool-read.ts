@@ -21,7 +21,6 @@ import {
 	normalizeRequest as normReq,
 	assertReadRequest,
 	readFilePathSchema,
-	readPathAliasSchema,
 	lineNumbersSchema,
 } from "./contract.js";
 
@@ -58,7 +57,6 @@ export function buildReadTool(io: FileIO) {
 		description: readDescription(getEffectiveConfig()),
 		parameters: {
 			file_path: readFilePathSchema,
-			path: readPathAliasSchema,
 			offset: {
 				type: "number",
 				description: "Line number to start reading from (1-indexed)",

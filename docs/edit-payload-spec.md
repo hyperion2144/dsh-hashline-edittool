@@ -126,7 +126,7 @@ defineTool({
 Validation rules (in `execute`, after schema soft-validates the schema shape):
 
 - If `op === "ins"` and `anchor_end` is set → not rejected (lenient): a warning is emitted — `edits[i].op:"ins" ignores anchor_end — ins inserts after anchor_start; drop the field.`
-- If `op === "del"` and `lines` is set (or `lines: []` empty array) → `[E_BAD_SHAPE] edits[i].op:"del" does not accept "lines"; use op:"replace" with lines:[""] to clear a single line.`
+- If `op === "del"` and `lines` is set → accepted and IGNORED (issue #69): deletion is defined by the anchors alone; no warning, no rejection.
 - If `op === "replace"` and `anchor_end` is missing → `[E_MISSING_ANCHOR_END] edits[i].op:"replace" requires BOTH anchor_start and anchor_end — replace always swaps a whole range; for a single-line replace pass the same anchor twice (anchor_start === anchor_end). To insert lines, use op:"ins".`
 - If `op === "replace"` and `lines` is missing or empty → `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`
   (An edit that replaces with `[""]` is distinct from `op:"del"`: the line
@@ -382,7 +382,7 @@ original snapshot; overlapping ranges are rejected; applied atomically):
 | `edit.op: "ins"` with empty `lines` | Reject: `[E_BAD_SHAPE] edits[i].op:"ins" requires a non-empty "lines" array of strings to insert.` |
 | `edit.op: "del"` single line | `anchor_start` line is removed; Shift block shows the -1 below. |
 | `edit.op: "del"` range | `anchor_start..anchor_end` lines are removed; Shift block shows the -range. |
-| `edit.op: "del"` with `lines` set | Reject: `[E_BAD_SHAPE] edits[i].op:"del" does not accept "lines"; use op:"replace" with lines:[""] to clear a single line.` |
+| `edit.op: "del"` with `lines` set | Accepted; `lines` is IGNORED (issue #69) — deletion is defined by `anchor_start..anchor_end` alone. |
 | `edit.op: "replace"` single line | `anchor_start` line is replaced with `lines` (both anchors passed); no Shift block (net line count 0). |
 | `edit.op: "replace"` range | `anchor_start..anchor_end` lines are replaced with `lines`; Shift block if `lines.length !== range.length`. |
 | `edit.op: "replace"` with empty `lines` | Reject: `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.` |
