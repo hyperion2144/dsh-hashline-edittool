@@ -62,7 +62,7 @@ import { execCwd, execSessionKey } from "./session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
 import { genDiff } from "./edit-diff.js";
-import { hashlineHeader } from "./hashline/index.js";
+import { EDIT_DIFF_LEGEND } from "./edit-response.js";
 
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
@@ -578,7 +578,7 @@ function buildChangedModelText(
 		file.originalHashes,
 		lineNumbers,
 	);
-	const diffBody = diffResult.diff ? `${hashlineHeader()}\n${diffResult.diff}` : "";
+	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
 	const successPrefix = `Successfully edited in ${displayPath}.`;
 	const lineSummary =
 		linesAdded > 0 || linesRemoved > 0
