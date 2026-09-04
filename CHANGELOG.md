@@ -19,6 +19,18 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - 文档：README / README.zh 全面向 v2.0 契约迁移（变长锚点、无 Shift 块、line_numbers、json 形状）；配置示例移除 `hash_length`；指南种子文件（`<preset>/*.md`）重播种。
 - **grep `regex` 开关默认改为 true（v2.0.2）**：pattern 默认按 JavaScript 正则解析，`regex: false` 退回字面子串匹配（工具 schema / 描述 / guidance / README 同步）。
 - **错误 UX 修复**：失效裸锚不再把 `-1` 哨兵泄漏进 `line -1..-1 is out of range` 消息——改由 mismatch 渲染器输出 `[E_STALE]` + ±上下文回显 + fresh markers；越界闸门仅在存在真实行声明（解析行号或显式 `<line>:<anchor>` 提示）时触发。
+
+### Fixed — dsh 0.1.2 适配补全（issue #69）
+
+- **read 卡片恢复（web 端 dsh 0.1.2 raw-events 卡片推导，实测通过）**：`read` 参数 schema 改为仅声明 `file_path` 规范拼写（`path` 参数移除——web 从 raw args 读 `file_path`，保留别名会导致卡片退化；执行层 `normalizeRequest` 仍容忍旧 `path` 调用，直接 API 调用方不受影响，只是无卡片）；modelText 包裹 dsh 原生 `<path>/<type>/<content>` 信封（信封正则只验存在、内容不校验，卡片数据仍走 `presentationMeta`；模型看到的内容不变，仅多 4 行包裹）。
+- **settings 服务不可见的直接读兜底 + 后台重试接管（重启实测发现）**：`ensureSettingsService` 的“已在他处注册”容忍路径会返回 true 但 `ctx.get("settings")` 因提供 fiber 未启动（strict）而拿不到服务 → 旧代码静默跳过 section 注册。现在：不可见时直接读 `settings.yaml`（含 fs.watch 热更新、ctx 卸载清理）保持配置存活，并后台重试；服务可见后真正注册 section 并退役兜底（各阶段均有日志）。
+- **edit `op:"del"` 容忍 `lines`（用户反馈）**：`del` 携带 `lines` 不再 `[E_BAD_SHAPE]` 硬拒——接受并忽略（删除仅由锚点定义），消除复制粘贴 replace 模式时的无谓重试。
+- **settings 静默失败加固**：`settingsSvc` 解析为 undefined 时输出 console.error（不再静默跳过 section 注册——这正是 #69 问题 1 在 33fee0e 上难以定位的根因形态）；新增 `installHashlineSettings` × 真实 `@deepseek-ai/dsh-settings` 集成测试。
+- **edit 呈现优化（generic 卡片可读性）**：edit/batch 响应文本的 `ANCHOR:FILELINE` 长 header 替换为单行紧凑 legend（`Diff rows: <+|-><anchor>:<content> …`；线上路径 `tool-edit.buildChangedModelText`）；锚点行格式不变，模型的锚点链编辑契约不受影响。
+- **undo 提示措辞**：明确撤销 diff 中仅 `+` 行（恢复行）携带可用新锚点，`-` 行为已删除行（锚点失效）。
+- **settings 集成测试扩至 6 场景**：publish 先后两种时序（含 scope.watch 自愈）、无宿主 service 直接读兜底、非法值容忍、separator 往返、服务不可见时直接读兜底 + 后台重试接管。
+- **已知限制（记录）**：schemastery `z.union` 对非法值静默丢弃且整个 section 归零（如 `output_format: bogus` 连带 separator 失效），无日志——集成测试已钉住该行为，属上游语义。
+
 ## [0.4.1] - 2026-08-30
 
 ### Added

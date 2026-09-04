@@ -226,7 +226,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				);
 			}
 			parts.push(
-				"File reverted to previous state. The post-edit diff rows carry the restored file\u2019s fresh anchors for follow-up edits.",
+				"File reverted to previous state. The revert diff\u2019s `+` rows (restored lines) carry fresh anchors for follow-up edits; `-` rows are the removed lines — their anchors are dead.",
 			);
 
 			if (undoDiffResult.servedRows.length > 0) {
