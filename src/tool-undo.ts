@@ -115,7 +115,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			const canonical = normReq(args);
 			assertUndoRequest(canonical);
-			const lineNumbers = canonical.line_numbers === true;
+			const lineNumbers = canonical.line_numbers !== false;
 			const path = canonical.path;
 			const absolutePath = await io.resolve(path, cwd, signal);
 			const sandboxPolicy = await sandbox.resolvePolicy("undo_last_edit", canonical as unknown as FsEscalationArgs, exec);

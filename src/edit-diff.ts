@@ -43,7 +43,7 @@ function fmtDiffLine(
 	hash: string | undefined,
 	lineNumber: number,
 	oldHash: string | undefined = undefined,
-	lineNumbers = false,
+	lineNumbers = true,
 ): string {
 	const anchor = oldHash ?? hash ?? " ".repeat(4);
 	const marker = lineNumbers ? `${lineNumber}:${anchor}` : anchor;
@@ -71,10 +71,10 @@ export function genDiff(
 	contextLines = contextLinesCfg(),
 	newContentHashes?: string[],
 	oldContentHashes?: string[],
-	lineNumbers = false,
+	lineNumbers = true,
 ): {
 	diff: string;
-	rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string }>;
+	rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }>;
 	firstChangedLine: number | undefined;
 	servedRows: ServedRow[];
 } {
@@ -172,12 +172,20 @@ servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChe
 			? `${row.lineNumber}:${row.oldHash ?? row.hash ?? " ".repeat(4)}`
 			: `${row.oldHash ?? row.hash ?? " ".repeat(4)}`;
 	let anchorWidth = 0;
-	const rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string }> = [];
+	const rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }> = [];
 	for (const row of output) {
 		if (typeof row === "string") continue;
 		const anchor = markerFor(row);
 		if (anchor.length > anchorWidth) anchorWidth = anchor.length;
-		rows.push({ kind: row.prefix, anchor, content: row.line });
+		rows.push({
+			kind: row.prefix,
+			anchor,
+			content: row.line,
+			lineNumber: row.lineNumber,
+			// 纯 hash（不含行号前缀）—— json diff 的 key 构造需要它与行号分开拼接，
+			// 否则 lineNumbers 开启时 anchor 已含 "<line>:" 会出现双行号（issue #69）。
+			hash: (row.oldHash ?? row.hash ?? ""),
+		});
 	}
 	const aligned = output.map((row) => {
 		if (typeof row === "string") return row; // " ..." ellipsis rows etc.

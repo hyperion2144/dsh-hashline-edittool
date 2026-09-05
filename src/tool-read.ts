@@ -187,7 +187,7 @@ export function buildReadTool(io: FileIO) {
 							signal,
 							offset: canonical.offset,
 							limit: canonical.limit,
-							lineNumbers: canonical.line_numbers === true,
+							lineNumbers: canonical.line_numbers !== false,
 						},
 					);
 				} catch (err) {
@@ -247,7 +247,7 @@ export function buildReadTool(io: FileIO) {
 							hashlines.push({ number, hash, text });
 							// anchor-keyed dict (grep/edit symmetry); with line_numbers on
 							// the key renders as <line>:<anchor> like the text rows.
-							lineDict[canonical.line_numbers === true ? `${number}:${hash}` : hash] = text;
+							lineDict[canonical.line_numbers !== false ? `${number}:${hash}` : hash] = text;
 						}
 						const modelView = {
 							path: rawPath,
@@ -270,7 +270,7 @@ export function buildReadTool(io: FileIO) {
 							canonical.offset ?? 1,
 							canonical.limit ?? DEFAULT_MAX_LINES,
 							rawPath,
-							{ lineNumbers: canonical.line_numbers === true },
+							{ lineNumbers: canonical.line_numbers !== false },
 						);
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the
