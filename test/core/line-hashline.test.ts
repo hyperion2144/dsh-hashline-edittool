@@ -8,12 +8,14 @@
  *   - stale anchor echo uses read format (±3 context)
  *   - grep tool outputs read-format matches
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, afterEach } from "vitest";
+import { applyEffective } from "../../src/config.js";
 import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
 import { genDiff } from "../../src/edit-diff.js";
 import {
 	parseHashRef,
 	grepFileContent,
+	fmtRegion,
 	lineHashesPure,
 	lineHashes,
 } from "../../src/hashline/index.js";
@@ -202,5 +204,31 @@ describe("grep — line#hash output", () => {
 		const hashes = lineHashesPure("a\nb\nc\n");
 		const section = await grepFileContent("/x", "a\nb\nc\n", hashes, "zzz");
 		expect(section).toBeUndefined();
+	});
+});
+
+// issue #69: the `<line>:` prefix is FIXED positional syntax — the configurable
+// separator only separates the anchor from the content. A "|"-configured
+// deployment must render `<line>:<anchor>|content`, never `<line>|<anchor>|…`.
+describe("fmtRegion — line-number prefix vs configurable separator", () => {
+	afterEach(() => {
+		applyEffective({});
+	});
+
+	it("keeps `:` between line number and anchor when separator is `|`", () => {
+		applyEffective({ separator: "|" });
+		const hashes = lineHashesPure("alpha\nbeta\n");
+		const out = fmtRegion(hashes.slice(0, 2), ["alpha", "beta"], 1, { lineNumbers: true });
+		const rows = out.split("\n");
+		expect(rows[0]).toMatch(/^1:[A-Za-z0-9]{2,8}\|\s*alpha$/);
+		expect(rows[1]).toMatch(/^2:[A-Za-z0-9]{2,8}\|\s*beta$/);
+		expect(rows[0]).not.toMatch(/^1\|/);
+	});
+
+	it("omits the prefix entirely when lineNumbers is false", () => {
+		applyEffective({ separator: "|" });
+		const hashes = lineHashesPure("alpha\n");
+		const out = fmtRegion(hashes.slice(0, 1), ["alpha"], 1, { lineNumbers: false });
+		expect(out).toMatch(/^[A-Za-z0-9]{2,8}\|\s*alpha$/);
 	});
 });
