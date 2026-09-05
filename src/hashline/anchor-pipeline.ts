@@ -1304,7 +1304,11 @@ export function fmtRegion(
 	const lineNumbers = opts?.lineNumbers !== false;
 	const markers = lines.map((_, index) =>
 		lineNumbers
-			? `${startLine + index}${hashSep()}${anchors[index]}`
+			// The line-number prefix is FIXED positional syntax: `<line>:<anchor>` —
+			// the configurable separator only separates the anchor from the content
+			// (issue #69: using hashSep() here made "|"-configured deployments emit
+			// `2|3x|content`, drifting from read's `<line>:<anchor>:content`).
+			? `${startLine + index}:${anchors[index]}`
 			: anchors[index]!,
 	);
 	const width = anchorWidth(markers);
