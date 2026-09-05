@@ -30,9 +30,15 @@ async function servedRows(
 	const res = await harness.readTool.execute("read", { path });
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
-		const m = /^([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line);
-		if (m && line.startsWith("ANCHOR:")) continue; // skip the header row
-		if (m) rows.push({ hash: m[1]!, content: m[2]! });
+		if (line.startsWith("ANCHOR:")) continue; // skip the header row
+		// Rows are `<line>:<anchor>:content` by default (#69); tolerate bare
+		// `<anchor>:content` and diff +/- prefixes.
+		const m = /^(?:[+\- ])?(\d+):([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line);
+		if (m) rows.push({ hash: m[2]!, content: m[3]! });
+		else {
+			const bare = /^([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line.replace(/^[+\- ]/, ""));
+			if (bare) rows.push({ hash: bare[1]!, content: bare[2]! });
+		}
 	}
 	return rows;
 }
@@ -191,12 +197,12 @@ describe("exact line-count edit contract", () => {
 			});
 			const out = JSON.parse(getText(res)) as { ok: boolean; diff: Record<string, string> };
 			expect(out.ok).toBe(true);
-			// removed row: "-" + old anchor; added row: "+" + final anchor
-			expect(out.diff[`-${by("b").hash}`]).toBe("b");
+			// removed row: "-<old line>:<old anchor>"; added row: "+<final line>:<final anchor>";
+			// context rows: "<line>:<anchor>" (mirrors read's keys).
+			expect(out.diff[`-2:${by("b").hash}`]).toBe("b");
 			const added = Object.keys(out.diff).find((k) => k.startsWith("+")) ?? "";
-			// context rows use BARE anchors, aligned with read's lines
-			expect(out.diff[by("a").hash]).toBe("a");
-			expect(out.diff[by("c").hash]).toBe("c");
+			expect(out.diff[`1:${by("a").hash}`]).toBe("a");
+			expect(out.diff[`3:${by("c").hash}`]).toBe("c");
 		});
 	});
 
@@ -231,9 +237,9 @@ describe("exact line-count edit contract", () => {
 			};
 			const matches = out.files[0]!.matches;
 			// match row and its context rows all live in the one dict (key = line#hash)
-			expect(matches[served[1]!.hash]).toBe("beta");
-			expect(matches[served[0]!.hash]).toBe("alpha");
-			expect(matches[served[2]!.hash]).toBe("gamma");
+			expect(matches[`2:${served[1]!.hash}`]).toBe("beta");
+			expect(matches[`1:${served[0]!.hash}`]).toBe("alpha");
+			expect(matches[`3:${served[2]!.hash}`]).toBe("gamma");
 		});
 	});
 

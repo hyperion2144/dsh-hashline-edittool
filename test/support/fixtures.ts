@@ -261,7 +261,11 @@ export function getText(result: { content: Array<{ text?: string }> }): string {
 }
 
 export function extractHash(line: string): string {
-	return line.split(":")[0]!;
+	// Rows are `<line>:<anchor>:content` by default (#69), or bare
+	// `<anchor>:content` with line_numbers off; diff rows add a +/-/space prefix.
+	const body = line.replace(/^[+\- ]+/, "");
+	const parts = body.split(":");
+	return /^\d+$/.test(parts[0]!) ? parts[1]! : parts[0]!;
 }
 
 export function expectedEditContent(

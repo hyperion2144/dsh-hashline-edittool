@@ -243,7 +243,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					canonical.path = resolution.path;
 				}
 				assertEditRequest(canonical);
-				const lineNumbers = canonical.line_numbers === true;
+				const lineNumbers = canonical.line_numbers !== false;
 				if (resolution) {
 					// Preserve the path-resolution warning at the top of the warnings list.
 					(canonical as { _pathWarning?: string })._pathWarning = resolution.warning;
@@ -530,7 +530,7 @@ function enforceNoopLoopSync(opts: {
 function buildCanonicalFromFileResult(
 	file: FileEditResult,
 	displayPath: string,
-	lineNumbers = false,
+	lineNumbers = true,
 ): EditCanonicalValue {
 	const result = {
 		path: displayPath,
@@ -560,7 +560,7 @@ function buildCanonicalFromFileResult(
 function buildChangedModelText(
 	file: FileEditResult,
 	displayPath: string,
-	lineNumbers = false,
+	lineNumbers = true,
 ): string {
 	if (file.appliedCount === 0) {
 		const warningsBlock =
@@ -637,7 +637,14 @@ function buildEditJson(
 		);
 	const diffDict: Record<string, string> = {};
 	for (const r of diff.rows) {
-		const key = r.kind === "-" ? `-${r.anchor}` : r.kind === "+" ? `+${r.anchor}` : r.anchor;
+		// Key carries the row type + FINAL line number + anchor (mirrors read's
+		// `<line>:<anchor>` keys; '-' rows keep the OLD line number).
+		const key =
+			r.kind === "-"
+				? `-${r.lineNumber}:${r.hash}`
+				: r.kind === "+"
+					? `+${r.lineNumber}:${r.hash}`
+					: `${r.lineNumber}:${r.hash}`;
 		diffDict[key] = r.content;
 	}
 	return {

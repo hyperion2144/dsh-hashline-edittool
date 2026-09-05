@@ -127,7 +127,7 @@ describe("genDiff", () => {
   it("renders a literal __ELLIPSIS__ line as content, not as a truncation marker", () => {
     const oldContent = "a\n__ELLIPSIS__\nc\nd\n";
     const newContent = "a\n__ELLIPSIS__\nc\nD\n";
-    const { diff } = genDiff(oldContent, newContent, 3);
+    const { diff } = genDiff(oldContent, newContent, 3, undefined, undefined, undefined, false);
     const lines = diff.split("\n");
     expect(lines.some((line) => line.endsWith(":__ELLIPSIS__"))).toBe(true);
     expect(lines.filter((line) => line.trim() === "...")).toHaveLength(0);
@@ -137,7 +137,7 @@ describe("genDiff", () => {
     const oldContent = "a\n__ELLIPSIS__\nc\nd\n";
     const newContent = "a\n__ELLIPSIS__\nc\nD\n";
     const hashes = lineHashesPure(newContent);
-    const { diff } = genDiff(oldContent, newContent, 2, hashes);
+    const { diff } = genDiff(oldContent, newContent, 2, hashes, undefined, false);
     const cLine = diff.split("\n").find((line) => line.endsWith(":c"))!;
 		expect(cLine.trimStart().startsWith(hashes[2]!)).toBe(true);
   });
