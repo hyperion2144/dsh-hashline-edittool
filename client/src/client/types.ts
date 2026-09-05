@@ -98,6 +98,23 @@ export interface DiffCardProps {
 	diffs: readonly FileDiff[];
 }
 
+/** One rendered diff row from the persisted meta (rendering channel, issue #71). */
+export interface DiffRowMeta {
+	/** `+` added, `-` removed, ` ` context. */
+	kind: "+" | "-" | " ";
+	/** `+` / context: the post-edit line number. `-`: the pre-edit line number. */
+	lineNumber: number;
+	/** `+` / context: the served post-edit anchor. `-`: the stale pre-edit anchor. Empty when unknown. */
+	hash: string;
+	text: string;
+}
+
+/** A diff card backed by the structured rows projection (gutter-rendering). */
+export interface RowsDiffCard {
+	path: string;
+	rows: readonly DiffRowMeta[];
+}
+
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
 	variant: "read" | "edit";

@@ -31,7 +31,6 @@ import { splitLines } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import {
 	buildReadPresentation,
-	envelopeReadText,
 	buildReadJson,
 	extractReadBody,
 	langFromPath,
@@ -218,10 +217,10 @@ export function buildReadTool(io: FileIO) {
 						totalLines: 0,
 						lines: [],
 						hashlines: [],
-						modelText: envelopeReadText(rawPath, result.text),
+						modelText: result.text,
 					} as ReadValue & { modelText: string };
 				}
-
+				
 				const presentation = isJsonOutput()
 					? (() => {
 						// v2.0 (#66/B1): rebuild the pure-JSON view on the bare-anchor
@@ -278,12 +277,13 @@ export function buildReadTool(io: FileIO) {
 				const body = result.hadUtf8DecodeErrors
 					? `${presentation.modelText}\n\n${UTF8_REWRITE_NOTE}`
 					: presentation.modelText;
-				// dsh 0.1.2 web parity: the web client derives the read card only
-				// from a result text matching the read envelope; the card renders
-				// from presentationMeta, and the model still sees the usual rows
-				// inside the envelope.
-				const modelText = envelopeReadText(rawPath, body);
-				return { ...presentation, modelText };
+				// Issue #71: the dsh read envelope is gone. Direction B (the bundled
+				// companion client plugin) renders the web read card from the
+				// persisted presentationMeta alone, so the model no longer pays the
+				// four <path>/<type>/<content> wrapper lines per read — and json
+				// mode emits pure JSON again. extractReadBody still strips the
+				// envelope from PRE-0.4.2 session history.
+				return { ...presentation, modelText: body };
 			});
 		},
 	});

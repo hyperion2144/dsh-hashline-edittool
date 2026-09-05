@@ -20,6 +20,7 @@
 
 import type {
 	DiffCardProps,
+	DiffRowMeta,
 	FileDiff,
 	ReadCardProps,
 	ReadMetaHashline,
@@ -66,14 +67,6 @@ export function parsedToolCall(block: ToolCallBlock): ParsedToolCall | null {
 	const parsed: ParsedToolCall = { name: call.name, args: value };
 	parsedCalls.set(block, parsed);
 	return parsed;
-}
-
-/** The exact single text block the card derivations consume. */
-function singleResultText(block: ToolCallBlock): string | undefined {
-	if (!("kind" in block)) return undefined;
-	if (block.content.length !== 1) return undefined;
-	const only = block.content[0];
-	return only?.type === "text" ? only.text : undefined;
 }
 
 /** Flatten a settled result's content blocks to display text. */
@@ -201,9 +194,8 @@ export function toolRowModel(
 }
 
 //#endregion
-//#region read card (mirror of shipped readCardModel + hashline gutter)
 
-const DSH_READ_ENVELOPE_RE = /^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\n([\s\S]*)\n<\/content>$/u;
+//#region read card (mirror of shipped readCardModel + hashline gutter)
 
 function validReadCall(block: ToolCallBlock): boolean {
 	const call = parsedToolCall(block);
@@ -260,9 +252,15 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 
 /**
  * Derive the settled read card. Requires the official contract (root, settled,
- * non-error call, valid meta, envelope text) and renders the hashline gutter
- * (`<line>:<anchor>`) whenever the meta carries valid hashlines; an empty hash
- * falls back to the bare number for that row.
+ * non-error call, valid `read` arguments and valid presentationMeta) and
+ * renders the hashline gutter (`<line>:<anchor>`) whenever the meta carries
+ * valid hashlines; an empty hash falls back to the bare number for that row.
+ *
+ * Unlike the shipped readCardModel there is NO envelope requirement: since
+ * issue #71 the main plugin no longer wraps read results in the dsh
+ * `<path>/<type>/<content>` envelope, so the card derives from the persisted
+ * meta alone. Enveloped pre-0.4.2 history still renders — the envelope is
+ * simply never required.
  * @param block - running or settled Tool block.
  * @param cwd - session workspace root for relative summaries.
  * @param home - host account home for `~` abbreviation.
@@ -277,8 +275,6 @@ export function readCardModel(
 	if (!validReadCall(block)) return null;
 	const meta = readPresentationMeta(block.meta);
 	if (meta === null) return null;
-	const text = singleResultText(block);
-	if (text === undefined || DSH_READ_ENVELOPE_RE.exec(text)?.[1] === undefined) return null;
 	const hashByNumber = new Map<number, string>();
 	for (const line of meta.hashlines ?? []) hashByNumber.set(line.number, line.hash);
 	return {
@@ -360,22 +356,57 @@ function appliedDiffs(meta: unknown): FileDiff[] | null | "empty" {
  * @param block - running or settled Tool block.
  * @returns the diff-card props, or null for the generic path.
  */
-export function diffCardModel(block: ToolCallBlock): DiffCardProps | null {
+export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 	if (block.parentCallId !== undefined) return null;
 	if (!("kind" in block)) {
 		const intended = intendedDiff(block);
-		return intended === null ? null : { diffs: [intended.diff] };
+		return intended === null ? null : { path: intended.diff.path, diffs: [intended.diff] };
 	}
 	if (block.isError) return null;
 	const applied = appliedDiffs(block.meta);
-	if (applied !== null && applied !== "empty") return { diffs: applied };
+	if (applied !== null && applied !== "empty") {
+		const rows = metaDiffRows(block.meta);
+		return { path: applied[0]?.path ?? "", diffs: applied, ...(rows !== null ? { rows } : {}) };
+	}
 	const intended = intendedDiff(block);
 	if (intended === null) return null;
-	return intended.tool === "write" ? { diffs: [intended.diff] } : null;
+	return intended.tool === "write" ? { path: intended.diff.path, diffs: [intended.diff] } : null;
 }
 
 //#endregion
-//#region edit anchor hints (hashline-specific)
+
+//#region diff rows meta (rendering channel, issue #71)
+
+/**
+ * Soft-validate the persisted diff rows meta: per-row kind, line number,
+ * anchor, and text. This is the RENDERING channel — persisted in
+ * presentationMeta by the main plugin's genDiff projection, never parsed
+ * from the model-facing text (which may change shape at any time).
+ */
+export function metaDiffRows(meta: unknown): DiffRowMeta[] | null {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+	const value = meta as Record<string, unknown>;
+	const rows = value.diffRows;
+	if (!Array.isArray(rows) || rows.length === 0) return null;
+	const out: DiffRowMeta[] = [];
+	for (const row of rows) {
+		if (typeof row !== "object" || row === null) return null;
+		const r = row as Record<string, unknown>;
+		if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") return null;
+		if (typeof r.lineNumber !== "number" || !Number.isInteger(r.lineNumber) || r.lineNumber < 1) return null;
+		if (typeof r.hash !== "string" || typeof r.text !== "string") return null;
+		out.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text });
+	}
+	return out;
+}
+
+/** A derived diff card: structured rows (gutter) and/or the official hunks. */
+export interface DiffCard {
+	path: string;
+	diffs: FileDiff[];
+	/** Structured rows with per-line `行号:锚点` gutter facts, when persisted. */
+	rows?: readonly DiffRowMeta[] | undefined;
+}
 
 /**
  * The anchors a hashline edit was addressed with, read back from the call's
