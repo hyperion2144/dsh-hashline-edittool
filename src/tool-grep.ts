@@ -128,7 +128,7 @@ matches: matchPositions.map((position) => ({
 function renderSection(
 	path: string,
 	section: GrepFileSection,
-	lineNumbers = false,
+	lineNumbers = true,
 	// issue #66/B3: the ANCHOR:FILELINE format header used to repeat once per
 	// matching file; a single grep call must print it at most ONCE. The first
 	// section carries it, the rest get only the --- path --- separator.
@@ -150,7 +150,7 @@ function renderSection(
 function buildSectionModelText(
 	path: string,
 	section: GrepFileSection,
-	lineNumbers = false,
+	lineNumbers = true,
 	includeFormatHeader = true,
 ): string {
 	return renderSection(path, section, lineNumbers, includeFormatHeader);
@@ -302,7 +302,7 @@ export function buildGrepTool(io: FileIO) {
 					limit: typeof params.limit === "number" ? params.limit : undefined,
 					context: typeof params.context === "number" ? params.context : undefined,
 					regex: params.regex !== false,
-					lineNumbers: params.line_numbers === true,
+					lineNumbers: params.line_numbers !== false,
 				};
 				// Pre-build matcher so a bad regex fails before any IO.
 				buildMatcher(params.pattern, opts.regex === true);
@@ -393,7 +393,7 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string 
 								? `${pos + 1}:${rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? ""}`
 								: (rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? "");
 						for (const m of section.matches) {
-							matches[m.anchor ?? anchorAt(m.position)] =
+								matches[anchorAt(m.position)] =
 								rowsByPos.get(m.position)?.content ?? linesOf(raw)[m.position] ?? "";
 							for (let k = Math.max(0, m.position - context); k <= Math.min(linesOf(raw).length - 1, m.position + context); k++) {
 								if (k === m.position) continue;

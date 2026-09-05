@@ -191,7 +191,7 @@ export function buildReadPresentation(
 	// switch must be honored HERE too — rows render as <line>:<anchor>:content.
 	const body = lineRenders
 		.map(({ number, hash, text }) =>
-			opts.lineNumbers === true
+			opts.lineNumbers !== false
 				? `${number}:${hash}${hashSep()}${text}`
 				: `${hash}${hashSep()}${text}`,
 		)

@@ -5,7 +5,7 @@ beforeAll(async () => {
 });
 describe("genDiff", () => {
 	it("adds hash hints for context and addition lines and pads deletion lines", () => {
-		const result = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
+		const result = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma", undefined, undefined, undefined, false);
 		const diff = result.diff;
 		expect(diff).toMatch(/^ \s*[A-Za-z0-9]{2,8}:alpha$/m);
 		expect(diff).toMatch(/^\+\s*[A-Za-z0-9]{2,8}:BETA$/m);
@@ -20,6 +20,7 @@ describe("genDiff", () => {
 			1,
 			undefined,
 			["AAA", "BBB", "CCC"],
+			false,
 		);
 		expect(diff).toMatch(/^-\s*BBB:beta$/m);
 		expect(diff).toMatch(/^\+\s*[A-Za-z0-9]{2,8}:BETA$/m);
@@ -32,9 +33,11 @@ describe("genDiff", () => {
 			0,
 			undefined,
 			["H1", "H2", "H3", "H4"],
+			undefined,
+			false,
 		);
-		expect(diff).toMatch(/-H2:b/);
-		expect(diff).toMatch(/-H3:c/);
+		expect(diff).toMatch(/-\d+:H2:b/);
+		expect(diff).toMatch(/-\d+:H3:c/);
 	});
 
 	it("marks every diff row with the line#hash marker prefix", () => {
@@ -51,7 +54,7 @@ describe("genDiff", () => {
 			"}",
 		].join("\n");
 
-		const { diff } = genDiff(before, after);
+		const { diff } = genDiff(before, after, undefined, undefined, undefined, false);
 
 		const lines = diff.split("\n");
 		for (const line of lines) {
@@ -71,7 +74,7 @@ describe("genDiff", () => {
 		const before = "BEFORE\n" + lines.join("\n") + "\nAFTER";
 		const after = "BEFORE_CHANGED\n" + lines.join("\n") + "\nAFTER_CHANGED";
 
-		const { diff } = genDiff(before, after, 4);
+		const { diff } = genDiff(before, after, 4, undefined, undefined, undefined, false);
 		const diffLines = diff.split("\n");
 
 		expect(diffLines.length).toBeLessThan(50);
@@ -131,7 +134,7 @@ describe("genDiff — property: column alignment", () => {
         () => vocab[randInt(rnd, 0, vocab.length - 1)]!,
       ).join("\n");
 
-      const { diff } = genDiff(oldContent, newContent, randInt(rnd, 0, 4));
+      const { diff } = genDiff(oldContent, newContent, randInt(rnd, 0, 4), undefined, undefined, false);
       for (const line of diff.split("\n")) {
         if (line.includes(":")) {
 			expect(
@@ -144,7 +147,7 @@ describe("genDiff — property: column alignment", () => {
   });
 
   it("keeps the marker structure correct for single-line diffs too", () => {
-    const { diff } = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma");
+    const { diff } = genDiff("alpha\nbeta\ngamma", "alpha\nBETA\ngamma", undefined, undefined, undefined, false);
     for (const line of diff.split("\n")) {
 			if (line.includes(":")) expect(line).toMatch(/^[ +-]\s*[A-Za-z0-9 ]{2,8}\s*:/);
     }

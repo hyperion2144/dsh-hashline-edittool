@@ -336,7 +336,7 @@ export const readFilePathSchema = {
 export const lineNumbersSchema = {
 	type: "boolean",
 	description:
-		"When true, each output row's marker is prefixed with its 1-indexed line as `<line>:<anchor>` (informational positional hint only — the anchor is authoritative; markers remain editable either form). Default false.",
+		"When true, each output row's marker is prefixed with its 1-indexed line as `<line>:<anchor>` (informational positional hint only — the anchor is authoritative; markers remain editable either form). Default true — pass `false` for bare `<anchor>` rows.",
 } as const;
 
 /** @deprecated — kept for backward compat with the pre-0.4 contract. */
