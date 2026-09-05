@@ -36,9 +36,20 @@ async function servedRows(
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
 		if (line.startsWith("ANCHOR:")) continue;
-		const sep = line.indexOf(":");
+		// Rows are `<line>:<anchor>:content` by default (#69); tolerate bare
+		// `<anchor>:content` (line_numbers off) and diff +/- prefixes.
+		const body = line.replace(/^[+\- ]+/, "");
+		const sep = body.indexOf(":");
 		if (sep === -1) continue;
-		rows.push({ hash: line.slice(0, sep), content: line.slice(sep + 1) });
+		const first = body.slice(0, sep);
+		const rest = body.slice(sep + 1);
+		if (/^\d+$/.test(first)) {
+			const h = rest.indexOf(":");
+			if (h === -1) continue;
+			rows.push({ hash: rest.slice(0, h), content: rest.slice(h + 1) });
+		} else {
+			rows.push({ hash: first, content: rest });
+		}
 	}
 	return rows;
 }
@@ -173,11 +184,12 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				expect(text).toContain("Successfully edited in t.txt");
 				// diff rows carry FINAL line numbers + hashes (unchanged rows keep
 				// their hash; their positions reflect the fully applied batch)
-				expect(text).toContain(` ${by("l4").hash}:l4`);
-				expect(text).toContain(` ${by("l6").hash}:l6`);
-				expect(text).toContain(` ${by("l7").hash}:l7`);
-				expect(text).toContain(` ${by("l8").hash}:l8`);
-				expect(text).toMatch(/\+[A-Za-z0-9]{2,8}:I7/); // inserted row
+				// Rows carry a line-number prefix now; match FINAL number + kept hash.
+				expect(text).toMatch(new RegExp(` \\d+:${by("l4").hash}:l4`));
+				expect(text).toMatch(new RegExp(` \\d+:${by("l6").hash}:l6`));
+				expect(text).toMatch(new RegExp(` \\d+:${by("l7").hash}:l7`));
+				expect(text).toMatch(new RegExp(` \\d+:${by("l8").hash}:l8`));
+				expect(text).toMatch(/\+\s*\d+:[A-Za-z0-9]{2,8}:I7/); // inserted row
 				expect(await readFile(path, "utf-8")).toBe(
 					"l1\nR2\nR3\nl4\nl6\nl7\nI7\nl8\n",
 				);

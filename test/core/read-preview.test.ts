@@ -14,28 +14,28 @@ describe("fmtReadPreview", () => {
 
   it("returns empty file marker for content with only newline", async () => {
     const result = await fmtReadPreview("\n", {}, undefined, home.testPath);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}\s*:\s*$/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}\s*:\s*$/);
   });
 
   it("returns all lines when no offset or limit given", async () => {
     const result = await fmtReadPreview("a\nb\nc\n", {}, undefined, home.testPath);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*c/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*c/);
   });
 
   it("respects offset parameter", async () => {
     const result = await fmtReadPreview("a\nb\nc\n", { offset: 2 }, undefined, home.testPath);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*c/);
-    expect(result.text).not.toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*c/);
+    expect(result.text).not.toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
   });
 
   it("respects limit parameter", async () => {
     const result = await fmtReadPreview("a\nb\nc\n", { limit: 2 }, undefined, home.testPath);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
-    expect(result.text).not.toMatch(/[A-Za-z0-9]{2,8}:\s*c/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
+    expect(result.text).not.toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*c/);
   });
 
   it("shows pagination hint when limit is less than total lines", async () => {
@@ -67,8 +67,8 @@ describe("fmtReadPreview", () => {
   it("skips an oversized first line and shows the rest with a bash fallback (auto-read budget)", async () => {
     const big = "X".repeat(60_000);
     const result = await fmtReadPreview(`${big}\na\nb\n`, {}, undefined, home.testPath, DEFAULT_MAX_BYTES);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
     expect(result.text).not.toContain(": X");
     expect(result.text).toMatch(/\[Line 1 is .*exceeds 50\.0KB; content not shown\. Use bash: sed -n '1p' <path> \| head -c \d+\]/);
     expect(result.text).toContain("Inspect with bash: sed -n '1p' <path>");
@@ -77,8 +77,8 @@ describe("fmtReadPreview", () => {
   it("marks an oversized middle line while keeping its neighbors hashable (auto-read budget)", async () => {
     const big = "Y".repeat(60_000);
     const result = await fmtReadPreview(`a\n${big}\nc\n`, {}, undefined, home.testPath, DEFAULT_MAX_BYTES);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*c/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*c/);
     expect(result.text).not.toContain(": Y");
     expect(result.text).toContain("[Line 2 is");
   });
@@ -96,8 +96,8 @@ describe("fmtReadPreview", () => {
     const big = "W".repeat(210_000);
     const content = ["a", big, "b", "c", "d", "e"].join("\n");
     const result = await fmtReadPreview(content, { limit: 3 }, undefined, home.testPath);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
-    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
+    expect(result.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
     expect(result.text).not.toContain(": W");
     expect(result.text).toContain("[Line 2 is");
     expect(result.nextOffset).toBe(4);
@@ -107,14 +107,14 @@ describe("fmtReadPreview", () => {
   it("shows a 60KB line in full by default", async () => {
     const big = "V".repeat(60_000);
     const result = await fmtReadPreview(`${big}\nb\n`, {}, undefined, home.testPath);
-		expect(result.text).toMatch(new RegExp(`^ANCHOR:FILELINE[^\n]*\n\[A-Za-z0-9]{2,8}[: \t]+V{60000}[^\n]*\n\[A-Za-z0-9]{2,8}[: \t]+b$`));
+		expect(result.text).toMatch(new RegExp(`^ANCHOR:FILELINE[^\n]*\n\\d+:[A-Za-z0-9]{2,8}[: \t]+V{60000}[^\n]*\n\\d+:\[A-Za-z0-9]{2,8}[: \t]+b$`));
     expect(result.text).not.toContain("content not shown");
   });
 
   it("shows a line just under 200KB in full by default", async () => {
     const big = "U".repeat(204_700);
     const result = await fmtReadPreview(`${big}\n`, {}, undefined, home.testPath);
-		expect(result.text).toMatch(new RegExp(`^ANCHOR:FILELINE[^\n]*\n\[A-Za-z0-9]{2,8}[: \t]+U{204700}$`));
+		expect(result.text).toMatch(new RegExp(`^ANCHOR:FILELINE[^\n]*\n\\d+:[A-Za-z0-9]{2,8}[: \t]+U{204700}$`));
     expect(result.text).not.toContain("content not shown");
   });
 
@@ -137,16 +137,16 @@ describe("fmtReadPreview — oversized marker truncation", () => {
     const budget = 130;
 
     const first = await fmtReadPreview(content, {}, undefined, home.testPath, budget);
-    expect(first.text).toMatch(/[A-Za-z0-9]{2,8}:\s*a/);
+    expect(first.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*a/);
     expect(first.text).toContain("[Line 2 is");
-    expect(first.text).not.toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
+    expect(first.text).not.toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
     expect(first.text).not.toContain("Line 3");
     expect(first.text).toContain("Use offset=3 to continue");
     expect(first.nextOffset).toBe(3);
 
     const second = await fmtReadPreview(content, { offset: 3 }, undefined, home.testPath, budget);
     expect(second.text).toContain("[Line 3 is");
-    expect(second.text).toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
+    expect(second.text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
     expect(second.nextOffset).toBeUndefined();
   });
 });
@@ -169,7 +169,7 @@ describe("fmtReadPreview — maxTruncLines budget", () => {
     expect(result.text).toContain("[Line 1 is");
     expect(result.text).toContain("[Line 2 is");
     expect(result.text).not.toContain("[Line 3 is");
-    expect(result.text).not.toMatch(/[A-Za-z0-9]{2,8}:\s*b/);
+    expect(result.text).not.toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
     expect(result.text).toContain("[Showing lines 1-2 of 4 (50.0KB limit). Use offset=3 to continue.]");
     expect(result.nextOffset).toBe(3);
   });

@@ -201,7 +201,7 @@ export function buildChanged(input: SuccessInput): TResult {
 		contextLinesCfg(),
 		resultHashes,
 		originalHashes,
-		input.lineNumbers === true,
+		input.lineNumbers !== false,
 	);
 	const addedLines = editMeta.addedLines;
 	const removedLines = editMeta.removedLines;

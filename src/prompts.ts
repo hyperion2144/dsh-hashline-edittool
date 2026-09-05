@@ -57,9 +57,9 @@ export const EDIT_GUIDANCE: ToolGuidance = {
 /** Read tool description, generated from the effective config (text/json). */
 export function readDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {anchor: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is a variable-length Base62 edit anchor; the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.";
+		return "Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {anchor: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is `<line>:<anchor>` (line prefix default on; pass `line_numbers: false` for bare anchors); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.";
 	}
-	return "Read a text file: pass `file_path`. Each line is `<anchor>:content` under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the left marker is the edit anchor (variable-length Base62, unique per line). With `line_numbers: true`, rows read `<line>:<anchor>:content` — the line is informational only. Binary/directory rejected; pageable with offset/limit.";
+	return "Read a text file: pass `file_path`. Each row is `<line>:<anchor>:content` (line number on by default; pass `line_numbers: false` for bare `<anchor>:content` rows) under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit.";
 }
 
 export const READ_GUIDANCE: ToolGuidance = {
@@ -67,8 +67,8 @@ export const READ_GUIDANCE: ToolGuidance = {
 		"Use read, not shell commands, to inspect text files and obtain the variable-length anchors the editing tools require.",
 	lines: [
 		"`read`: call it only for content the tools have not served — a page you never saw, or lines past the post-edit diff.",
-		"`read`: each row is `<anchor>:content`; the marker is the anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors). The header `ANCHOR:FILELINE` separates marker columns from file content.",
-		"`read`: `line_numbers: true` prefixes each marker with its 1-indexed line (`<line>:<anchor>`) as a positional hint — copy only the anchor part (or the whole `<line>:<anchor>`, both accepted) into edit; the anchor is authoritative.",
+		"`read`: each row is `<line>:<anchor>:content` (line number on by default; `line_numbers: false` gives bare `<anchor>:content`); the marker is the anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors). The header `ANCHOR:FILELINE` separates marker columns from file content.",
+		"`read`: the `<line>:` prefix is a positional hint — copy only the anchor part (or the whole `<line>:<anchor>`, both accepted) into edit; the anchor is authoritative. Pass `line_numbers: false` for bare `<anchor>:content` rows.",
 		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
 		"`read`: binary/directory rejects; page large files with offset/limit.",
 	],
@@ -89,9 +89,9 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 /** Grep tool description, generated from the effective config (text/json). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are edit anchors (variable-length Base62), values are verbatim file content; matches are served so they can be edited directly.";
+		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are `<line>:<anchor>` edit anchors (variable-length Base62, line prefix default on), values are verbatim file content; matches are served so they can be edited directly.";
 	}
-	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:content` rows, `line_numbers` supported); matches are served, so they can be edited directly.";
+	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<line>:<anchor>:content` rows, line number on by default; `line_numbers: false` for bare anchors); matches are served, so they can be edited directly.";
 }
 
 export const GREP_GUIDANCE: ToolGuidance = {

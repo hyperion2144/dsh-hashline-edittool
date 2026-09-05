@@ -520,7 +520,7 @@ return {
     precomputedHashes ??
     (await (path ? lineHashes(text, path) : lineHashes(text)));
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
-	const formatted = `${hashlineHeader()}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers === true })}`;
+	const formatted = `${hashlineHeader()}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers !== false })}`;
   const maxBytes = maxLineBytes;
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
@@ -534,7 +534,7 @@ return {
     const rows = rowSizes.map((row, index) =>
       row.bytes > maxBytes
         ? `[Line ${row.lineNumber} is ${formatSize(row.bytes)}, exceeds ${formatSize(maxBytes)}; content not shown. Use bash: sed -n '${row.lineNumber}p' <path> | head -c ${maxBytes}]`
-        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber, { lineNumbers: options.lineNumbers === true }),
+        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber, { lineNumbers: options.lineNumbers !== false }),
     );
     const skippedTruncation = truncateHead(rows.join('\n'), {
       maxBytes,
@@ -676,7 +676,7 @@ export async function readView(
     });
   const r = await fmtReadPreview(
     normalized,
-		{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers === true }, // issue #66/B5: was dropped — lineNumbers never reached the renderer
+		{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false }, // issue #66/B5: was dropped — lineNumbers never reached the renderer
 		fileHashes,
 		absolutePath,
   );

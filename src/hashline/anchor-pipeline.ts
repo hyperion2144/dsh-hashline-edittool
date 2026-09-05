@@ -1301,7 +1301,7 @@ export function fmtRegion(
 			`fmtRegion: startLine (${startLine}) must be a positive integer.`,
 		);
 	}
-	const lineNumbers = opts?.lineNumbers === true;
+	const lineNumbers = opts?.lineNumbers !== false;
 	const markers = lines.map((_, index) =>
 		lineNumbers
 			? `${startLine + index}${hashSep()}${anchors[index]}`
