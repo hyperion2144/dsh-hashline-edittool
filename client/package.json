@@ -1,6 +1,6 @@
 {
   "name": "dsh-hashline-edittool-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Companion dsh web client plugin for dsh-hashline-edittool: renders hashline-branded read/edit tool cards (line:anchor gutters, applied multi-hunk diffs with anchor hints) from persisted presentationMeta. Issue #71 direction B.",
   "main": "lib/index.js",

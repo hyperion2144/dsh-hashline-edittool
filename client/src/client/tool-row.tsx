@@ -27,6 +27,7 @@ import type { DiffBlockProps, ReadBlockProps } from "@deepseek-ai/dsh-client-ui-
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readBlockLabels } from "./labels.js";
 import { diffCardModel, editAnchorHints, readCardModel, toolRowModel } from "./models.js";
+import { DiffRowsBlock } from "./diff-block.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 
 /** Join class names (tiny clsx stand-in; `clsx` is not a module-table word). */
@@ -123,6 +124,11 @@ function ToolRow({
 	const summaryText = failureLine ?? summary;
 	const diffStat = useMemo(() => {
 		if (diffBody === null) return null;
+		if (diffBody.rows !== undefined) {
+			const added = diffBody.rows.filter((row) => row.kind === "+").length;
+			const removed = diffBody.rows.filter((row) => row.kind === "-").length;
+			return `+${added} -${removed}`;
+		}
 		const { added, removed } = diffTotals(diffBody.diffs as never);
 		return `+${added} -${removed}`;
 	}, [diffBody]);
@@ -189,12 +195,22 @@ function ToolRow({
 					className: css.bodyWrap,
 					children: [
 						diffBody !== null
-							? jsx_(DiffBlock, {
-									diffs: diffBody.diffs as unknown as DiffBlockProps["diffs"],
-									labels: diffLabels,
-									maxLines: 8,
-									className: css.diffBody,
-								})
+							? diffBody.rows !== undefined
+								? // Structured rows from the persisted meta: the forked block
+								  // draws the `行号:锚点` gutter (issue #71).
+								  jsx_(DiffRowsBlock, {
+										path: diffBody.path,
+										rows: diffBody.rows,
+										labels: diffLabels,
+										maxLines: 8,
+										className: css.diffBody,
+									})
+								: jsx_(DiffBlock, {
+										diffs: diffBody.diffs as unknown as DiffBlockProps["diffs"],
+										labels: diffLabels,
+										maxLines: 8,
+										className: css.diffBody,
+									})
 							: readBody !== null
 								? jsx_(ReadBlock, {
 										label: readBody.label,

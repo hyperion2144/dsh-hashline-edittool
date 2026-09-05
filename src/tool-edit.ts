@@ -63,6 +63,7 @@ import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
 import { genDiff } from "./edit-diff.js";
 import { EDIT_DIFF_LEGEND } from "./edit-response.js";
+import { diffRowsFromGenDiff, diffRowsFromMeta, type EditDiffRow } from "./presentation-helpers.js";
 
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
@@ -76,9 +77,10 @@ type EditCanonicalValue = {
 	warnings: string[];
 	driftNotice?: string;
 	noop: boolean;
+	/** Structured diff-window rows for the web card (rendering channel, issue #71). */
+	diffRows?: EditDiffRow[];
 	modelText: string;
 } & { [key: string]: unknown };
-
 /**
  * Build a `PreparedItem` from one `edits[i]`. Resolves the per-item
  * `path` against the top-level fallback, defaults `anchor_end` to `anchor_start` when
@@ -181,6 +183,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					firstChangedLine: { type: "integer" },
 					lastChangedLine: { type: "integer" },
 					warnings: { type: "array", items: { type: "string" } },
+					// 渲染通道: web diff 卡的结构化行（issue #71）
+					diffRows: { type: "array" },
 					driftNotice: { type: "string" },
 					noop: { type: "boolean" },
 					// 多文件形态
@@ -200,7 +204,13 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				if (Array.isArray(v.success) || Array.isArray(v.fail)) return { diffs: [] } as never;
 				if (v.noop) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
-				return { diffs } as never;
+				// 渲染通道（issue #71）: genDiff 的结构化行（新旧行号 + 锚点），
+				// web diff 卡的 gutter 直接渲染它，绝不解析 modelText。
+				const diffRows = diffRowsFromMeta(v.diffRows);
+				return {
+					diffs,
+					...(diffRows !== undefined ? { diffRows } : {}),
+				} as never;
 			},
 		},
 		presentCall: (args) => {
@@ -532,6 +542,19 @@ function buildCanonicalFromFileResult(
 	displayPath: string,
 	lineNumbers = true,
 ): EditCanonicalValue {
+	// 渲染通道（issue #71）: genDiff 的结构化 diff 行（新旧行号 + 会话锚点）。
+	// 与 modelText 同源同算法，但作为结构化数据走 presentationMeta，
+	// web diff 卡的 gutter 直接渲染它，绝不解析 modelText 文本。
+	const diffRows = diffRowsFromGenDiff(
+		genDiff(
+			file.originalNormalized,
+			file.result,
+			contextLinesCfg(),
+			file.resultHashes,
+			file.originalHashes,
+			true,
+		).rows,
+	);
 	const result = {
 		path: displayPath,
 		before: file.originalNormalized,
@@ -543,6 +566,7 @@ function buildCanonicalFromFileResult(
 		warnings: file.warnings,
 		...(file.driftNotice !== undefined ? { driftNotice: file.driftNotice } : {}),
 		noop: file.appliedCount === 0,
+		diffRows,
 		modelText: buildChangedModelText(file, displayPath, lineNumbers),
 	} as EditCanonicalValue;
 	return result;

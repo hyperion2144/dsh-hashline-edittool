@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	diffCardModel,
+	metaDiffRows,
 	editAnchorHints,
 	narrowDiffs,
 	readCardModel,
@@ -103,9 +104,30 @@ describe("readCardModel", () => {
 		expect(card?.lines.map((line) => line.number)).toEqual([1, 2]);
 	});
 
-	it("returns null for the generic path: malformed meta, missing envelope, running call", () => {
+	it("renders the card WITHOUT the dsh envelope text (issue #71: meta alone)", () => {
+		const card = readCardModel(
+			settledRead({
+				text: "ANCHOR:FILELINE\n1:a1:const a = 1;\n2:b2:const b = 2;\n\n[End of file - total 2 lines.]",
+				hashlines: [
+					{ number: 1, hash: "a1", text: "const a = 1;" },
+					{ number: 2, hash: "b2", text: "const b = 2;" },
+				],
+			}),
+			undefined,
+			undefined,
+		);
+		expect(card).not.toBeNull();
+		expect(card?.lines.map((line) => line.number)).toEqual(["1:a1", "2:b2"]);
+	});
+
+	it("still renders enveloped pre-0.4.2 history (legacy tolerance)", () => {
+		const legacy = "<path>/w/src/a.ts</path>\n<type>file</type>\n<content>\nrows\n</content>";
+		const card = readCardModel(settledRead({ text: legacy }), undefined, undefined);
+		expect(card).not.toBeNull();
+	});
+
+	it("returns null for the generic path: malformed meta, running call", () => {
 		expect(readCardModel(settledRead({ meta: { broken: true } }), undefined, undefined)).toBeNull();
-		expect(readCardModel(settledRead({ text: "plain text" }), undefined, undefined)).toBeNull();
 		expect(
 			readCardModel(running(JSON.stringify({ file_path: "/w/a.ts" })), undefined, undefined),
 		).toBeNull();
@@ -242,5 +264,44 @@ describe("toolRowModel", () => {
 		const model = toolRowModel("edit", failed, undefined, undefined);
 		expect(model.state).toBe("error");
 		expect(model.errorSummary).toBe("[E_STALE] 2 stale anchors");
+	});
+});
+
+describe("metaDiffRows (rendering channel, issue #71)", () => {
+	const meta = {
+		diffs: [{ path: "/w/a.ts", oldText: "b", newText: "B" }],
+		diffRows: [
+			{ kind: " ", lineNumber: 1, hash: "a1", text: "a" },
+			{ kind: "-", lineNumber: 2, hash: "old", text: "b" },
+			{ kind: "+", lineNumber: 2, hash: "n9", text: "B" },
+		],
+	};
+	const block = settled({
+		call: { name: "edit", argsRaw: JSON.stringify({ path: "/w/a.ts", edits: [{ anchor_start: "2:old" }] }) },
+		content: [{ type: "text", text: "ok" }],
+		meta,
+	});
+
+	it("exposes structured rows on the card for the `行号:锚点` gutter", () => {
+		const card = diffCardModel(block);
+		expect(card?.rows?.map((row) => `${row.lineNumber}:${row.hash}`)).toEqual(["1:a1", "2:old", "2:n9"]);
+		expect(card?.diffs).toHaveLength(1);
+	});
+
+	it("falls back to the official plain block when diffRows are malformed", () => {
+		const broken = settled({
+			call: { name: "edit", argsRaw: "{}" },
+			content: [{ type: "text", text: "ok" }],
+			meta: { diffs: [{ path: "p", oldText: null, newText: "x" }], diffRows: [{ kind: "x" }] },
+		});
+		const card = diffCardModel(broken);
+		expect(card?.rows).toBeUndefined();
+		expect(card?.diffs).toHaveLength(1);
+	});
+
+	it("rejects non-object meta", () => {
+		expect(metaDiffRows("nope")).toBeNull();
+		expect(metaDiffRows({ diffRows: "rows" })).toBeNull();
+		expect(metaDiffRows({ diffRows: [] })).toBeNull();
 	});
 });

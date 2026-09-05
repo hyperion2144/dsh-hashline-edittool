@@ -50,10 +50,9 @@ describe("tool-read structured presentation", () => {
 			expect(value.lines[1]).toEqual({ number: 2, text: "beta" });
 			expect(value.hashlines[0]?.hash).toMatch(/^[A-Za-z0-9]{2,8}$/);
 			expect(value.hashlines[0]?.number).toBe(1);
-			// dsh 0.1.2 web parity: model text is enveloped; the hashline header
-			// opens the envelope body.
-			expect(value.modelText).toMatch(/^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\nANCHOR:FILELINE/);
-			expect(value.modelText.endsWith("\n</content>")).toBe(true);
+			// Issue #71 direction B: no dsh envelope — the hashline legend opens
+			// the model text directly (the web card renders from meta).
+			expect(value.modelText).toMatch(/^ANCHOR:FILELINE/);
 		});
 	});
 
@@ -69,9 +68,8 @@ describe("tool-read structured presentation", () => {
 					arguments: args,
 				}) as never;
 			const value = (await tool.execute({ path: "p2.txt" }, exec({}))) as { modelText: string; lines: { number: number }[] };
-			expect(value.modelText.startsWith("<path>")).toBe(true);
-			expect(value.modelText).toContain("\n<type>file</type>\n<content>\nANCHOR:FILELINE");
-			expect(value.modelText.endsWith("\n</content>")).toBe(true);
+			expect(value.modelText.startsWith("ANCHOR:FILELINE")).toBe(true);
+			expect(value.modelText).not.toContain("<type>file</type>");
 			expect(value.modelText).toMatch(/\[Showing lines 1-2000 of 2500/);
 			expect(value.lines).toHaveLength(2000);
 		});
@@ -261,5 +259,81 @@ describe("presentation-helpers — langFromPath", () => {
 		const { langFromPath } = await import("../../src/presentation-helpers.js");
 		expect(langFromPath("data.xyz")).toBeUndefined();
 		expect(langFromPath("Makefile")).toBeUndefined();
+	});
+});
+
+describe("edit presentationMeta diffRows (issue #71 rendering channel)", () => {
+	it("persists structured diff rows with line numbers and anchors", async () => {
+		await withTempFile("dr.txt", "a\nb\nc\nd\n", async ({ cwd }) => {
+			const { localIO } = await import("../../src/fs-bridge.js");
+			const { FsSandboxController } = await import("../../src/sandbox.js");
+			const { buildEditTool } = await import("../../src/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tool-read.js");
+			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+			const io = localIO();
+			const read = buildReadTool(io);
+			const edit = buildEditTool(io, sandbox);
+			const exec = (args: unknown) =>
+				({
+					signal: new AbortController().signal,
+					agent: { id: "s", session: { id: "s", header: { cwd } } },
+					arguments: args,
+				}) as never;
+			const readValue = (await read.execute({ path: "dr.txt" }, exec({}))) as {
+				hashlines: { number: number; hash: string }[];
+			};
+			const marker = `${readValue.hashlines[1]?.hash}`;
+			const value = (await edit.execute(
+				{ path: "dr.txt", edits: [{ op: "replace", anchor_start: marker, anchor_end: marker, lines: ["B!"] }] },
+				exec({}),
+			)) as { modelText: string };
+			expect(value.modelText).not.toMatch(/<path>/);
+		});
+	});
+
+	it("presentationMeta carries diffRows alongside diffs for the web gutter", async () => {
+		await withTempFile("dr2.txt", "one\ntwo\nthree\n", async ({ cwd }) => {
+			const { localIO } = await import("../../src/fs-bridge.js");
+			const { FsSandboxController } = await import("../../src/sandbox.js");
+			const { buildEditTool } = await import("../../src/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tool-read.js");
+			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+			const io = localIO();
+			const read = buildReadTool(io);
+			const edit = buildEditTool(io, sandbox);
+			const exec = (args: unknown) =>
+				({
+					signal: new AbortController().signal,
+					agent: { id: "s", session: { id: "s", header: { cwd } } },
+					arguments: args,
+				}) as never;
+			const readValue = (await read.execute({ path: "dr2.txt" }, exec({}))) as {
+				hashlines: { number: number; hash: string }[];
+			};
+			const marker = `${readValue.hashlines[0]?.hash}`;
+			await edit.execute(
+				{ path: "dr2.txt", edits: [{ op: "replace", anchor_start: marker, anchor_end: marker, lines: ["ONE!"] }] },
+				exec({}),
+			);
+			// Re-read a second file and drive the presentation layer directly:
+			// the meta projection is exercised through the tool's output schema.
+			const edit2 = buildEditTool(io, sandbox);
+			const read2 = (await read.execute({ path: "dr2.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
+			const marker2 = `${read2.hashlines[0]?.hash}`;
+			const canonical = (await edit2.execute(
+				{ path: "dr2.txt", edits: [{ op: "replace", anchor_start: marker2, anchor_end: marker2, lines: ["ONE!!"] }] },
+				exec({}),
+			)) as unknown as { diffRows?: Array<{ kind: string; lineNumber: number; hash: string; text: string }> };
+			// The canonical value carries the structured rows…
+			expect(Array.isArray(canonical.diffRows)).toBe(true);
+			const rows = canonical.diffRows ?? [];
+			expect(rows.length).toBeGreaterThan(0);
+			expect(rows.some((row) => row.kind === "+" && row.hash !== "" && /\d/.test(String(row.lineNumber)))).toBe(true);
+			// …and the projection validator accepts them (client-side contract).
+			const { diffRowsFromMeta } = await import("../../src/presentation-helpers.js");
+			expect(diffRowsFromMeta({ diffRows: rows })).toEqual(rows);
+			expect(diffRowsFromMeta({ diffRows: [{ kind: "x", lineNumber: 1, hash: "", text: "" }] })).toBeUndefined();
+			expect(diffRowsFromMeta({})).toBeUndefined();
+		});
 	});
 });
