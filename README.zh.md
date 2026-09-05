@@ -108,7 +108,7 @@ hashline:
 
 ### text 输出（默认）
 
-每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、左侧变长锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。可选 `line_numbers` 开启时（每次调用），行渲染为 `<line>:<anchor>`——仅作提示，锚点仍是权威。
+每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、左侧变长锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。行渲染默认带行号 `<line>:<anchor>`（#69 起默认开启）——仅作提示，锚点仍是权威；每次调用可传 `line_numbers: false` 获得裸 `<anchor>` 行。
 
 ### json 输出
 
@@ -275,7 +275,7 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 
 | 工具 | 作用 |
 | ------ | ------ |
-| `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers: true` 时行前缀 `<line>:`，仅作位置提示）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
+| `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers` 默认 true（行前缀 `<line>:`，仅作位置提示；传 `line_numbers: false` 得到裸锚点）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
 | `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围，`lines` 禁用）或 `replace`（`lines` 行数**任意**——整个范围被整体替换，收缩与展开都是单 hunk）。锚点为变长 Base62（`<anchor>` 或 `<line>:<anchor>` 弱提示）；内容相同的行获得**互不相同**的锚点。对解析出的范围对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。没有 `Shift:` 块——编辑后从 diff 行取新锚点。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。支持 `line_numbers`。 |
 
@@ -370,7 +370,7 @@ npm publish --registry https://registry.npmjs.org   # 版本未打 tag 前会被
 
 ## 路线图
 
-**当前状态（v2.0）：** 变长内容锚点（2 字符层至 3,844 行、分层上浮、会话内跨编辑稳定）、可选 `line_numbers` 渲染、`grep` 工具、按工作区存储、参与沙箱策略、可复现基准测试、中英双语 README、已发布 npm。
+**当前状态（v2.0）：** 变长内容锚点（2 字符层至 3,844 行、分层上浮、会话内跨编辑稳定）、默认带行号渲染（`line_numbers: false` 可关闭）、`grep` 工具、按工作区存储、参与沙箱策略、可复现基准测试、中英双语 README、已发布 npm。
 
 <details><summary>下一步</summary>
 

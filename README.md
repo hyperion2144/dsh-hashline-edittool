@@ -120,7 +120,7 @@ hashline:
 
 ### text output (default)
 
-Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the left variable-length anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part. With the optional `line_numbers` flag on (per call), rows render as `<line>:<anchor>` — informational only, the anchor stays authoritative.
+Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the left variable-length anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part. Rows render as `<line>:<anchor>` by default (line number on since #69) — informational only, the anchor stays authoritative; pass `line_numbers: false` per call for bare `<anchor>` rows.
 
 ### json output
 
@@ -346,7 +346,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 
 | Tool | What it does |
 | ------ | -------------- |
-| `read` | Returns a file as `ANCHOR:FILELINE` header + `<anchor>:<content>` rows (anchors are variable-length Base62, unique per line; `line_numbers: true` adds a `<line>:` prefix as a positional hint). Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — anchors need full lines. |
+| `read` | Returns a file as `ANCHOR:FILELINE` header + `<anchor>:<content>` rows (anchors are variable-length Base62, unique per line; `line_numbers` defaults to true (a `<line>:` prefix is added as a positional hint; `line_numbers: false` gives bare anchors). Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — anchors need full lines. |
 | `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — `anchor_end` optional, defaults to the single `anchor_start` line; REQUIRED when `lines` has more than one line). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`); identical content lines get DISTINCT anchors. Verifies each resolved range against served state (anchor + content); `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` / `[E_STALE]` reject-and-serve fresh anchors. There is no `Shift:` block — re-read for fresh anchors after an edit. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
 | `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (JavaScript-flavre regex by default; `regex: false` for literal substring) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<anchor>:<content>` rows. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
@@ -460,7 +460,7 @@ The test suite drives the dsh tool builders directly over a local filesystem bri
 
 ## Roadmap
 
-**Current state:** variable-length content anchors (2-char layer → 3,844 lines, layer growth, session-stable across edits), optional `line_numbers` render flag, `grep` tool,
+**Current state:** variable-length content anchors (2-char layer → 3,844 lines, layer growth, session-stable across edits), line-numbers-by-default render (`line_numbers: false` opts out), `grep` tool,
 per-workspace store, sandbox policy participation, the served-tail truncation fix, reproducible
 benchmark, EN + 中文 READMEs, published on npm. Test count: 687 passing.
 
