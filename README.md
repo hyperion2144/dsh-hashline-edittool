@@ -119,7 +119,12 @@ hashline:
   separator: ":"         # column separator between the marker and the content (default ":")
   output_format: text    # "text" (hashline rows) | "json" (pure JSON)
   context_lines: 3       # context rows echoed around stale anchors / diffs / grep (default 3, 0..20)
+  require_line_content: false  # when true, edit anchors become `{ anchor, line }` pairs (see below)
 ```
+
+#### require_line_content (default false)
+
+Hardening switch against wrong-anchor edits. When enabled, the `edit` tool's schema changes (live, per agent): every `edits[]` anchor must be a `{ anchor, line }` pair — `anchor` as usual, plus `line`: your declaration of that line's CURRENT full text (single line, verbatim; trailing whitespace may be omitted and a copied read-row marker prefix is tolerated). Every declaration is verified after the stale-anchor check; a mismatch rejects the whole call with `[E_CONTENT_MISMATCH]`, echoing the actual line and where your declared content currently lives. With the switch off, anchors stay plain strings and a passed object is rejected as a shape error.
 
 ### text output (default)
 
@@ -374,6 +379,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_NOT_FOUND]` | File does not exist. |
 | `[E_NOT_OBSERVED]` | The file has not been observed in this session (read-before-write policy); call `read` first. |
 | `[E_NOT_TEXT]` | Path is a directory, binary, or non-UTF-8 file; hashline edits only text. |
+| `[E_CONTENT_MISMATCH]` | `hashline.require_line_content` is on and a declared `line` does not match the anchor's current line; the actual line (and where the declared content lives) is echoed. |
 | `[E_RANGE_STALE]` | A served line differs on disk since it was read; the range is echoed fresh. |
 | `[E_RANGE_UNSERVED]` | The range includes lines never served to the model. |
 | `[E_RANGE_UNVERIFIED]` | Boundary anchor cannot be verified against served state. |

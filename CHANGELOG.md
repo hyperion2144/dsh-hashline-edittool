@@ -4,6 +4,13 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added — edit 申报行内容校验（content echo，wayfinder map #74，契约定案 #76）
+
+- **新配置开关 `hashline.require_line_content`（默认 false）**：开启后 `edit` 的 `edits[]` 锚点从纯字符串变为 `{ anchor, line }` 字典 —— `line` 是模型对该行当前全文的**申报**（单行、`""` 申报空行；行尾空白可省、复制 read 行的标记前缀可容忍），申报与锚点解析行的实际内容两级比对（逐字优先 → 标记前缀剥离回退，行首缩进永不 trim）一致才放行修改。三 op（ins/del/replace）全要求申报；`anchor_end` 缺省折叠时只申报 start。
+- **schema 真动态**（机制实测：#75，分支 `research/edit-content-echo-schema`）：开关切换（settings 服务 onChange + `settings/updated`）触发所有存活 agent 的 edit 工具 + `tool:edit` guidance 区段 disposer→重注册，模型下一步即见新参数集（dsh 工具清单逐步重组、非会话快照；先例 dsh-tool-subagent）；`execute` 内保留运行时 config 校验兑底（陈旧 schema 会话不穿帮）。
+- **双向硬拒**：开态传纯字符串 = 申报缺失（`E_BAD_SHAPE` 引导补 `line`）；关态传字典 = 形状错误（提示可开启配置）。schema 所见即校验所得。
+- **新错误码 `E_CONTENT_MISMATCH`**：申报不匹配时回显实际行全文 + 「该内容当前位于行 N, M…」自动纠偏提示（主防线场景：模型拿错锚点）。校验时序 = 锚点解析 → served E_STALE → 申报校验 → 应用；任一 item 不匹配整调用拒绝（维持全原子语义）。
+- **测试**：24 项新契约测试（开关两态 schema 形状、三 op × 单行/范围、双向硬拒、两级比对含标记样内容无误伤、回显与同内容提示、批量原子性、served 先行时序）。
 ## [0.4.2] - 2026-09-06
 
 ### Added — 伴随 client 插件：web 原生级 read/edit 卡片（issue #71，方向 B）

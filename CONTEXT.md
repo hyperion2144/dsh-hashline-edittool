@@ -41,3 +41,7 @@ _Avoid_: text, content, replacement, `replacement_text` (the pre-0.4 name)
 **`edits`**:
 An array of `{op, anchor_start, anchor_end?, lines?}` entries — the payload of the single `edit` tool call, applied atomically against one file snapshot (overlapping ranges are rejected, `[E_BATCH_CONFLICT]`). The top-level `path` is the default file; each entry's optional `path` overrides it for that entry only (multi-file dispatch). `path` itself is tool-level, not edit-level, so it is not glossary-defined here.
 _Avoid_: patches, modifications, replacements (plural); `batch_edit` (the removed 0.3-era tool)
+
+**declared line (`line`)**:
+With `require_line_content` enabled, each anchor in an `edits[i]` entry becomes a `{ anchor, line }` pair — `line` is the caller's declaration of the anchor line's CURRENT full text (single line, verbatim; trailing whitespace and a copied read-row marker prefix are tolerated). Every declaration is verified after the served-staleness check and before anything applies; a mismatch rejects the whole call (`E_CONTENT_MISMATCH`). With the switch off, declared lines do not exist and anchors are plain markers.
+_Avoid_: expected content, content echo, `line_content`, confirmation text
