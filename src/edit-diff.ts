@@ -132,7 +132,11 @@ export function genDiff(
 					...tail,
 				];
 				skipMiddle = displayLines.length - contextLines * 2;
-			} else if (linesToShow.length > contextLines) {
+			} else if (!nextPartIsChange && linesToShow.length > contextLines) {
+				// Trailing context after the LAST change: keep only the lines adjacent
+				// to it. Between two changes this branch must NOT fire — trimming the
+				// tail there breaks adjacency to the next hunk AND skips the line
+				// counters, misnumbering every following row (found by issue #71).
 				linesToShow = linesToShow.slice(0, contextLines);
 			}
 
