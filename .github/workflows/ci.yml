@@ -1,11 +1,9 @@
 name: CI
 
-# Verify main pushes and every pull request: typecheck, tests, build.
-# Releases are handled by release.yml (tag pushes, or manual dispatch).
-on:
-  push:
-    branches: [main]
-  pull_request:
+# Verify main pushes and every pull request: typecheck, tests, build —
+# for the main package AND the companion client package (client/, the dsh web
+# UI plugin; issue #71). Releases are handled by release.yml (tag pushes, or
+# manual dispatch).
 
 permissions:
   contents: read
@@ -29,3 +27,27 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  verify-client:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+        working-directory: client
+      - run: npm run typecheck
+        working-directory: client
+      - run: npm test
+        working-directory: client
+      - run: npm run build
+        working-directory: client

@@ -1,0 +1,9 @@
+# dsh-hashline-edittool-client bundle patch: mount the host-plane marker row.
+# The row exists so the host Loader mounts the package: dsh's client module
+# system scans Loader entries for `dsh.client` declarations and serves the
+# browser half (lib/client.js) into the web boot graph. Uninstalling or
+# disabling the bundle removes the row, drops the client bundle from the boot
+# graph, and leaves no residue in the web UI.
+- insert:
+    - id: dsh-hashline-edittool-client
+      name: dsh-hashline-edittool-client

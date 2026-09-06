@@ -212,38 +212,36 @@ export function buildReadPresentation(
 }
 
 /**
- * The dsh 0.1.2 web client derives the read card ONLY when the tool result's
- * single text block matches this envelope shape (readCardModel's regex,
- * byte-for-byte). The inner body is NOT validated — the card renders from
- * presentationMeta — so wrapping the hashline rows / pure-JSON view in this
- * envelope restores the web read card while the model still sees its usual
- * rows, plus four wrapper lines.
+ * Legacy artifact of the dsh 0.1.2 web read card (issue #69 direction A).
+ * Since issue #71 direction B, read results are NOT enveloped anymore — the
+ * bundled client plugin renders the card from presentationMeta alone. The
+ * regex survives only so {@link extractReadBody} can still strip the envelope
+ * from PRE-0.4.2 session history when a legacy card projection asks for the
+ * body.
  */
 export const DSH_READ_ENVELOPE_RE =
 	/^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\n([\s\S]*)\n<\/content>$/u;
 
-/**
- * Wrap a read result's model-facing text in the dsh read envelope.
- * The body is passed through verbatim (hashline rows or the pure-JSON view).
- */
-export function envelopeReadText(path: string, body: string): string {
-	return `<path>${path}</path>\n<type>file</type>\n<content>\n${body}\n</content>`;
-}
 
-/** Regex that strips the `ANCHOR:FILELINE` header for the read-card `content` fallback. */
-const READ_BODY_RE = new RegExp(
-	`^${hashlineHeader().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\n([\\s\\S]*)$`,
-);
+/**
+ * Build the `ANCHOR:FILELINE` header-strip regex at CALL time. The compiled
+ * header depends on configuration that may settle after this module loads —
+ * a module-load-time RegExp captured a stale shape and silently never
+ * matched (found by the issue #71 direction-B tests).
+ */
+function readBodyRe(): RegExp {
+	return new RegExp(`^${hashlineHeader().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n([\\s\\S]*)$`);
+}
 
 /**
  * Strip the read transport wrapper and return the body shown to the model.
- * Prefers the dsh read envelope (0.1.2 web parity); falls back to the legacy
- * `ANCHOR:FILELINE` header strip for pre-envelope model texts.
+ * Prefers the legacy dsh read envelope (pre-0.4.2 session history); falls
+ * back to the `ANCHOR:FILELINE` header strip for current model texts.
  */
 export function extractReadBody(modelText: string): string | undefined {
 	const envelope = DSH_READ_ENVELOPE_RE.exec(modelText);
 	if (envelope !== null) return envelope[1];
-	const m = READ_BODY_RE.exec(modelText);
+	const m = readBodyRe().exec(modelText);
 	return m?.[1];
 }
 
@@ -338,6 +336,56 @@ export function computeHunkDiffs(path: string, before: string, after: string): F
 	return diffs;
 }
 
+/**
+ * One rendered diff row with its gutter facts — the RENDERING channel for the
+ * web diff card (issue #71). Persisted in presentationMeta; never derived
+ * from the model-facing text, which may change shape at any time.
+ */
+export type EditDiffRow = {
+	/** `+` added, `-` removed, ` ` context. */
+	kind: "+" | "-" | " ";
+	/** `+` / context: the post-edit line number. `-`: the pre-edit line number. */
+	lineNumber: number;
+	/** `+` / context: the served post-edit anchor. `-`: the stale pre-edit anchor. Empty when unknown. */
+	hash: string;
+	text: string;
+};
+
+/** Project genDiff's structured rows into the persisted meta shape. */
+export function diffRowsFromGenDiff(
+	rows: ReadonlyArray<{ kind: "+" | "-" | " "; content: string; lineNumber: number; hash: string }>,
+): EditDiffRow[] {
+	return rows.map((row) => ({
+		kind: row.kind,
+		lineNumber: row.lineNumber,
+		hash: row.hash ?? "",
+		text: row.content,
+	}));
+}
+
+/** Soft-validate the persisted diff rows meta. Returns the validated shape, or `undefined`. */
+export function diffRowsFromMeta(meta: unknown): EditDiffRow[] | undefined {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined;
+	const v = meta as { diffRows?: unknown };
+	if (!Array.isArray(v.diffRows) || v.diffRows.length === 0) return undefined;
+	if (
+		!v.diffRows.every((row) => {
+			if (typeof row !== "object" || row === null) return false;
+			const r = row as { kind?: unknown; lineNumber?: unknown; hash?: unknown; text?: unknown };
+			return (
+				(r.kind === "+" || r.kind === "-" || r.kind === " ") &&
+				typeof r.lineNumber === "number" &&
+				Number.isInteger(r.lineNumber) &&
+				r.lineNumber >= 1 &&
+				typeof r.hash === "string" &&
+				typeof r.text === "string"
+			);
+		})
+	) {
+		return undefined;
+	}
+	return v.diffRows as EditDiffRow[];
+}
 /** Soft-validate the persisted diffs meta. Returns the validated shape, or `undefined`. */
 export function diffsFromMeta(meta: unknown): FileDiff[] | undefined {
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined;

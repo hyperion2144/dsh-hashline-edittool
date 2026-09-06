@@ -1,26 +1,20 @@
 /**
- * Read-envelope + `file_path` spelling tests (issue #69 problem 2).
+ * Read modelText shape tests (issue #69 problem 2 → issue #71 direction B).
  *
- * The dsh 0.1.2 web client derives the read card from RAW call args
- * (`file_path`), the persisted presentationMeta, and a result text matching
- * {@link DSH_READ_ENVELOPE_RE}. These tests pin all three legs so a future
- * refactor cannot silently degrade the web read card again.
+ * Direction A wrapped read results in the dsh read envelope so the SHIPPED
+ * web card rendered. Direction B (the bundled client plugin) renders the card
+ * from presentationMeta alone, so the envelope is GONE from model texts — the
+ * model sees the hashline legend + rows + footer directly, and json mode is
+ * pure JSON again. {@link DSH_READ_ENVELOPE_RE} survives only for legacy
+ * history tolerance in extractReadBody. These tests pin the new shape.
  *
  * @module dsh-hashline-edittool/test/read-envelope
  */
 import { describe, expect, it, afterEach } from "vitest";
-import {
-	applyEffective,
-} from "../../src/config.js";
-import {
-	DSH_READ_ENVELOPE_RE,
-	envelopeReadText,
-	extractReadBody,
-} from "../../src/presentation-helpers.js";
-import {
-	withTempFile,
-	makeExec,
-} from "../support/fixtures.js";
+import { applyEffective } from "../../src/config.js";
+import { DSH_READ_ENVELOPE_RE, extractReadBody } from "../../src/presentation-helpers.js";
+import { hashlineHeader } from "../../src/hashline/hash-assign.js";
+import { withTempFile, makeExec } from "../support/fixtures.js";
 import { localIO } from "../../src/fs-bridge.js";
 
 afterEach(() => {
@@ -34,37 +28,37 @@ async function executeRead(args: unknown, cwd: string) {
 	return tool.execute(args, makeExec(cwd)({}));
 }
 
-describe("read modelText envelope (dsh 0.1.2 web parity)", () => {
-	it("wraps text-mode rows in the dsh read envelope", async () => {
-		await withTempFile("p.txt", "alpha\nbeta\n", async ({ cwd, path }) => {
+describe("read modelText has no dsh envelope (issue #71 direction B)", () => {
+	it("emits legend + rows + footer without the <path>/<type>/<content> wrapper", async () => {
+		await withTempFile("p.txt", "alpha\nbeta\n", async ({ cwd }) => {
 			const value = (await executeRead({ file_path: "p.txt" }, cwd)) as {
 				modelText: string;
 			};
-			expect(value.modelText).toMatch(DSH_READ_ENVELOPE_RE);
-			expect(value.modelText).toContain("ANCHOR:FILELINE");
-			expect(value.modelText.split("\n")[0]).toBe("<path>p.txt</path>");
-			expect(value.modelText.endsWith("\n</content>")).toBe(true);
+			expect(value.modelText).not.toMatch(DSH_READ_ENVELOPE_RE);
+			expect(value.modelText.startsWith("ANCHOR:FILELINE")).toBe(true);
+			expect(value.modelText).toMatch(/\[End of file - total 2 lines\.\]$/);
 		});
 	});
 
-	it("wraps the pure-JSON view in the envelope in json mode", async () => {
+	it("json mode emits pure JSON (parseable, no envelope)", async () => {
 		applyEffective({ output_format: "json" });
 		await withTempFile("j.txt", "alpha\nbeta\n", async ({ cwd }) => {
 			const value = (await executeRead({ file_path: "j.txt" }, cwd)) as {
 				modelText: string;
 			};
-			expect(value.modelText).toMatch(DSH_READ_ENVELOPE_RE);
-			expect(value.modelText).toContain('{"path"');
+			expect(value.modelText).not.toMatch(DSH_READ_ENVELOPE_RE);
+			const parsed = JSON.parse(value.modelText) as { path: string };
+			expect(parsed.path).toBe("j.txt");
 		});
 	});
 
-
-	it("envelopes even the defensive fallback branch", async () => {
+	it("emits the defensive fallback branch bare as well", async () => {
 		await withTempFile("f.txt", "content", async ({ cwd }) => {
 			const value = (await executeRead({ file_path: "f.txt" }, cwd)) as {
 				modelText: string;
 			};
-			expect(value.modelText).toMatch(DSH_READ_ENVELOPE_RE);
+			expect(value.modelText).not.toMatch(DSH_READ_ENVELOPE_RE);
+			expect(value.modelText).toContain("content");
 		});
 	});
 });
@@ -109,14 +103,13 @@ describe("read file_path spelling (raw args the web validates)", () => {
 	});
 });
 
-describe("envelope helpers", () => {
-	it("envelopeReadText output always matches the dsh regex", () => {
-		for (const body of ["", "rows\n\nfooter", "line\nwith\ntrailing\n"]) {
-			expect(envelopeReadText("x/y.txt", body)).toMatch(DSH_READ_ENVELOPE_RE);
-		}
+describe("envelope helpers (legacy history tolerance)", () => {
+	it("extractReadBody strips the legacy envelope from pre-0.4.2 history", () => {
+		const legacy = `<path>p</path>\n<type>file</type>\n<content>\nthe-body\n</content>`;
+		expect(extractReadBody(legacy)).toBe("the-body");
 	});
 
-	it("extractReadBody strips the envelope and the legacy header", () => {
-		expect(extractReadBody(envelopeReadText("p", "the-body"))).toBe("the-body");
+	it("extractReadBody strips the ANCHOR:FILELINE header from current texts", () => {
+		expect(extractReadBody(`${hashlineHeader()}\nthe-body`)).toBe("the-body");
 	});
 });
