@@ -52,15 +52,15 @@ const CSS_TEXT = [
 	".dshl-diff-copyButton{position:absolute;top:8px;right:12px;z-index:1;background-color:transparent;border:none;padding:0;margin:0;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13)}",
 	".dshl-diff-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-diff-line{min-height:var(--dsl-diff-line-height);white-space:pre;display:flex}",
-	// Gutter: the ReadBlock gutter cell, so both cards share one look. It is
-	// chrome, not content — excluded from text selection like the read card's.
-	".dshl-diff-gutter{flex:none;min-width:64px;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// Gutter: ONE column carrying marker + number + anchor (`-21:C7` / `+21:h2` /
+	// `20:Cg`), right-aligned; the exact column width is set per-card from the
+	// longest label so every row shares one content edge. Chrome, not content —
+	// excluded from text selection like the read card's gutter.
+	".dshl-diff-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
 	".dshl-diff-content{white-space:pre}",
 	".dshl-diff-path{color:var(--dsw-alias-label-primary);font-weight:600;padding-right:56px}",
 	".dshl-diff-gap{color:var(--dsw-alias-label-tertiary)}",
-	".dshl-diff-del::before{content:'- ';color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diff-del{color:var(--dsw-alias-state-error-primary)}",
-	".dshl-diff-add::before{content:'+ ';color:var(--dsw-alias-state-success-primary)}",
 	".dshl-diff-add{color:var(--dsw-alias-state-success-primary)}",
 	".dshl-diff-ctx{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
@@ -108,9 +108,19 @@ export interface DiffRowsLabels {
 	files: (count: number) => string;
 }
 
-/** The gutter label of one row. Removed lines keep their pre-edit number only — their anchors are stale. */
+/**
+ * The gutter label of one row — ONE column carrying marker + number + anchor:
+ * `-21:C7` for removed lines (the pre-edit anchor, stale but informative),
+ * `+21:h2` for added lines (the served chained-edit anchor), `20:Cg` for
+ * context. The marker never separates from the number:anchor pair.
+ */
 function gutterLabel(row: DiffRowMeta): string {
-	if (row.kind === "-") return `${row.lineNumber}`;
+	if (row.kind === "-") {
+		return row.hash !== "" ? `-${row.lineNumber}:${row.hash}` : `-${row.lineNumber}`;
+	}
+	if (row.kind === "+") {
+		return row.hash !== "" ? `+${row.lineNumber}:${row.hash}` : `+${row.lineNumber}`;
+	}
 	return row.hash !== "" ? `${row.lineNumber}:${row.hash}` : `${row.lineNumber}`;
 }
 
@@ -118,7 +128,7 @@ interface DisplayRow {
 	kind: "del" | "add" | "ctx" | "gap" | "path";
 	gutter: string;
 	text: string;
-	/** The diff class for the content cell (del/add/ctx); gap/path draw bare. */
+	/** The diff class for the gutter and content cells (del/add/ctx); gap/path draw bare. */
 	rowClass: string;
 }
 
@@ -132,6 +142,9 @@ function buildDisplayRows(path: string, rows: readonly DiffRowMeta[]): DisplayRo
 		}
 		if (row.kind === "-") {
 			out.push({ kind: "del", gutter: gutterLabel(row), text: row.text, rowClass: css.del });
+		} else if (row.kind === "+") {
+			out.push({ kind: "add", gutter: gutterLabel(row), text: row.text, rowClass: css.add });
+			prevNew = row.lineNumber;
 		} else {
 			out.push({ kind: "ctx", gutter: gutterLabel(row), text: row.text, rowClass: css.ctx });
 			prevNew = row.lineNumber;
@@ -160,13 +173,17 @@ export interface DiffRowsBlockProps {
 }
 
 /**
- * Render the applied edit as a diff surface with a `行号:锚点` gutter: added
- * and context rows carry the served post-edit anchor (the chained-edit
- * currency), removed rows keep their pre-edit number.
+ * Render the applied edit as a diff surface with ONE gutter column carrying
+ * marker + number + anchor (`-21:C7` / `+21:h2` / `20:Cg`): removed lines
+ * keep their pre-edit anchor, added and context lines carry the served
+ * post-edit anchor (the chained-edit currency).
  */
-export function DiffRowsBlock({ path, rows, labels, maxLines = 16, className }: DiffRowsBlockProps): React.ReactNode {
+export function DiffRowsBlock({ path, rows, labels, maxLines = 16, className }: DiffRowsBlockProps): ReactNode {
 	ensureDiffStyles();
 	const display = useMemo(() => buildDisplayRows(path, rows), [path, rows]);
+	// One shared gutter column: the widest label sets the width for every row
+	// (monospace font → `ch` is exact), so all content cells share one edge.
+	const gutterWidth = Math.max(8, ...display.map((row) => row.gutter.length));
 	const [expanded, setExpanded] = useState(false);
 	const [copied, setCopied] = useState(false);
 
@@ -194,10 +211,17 @@ export function DiffRowsBlock({ path, rows, labels, maxLines = 16, className }: 
 	const rowEl = (row: DisplayRow, index: number) =>
 		jsx_("div", {
 			key: index,
-			className: `${css.line} ${row.rowClass}`,
+			className: css.line,
 			children: [
-				jsx_("span", { className: css.gutter, "aria-hidden": true, children: row.gutter }),
-				jsx_("span", { className: css.content, children: row.text }),
+				// The gutter cell carries marker + number + anchor as one string;
+				// del/add rows take the diff color on the label too.
+				jsx_("span", {
+					className: row.kind === "del" || row.kind === "add" ? `${css.gutter} ${row.rowClass}` : css.gutter,
+					style: { minWidth: `${gutterWidth}ch` },
+					"aria-hidden": true,
+					children: row.gutter,
+				}),
+				jsx_("span", { className: `${css.content} ${row.rowClass}`.trim(), children: row.text }),
 			],
 		});
 
