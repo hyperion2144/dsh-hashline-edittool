@@ -19,6 +19,7 @@ import type { LineEnding } from "./edit-diff.js";
 import { restoreEndings } from "./edit-diff.js";
 import { normFromText } from "./file-reader.js";
 import { scanDrift, loadServed, migrateServedAfterEdit } from "./session-view.js";
+import { isContentMismatch } from "./declaration.js";
 import {
 	applyEdit,
 	resEdit,
@@ -115,6 +116,10 @@ export interface PreparedItem {
 	pathWarning?: string;
 	/** Edit semantic (0.3+): "ins" | "del" | "replace". Defaults to "replace". */
 	op?: "ins" | "del" | "replace";
+	/** Declared line content for anchor_start (require_line_content ON). */
+	expectedStart?: string;
+	/** Declared line content for anchor_end (only when explicitly passed). */
+	expectedEnd?: string;
 }
 
 /**
@@ -277,6 +282,10 @@ export interface ApplyOneInput {
 	 * (the pre-0.3 default). Defaults to `"replace"`.
 	 */
 	op?: "ins" | "del" | "replace";
+	/** Declared line content for anchor_start (require_line_content ON). */
+	expectedStart?: string;
+	/** Declared line content for anchor_end (only when explicitly passed). */
+	expectedEnd?: string;
 }
 
 export interface ApplyOneResult {
@@ -403,11 +412,13 @@ export async function applyOne(
 			input.hashes,
 			input.displayPath,
 			input.served,
+			{ start: input.expectedStart, end: input.expectedEnd },
 		);
 	} catch (error) {
 		if (
 			error instanceof AnchorMismatchError ||
-			error instanceof ServedRejectionError
+			error instanceof ServedRejectionError ||
+			isContentMismatch(error)
 		) {
 			return onReject(error, edit);
 		}
@@ -721,6 +732,8 @@ const ordered = [...resolvedEdits].sort(
 				removeTo: item.remove_to,
 				replacementText: item.replacement_text,
 				op: item.op,
+				expectedStart: item.expectedStart,
+				expectedEnd: item.expectedEnd,
 				absolutePath,
 				displayPath: item.path,
 				signal: opts.signal,
