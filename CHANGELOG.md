@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-06
+
 ### Added — 伴随 client 插件：web 原生级 read/edit 卡片（issue #71，方向 B）
 
 - **新伴随包 `dsh-hashline-edittool-client`（浏览器半内置于本包 `client/` 构建工作区）**：dsh web 的 Cordis client 插件，从已持久化的 `presentationMeta` 渲染 hashline 品牌卡片——read 卡复用官方 `ReadBlock`（唯一差异：gutter 渲染 `<行号>:<锚点>`，来自 meta `hashlines`）；edit 卡由结构化 `meta.diffRows` 驱动（fork 版 DiffBlock + gutter，官方配色）：`+`/context 行 gutter 显示 `<新行号>:<新锚点>`（链式编辑可直接复制），`-` 行显示旧行号（旧锚已失效不显示锚点），多 hunk 完整呈现不再退化为 generic；折叠行附 caption 级锚点提示（`@12:a3f`，读自调用自身 `edits[].anchor_start`）。注册走 keyed `tool.call.toolview` slot `priority: -1`（slot 台账按升序 shadowing，同 key 同优先级会 throw，显式 -1 确定性接管、不碰内建注册）。
