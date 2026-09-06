@@ -63,7 +63,7 @@ import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
 import { genDiff } from "./edit-diff.js";
 import { EDIT_DIFF_LEGEND } from "./edit-response.js";
-import { diffRowsFromGenDiff, diffRowsFromMeta, type EditDiffRow } from "./presentation-helpers.js";
+import { diffRowsFromGenDiff, type EditDiffRow } from "./presentation-helpers.js";
 
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
@@ -206,12 +206,14 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				// 渲染通道（issue #71）: genDiff 的结构化行（新旧行号 + 锚点），
 				// web diff 卡的 gutter 直接渲染它，绝不解析 modelText。
-				const diffRows = diffRowsFromMeta(v.diffRows);
+				// v.diffRows 已是 diffRowsFromGenDiff 的产物（EditDiffRow[]），
+				// 非空即透传（diffRowsFromMeta 的入参是 meta 对象，不能传数组）。
+				const diffRows = Array.isArray(v.diffRows) && v.diffRows.length > 0 ? v.diffRows : undefined;
 				return {
 					diffs,
 					...(diffRows !== undefined ? { diffRows } : {}),
 				} as never;
-			},
+		},
 		},
 		presentCall: (args) => {
 			const a = args as {
