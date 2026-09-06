@@ -2,7 +2,7 @@
   "name": "dsh-hashline-edittool",
   "version": "0.4.1",
   "type": "module",
-  "description": "Line-anchored read/edit/batch_edit/grep/undo_last_edit tools for DeepSeek Harness (dsh). Every line is addressed by `<line>#<hash>` so chained edits skip a re-read; stale or ambiguous anchors are rejected and a fresh `<line>#<hash>` is served back. Undo persists across restarts.",
+  "description": "Line-anchored read/edit/batch_edit/grep/undo_last_edit tools for DeepSeek Harness (dsh). Every line is addressed by `<line>:<anchor>` so chained edits skip a re-read; stale or ambiguous anchors are rejected and a fresh `<line>:<anchor>` is served back. Undo persists across restarts. Ships a companion web client half rendering hashline-branded read/edit cards.",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -10,10 +10,12 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client/lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "client/lib",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
@@ -46,17 +48,20 @@
     "grep",
     "undo",
     "file-editing",
+    "web-ui",
     "stable"
   ],
   "license": "MIT",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "dependencies": {
     "diff": "^8.0.2",
-    "dsh-hashline-edittool-client": "file:client",
     "file-type": "^21.3.0",
     "minimatch": "^10.2.6"
   },
@@ -65,11 +70,11 @@
   },
   "scripts": {
     "prepare": "tsc -p tsconfig.json",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && npm run build --prefix client",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run typecheck && npm test && node scripts/assert-tagged.mjs",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build --prefix client && node scripts/assert-tagged.mjs",
     "benchmark": "node benchmark/run.mjs",
     "postpublish": "node scripts/tag-current.mjs",
     "release": "node scripts/release.mjs",

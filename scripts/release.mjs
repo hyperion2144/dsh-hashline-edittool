@@ -84,13 +84,6 @@ const existingTag = run(["tag", "-l", `v${next}`]);
 if (existingTag === `v${next}`) {
 	fail(`tag v${next} already exists`);
 }
-if (pkg.dependencies?.["dsh-hashline-edittool-client"] === "file:client") {
-	fail(
-		'the companion client dependency is still the local link "file:client" — npm rejects file: deps in published packages. Publish dsh-hashline-edittool-client first, then set the dependency to its published range (e.g. ^0.1.0), commit, and re-run the release.',
-	);
-}
-
-
 // --- 2. bump version -------------------------------------------------------
 const lockPath = join(root, "package-lock.json");
 let lock;
