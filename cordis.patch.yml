@@ -1,18 +1,13 @@
-# dsh-hashline-edittool bundle patch: mount the host-plane plugin rows.
+# dsh-hashline-edittool bundle patch: mount the host-plane plugin row.
 # Installed via `dsh plugin add dsh-hashline-edittool` (or a profile's bundle list).
 # The plugin hooks agent/session-start and shadows the built-in read/edit tools
 # (plus batch_edit / undo_last_edit / grep) on each agent's own scope layer, so
 # no preset editing or user config is needed.
 #
-# The second row mounts the COMPANION client package (declared as a dependency
-# in package.json) so ONE install ships the web cards too: dsh's client module
-# system scans Loader entries for `dsh.client` declarations and serves that
-# package's browser half into the web boot graph. It resolves through this
-# bundle's own tree, so no separate `dsh plugin add` is needed. Disable it
-# independently from a profile patch (`disabled: true`) to fall back to the
-# shipped web cards.
+# The SAME package also declares `dsh.client` (browser half at
+# exports["./client"]): dsh's client module system scans this mounted row and
+# serves the web card bundle into the boot graph — one install ships the host
+# tools AND the web cards. No second row, no second package.
 - insert:
     - id: dsh-hashline-edittool
       name: dsh-hashline-edittool
-    - id: dsh-hashline-edittool-client
-      name: dsh-hashline-edittool-client

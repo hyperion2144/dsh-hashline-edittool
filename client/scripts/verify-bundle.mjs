@@ -56,7 +56,7 @@ run(windowObj, requireStub);
 if (registered.length !== 1) {
 	throw new Error(`expected exactly one bundle registration, got ${registered.length}`);
 }
-if (registered[0].id !== "dsh-hashline-edittool-client") {
+if (registered[0].id !== "dsh-hashline-edittool") {
 	throw new Error(`unexpected registration id: ${registered[0].id}`);
 }
 

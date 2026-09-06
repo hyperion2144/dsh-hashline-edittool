@@ -54,7 +54,7 @@ interface ToolRowProps {
 	t: ToolViewProps["t"];
 	variant: "read" | "edit";
 	toolName: string;
-	icon: React.ReactNode;
+	icon: ReactNode;
 	title: string;
 	summary: string;
 	/** Caption-styled extra suffix (hashline anchor hints); null draws none. */
@@ -104,7 +104,7 @@ function ToolRow({
 	filePath,
 	onOpenFile,
 	inspect,
-}: ToolRowProps): React.ReactNode {
+}: ToolRowProps): ReactNode {
 	ensureToolRowStyles();
 	const [expanded, setExpanded] = useState(false);
 	const readLabels = useMemo(() => readBlockLabels(t), [t]);
@@ -271,7 +271,7 @@ function ToolRow({
  * `hashlines` meta. Without hashline data it degrades to the exact shipped
  * presentation (bare numbers, or the generic input/output body).
  */
-export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): React.ReactNode {
+export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const read = readCardModel(block, cwd, home);
 	return jsx_(ToolRow, {
@@ -301,7 +301,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
  * the call's own `edits[].anchor_start`. Non-hashline calls fall back to the
  * shipped behavior (intended diff while running, generic body otherwise).
  */
-export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): React.ReactNode {
+export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const diff = diffCardModel(block);
 	const anchors = useMemo(() => editAnchorHints(callArgsRaw(block)), [block]);

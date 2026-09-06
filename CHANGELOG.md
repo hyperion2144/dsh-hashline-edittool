@@ -6,11 +6,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Added — 伴随 client 插件：web 原生级 read/edit 卡片（issue #71，方向 B）
 
-- **新伴随包 `dsh-hashline-edittool-client`（`client/`，v0.1.1）**：dsh web 的 Cordis client 插件，从已持久化的 `presentationMeta` 渲染 hashline 品牌卡片——read 卡复用官方 `ReadBlock`（唯一差异：gutter 渲染 `<行号>:<锚点>`，来自 meta `hashlines`）；edit 卡由结构化 `meta.diffRows` 驱动（fork 版 DiffBlock + gutter，官方配色）：`+`/context 行 gutter 显示 `<新行号>:<新锚点>`（链式编辑可直接复制），`-` 行显示旧行号（旧锚已失效不显示锚点），多 hunk 完整呈现不再退化为 generic；折叠行附 caption 级锚点提示（`@12:a3f`，读自调用自身 `edits[].anchor_start`）。注册走 keyed `tool.call.toolview` slot `priority: -1`（slot 台账按升序 shadowing，同 key 同优先级会 throw，显式 -1 确定性接管、不碰内建注册）。
-- **渲染通道与模型通道彻底分离**：web 卡片数据一律来自 presentationMeta（结构化、可演进），绝不解析给模型看的 modelText（其格式/分隔符可随时调整）。本版同时移除 read 结果的 dsh 信封（方向 B 替代方向 A，模型每次 read 少 4 行包裹；json 模式恢复纯 JSON；`extractReadBody` 保留对旧会话历史的信封剥离容忍）。client ≥0.1.1 配 main ≥0.4.2。
-- **一次安装同时装好两半**：client 包声明为主插件依赖，主插件 `cordis.patch.yml` 一并插入 client 行（loader 按所属树解析依赖），`dsh plugin add dsh-hashline-edittool` 即完整生效；本地开发用 `file:client`（release 预检会在发布前拒绝该形态并提示改回正式版本区间）。
+- **新伴随包 `dsh-hashline-edittool-client`（浏览器半内置于本包 `client/` 构建工作区）**：dsh web 的 Cordis client 插件，从已持久化的 `presentationMeta` 渲染 hashline 品牌卡片——read 卡复用官方 `ReadBlock`（唯一差异：gutter 渲染 `<行号>:<锚点>`，来自 meta `hashlines`）；edit 卡由结构化 `meta.diffRows` 驱动（fork 版 DiffBlock + gutter，官方配色）：`+`/context 行 gutter 显示 `<新行号>:<新锚点>`（链式编辑可直接复制），`-` 行显示旧行号（旧锚已失效不显示锚点），多 hunk 完整呈现不再退化为 generic；折叠行附 caption 级锚点提示（`@12:a3f`，读自调用自身 `edits[].anchor_start`）。注册走 keyed `tool.call.toolview` slot `priority: -1`（slot 台账按升序 shadowing，同 key 同优先级会 throw，显式 -1 确定性接管、不碰内建注册）。
+- **渲染通道与模型通道彻底分离**：web 卡片数据一律来自 presentationMeta（结构化、可演进），绝不解析给模型看的 modelText（其格式/分隔符可随时调整）。本版同时移除 read 结果的 dsh 信封（方向 B 替代方向 A，模型每次 read 少 4 行包裹；json 模式恢复纯 JSON；`extractReadBody` 保留对旧会话历史的信封剥离容忍）。
+- **单包单装**：浏览器半就是主包的一部分（`exports["./client"]`，`dsh.client` 声明在主包 manifest），`dsh plugin add dsh-hashline-edittool` 一次装齐 host 工具 + web 卡片；发布同版本同包，无第二依赖。
 - **卸载/禁用无残留（已实测）**：client 行禁用后 web boot graph 完全不含该包（smoke profile 重启实测 46→0 提及）；slot 注册走调用方 fiber 的 `ctx.effect`，卸载级联清除，内建卡片即刻回归。
-- **版本解耦**：client 包独立版本号/独立发布，可单独升级；client 测试 22 项（卡片模型）+ `scripts/verify-bundle.mjs` 无头评估构建产物（factory 形状、externals 绑定、注册行为）；CI 新增 `verify-client` job（node 22/24）。
+- **验证**：client 构建工作区测试 22 项（卡片模型）+ `scripts/verify-bundle.mjs` 无头评估构建产物（factory 形状、externals 绑定、注册行为）；CI 新增 `verify-client` job（node 22/24）。
 
 ### Changed — v2.0 dynamic anchors（dynamic hashline，wayfinder #56）
 

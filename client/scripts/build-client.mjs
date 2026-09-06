@@ -22,6 +22,10 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
+// The bundle id MUST equal the mounting graph row: the browser half ships as
+// the MAIN package's exports["./client"] (single-package install), and
+// window.__ModuleLoader__ keys registrations by graph row id.
+const BUNDLE_ID = "dsh-hashline-edittool";
 const outfile = join(pkgRoot, "lib", "client.js");
 
 const result = await build({
@@ -42,7 +46,7 @@ if (result.errors.length > 0) {
 
 const body = readFileSync(outfile, "utf8");
 const wrapped = `window.__ModuleLoader__.load({
-	id: ${JSON.stringify(pkg.name)},
+	id: ${JSON.stringify(BUNDLE_ID)},
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
