@@ -65,12 +65,13 @@
     "file-type": "^21.3.0",
     "minimatch": "^10.2.6"
   },
+  "workspaces": ["client"],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "prepare": "npm install --prefix client --ignore-scripts --no-audit --no-fund && npm run build",
-    "build": "tsc -p tsconfig.json && npm run build --prefix client",
+    "prepare": "npm run build",
+    "build": "tsc -p tsconfig.json && npm run build -w client",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",

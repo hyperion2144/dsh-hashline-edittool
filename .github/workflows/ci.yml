@@ -28,13 +28,11 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      # workspaces: root npm ci installs the client dep tree too — the
+      # main build chains the client build (-w client) in the same step.
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      # The main build chains the client build (`npm run build --prefix client`):
-      # install the client dep tree or its tsc misses react / ui-primitives types.
-      - run: npm ci
-        working-directory: client
       - run: npm run build
 
   verify-client:
@@ -51,12 +49,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-          cache-dependency-path: client/package-lock.json
       - run: npm ci
-        working-directory: client
-      - run: npm run typecheck
-        working-directory: client
-      - run: npm test
-        working-directory: client
-      - run: npm run build
-        working-directory: client
+      - run: npm run typecheck -w client
+      - run: npm test -w client
+      - run: npm run build -w client
