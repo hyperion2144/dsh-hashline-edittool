@@ -202,6 +202,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					ok: { type: "boolean" },
 					success: { type: "array" },
 					fail: { type: "array" },
+					// issue #82: 多文件聚合 diffs + diffRows
+					multiDiffs: { type: "array" },
+					multiDiffRows: { type: "array" },
 					// 两种形态都有
 					modelText: { type: "string", required: true },
 				},
@@ -425,7 +428,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath, lineNumbers)}`
 							: `Edit for ${o.displayPath} failed: ${o.code} ${o.message}`,
 					);
-					return { success, fail, multiDiffs, multiDiffRows, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
+					return { success, fail, multiDiffs: multiDiffs as never, multiDiffRows: multiDiffRows as never, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)
@@ -434,7 +437,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					success,
 					fail,
 				});
-				return { ok: success.length > 0, success, fail, multiDiffs, multiDiffRows, modelText };
+				return { ok: success.length > 0, success, fail, multiDiffs: multiDiffs as never, multiDiffRows: multiDiffRows as never, modelText };
 			});
 		},
 	});
