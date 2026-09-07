@@ -31,6 +31,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # The main build chains the client build (`npm run build --prefix client`):
+      # install the client dep tree or its tsc misses react / ui-primitives types.
+      - run: npm ci
+        working-directory: client
       - run: npm run build
 
   verify-client:
