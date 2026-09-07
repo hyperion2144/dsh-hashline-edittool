@@ -28,6 +28,7 @@ import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { ensureSettingsService } from "./settings-provider.js";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
+import { rebuildEditSurfaces } from "./edit-rebuild.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
@@ -38,6 +39,8 @@ export interface HashlineSettings {
 	separator?: string;
 	output_format?: "text" | "json";
 	context_lines?: number;
+	/** When true, edit anchors are `{ anchor, line }` declaration pairs (default false). */
+	require_line_content?: boolean;
 }
 
 /** Permissive schema — unknown keys tolerated so newer versions don't break older builds. */
@@ -46,6 +49,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		separator: z.string().min(1).max(4),
 		output_format: z.union(["text", "json"]),
 		context_lines: z.number().min(0).max(20),
+		require_line_content: z.boolean(),
 	})
 	.loose() as unknown as z<HashlineSettings>;
 	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
@@ -58,12 +62,15 @@ export interface EffectiveHashlineConfig {
 	separator: string;
 	outputFormat: OutputFormat;
 	contextLines: number;
+	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
+	requireLineContent: boolean;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	separator: ":",
 	outputFormat: "text",
 	contextLines: 3,
+	requireLineContent: false,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -92,8 +99,17 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		settings.context_lines <= 20
 			? settings.context_lines
 			: DEFAULT_CONFIG.contextLines;
-	effective = { separator: sep, outputFormat: fmt, contextLines: nctx };
+	const requireLine =
+		typeof settings?.require_line_content === "boolean"
+			? settings.require_line_content
+			: DEFAULT_CONFIG.requireLineContent;
+	// The edit tool's model-facing schema depends on this flag: when it
+	// FLIPS, live agents' edit surfaces must be disposed and re-registered
+	// so the next model step sees the new parameter set (issue #75/#76).
+	const flagChanged = effective.requireLineContent !== requireLine;
+	effective = { separator: sep, outputFormat: fmt, contextLines: nctx, requireLineContent: requireLine };
 	applyHashlineShape({ separator: sep, contextLines: nctx });
+	if (flagChanged) rebuildEditSurfaces();
 }
 
 /** Default settings.yaml location (same file the dsh settings layer uses). */
@@ -146,6 +162,10 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 		else if (key === "context_lines") {
 			const n = Number(value);
 			if (Number.isInteger(n) && n >= 0 && n <= 20) out.context_lines = n;
+		}
+		else if (key === "require_line_content") {
+			if (value === "true") out.require_line_content = true;
+			else if (value === "false") out.require_line_content = false;
 		}
 	}
 return out;

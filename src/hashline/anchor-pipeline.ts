@@ -47,6 +47,7 @@ import {
 	lineHashesPure,
 } from "./hash-assign.js";
 import { recordServed } from "../served-store.js";
+import { verifyExpectedLines, type ExpectedLines } from "../declaration.js";
 import { SERVED_ECHO_CAP } from "../constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../constants.js";
 
@@ -1161,6 +1162,7 @@ export function applyEdit(
 	precomputedAnchors?: string[],
 	filePath?: string,
 	served?: (string | null)[],
+	expected?: ExpectedLines,
 ): {
 	content: string;
 	firstChangedLine: number | undefined;
@@ -1236,6 +1238,17 @@ export function applyEdit(
 			filePath,
 		});
 	}
+
+	// Declared line-content gate (require_line_content mode, contract #76):
+	// runs AFTER the served verification (served E_STALE wins first) and
+	// BEFORE any span application — a mismatch rejects the whole edit.
+	verifyExpectedLines({
+		startLine: resolved.hash_bounds[0].line,
+		endLine: resolved.hash_bounds[1].line,
+		fileLines: lineIndex.fileLines,
+		filePath,
+		expected,
+	});
 
 	const spanResult = resToSpan(resolved, content, lineIndex);
 	if (spanResult.kind === "noop") {

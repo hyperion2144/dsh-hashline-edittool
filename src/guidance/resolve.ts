@@ -9,12 +9,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-	EDIT_GUIDANCE,
+	editGuidance,
 	GREP_GUIDANCE,
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
 	type ToolGuidance,
 } from "../prompts.js";
+import { getEffectiveConfig } from "../config.js";
 import { errCode } from "../utils.js";
 import { isBlankOverride, parseSectionFile } from "./parse.js";
 
@@ -55,7 +56,9 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		name: "tool:edit",
 		file: "edit.md",
 		defaultOrder: 131,
-		renderDefault: () => guidanceText(EDIT_GUIDANCE),
+		// Flag-aware: with require_line_content ON the default teaches the
+		// `{ anchor, line }` declaration form (rebuilt live on flag flip).
+		renderDefault: () => guidanceText(editGuidance(getEffectiveConfig())),
 	},
 	{
 		name: "tool:undo_last_edit",

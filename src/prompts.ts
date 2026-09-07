@@ -27,32 +27,55 @@ export interface ToolGuidance {
 
 import type { EffectiveHashlineConfig } from "./config.js";
 
-/** Edit tool description, generated from the effective config (text/json). */
+/** Edit tool description, generated from the effective config (text/json, declaration mode). */
 export function editDescription(cfg: EffectiveHashlineConfig): string {
-	const base =
-		"Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
+	const base = cfg.requireLineContent
+		? "Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines?}` — every anchor is a pair: the anchor PLUS the current full text of its line, verified before applying (mismatch = [E_CONTENT_MISMATCH]). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`)."
+		: "Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
 	if (cfg.outputFormat === "json") {
 		return base + " JSON output: `{ok, files:[{path, applied, finalLines, noop}], hints, warnings, errors}` — `finalLines` keys are fresh anchors for follow-up edits.";
 	}
 	return base;
 }
 
-export const EDIT_GUIDANCE: ToolGuidance = {
-	intro:
-		"Edit one or more ranges via `edits:[{op, anchor_start, anchor_end?, lines?}]` — never by line content.",
-	lines: [
-		"`edit`: each item is `{ op, anchor_start, anchor_end?, lines? }`. `op` is `ins` (insert after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
-		"`edit`: `replace` requires BOTH `anchor_start` and `anchor_end` (a single-line replace passes the same anchor twice); `lines` has ANY length — the whole range is swapped for it. `ins` may anchor on a range's end line, never its start/interior.",
-		"`edit`: op memory: `ins` KEEPS the anchor line and inserts after it (using it like replace leaves the old line behind); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means NOTHING was written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
-		"`edit`: `anchor_start` is required and anchors the FIRST line of the range; `anchor_end` anchors the LAST line and is OPTIONAL — omitting it defaults to a single-line replace/delete (range = anchor_start only). A replace with MORE THAN ONE line in `lines` REQUIRES anchor_end (the tool will not guess the range from the replacement length). `op:\"ins\"` accepts ONLY `anchor_start` — the insert lands AFTER that line; `anchor_end` is rejected.",
-		"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
-		"`edit`: anchors must be variable-length Base62 markers copied from the leftmost column of a read/grep/diff row — never hand-write or paste line content. The legacy `<line>#<hash>` form is rejected (`E_BAD_REF`).",
-		"`edit`: identical content lines get DISTINCT anchors — copy the exact marker of the line you mean.",
-		"`edit`: ALL anchors in one call come from the same ORIGINAL read — never shift them to positions a previous hunk would produce in sequence (there is no 'after the previous edit' coordinate; the batch applies against the original snapshot). The response's diff rows show the FINAL positions; there is no `Shift:` block — re-read for fresh anchors after an edit.",
-		"`edit`: a stale or never-served range is hard-rejected (`[E_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
-		"`edit`: the batch is ATOMIC — any hunk failure rejects the WHOLE batch ([E_BATCH_ABORT]) and nothing is written; already-resolved hunks are not applied, so there is nothing to roll back or undo. Do not issue several `edit` calls in one message — one call, one `edits` array.",
-	],
-};
+/**
+ * Edit guidance, generated from the effective config. With
+ * `require_line_content` ON the anchor bullets teach the `{ anchor, line }`
+ * declaration form; OFF keeps the plain-anchor contract verbatim.
+ */
+export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
+	if (cfg.requireLineContent) {
+		return {
+			intro:
+				"Edit one or more ranges via `edits:[{op, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines?}]` — every anchor carries a declaration of its line's current text.",
+			lines: [
+				"`edit`: each item is `{ op, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines? }`. `op` is `ins` (insert after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
+				"`edit`: `line` is your declaration of the line's CURRENT full text, verbatim from your latest read — single line, no newlines; an empty string declares an empty line. Trailing whitespace may be omitted and a copied read-row marker prefix is tolerated; anything else must match exactly.",
+				"`edit`: every declared line is verified before the edit applies (after the stale-anchor check) — a mismatch rejects the whole call with `[E_CONTENT_MISMATCH]`, echoing the actual line and where your declared content currently lives. Copy each declaration from the same read the anchors came from.",
+				"`edit`: all three ops require declarations; omitting `anchor_end` (single-line replace/delete) declares only `anchor_start`. A replace with MORE THAN ONE line in `lines` still REQUIRES anchor_end (declared too). `op:\"ins\"` accepts ONLY `anchor_start` — the insert lands AFTER that line.",
+				"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
+				"`edit`: anchors are variable-length Base62 markers copied from the leftmost column of a read/grep/diff row; the legacy `<line>#<hash>` form is rejected (`E_BAD_REF`). Identical content lines get DISTINCT anchors — declare the line you mean.",
+				"`edit`: ALL anchors (and declarations) in one call come from the same ORIGINAL read. The batch is ATOMIC — any hunk failure rejects the WHOLE batch ([E_BATCH_ABORT]) and nothing is written. Do not issue several `edit` calls in one message — one call, one `edits` array.",
+			],
+		};
+	}
+	return {
+		intro:
+			"Edit one or more ranges via `edits:[{op, anchor_start, anchor_end?, lines?}]` — never by line content.",
+		lines: [
+			"`edit`: each item is `{ op, anchor_start, anchor_end?, lines? }`. `op` is `ins` (insert after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
+			"`edit`: `replace` requires BOTH `anchor_start` and `anchor_end` (a single-line replace passes the same anchor twice); `lines` has ANY length — the whole range is swapped for it. `ins` may anchor on a range's end line, never its start/interior.",
+			"`edit`: op memory: `ins` KEEPS the anchor line and inserts after it (using it like replace leaves the old line behind); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means NOTHING was written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
+			"`edit`: `anchor_start` is required and anchors the FIRST line of the range; `anchor_end` anchors the LAST line and is OPTIONAL — omitting it defaults to a single-line replace/delete (range = anchor_start only). A replace with MORE THAN ONE line in `lines` REQUIRES anchor_end (the tool will not guess the range from the replacement length). `op:\"ins\"` accepts ONLY `anchor_start` — the insert lands AFTER that line; `anchor_end` is rejected.",
+			"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
+			"`edit`: anchors must be variable-length Base62 markers copied from the leftmost column of a read/grep/diff row — never hand-write or paste line content. The legacy `<line>#<hash>` form is rejected (`E_BAD_REF`).",
+			"`edit`: identical content lines get DISTINCT anchors — copy the exact marker of the line you mean.",
+			"`edit`: ALL anchors in one call come from the same ORIGINAL read — never shift them to positions a previous hunk would produce in sequence (there is no 'after the previous edit' coordinate; the batch applies against the original snapshot). The response's diff rows show the FINAL positions; there is no `Shift:` block — re-read for fresh anchors after an edit.",
+			"`edit`: a stale or never-served range is hard-rejected (`[E_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
+			"`edit`: the batch is ATOMIC — any hunk failure rejects the WHOLE batch ([E_BATCH_ABORT]) and nothing is written; already-resolved hunks are not applied, so there is nothing to roll back or undo. Do not issue several `edit` calls in one message — one call, one `edits` array.",
+		],
+	};
+}
 
 /** Read tool description, generated from the effective config (text/json). */
 export function readDescription(cfg: EffectiveHashlineConfig): string {
