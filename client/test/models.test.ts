@@ -265,6 +265,47 @@ describe("toolRowModel", () => {
 		expect(model.state).toBe("error");
 		expect(model.errorSummary).toBe("[E_STALE] 2 stale anchors");
 	});
+
+	it("issue #81: edit with no top-level path shows per-item path in summary (single file)", () => {
+		const argsRaw = JSON.stringify({
+			edits: [{ op: "replace", path: "/w/src/a.ts", anchor_start: "2:b2", lines: ["x"] }],
+		});
+		const model = toolRowModel("edit", running(argsRaw, "edit"), "/w", undefined);
+		expect(model.summary).toBe("src/a.ts");
+		expect(model.filePath).toBe("/w/src/a.ts");
+	});
+
+	it("issue #81: edit with no top-level path shows all unique paths (multi file)", () => {
+		const argsRaw = JSON.stringify({
+			edits: [
+				{ op: "replace", path: "/w/src/a.ts", anchor_start: "2:b2", lines: ["x"] },
+				{ op: "replace", path: "/w/src/b.ts", anchor_start: "5:c3", lines: ["y"] },
+			],
+		});
+		const model = toolRowModel("edit", running(argsRaw, "edit"), "/w", undefined);
+		expect(model.summary).toBe("src/a.ts, src/b.ts");
+		expect(model.filePath).toBeUndefined();
+	});
+
+	it("issue #81: edit with no top-level path deduplicates identical per-item paths", () => {
+		const argsRaw = JSON.stringify({
+			edits: [
+				{ op: "replace", path: "/w/src/a.ts", anchor_start: "2:b2", lines: ["x"] },
+				{ op: "ins", path: "/w/src/a.ts", anchor_start: "5:c3", lines: ["y"] },
+			],
+		});
+		const model = toolRowModel("edit", running(argsRaw, "edit"), "/w", undefined);
+		expect(model.summary).toBe("src/a.ts");
+		expect(model.filePath).toBe("/w/src/a.ts");
+	});
+
+	it("issue #81: edit with no top-level path and no per-item paths falls back to raw", () => {
+		const argsRaw = JSON.stringify({ edits: [{ op: "replace", anchor_start: "2:b2", lines: ["x"] }] });
+		const model = toolRowModel("edit", running(argsRaw, "edit"), undefined, undefined);
+		// No path anywhere — unchanged fallback: summary is the raw JSON (pre-existing behavior)
+		expect(model.summary).toBe(argsRaw);
+		expect(model.filePath).toBeUndefined();
+	});
 });
 
 describe("metaDiffRows (rendering channel, issue #71)", () => {
