@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-07
+
 ### Added — edit 申报行内容校验（content echo，wayfinder map #74，契约定案 #76）
 
 - **新配置开关 `hashline.require_line_content`（默认 false）**：开启后 `edit` 的 `edits[]` 锚点从纯字符串变为 `{ anchor, line }` 字典 —— `line` 是模型对该行当前全文的**申报**（单行、`""` 申报空行；行尾空白可省、复制 read 行的标记前缀可容忍），申报与锚点解析行的实际内容两级比对（逐字优先 → 标记前缀剥离回退，行首缩进永不 trim）一致才放行修改。三 op（ins/del/replace）全要求申报；`anchor_end` 缺省折叠时只申报 start。
