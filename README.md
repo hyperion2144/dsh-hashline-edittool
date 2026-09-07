@@ -370,7 +370,7 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row pasted into `lines` (e.g. a `<line>:<anchor>:content` read/diff row); the prefix is stripped when the anchor exists in the file — with a warning. Literal look-alike content is never rewritten. |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
-| `[E_MISSING_ANCHOR_END]` | `op:"replace"` with a multi-line `lines` array omits `anchor_end` — multi-line replaces must declare the verified end boundary explicitly (single-line replaces may omit it). |
+| `[E_INS_ANCHOR_DUP]` | `op:"ins"` `lines[0]` matches the `anchor_start` line content — `ins` inserts after the anchor line (preserved automatically); including it in `lines` creates a duplicate. Warning only; the edit proceeds. |
 | `[E_LINE_HINT]` | A `<line>:<anchor>` hint disagreed with the anchor's resolved position; the anchor is authoritative and the edit proceeds. |
 | `[E_PASTE_DUP]` | A replacement line exactly matches an adjacent file line (possible pasted read/diff row); the line is KEPT verbatim and the edit proceeds — the tool never silently drops content. |
 | `[E_INVALID_PATCH]` | Diff-preview `+`/`-` markers pasted into `lines`; the marker prefix is stripped with a warning. |

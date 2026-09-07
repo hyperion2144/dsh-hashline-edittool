@@ -63,18 +63,18 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
-	it("still rejects a MULTI-line replace without anchor_end (E_MISSING_ANCHOR_END)", async () => {
-		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
+	it("defaults a MULTI-line replace without anchor_end to a SINGLE-line range", async () => {
+		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
-			await expect(
-				editTool(harness).execute("edit", {
-					path: "t.txt",
-					edits: [
-						{ op: "replace", anchor_start: served[0]!.hash, lines: ["A", "B"] },
-					],
-				}),
-			).rejects.toThrow(/E_MISSING_ANCHOR_END/);
+			await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [
+					{ op: "replace", anchor_start: served[0]!.hash, lines: ["A", "B"] },
+				],
+			});
+			const after = await readFile(path, "utf-8");
+			expect(after).toBe("A\nB\nb\nc\n"); // only line 1 replaced with 2 lines
 		});
 	});
 
@@ -243,19 +243,19 @@ describe("exact line-count edit contract", () => {
 		});
 	});
 
-	it("rejected edits fail loudly in json mode too (throw, isError)", async () => {
-		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd }) => {
+	it("multi-line replace without anchor_end works in json mode too", async () => {
+		await withTempFile("t.txt", "a\nb\nc\n", async ({ cwd, path }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt"); // anchors from text mode
 			applyEffective({ output_format: "json" });
-			await expect(
-				editTool(harness).execute("edit", {
-					path: "t.txt",
-					edits: [
-						{ op: "replace", anchor_start: served[0]!.hash, lines: ["A", "B"] },
-					],
-				}),
-			).rejects.toThrow(/E_MISSING_ANCHOR_END/);
+			await editTool(harness).execute("edit", {
+				path: "t.txt",
+				edits: [
+					{ op: "replace", anchor_start: served[0]!.hash, lines: ["A", "B"] },
+				],
+			});
+			const after = await readFile(path, "utf-8");
+			expect(after).toBe("A\nB\nb\nc\n"); // only line 1 replaced with 2 lines
 		});
 	});
 });

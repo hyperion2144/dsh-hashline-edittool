@@ -127,7 +127,7 @@ Validation rules (in `execute`, after schema soft-validates the schema shape):
 
 - If `op === "ins"` and `anchor_end` is set → not rejected (lenient): a warning is emitted — `edits[i].op:"ins" ignores anchor_end — ins inserts after anchor_start; drop the field.`
 - If `op === "del"` and `lines` is set → accepted and IGNORED (issue #69): deletion is defined by the anchors alone; no warning, no rejection.
-- If `op === "replace"` and `anchor_end` is missing → `[E_MISSING_ANCHOR_END] edits[i].op:"replace" requires BOTH anchor_start and anchor_end — replace always swaps a whole range; for a single-line replace pass the same anchor twice (anchor_start === anchor_end). To insert lines, use op:"ins".`
+- If `op === "replace"` and `anchor_end` is missing → defaults to a SINGLE-LINE range (anchor_start only); `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines.
 - If `op === "replace"` and `lines` is missing or empty → `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`
   (An edit that replaces with `[""]` is distinct from `op:"del"`: the line
   still exists in the file, just empty. The `anchor_start..anchor_end` range

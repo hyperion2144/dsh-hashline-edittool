@@ -296,7 +296,7 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 | `[E_BARE_HASH_PREFIX]` | 粘贴进 `lines` 的锚点前缀行（如 read/diff 行的 `<line>:<anchor>:content`）；锚点在文件中存在时剥离前缀并提示 warning，字面相似内容永不被改写。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
 | `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠（`ins` 可锚定某范围的 END 行，但不允许起始行/中间行）；请拆分或合并，未写入任何内容。 |
-| `[E_MISSING_ANCHOR_END]` | `op:"replace"` 必须同时给出 `anchor_start` 与 `anchor_end`（单行替换两值相同）。 |
+| `[E_INS_ANCHOR_DUP]` | `op:"ins"` 的 `lines[0]` 与 `anchor_start` 行内容匹配 — `ins` 在锚点行之后插入（该行自动保留）；在 `lines` 中包含它会产生重复。仅警告；编辑照常执行。 |
 | `[E_INVALID_PATCH]` | 粘贴进 `lines` 的 diff 预览 `+`/`-` 标记；剥离前缀并提示 warning。 |
 | `[E_NOOP_LOOP]` | 完全相同的编辑反复不产生任何变化；再次提交会被拒绝。 |
 | `[E_NOT_FOUND]` | 文件不存在。 |
