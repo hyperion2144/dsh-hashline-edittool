@@ -346,6 +346,14 @@ export function resolveIns(
 	const lines = splitLines(content);
 	const fromContent = lines[fromLine] ?? "";
 	const insertedLines = parseText(replacementText);
+	// Detect the common mistake of including the anchor line in `lines`:
+	// if lines[0] matches the anchor line content, warn (do NOT auto-fix).
+	// The edit applies as-is; the warning guides the model to undo + resubmit.
+	if (insertedLines.length > 0 && insertedLines[0]!.replace(/\s+$/, "") === fromContent.replace(/\s+$/, "")) {
+		warnings.push(
+			`[E_INS_ANCHOR_DUP] op:"ins" lines[0] matches the anchor_start line content (line ${fromLine + 1}). ins inserts AFTER anchor_start — the anchor line is preserved automatically and should NOT be in lines. A duplicate was inserted. If unintended: undo_last_edit and resubmit lines without the anchor line.`,
+		);
+	}
 	const effectiveReplacement =
 		[fromContent, ...insertedLines].join("\n");
 	warnings.push(

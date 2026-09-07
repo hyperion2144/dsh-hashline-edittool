@@ -230,21 +230,10 @@ export function assertEditItem(
 		assertAnchorField(item.anchor_end, "anchor_end", index, requireLineContent);
 	}
 	if (item.op === "replace" && item.anchor_end === undefined) {
-		// v2.0.3 (#68-class DX): omitted anchor_end defaults to a SINGLE-LINE
-		// replace (range = start..start). The model forgetting to duplicate the
-		// anchor was the highest-frequency contract failure, and for single-line
-		// edits the end anchor is pure redundancy. A MULTI-line replacement
-		// still requires it explicitly: lines.length > 1 with no end anchor is
-		// an under-specified range declaration — reject rather than silently
-		// replacing one line and leaving the rest of the intended range behind.
-		const lineCount = Array.isArray(item.lines) ? item.lines.length : 0;
-		if (lineCount > 1) {
-			throw new Error(
-				`[E_MISSING_ANCHOR_END] edits[${index}].op:"replace" with ${lineCount} replacement lines requires BOTH anchor_start and anchor_end — omit anchor_end only for a SINGLE-line replace (or pass the same anchor twice). For multi-line ranges, anchor_end is the verified boundary; the tool will not guess it from the replacement length.`,
-			);
-		}
-		// single-line replace / del without anchor_end: the fold end = start is
-		// applied downstream (buildPreparedItem / assertItem) — args may be
+		// omitted anchor_end defaults to a SINGLE-LINE replace (range =
+		// start..start). The replacement (`lines`) may have ANY number of
+		// lines — "replace one line with many" is the common case. The fold
+		// end = start is applied downstream (buildPreparedItem); args may be
 		// frozen by the host runner, so validation must not mutate them.
 	}
 	if (item.op === "ins" || item.op === "replace") {
@@ -404,7 +393,7 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 				enum: ["ins", "del", "replace"],
 				required: true,
 				description:
-					'Edit semantic. "ins" inserts `lines` AFTER the `anchor_start` line; "del" removes the range; "replace" swaps it with `lines`.',
+					'Edit semantic. "ins" inserts `lines` AFTER the `anchor_start` line (the anchor line is preserved — do NOT include it in `lines`); "del" removes the range; "replace" swaps it with `lines`.',
 			},
 			anchor_start: requireLineContent
 				? anchorDeclarationSchema(true)
@@ -419,13 +408,13 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 				: {
 					type: "string",
 					description:
-						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line replace/delete (range = anchor_start only). REQUIRED when the replacement has more than one line (`lines.length > 1`): the tool will not guess a multi-line range from the replacement length. Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
+						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line range (anchor_start only); the replacement `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines. Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
 				},
 			lines: {
 				type: "array",
 				items: { type: "string" },
 				description:
-					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. For `ins`: lines to insert after `anchor_start`. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
+					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. For `ins`: lines to insert AFTER `anchor_start` — do NOT include the anchor_start line itself; it is preserved automatically. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
 			},
 			path: {
 				type: "string",
