@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	diffCardModel,
 	metaDiffRows,
+	metaDiffRowGroups,
 	editAnchorHints,
 	narrowDiffs,
 	readCardModel,
@@ -344,5 +345,56 @@ describe("metaDiffRows (rendering channel, issue #71)", () => {
 		expect(metaDiffRows("nope")).toBeNull();
 		expect(metaDiffRows({ diffRows: "rows" })).toBeNull();
 		expect(metaDiffRows({ diffRows: [] })).toBeNull();
+	});
+});
+
+describe("metaDiffRowGroups (issue #82: multi-file tab rendering)", () => {
+	it("validates well-formed per-file groups", () => {
+		const groups = metaDiffRowGroups({
+			diffRowGroups: [
+				{ path: "a.txt", rows: [{ kind: "+", lineNumber: 1, hash: "a1", text: "new" }] },
+				{ path: "b.txt", rows: [{ kind: "-", lineNumber: 2, hash: "b2", text: "old" }] },
+			],
+		});
+		expect(groups).not.toBeNull();
+		expect(groups).toHaveLength(2);
+		expect(groups![0]!.path).toBe("a.txt");
+		expect(groups![0]!.rows).toHaveLength(1);
+		expect(groups![1]!.path).toBe("b.txt");
+		expect(groups![1]!.rows).toHaveLength(1);
+	});
+
+	it("returns null for missing or empty groups", () => {
+		expect(metaDiffRowGroups("nope")).toBeNull();
+		expect(metaDiffRowGroups({ diffRowGroups: "x" })).toBeNull();
+		expect(metaDiffRowGroups({ diffRowGroups: [] })).toBeNull();
+	});
+
+	it("returns null when a group has malformed rows", () => {
+		expect(metaDiffRowGroups({
+			diffRowGroups: [{ path: "a.txt", rows: [{ kind: "x" }] }],
+		})).toBeNull();
+	});
+
+	it("diffCardModel exposes rowGroups for multi-file edit", () => {
+		const block = settled({
+			call: { name: "edit", argsRaw: JSON.stringify({ edits: [{ path: "a.txt" }, { path: "b.txt" }] }) },
+			content: [{ type: "text", text: "ok" }],
+			meta: {
+				diffs: [
+					{ path: "a.txt", oldText: "old", newText: "new" },
+					{ path: "b.txt", oldText: null, newText: "created" },
+				],
+				diffRowGroups: [
+					{ path: "a.txt", rows: [{ kind: "+", lineNumber: 1, hash: "a1", text: "new" }] },
+					{ path: "b.txt", rows: [{ kind: "+", lineNumber: 1, hash: "b1", text: "created" }] },
+				],
+			},
+		});
+		const card = diffCardModel(block);
+		expect(card).not.toBeNull();
+		expect(card?.rowGroups).toHaveLength(2);
+		expect(card?.rowGroups?.[0]?.path).toBe("a.txt");
+		expect(card?.rowGroups?.[1]?.path).toBe("b.txt");
 	});
 });

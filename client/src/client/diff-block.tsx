@@ -16,7 +16,7 @@ import type { ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { DiffBlockLabels } from "./labels.js";
-import type { DiffRowMeta } from "./types.js";
+import type { DiffRowGroup, DiffRowMeta } from "./types.js";
 
 interface FoldLabels {
 	collapseAria: string;
@@ -52,10 +52,6 @@ const CSS_TEXT = [
 	".dshl-diff-copyButton{position:absolute;top:8px;right:12px;z-index:1;background-color:transparent;border:none;padding:0;margin:0;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13)}",
 	".dshl-diff-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-diff-line{min-height:var(--dsl-diff-line-height);white-space:pre;display:flex}",
-	// Gutter: ONE column carrying marker + number + anchor (`-21:C7` / `+21:h2` /
-	// `20:Cg`), right-aligned; the exact column width is set per-card from the
-	// longest label so every row shares one content edge. Chrome, not content —
-	// excluded from text selection like the read card's gutter.
 	".dshl-diff-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
 	".dshl-diff-content{white-space:pre}",
 	".dshl-diff-path{color:var(--dsw-alias-label-primary);font-weight:600;padding-right:56px}",
@@ -66,6 +62,11 @@ const CSS_TEXT = [
 	".dshl-diff-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-diff-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	// issue #82: multi-file tab bar
+	".dshl-diff-tabs{display:flex;gap:0;padding:8px 14px 0;flex-wrap:wrap}",
+	".dshl-diff-tab{padding:4px 12px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13);border-bottom:2px solid transparent;margin-bottom:-1px}",
+	".dshl-diff-tab:hover{color:var(--dsw-alias-label-primary)}",
+	".dshl-diff-tab-active{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-state-info-primary)}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -95,6 +96,9 @@ const css = {
 	ctx: "dshl-diff-ctx",
 	expand: "dshl-diff-expand",
 	footer: "dshl-diff-footer",
+	tabs: "dshl-diff-tabs",
+	tab: "dshl-diff-tab",
+	tabActive: "dshl-diff-tab-active",
 } as const;
 
 /** Localized chrome (DiffBlockLabels shape). */
@@ -167,6 +171,8 @@ function copyText(rows: readonly DisplayRow[]): string {
 export interface DiffRowsBlockProps {
 	path: string;
 	rows: readonly DiffRowMeta[];
+	/** Per-file groups for multi-file tab rendering (issue #82). When provided with >1 entries, a tab bar is rendered. */
+	groups?: readonly DiffRowGroup[] | undefined;
 	labels: DiffRowsLabels;
 	maxLines?: number | undefined;
 	className?: string | undefined;
@@ -178,9 +184,19 @@ export interface DiffRowsBlockProps {
  * keep their pre-edit anchor, added and context lines carry the served
  * post-edit anchor (the chained-edit currency).
  */
-export function DiffRowsBlock({ path, rows, labels, maxLines = 16, className }: DiffRowsBlockProps): ReactNode {
+export function DiffRowsBlock({ path, rows, groups, labels, maxLines = 16, className }: DiffRowsBlockProps): ReactNode {
 	ensureDiffStyles();
-	const display = useMemo(() => buildDisplayRows(path, rows), [path, rows]);
+
+	// issue #82: multi-file tab rendering. When groups are provided with >1
+	// entries, a tab bar lets the user switch between files. The active
+	// group supplies the path + rows for the diff body.
+	const hasGroups = groups !== undefined && groups.length > 1;
+	const [activeTab, setActiveTab] = useState(0);
+	const activeGroup = hasGroups ? groups![activeTab]! : undefined;
+	const activePath = activeGroup !== undefined ? activeGroup.path : path;
+	const activeRows = activeGroup !== undefined ? activeGroup.rows : rows;
+
+	const display = useMemo(() => buildDisplayRows(activePath, activeRows), [activePath, activeRows]);
 	// One shared gutter column: the widest label sets the width for every row
 	// (monospace font → `ch` is exact), so all content cells share one edge.
 	const gutterWidth = Math.max(8, ...display.map((row) => row.gutter.length));
@@ -198,8 +214,8 @@ export function DiffRowsBlock({ path, rows, labels, maxLines = 16, className }: 
 
 	const onToggle = useCallback(() => setExpanded((value) => !value), []);
 
-	const added = rows.filter((row) => row.kind === "+").length;
-	const removed = rows.filter((row) => row.kind === "-").length;
+	const added = activeRows.filter((row) => row.kind === "+").length;
+	const removed = activeRows.filter((row) => row.kind === "-").length;
 
 	const hidden = display.length - maxLines;
 	const capped = hidden > 0 && !expanded;
@@ -225,13 +241,26 @@ export function DiffRowsBlock({ path, rows, labels, maxLines = 16, className }: 
 			],
 		});
 
+	const fileCount = hasGroups ? groups!.length : 1;
+
 	return jsx_("div", {
 		className: `${css.block} ${className ?? ""}`,
 		"data-diff": "",
 		children: [
 			jsx_("button", { type: "button", className: css.copyButton, onClick: onCopy, children: copied ? labels.copied : labels.copy }),
+			// issue #82: tab bar for multi-file rendering
+			...(hasGroups ? [jsx_("div", {
+				className: css.tabs,
+				children: groups!.map((group, i) => jsx_("button", {
+					key: i,
+					type: "button",
+					className: `${css.tab} ${i === activeTab ? css.tabActive : ""}`.trim(),
+					onClick: () => { setActiveTab(i); setExpanded(false); },
+					children: group.path,
+				})),
+			})] : []),
 			jsx_("div", { className: css.body, children: [...head.map(rowEl), ...(hidden > 0 ? [jsx_(FoldToggle, { className: css.expand, expanded, hidden, labels, onToggle })] : []), ...tail.map(rowEl)] }),
-			jsx_("div", { className: css.footer, children: `└ +${added} -${removed} · ${labels.files(1)}` }),
+			jsx_("div", { className: css.footer, children: `└ +${added} -${removed} · ${labels.files(fileCount)}` }),
 		],
 	});
 }

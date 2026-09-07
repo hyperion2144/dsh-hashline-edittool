@@ -195,7 +195,17 @@ function ToolRow({
 					className: css.bodyWrap,
 					children: [
 						diffBody !== null
-							? diffBody.rows !== undefined
+							? diffBody.rowGroups !== undefined
+								? // Multi-file tab rendering (issue #82): per-file groups with tab bar.
+								  jsx_(DiffRowsBlock, {
+										path: diffBody.path,
+										rows: diffBody.rowGroups[0]?.rows ?? [],
+										groups: diffBody.rowGroups,
+										labels: diffLabels,
+										maxLines: 8,
+										className: css.diffBody,
+								  })
+							: diffBody.rows !== undefined
 								? // Structured rows from the persisted meta: the forked block
 								  // draws the `行号:锚点` gutter (issue #71).
 								  jsx_(DiffRowsBlock, {
@@ -204,7 +214,7 @@ function ToolRow({
 										labels: diffLabels,
 										maxLines: 8,
 										className: css.diffBody,
-									})
+								  })
 								: jsx_(DiffBlock, {
 										diffs: diffBody.diffs as unknown as DiffBlockProps["diffs"],
 										labels: diffLabels,

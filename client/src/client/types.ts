@@ -108,6 +108,12 @@ export interface DiffRowMeta {
 	hash: string;
 	text: string;
 }
+/** One file's diff rows in a multi-file group (issue #82: per-file tab rendering). */
+export interface DiffRowGroup {
+	path: string;
+	rows: readonly DiffRowMeta[];
+}
+
 
 /** A diff card backed by the structured rows projection (gutter-rendering). */
 export interface RowsDiffCard {
