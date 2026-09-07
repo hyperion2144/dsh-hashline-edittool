@@ -1179,9 +1179,20 @@ export function applyEdit(
 	const warnings: string[] = [];
 
 	const rangeFixed = swapReversedRanges(edit, warnings);
+
+	// issue #83: restrict anchor-prefix stripping to the edit range only.
+	// The edit's hash_bounds resolve to line indices in the file; anchors
+	// outside that range must not trigger stripping even if they exist
+	// elsewhere in the file (short-anchor collision with code tokens).
+	const startIdx = fileAnchors.indexOf(rangeFixed.hash_bounds[0].anchor);
+	const endIdx = fileAnchors.indexOf(rangeFixed.hash_bounds[1].anchor);
+	const rangeAnchors = startIdx >= 0 && endIdx >= 0
+		? fileAnchors.slice(Math.min(startIdx, endIdx), Math.max(startIdx, endIdx) + 1)
+		: fileAnchors; // fall back if anchors unresolvable (edit will fail later)
+
 	const prefixFixed = stripDiffPrefixes(
-		stripBarePrefixes(rangeFixed, fileAnchors, warnings),
-		fileAnchors,
+		stripBarePrefixes(rangeFixed, rangeAnchors, warnings),
+		rangeAnchors,
 		warnings,
 	);
 

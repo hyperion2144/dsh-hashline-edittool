@@ -73,13 +73,13 @@ describe("configurable separator end-to-end", () => {
 	});
 
 
-	it("keeps legacy │ rows parseable under the custom separator", () => {
+	it("strips pasted row content after the configured separator", () => {
 		applyEffective({ separator: "|" });
 		const content = "a\nb\n";
 		const hashes = lineHashesPure(content);
 		const edit = {
-			remove_from: `${hashes[1]}│b`,
-			remove_to: `${hashes[1]}│b`,
+			remove_from: `${hashes[1]}|b`,
+			remove_to: `${hashes[1]}|b`,
 			replacement_text: "B",
 		} as const;
 		const resolved = resEdit(edit as never);

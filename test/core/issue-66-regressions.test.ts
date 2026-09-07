@@ -24,14 +24,14 @@ describe("#66/B2 — anchor-prefix stripping is unconditional and symmetric", ()
 	it("strips a `line:anchor:` prefix pasted from a line-numbers read row", async () => {
 		const content = "alpha\nbeta\ngamma";
 		const hashes = anchorsPure(content);
-		// Row pasted from a POST-EDIT diff: the line number is stale and the
-		// anchor does not match the prefix line — must still strip (#66/B2).
+		// Row pasted from a POST-EDIT diff: the line number is stale but the
+		// anchor is from the edit range — must still strip (#66/B2, #83).
 		const result = applyEdit(
 			content,
 			resEdit({
 				remove_from: `${hashes[1]}`,
 				remove_to: `${hashes[1]}`,
-				replacement_text: `3:${hashes[0]}:GAMMA-PASTE`,
+				replacement_text: `3:${hashes[1]}:GAMMA-PASTE`,
 			}),
 		);
 		expect(result.content).toBe("alpha\nGAMMA-PASTE\ngamma");

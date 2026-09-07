@@ -73,11 +73,9 @@ function compileShape(s: HashlineShape): CompiledShape {
 	// defensively (spec: depth cap 4 ≈ 14.77M lines; layers above are
 	// unreachable in practice but stay parseable).
 	const anchorClass = `[${ALPH_SAFE}]{1,8}`;
-	// legacy '│' rows still parse; ':' joins the hint separator so pasted
-	// `line:anchor:` rows strip symmetrically with `line<sep>anchor<sep>`
-	// (issue #66/B2: when separator ≠ ':', colon-prefixed rows used to slip
-	// past the strip regex and land verbatim in the file).
-	const seps = `[${sepSafe}:│]`;
+	// issue #83: separator matching is dynamic — only the configured
+	// separator is recognized, no hardcoded ':' or '│' fallback.
+	const seps = `[${sepSafe}]`;
 	return {
 		hashClassSource: anchorClass,
 		hashRe: new RegExp(`^${anchorClass}$`),
