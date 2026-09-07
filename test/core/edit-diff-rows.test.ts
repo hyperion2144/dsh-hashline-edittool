@@ -119,3 +119,58 @@ describe("edit presentationMeta passes diffRows through (integration point)", ()
 		});
 	});
 });
+
+describe("edit presentationMeta multi-file diffs (issue #82)", () => {
+	it("presentationMeta returns aggregated diffs + diffRows for multi-file edit", async () => {
+		await withTempFile("a.txt", "alpha\nbeta\n", async ({ cwd }) => {
+			const { writeFile: wf } = await import("node:fs/promises");
+			const { join } = await import("node:path");
+			await wf(join(cwd, "b.txt"), "gamma\ndelta\n", "utf-8");
+
+			const { buildEditTool } = await import("../../src/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { FsSandboxController } = await import("../../src/sandbox.js");
+			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+			const io = localIO();
+			const read = buildReadTool(io);
+			const edit = buildEditTool(io, sandbox);
+			const exec = (args: unknown) =>
+				({ signal: new AbortController().signal, agent: { id: "s", session: { id: "s", header: { cwd } } }, arguments: args }) as never;
+
+			// Read both files to get anchors
+			const ra = (await read.execute({ path: "a.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
+			const rb = (await read.execute({ path: "b.txt" }, exec({}))) as { hashlines: { number: number; hash: string }[] };
+			const aHash = ra.hashlines[0]!.hash;
+			const bHash = rb.hashlines[0]!.hash;
+
+			// Multi-file edit: edits to both a.txt and b.txt in one call
+			const canonical = (await edit.execute(
+				{
+					edits: [
+						{ path: "a.txt", op: "replace", anchor_start: aHash, anchor_end: aHash, lines: ["ALPHA!"] },
+						{ path: "b.txt", op: "replace", anchor_start: bHash, anchor_end: bHash, lines: ["GAMMA!"] },
+					],
+				},
+				exec({}),
+			)) as { multiDiffs?: unknown[]; multiDiffRows?: unknown[]; success?: unknown[] };
+
+			// Multi-file form returns success array (not single-file canonical)
+			expect(Array.isArray(canonical.success)).toBe(true);
+			// issue #82: aggregated diffs + diffRows are present
+			expect(Array.isArray(canonical.multiDiffs)).toBe(true);
+			expect((canonical.multiDiffs as unknown[]).length).toBeGreaterThan(0);
+			expect(Array.isArray(canonical.multiDiffRows)).toBe(true);
+			expect((canonical.multiDiffRows as unknown[]).length).toBeGreaterThan(0);
+
+			// presentationMeta passes them through (the integration point the host calls)
+			const tool = edit as unknown as {
+				output: { presentationMeta: (args: unknown, value: unknown) => Record<string, unknown> };
+			};
+			const meta = tool.output.presentationMeta({ edits: [] }, canonical);
+			expect(Array.isArray(meta.diffs)).toBe(true);
+			expect((meta.diffs as unknown[]).length).toBeGreaterThan(0);
+			expect(Array.isArray(meta.diffRows)).toBe(true);
+			expect((meta.diffRows as unknown[]).length).toBeGreaterThan(0);
+		});
+	});
+});

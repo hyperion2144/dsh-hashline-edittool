@@ -211,8 +211,18 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 			],
 			presentationMeta: (_args, value) => {
 				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[] };
-				// 多文件形态: 无 before/after 整文件内容, 无法算 hunk diffs → 空 diffs
-				if (Array.isArray(v.success) || Array.isArray(v.fail)) return { diffs: [] } as never;
+				// issue #82: multi-file form carries aggregated per-file diffs + diffRows
+				if (Array.isArray(v.success) || Array.isArray(v.fail)) {
+					const md = v.multiDiffs;
+					const mdr = v.multiDiffRows;
+					if (Array.isArray(md) && md.length > 0) {
+						return {
+							diffs: md as FileDiff[],
+							...(Array.isArray(mdr) && mdr.length > 0 ? { diffRows: mdr as EditDiffRow[] } : {}),
+						} as never;
+					}
+					return { diffs: [] } as never;
+				}
 				if (v.noop) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				// 渲染通道（issue #71）: genDiff 的结构化行（新旧行号 + 锚点），
@@ -391,6 +401,17 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					message: o.message,
 				}));
 
+				// issue #82: compute per-file diffs + diffRows for multi-file presentationMeta
+				const multiDiffs: FileDiff[] = [];
+				const multiDiffRows: EditDiffRow[] = [];
+				for (const o of successes) {
+					const file = o.file;
+					multiDiffs.push(...computeHunkDiffs(o.displayPath, file.originalNormalized, file.result));
+					multiDiffRows.push(...diffRowsFromGenDiff(
+						genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true).rows,
+					));
+				}
+
 				if (!isJsonOutput()) {
 					// text 模式: 聚合 prose (ADR-0004 D1) — 成功块在前, 失败块在后
 					const appliedTotal = successes.reduce((n, o) => n + o.file.appliedCount, 0);
@@ -404,7 +425,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath, lineNumbers)}`
 							: `Edit for ${o.displayPath} failed: ${o.code} ${o.message}`,
 					);
-					return { success, fail, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
+					return { success, fail, multiDiffs, multiDiffRows, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)
@@ -413,7 +434,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					success,
 					fail,
 				});
-				return { ok: success.length > 0, success, fail, modelText };
+				return { ok: success.length > 0, success, fail, multiDiffs, multiDiffRows, modelText };
 			});
 		},
 	});
