@@ -152,15 +152,18 @@ describe("edit presentationMeta multi-file diffs (issue #82)", () => {
 					],
 				},
 				exec({}),
-			)) as { multiDiffs?: unknown[]; multiDiffRows?: unknown[]; success?: unknown[] };
+			)) as { multiDiffs?: unknown[]; multiDiffRowGroups?: unknown[]; success?: unknown[] };
 
 			// Multi-file form returns success array (not single-file canonical)
 			expect(Array.isArray(canonical.success)).toBe(true);
-			// issue #82: aggregated diffs + diffRows are present
+			// issue #82: aggregated diffs + diffRowGroups are present
 			expect(Array.isArray(canonical.multiDiffs)).toBe(true);
 			expect((canonical.multiDiffs as unknown[]).length).toBeGreaterThan(0);
-			expect(Array.isArray(canonical.multiDiffRows)).toBe(true);
-			expect((canonical.multiDiffRows as unknown[]).length).toBeGreaterThan(0);
+			expect(Array.isArray(canonical.multiDiffRowGroups)).toBe(true);
+			expect((canonical.multiDiffRowGroups as unknown[]).length).toBeGreaterThan(0);
+			// Each group has path + rows
+			const groups = canonical.multiDiffRowGroups as Array<{ path: string; rows: unknown[] }>;
+			expect(groups.every((g) => typeof g.path === "string" && Array.isArray(g.rows))).toBe(true);
 
 			// presentationMeta passes them through (the integration point the host calls)
 			const tool = edit as unknown as {
@@ -169,8 +172,8 @@ describe("edit presentationMeta multi-file diffs (issue #82)", () => {
 			const meta = tool.output.presentationMeta({ edits: [] }, canonical);
 			expect(Array.isArray(meta.diffs)).toBe(true);
 			expect((meta.diffs as unknown[]).length).toBeGreaterThan(0);
-			expect(Array.isArray(meta.diffRows)).toBe(true);
-			expect((meta.diffRows as unknown[]).length).toBeGreaterThan(0);
+			expect(Array.isArray(meta.diffRowGroups)).toBe(true);
+			expect((meta.diffRowGroups as unknown[]).length).toBeGreaterThan(0);
 		});
 	});
 });

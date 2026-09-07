@@ -20,6 +20,7 @@
 
 import type {
 	DiffCardProps,
+	DiffRowGroup,
 	DiffRowMeta,
 	FileDiff,
 	ReadCardProps,
@@ -407,7 +408,8 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 	const applied = appliedDiffs(block.meta);
 	if (applied !== null && applied !== "empty") {
 		const rows = metaDiffRows(block.meta);
-		return { path: applied[0]?.path ?? "", diffs: applied, ...(rows !== null ? { rows } : {}) };
+		const rowGroups = metaDiffRowGroups(block.meta);
+		return { path: applied[0]?.path ?? "", diffs: applied, ...(rows !== null ? { rows } : {}), ...(rowGroups !== null ? { rowGroups } : {}) };
 	}
 	const intended = intendedDiff(block);
 	if (intended === null) return null;
@@ -441,12 +443,44 @@ export function metaDiffRows(meta: unknown): DiffRowMeta[] | null {
 	return out;
 }
 
+/**
+ * Soft-validate the persisted per-file diff row groups (issue #82: multi-file
+ * tab rendering). Each group has a `path` and a `rows` array validated the same
+ * way as `metaDiffRows`.
+ */
+export function metaDiffRowGroups(meta: unknown): DiffRowGroup[] | null {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+	const value = meta as Record<string, unknown>;
+	const groups = value.diffRowGroups;
+	if (!Array.isArray(groups) || groups.length === 0) return null;
+	const out: DiffRowGroup[] = [];
+	for (const group of groups) {
+		if (typeof group !== "object" || group === null) return null;
+		const g = group as Record<string, unknown>;
+		if (typeof g.path !== "string") return null;
+		if (!Array.isArray(g.rows) || g.rows.length === 0) return null;
+		const rows: DiffRowMeta[] = [];
+		for (const row of g.rows) {
+			if (typeof row !== "object" || row === null) return null;
+			const r = row as Record<string, unknown>;
+			if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") return null;
+			if (typeof r.lineNumber !== "number" || !Number.isInteger(r.lineNumber) || r.lineNumber < 1) return null;
+			if (typeof r.hash !== "string" || typeof r.text !== "string") return null;
+			rows.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text });
+		}
+		out.push({ path: g.path, rows });
+	}
+	return out;
+}
+
 /** A derived diff card: structured rows (gutter) and/or the official hunks. */
 export interface DiffCard {
 	path: string;
 	diffs: FileDiff[];
-	/** Structured rows with per-line `行号:锚点` gutter facts, when persisted. */
+	/** Structured rows with per-line `行号:锚点` gutter facts, when persisted (single-file). */
 	rows?: readonly DiffRowMeta[] | undefined;
+	/** Per-file row groups for multi-file tab rendering (issue #82). */
+	rowGroups?: readonly DiffRowGroup[] | undefined;
 }
 
 /**

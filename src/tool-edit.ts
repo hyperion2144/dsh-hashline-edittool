@@ -202,9 +202,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					ok: { type: "boolean" },
 					success: { type: "array" },
 					fail: { type: "array" },
-					// issue #82: 多文件聚合 diffs + diffRows
+					// issue #82: 多文件聚合 diffs + diffRowGroups (per-file tab)
 					multiDiffs: { type: "array" },
-					multiDiffRows: { type: "array" },
+					multiDiffRowGroups: { type: "array" },
 					// 两种形态都有
 					modelText: { type: "string", required: true },
 				},
@@ -213,15 +213,15 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				{ type: "text", text: (value as EditCanonicalValue).modelText },
 			],
 			presentationMeta: (_args, value) => {
-				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[] };
-				// issue #82: multi-file form carries aggregated per-file diffs + diffRows
+				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[]; multiDiffRowGroups?: unknown };
+				// issue #82: multi-file form carries aggregated per-file diffs + diffRowGroups
 				if (Array.isArray(v.success) || Array.isArray(v.fail)) {
 					const md = v.multiDiffs;
-					const mdr = v.multiDiffRows;
+					const mdrGroups = v.multiDiffRowGroups;
 					if (Array.isArray(md) && md.length > 0) {
 						return {
 							diffs: md as FileDiff[],
-							...(Array.isArray(mdr) && mdr.length > 0 ? { diffRows: mdr as EditDiffRow[] } : {}),
+							...(Array.isArray(mdrGroups) && mdrGroups.length > 0 ? { diffRowGroups: mdrGroups } : {}),
 						} as never;
 					}
 					return { diffs: [] } as never;
@@ -404,15 +404,18 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					message: o.message,
 				}));
 
-				// issue #82: compute per-file diffs + diffRows for multi-file presentationMeta
+				// issue #82: compute per-file diffs + diffRowGroups for multi-file presentationMeta
 				const multiDiffs: FileDiff[] = [];
-				const multiDiffRows: EditDiffRow[] = [];
+				const multiDiffRowGroups: { path: string; rows: EditDiffRow[] }[] = [];
 				for (const o of successes) {
 					const file = o.file;
 					multiDiffs.push(...computeHunkDiffs(o.displayPath, file.originalNormalized, file.result));
-					multiDiffRows.push(...diffRowsFromGenDiff(
-						genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true).rows,
-					));
+					multiDiffRowGroups.push({
+						path: o.displayPath,
+						rows: diffRowsFromGenDiff(
+							genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true).rows,
+						),
+					});
 				}
 
 				if (!isJsonOutput()) {
@@ -428,7 +431,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath, lineNumbers)}`
 							: `Edit for ${o.displayPath} failed: ${o.code} ${o.message}`,
 					);
-					return { success, fail, multiDiffs: multiDiffs as never, multiDiffRows: multiDiffRows as never, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
+					return { success, fail, multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)
@@ -437,7 +440,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					success,
 					fail,
 				});
-				return { ok: success.length > 0, success, fail, multiDiffs: multiDiffs as never, multiDiffRows: multiDiffRows as never, modelText };
+				return { ok: success.length > 0, success, fail, multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
 			});
 		},
 	});
