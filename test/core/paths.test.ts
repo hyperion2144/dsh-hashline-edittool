@@ -40,6 +40,24 @@ describe("configDir", () => {
 			else process.env.DSH_HOME = previousDsh;
 		}
 	});
+
+	it("keys the store by projectKey(cwd) under the plugin base", () => {
+		const previousDsh = process.env.DSH_HOME;
+		process.env.DSH_HOME = "/custom/dsh";
+		try {
+			const base = configDir();
+			const withCwd = configDir("/home/user/my-project");
+			expect(withCwd.startsWith(base)).toBe(true);
+			expect(withCwd).not.toBe(base);
+			expect(withCwd).toContain("home");
+			expect(withCwd).toContain("my-project");
+			const otherCwd = configDir("/home/user/other-project");
+			expect(otherCwd).not.toBe(withCwd);
+		} finally {
+			if (previousDsh === undefined) delete process.env.DSH_HOME;
+			else process.env.DSH_HOME = previousDsh;
+		}
+	});
 });
 
 describe("hashStorePath", () => {
