@@ -20,7 +20,9 @@
  * @module dsh-hashline-edittool/contract
  */
 
+import type { ParameterPropertySpec, ParameterSchemaSpec } from "@deepseek-ai/dsh-tools";
 import { EDITS_MAX_ITEMS } from "./constants.js";
+import type { AnchorRef } from "./declaration.js";
 import { isRec, normalizeFilePath, rejectUnknownFields } from "./utils.js";
 
 // ---- request shapes --------------------------------------------------------
@@ -34,18 +36,32 @@ import { isRec, normalizeFilePath, rejectUnknownFields } from "./utils.js";
 export interface EditItemParams {
 	/** Required. Insert / delete / replace semantic. */
 	op: "ins" | "del" | "replace";
-	/** Required. Anchor of the FIRST line of the affected range. */
-	anchor_start: string;
+	/**
+	 * Required. Anchor of the FIRST line of the affected range. A plain
+	 * anchor string when `require_line_content` is OFF; a
+	 * `{ anchor, line }` declaration pair when ON (see declaration.ts).
+	 */
+	anchor_start: AnchorRef;
 	/**
 	 * Anchor of the LAST line. Optional for `replace` (omit = single-line
 	 * passes the same anchor twice); optional for `del` (omit = one line);
-	 * forbidden for `ins`.
+	 * forbidden for `ins`. Same dual form as `anchor_start`.
 	 */
-	anchor_end?: string;
+	anchor_end?: AnchorRef;
 	/** Required for `ins` and `replace`; ignored for `del` (deletion is anchor-defined). New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
 	lines?: string[];
 	/** Optional per-item path override (multi-file edits in one call). */
 	path?: string;
+}
+
+/** The anchor string of either anchor-field form (post-validation). */
+export function anchorOf(ref: AnchorRef): string {
+	return typeof ref === "string" ? ref : ref.anchor;
+}
+
+/** The declared line text, when the anchor field is the declaration form. */
+export function declaredLineOf(ref: AnchorRef): string | undefined {
+	return typeof ref === "string" ? undefined : ref.line;
 }
 
 export interface EditParams {
@@ -93,6 +109,9 @@ const EDIT_ITEM_KS = new Set([
 	"path",
 ]);
 
+/** Fields of the `{ anchor, line }` declaration form (require_line_content ON). */
+const ANCHOR_DECLARATION_KS = new Set(["anchor", "line"]);
+
 const READ_KS = new Set(["path", "offset", "limit", "line_numbers"]);
 
 // ---- normalization -----------------------------------------------------------
@@ -114,11 +133,76 @@ export const normReq = normalizeRequest;
 
 // ---- assertions ---------------------------------------------------------------
 
+
+/**
+ * Validate one anchor field in its dual form (contract #76).
+ *
+ * OFF (`requireLineContent` false): the field must be a plain non-empty
+ * anchor string; the `{ anchor, line }` object form is a shape error that
+ * points at the setting.
+ *
+ * ON: the field must be a `{ anchor, line }` pair — `anchor` non-empty,
+ * `line` a single-line string (empty string declares an empty line). A
+ * plain string is a MISSING declaration and is rejected with the exact
+ * object shape to send.
+ */
+function assertAnchorField(
+	value: unknown,
+	field: "anchor_start" | "anchor_end",
+	index: number,
+	requireLineContent: boolean,
+): void {
+	const label = `edits[${index}].${field}`;
+	if (!requireLineContent) {
+		if (isRec(value)) {
+			throw new Error(
+				`[E_BAD_SHAPE] ${label} must be an anchor string; the { anchor, line } object form is only valid when the hashline.require_line_content setting is enabled.`,
+			);
+		}
+		if (typeof value !== "string" || value.length === 0) {
+			throw new Error(
+				`[E_BAD_SHAPE] ${label} must be a non-empty anchor string (variable-length Base62 or \`<line>:<anchor>\`).`,
+			);
+		}
+		return;
+	}
+	if (typeof value === "string") {
+		throw new Error(
+			value.length === 0
+				? `[E_BAD_SHAPE] ${label} must be a { anchor, line } object — require_line_content is ON: anchor is required, and line must declare the current full text of that line.`
+				: `[E_BAD_SHAPE] ${label} is missing the required line declaration — require_line_content is ON, so pass { anchor: ${JSON.stringify(value)}, line: "<the current full text of that line>" }.`,
+		);
+	}
+	if (!isRec(value)) {
+		throw new Error(
+			`[E_BAD_SHAPE] ${label} must be a { anchor, line } object — require_line_content is ON.`,
+		);
+	}
+	rejectUnknownFields(value, ANCHOR_DECLARATION_KS, label);
+	if (typeof value.anchor !== "string" || value.anchor.length === 0) {
+		throw new Error(
+			`[E_BAD_SHAPE] ${label}.anchor must be a non-empty anchor string (variable-length Base62 or \`<line>:<anchor>\`).`,
+		);
+	}
+	if (typeof value.line !== "string") {
+		throw new Error(
+			`[E_BAD_SHAPE] ${label}.line is required: declare the current full text of the line (an empty string declares an empty line).`,
+		);
+	}
+	if (value.line.includes("\n")) {
+		throw new Error(
+			`[E_BAD_SHAPE] ${label}.line must be a SINGLE line of text (no newlines) — the current full text of the line the anchor resolves to.`,
+		);
+	}
+}
 /**
  * Validate one edit item. Throws `[E_BAD_SHAPE]` with a path-qualified
  * message on the first violation. Validation rules:
  *   - `op` is required and one of `ins` / `del` / `replace`
- *   - `anchor_start` is required and a non-empty string (the anchor)
+ *   - `anchor_start` / `anchor_end` follow the dual form: plain anchor
+ *     strings when `requireLineContent` is OFF; `{ anchor, line }`
+ *     declaration pairs when ON (missing `line` = missing declaration,
+ *     object form when OFF = shape error; see declaration.ts)
  *   - `anchor_end` is forbidden for `op: "ins"`, optional otherwise (required for `op: "replace"`)
  *   - `lines` is required and must be a non-empty string array for `ins` /
  *     `replace`; on `del` it is accepted and IGNORED (anchor-defined deletion)
@@ -128,6 +212,7 @@ export function assertEditItem(
 	item: unknown,
 	index: number,
 	hasTopLevelPath: boolean,
+	requireLineContent: boolean,
 ): asserts item is EditItemParams {
 	if (!isRec(item)) {
 		throw new Error(
@@ -140,17 +225,9 @@ export function assertEditItem(
 			`[E_BAD_SHAPE] edits[${index}].op must be "ins", "del", or "replace".`,
 		);
 	}
-	if (typeof item.anchor_start !== "string" || item.anchor_start.length === 0) {
-		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}].anchor_start must be a non-empty "<line>#<hash>" anchor string (e.g. "12#aB3").`,
-		);
-	}
+	assertAnchorField(item.anchor_start, "anchor_start", index, requireLineContent);
 	if (item.anchor_end !== undefined) {
-		if (typeof item.anchor_end !== "string" || item.anchor_end.length === 0) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].anchor_end must be a non-empty anchor string when provided.`,
-			);
-		}
+		assertAnchorField(item.anchor_end, "anchor_end", index, requireLineContent);
 	}
 	if (item.op === "replace" && item.anchor_end === undefined) {
 		// v2.0.3 (#68-class DX): omitted anchor_end defaults to a SINGLE-LINE
@@ -201,6 +278,7 @@ export function assertEditItem(
 
 export function assertEditRequest(
 	request: unknown,
+	requireLineContent: boolean,
 ): asserts request is EditParams {
 	if (!isRec(request)) {
 		throw new Error("[E_BAD_SHAPE] Edit request must be an object.");
@@ -225,7 +303,7 @@ export function assertEditRequest(
 		);
 	}
 	request.edits.forEach((item, index) => {
-		assertEditItem(item, index, hasTopLevelPath);
+		assertEditItem(item, index, hasTopLevelPath, requireLineContent);
 	});
 }
 
@@ -267,48 +345,106 @@ export function assertUndoRequest(
  * `assertEditRequest` after `normalizeFilePath` aliasing.
  */
 
-export const editItemSchema = {
-	type: "object",
-	additionalProperties: false,
-	properties: {
-		op: {
-			type: "string",
-			enum: ["ins", "del", "replace"],
+/**
+ * The `{ anchor, line }` declaration-pair schema (require_line_content ON).
+ */
+function anchorDeclarationSchema(required: boolean): ParameterPropertySpec {
+	if (required) {
+		return {
+			type: "object",
+			additionalProperties: false,
 			required: true,
 			description:
-				'Edit semantic. "ins" inserts `lines` AFTER the `anchor_start` line; "del" removes the range; "replace" swaps it with `lines`.',
+				"Anchor + declared line content pair: the edit applies only when `line` matches the current text of the line `anchor` resolves to.",
+			properties: {
+				anchor: {
+					type: "string",
+					required: true,
+					description:
+						"The anchor (variable-length Base62 from a read/grep/diff row; `<line>:<anchor>` also accepted).",
+				},
+				line: {
+					type: "string",
+					required: true,
+					description:
+						'Your declaration of the line\'s CURRENT full text, verbatim (trailing whitespace may be omitted; a copied read-row marker prefix is tolerated). Single line only — no newlines; an empty string declares an empty line. A mismatch rejects with [E_CONTENT_MISMATCH].',
+				},
+			},
+		} as const;
+	}
+	return {
+		type: "object",
+		additionalProperties: false,
+		description:
+			"Anchor + declared line content pair: the edit applies only when `line` matches the current text of the line `anchor` resolves to.",
+		properties: {
+			anchor: {
+				type: "string",
+				required: true,
+				description:
+					"The anchor (variable-length Base62 from a read/grep/diff row; `<line>:<anchor>` also accepted).",
+			},
+			line: {
+				type: "string",
+				required: true,
+				description:
+					'Your declaration of the line\'s CURRENT full text, verbatim (trailing whitespace may be omitted; a copied read-row marker prefix is tolerated). Single line only — no newlines; an empty string declares an empty line. A mismatch rejects with [E_CONTENT_MISMATCH].',
+			},
 		},
-		anchor_start: {
-			type: "string",
-			required: true,
-			description:
-				'Required. Anchor (variable-length Base62 from a read/grep/diff row; `<line>:<anchor>` with the line_numbers option is accepted, anchor authoritative) of the FIRST line of the range. For `op:"ins"`, the lines land AFTER this line.'
-		},
-		anchor_end: {
-			type: "string",
-			description:
-				'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line replace/delete (range = anchor_start only). REQUIRED when the replacement has more than one line (`lines.length > 1`): the tool will not guess a multi-line range from the replacement length. Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
-		},
-		lines: {
-			type: "array",
-			items: { type: "string" },
-			description:
-				'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. For `ins`: lines to insert after `anchor_start`. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
-		},
-		path: {
-			type: "string",
-			description:
-				"Optional per-item path override (multi-file edits in one call). Overrides the top-level `path` for this edit only.",
-		},
-	},
-} as const;
+	} as const;
+}
 
-export const editsSchema = {
-	type: "array",
-	description:
-		"Ordered list of edits to apply atomically. Edits apply in order against evolving content; each one sees the file state after the previous edit in the same call. All anchors come from one read (original snapshot) — re-read for fresh anchors after an edit (there is no `Shift:` block in v2.0).",
-	items: editItemSchema,
-} as const;
+export function buildEditItemSchema(requireLineContent: boolean): ParameterPropertySpec {
+	return {
+		type: "object",
+		additionalProperties: false,
+		properties: {
+			op: {
+				type: "string",
+				enum: ["ins", "del", "replace"],
+				required: true,
+				description:
+					'Edit semantic. "ins" inserts `lines` AFTER the `anchor_start` line; "del" removes the range; "replace" swaps it with `lines`.',
+			},
+			anchor_start: requireLineContent
+				? anchorDeclarationSchema(true)
+				: {
+					type: "string",
+					required: true,
+					description:
+						'Required. Anchor (variable-length Base62 from a read/grep/diff row; `<line>:<anchor>` with the line_numbers option is accepted, anchor authoritative) of the FIRST line of the range. For `op:"ins"`, the lines land AFTER this line.'
+				},
+			anchor_end: requireLineContent
+				? anchorDeclarationSchema(false)
+				: {
+					type: "string",
+					description:
+						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line replace/delete (range = anchor_start only). REQUIRED when the replacement has more than one line (`lines.length > 1`): the tool will not guess a multi-line range from the replacement length. Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
+				},
+			lines: {
+				type: "array",
+				items: { type: "string" },
+				description:
+					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. For `ins`: lines to insert after `anchor_start`. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
+			},
+			path: {
+				type: "string",
+				description:
+					"Optional per-item path override (multi-file edits in one call). Overrides the top-level `path` for this edit only.",
+			},
+		},
+	} as const;
+}
+
+export function buildEditsSchema(requireLineContent: boolean): ParameterPropertySpec {
+	return {
+		type: "array",
+		required: true,
+		description:
+			"Ordered list of edits to apply atomically. Edits apply in order against evolving content; each one sees the file state after the previous edit in the same call. All anchors come from one read (original snapshot) — re-read for fresh anchors after an edit (there is no `Shift:` block in v2.0).",
+		items: buildEditItemSchema(requireLineContent),
+	} as const;
+}
 
 export const pathSchema = {
 	type: "string",

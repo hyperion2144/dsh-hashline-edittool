@@ -33,11 +33,14 @@ import {
 	normalizeRequest as normReq,
 	assertEditRequest,
 	pathSchema,
-	editsSchema,
+	buildEditsSchema,
+	anchorOf,
+	declaredLineOf,
 	lineNumbersSchema,
 } from "./contract.js";
-import { abortIf, isRec, visLines } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
+import type { AnchorRef } from "./declaration.js";
+import { abortIf, isRec, visLines } from "./utils.js";
 import { contextLinesCfg } from "./hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "./mutation.js";
@@ -94,8 +97,8 @@ function buildPreparedItem(
 	topLevelPath: string,
 	item: {
 		op?: "ins" | "del" | "replace";
-		anchor_start: string;
-		anchor_end?: string;
+		anchor_start: AnchorRef;
+		anchor_end?: AnchorRef;
 		lines?: string[];
 		path?: string;
 	},
@@ -106,7 +109,11 @@ function buildPreparedItem(
 	// (single-line replace/delete). A multi-line replace without anchor_end was
 	// already rejected by assertEditItem (the host runner may pass frozen args,
 	// so the fold happens here by CONSTRUCTING the PreparedItem, not mutating).
-	const toResolved = item.anchor_end ?? item.anchor_start;
+	// require_line_content: the `{ anchor, line }` declaration form folds to
+	// the anchor string here, with the declared text carried as expected*
+	// fields for the pipeline gate (declaration.ts). An OMITTED anchor_end
+	// declares nothing for the end boundary (contract #76: only start).
+	const toResolved = item.anchor_end !== undefined ? anchorOf(item.anchor_end) : anchorOf(item.anchor_start);
 	const replacementText =
 		item.op === "del"
 			? ""
@@ -115,10 +122,14 @@ function buildPreparedItem(
 		index,
 		path: itemPath,
 		absolutePath,
-		remove_from: item.anchor_start,
+		remove_from: anchorOf(item.anchor_start),
 		remove_to: toResolved,
 		replacement_text: replacementText,
 		op: item.op ?? "replace",
+		expectedStart: declaredLineOf(item.anchor_start),
+		...(item.anchor_end !== undefined
+			? { expectedEnd: declaredLineOf(item.anchor_end) }
+			: {}),
 	};
 }
 
@@ -165,7 +176,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 		description: editDescription(getEffectiveConfig()),
 	parameters: {
 			path: { ...pathSchema },
-			edits: { ...editsSchema, required: true },
+			edits: buildEditsSchema(getEffectiveConfig().requireLineContent),
 			line_numbers: { ...lineNumbersSchema },
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
@@ -254,7 +265,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				if (resolution && isRec(canonical)) {
 					canonical.path = resolution.path;
 				}
-				assertEditRequest(canonical);
+				assertEditRequest(canonical, getEffectiveConfig().requireLineContent);
 				const lineNumbers = canonical.line_numbers !== false;
 				if (resolution) {
 					// Preserve the path-resolution warning at the top of the warnings list.

@@ -24,10 +24,11 @@ import {
 	resolveSection,
 } from "../src/guidance.js";
 import {
-	EDIT_GUIDANCE,
+	editGuidance,
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
 } from "../src/prompts.js";
+import { getEffectiveConfig } from "../src/config.js";
 
 async function withHome(run: (home: string) => Promise<void>): Promise<void> {
 	const home = await mkdtemp(
@@ -78,7 +79,7 @@ describe("guidance sections", () => {
 			[READ_GUIDANCE.intro, "", bullets(READ_GUIDANCE.lines)].join("\n"),
 		);
 		expect(renderSectionDefault("tool:edit")).toBe(
-			[EDIT_GUIDANCE.intro, "", bullets(EDIT_GUIDANCE.lines)].join("\n"),
+			[editGuidance(getEffectiveConfig()).intro, "", bullets(editGuidance(getEffectiveConfig()).lines)].join("\n"),
 		);
 		expect(renderSectionDefault("tool:undo_last_edit")).toBe(
 			[UNDO_GUIDANCE.intro, "", bullets(UNDO_GUIDANCE.lines)].join("\n"),

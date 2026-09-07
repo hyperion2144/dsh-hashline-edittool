@@ -23,7 +23,7 @@
  */
 
 import type { FileIO } from "./fs-bridge.js";
-import type { EditParams } from "./contract.js";
+import { anchorOf, type EditParams } from "./contract.js";
 import type { HashStore } from "./hash-store.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
@@ -110,11 +110,11 @@ export async function execPipeline(
 	// that still use the old `{ path, remove_from, remove_to, replacement_text }`
 	// spelling. We normalize the first item (default `op: "replace"`).
 	const firstItem = params.edits?.[0]
-	const removeFromRaw = (params as { remove_from?: string }).remove_from ?? firstItem?.anchor_start
+	const removeFromRaw = (params as { remove_from?: string }).remove_from ?? (firstItem ? anchorOf(firstItem.anchor_start) : undefined)
 	const removeToRaw =
 		(params as { remove_to?: string }).remove_to ??
-		firstItem?.anchor_end ??
-		firstItem?.anchor_start ??
+		(firstItem?.anchor_end !== undefined ? anchorOf(firstItem.anchor_end) : undefined) ??
+		(firstItem ? anchorOf(firstItem.anchor_start) : undefined) ??
 		removeFromRaw
 	const replTextRaw =
 		(params as { replacement_text?: string }).replacement_text ??

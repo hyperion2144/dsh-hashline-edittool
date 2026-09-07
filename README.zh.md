@@ -102,7 +102,12 @@ hashline:
   separator: ":"         # 行分隔符（默认 ":"）
   output_format: text    # "text"（hashline 行格式）| "json"（纯 JSON）
   context_lines: 3       # 上下文行数：stale 回显 / diff / grep 统一生效（默认 3，0..20）
+  require_line_content: false  # 开启后 edit 锚点变为 `{ anchor, line }` 字典（见下）
 ```
+
+#### require_line_content（默认 false）
+
+防拿错锚点的加固开关。开启后 `edit` 的工具 schema 实时变化（逐 agent）：`edits[]` 每个锚点必须为 `{ anchor, line }` 字典——`line` 是对该行当前全文的申报（单行、逐字；行尾空白可省、复制 read 行的标记前缀可容忍）。每次申报在 stale 锚点检查之后、任何修改落地之前校验；不匹配整调用拒绝并报 `[E_CONTENT_MISMATCH]`（回显实际行内容与申报内容当前所在行）。关闭时锚点保持纯字符串，传入字典按形状错误拒绝。
 
 若部署环境没有挂载 settings 服务（如最小 smoke profile），插件会自行挂载一个只读的文件后端 provider——配置文件始终是唯一事实源；`@deepseek-ai/*` 均为宿主共享的 peer 依赖。
 
