@@ -134,6 +134,25 @@ const SUMMARY_KEYS: Record<string, string[]> = {
 };
 
 const FILE_PATH_KEYS = ["path", "file_path"];
+/** Collect unique non-empty `path` values from `edits[].path` (issue #81).
+ * Returns the deduplicated paths in first-seen order, or an empty array when
+ * the args have no `edits` array or none carry a string `path`.
+ */
+function collectEditPaths(args: Record<string, unknown>): string[] {
+	const edits = args.edits;
+	if (!Array.isArray(edits)) return [];
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const edit of edits) {
+		if (typeof edit !== "object" || edit === null) continue;
+		const path = (edit as Record<string, unknown>).path;
+		if (typeof path !== "string" || path === "" || seen.has(path)) continue;
+		seen.add(path);
+		out.push(path);
+	}
+	return out;
+}
+
 
 function deriveSummary(variant: string, argsRaw: string): string {
 	const args = parseArgs(argsRaw);
@@ -151,7 +170,13 @@ function deriveFilePath(variant: string, argsRaw: string): string | undefined {
 	const args = parseArgs(argsRaw);
 	if (args === undefined) return undefined;
 	const picked = pickString(args, FILE_PATH_KEYS);
-	return picked === undefined ? undefined : firstLine(picked);
+	if (picked !== undefined) return firstLine(picked);
+	// issue #81: edit with no top-level path — use per-item path when exactly one file.
+	if (variant === "edit") {
+		const editPaths = collectEditPaths(args);
+		if (editPaths.length === 1) return firstLine(editPaths[0]!);
+	}
+	return undefined;
 }
 
 /**
@@ -177,8 +202,24 @@ export function toolRowModel(
 			: block.isError
 				? "error"
 				: "ok";
-	const base =
-		argsRaw === "" ? block.callId : abbreviateHomePath(relativizeToCwd(deriveSummary(variant, argsRaw), cwd), home);
+	let base: string;
+	if (argsRaw === "") {
+		base = block.callId;
+	} else {
+		base = abbreviateHomePath(relativizeToCwd(deriveSummary(variant, argsRaw), cwd), home);
+		// issue #81: edit with no top-level path — relativize each per-item path individually.
+		if (variant === "edit") {
+			const args = parseArgs(argsRaw);
+			if (args !== undefined && pickString(args, SUMMARY_KEYS.edit) === undefined) {
+				const editPaths = collectEditPaths(args);
+				if (editPaths.length > 0) {
+					base = editPaths
+						.map((p) => abbreviateHomePath(relativizeToCwd(firstLine(p), cwd), home))
+						.join(", ");
+				}
+			}
+		}
+	}
 	const output = done ? resultText(block) || null : null;
 	const errorSummary = state === "error" && output !== null ? firstLine(output) : null;
 	return {
