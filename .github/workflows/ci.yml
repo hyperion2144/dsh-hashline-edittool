@@ -5,6 +5,11 @@ name: CI
 # UI plugin; issue #71). Releases are handled by release.yml (tag pushes, or
 # manual dispatch).
 
+on:
+  push:
+    branches: [main]
+  pull_request:
+
 permissions:
   contents: read
 
