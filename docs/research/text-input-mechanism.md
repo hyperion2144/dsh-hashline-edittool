@@ -214,13 +214,11 @@ async execute(args, exec) {
 
 ---
 
-## 子问题 4：Claude Code 内置工具、dsh 其他插件是否有纯文本参数先例？
+## 子问题 4：DSH 其他插件（`dsh-tool-*` 包）是否有纯文本参数先例？
 
-**答：调研范围内（dsh 主仓全部 `dsh-tool-*` 包 + `dsh-hooks-claude-code` + Anthropic
-SDK）**——**未发现任何「整个工具参数为单一字符串」的先例**。所有先例都是「单
-string 属性 + 其他结构化字段」的混合 schema，且都是 JSON 通道。
+**答：DSH 主仓所有 `dsh-tool-*` 包**——**未发现任何「整个工具参数为单一字符串」的先例**。所有先例都是「单 string 属性 + 其他结构化字段」的混合 schema，且都是 JSON 通道。
 
-**dsh 内置工具盘点（grep `@deepseek-ai/dsh-tool-*` 与 `dsh-subagent*`）**：
+**dsh 内置工具盘点（grep `@deepseek-ai/dsh-tool-*`）**：
 
 | 包 | 工具 | 参数 schema 形状 | source |
 |---|---|---|---|
@@ -239,31 +237,11 @@ string 属性 + 其他结构化字段」的混合 schema，且都是 JSON 通道
 
 - 所有 DSH 一等公民工具都用 `{type:"object", properties:{...}, required:[...]}`
 - 「单 string 属性」的形态有，但都不是「整个工具只有一个 string 参数」
-- 离「纯文本」最近的 `dsh-tool-subagent` 的 `prompt` 也是「嵌在一个 object 里的
-  一个 string 属性」，不是根级 string
-- Claude Code 的等价（Bash、Read、Edit、Write、MultiEdit）在 Anthropic SDK 与
-  Agent SDK 都按 OpenAI Function Calling / Anthropic Tool Use 协议声明，全部
-  object-rooted
+- 离「纯文本」最近的 `dsh-tool-subagent` 的 `prompt` 也是「嵌在一个 object 里的一个 string 属性」，不是根级 string
 
-**Claude Code 侧的检索**（无法直接 fetch 文档站；网络受限；只能借助 web_search
-返回的 search snippet 与 `dsh-hooks-claude-code` 包内文）：
+**结论**：**DSH 主仓生态里没有「单 string 根级参数」的先例**；本插件的方案会是 DSH 生态里第一条「纯文本工具参数」路径。这并不构成禁忌——它走的是**与既有 JSON 通道并列的第二通道**，而不是替代 JSON 通道。
 
-- `dsh-hooks-claude-code` 内部完全不注册工具——它只是把 dsh 的 `tools/pre-execute`
-  /`tools/post-execute` 桥到 Claude Code 的 hook 协议，不实现工具本身
-  （`dsh-hooks-claude-code/lib/index.js:249,266`）。Claude Code 自身工具集（Bash、
-  Read、Edit、Write 等）由 Anthropic 私有分发，未在 vendored 的
-  `@anthropic-ai/sdk` 包内出现
-- 公开文档（仅 snippet 可见，无法 fetch）显示 Claude Code `Bash` 用
-  `bash_20250124` 类型 + `input_schema` 嵌入到模型（`schema-less` 注释，
-  VincentTLe/coding-agent docs）——这等价于 dsh 的「adapter 把 parameters 字段
-  转发到 provider」的逻辑，与 dsh 的 DeepSeek adapter 是同一种 wire 形态
-- Anthropic 官方 tools（Bash、Text Editor、Computer Use）都是 client tools with
-  `type: "bash_20250124"` 之类 `date-versioned type`，并**不是**「整个 schema
-  就是 `{type:"string"}`」
-
-**结论**：**当前生态里没有「单 string 根级参数」的工业级先例**；本插件的方案会
-是 DSH 生态里第一条「纯文本工具参数」路径。这并不构成禁忌——它走的是**与既有
-JSON 通道并列的第二通道**，而不是替代 JSON 通道。
+> 备注：原 Q4 文本曾试图盘点 Claude Code 内置工具的 schema 形态。经裁定 Claude Code 是 Anthropic 独立生态、其工具 schema 与 DSH 的 `defineTool` 机制无直接对比/借鉴关系，已删除该段以保持问题边界聚焦在 DSH 内部。
 
 ---
 
