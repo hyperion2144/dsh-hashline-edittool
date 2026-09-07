@@ -1,8 +1,8 @@
 /**
  * Regression tests for the per-workspace store: every tool call resolves the
- * store at `<workspace>/.dsh_hashline_edittool/` (the workspace being the session
- * cwd carried by `withWorkspace`), and parallel workspaces keep separate
- * stores — snapshots, served rows, and undo history never leak between them.
+ * store under `$DSH_HOME/plugins/dsh-hashline-edittool/<projectKey(cwd)>/`, and
+ * parallel workspaces keep separate stores — snapshots, served rows, and undo
+ * history never leak between them.
  * @module dsh-hashline-edittool/workspace-store.test
  */
 
@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { withWorkspace, workspaceCwd } from "../../src/workspace.js";
-import { hashStorePath } from "../../src/paths.js";
+import { hashStorePath, configDir } from "../../src/paths.js";
 import { loadHashStore, shutdownHashStore } from "../../src/hash-store.js";
 import { recordServed, loadServed } from "../../src/served-store.js";
 import { lineHashes } from "../../src/hashline/index.js";
@@ -36,18 +36,17 @@ describe("workspace context", () => {
 		}
 	});
 
-	it("resolves the store file under <workspace>/.dsh_hashline_edittool", async () => {
+	it("resolves the store file under $DSH_HOME/plugins/dsh-hashline-edittool/<projectKey>", async () => {
 		const cwd = tempWorkspace("dsh-ws-path-");
 		try {
+			const expectedDir = configDir(cwd);
 			expect(hashStorePath(cwd)).toBe(
-				join(cwd, ".dsh_hashline_edittool", "hash-store.sqlite"),
+				join(expectedDir, "hash-store.sqlite"),
 			);
 			await withWorkspace(cwd, async () => {
 				await loadHashStore();
 			});
-			expect(
-				existsSync(join(cwd, ".dsh_hashline_edittool", "hash-store.sqlite")),
-			).toBe(true);
+			expect(existsSync(hashStorePath(cwd))).toBe(true);
 		} finally {
 			shutdownHashStore();
 			rmSync(cwd, { recursive: true, force: true });

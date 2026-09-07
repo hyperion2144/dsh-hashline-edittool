@@ -12,21 +12,50 @@ import { resolveDshHome } from "@deepseek-ai/dsh-home-paths";
 import { errCode } from "./utils.js";
 
 /**
- * On-disk home for dsh-hashline-edittool state. Inside a tool call the store
- * lives co-located with the files being edited:
- * `<workspace>/.dsh_hashline_edittool/` (the workspace is the session cwd,
- * carried through the execution by `withWorkspace`). Outside a tool call —
- * tests, previews, startup — the store falls back to the shared DeepSeek
- * Harness home
+ * On-disk home for dsh-hashline-edittool state. All stores live under the
+ * shared DeepSeek Harness home
  * (`$DSH_HOME/plugins/dsh-hashline-edittool`,
  * default `~/.dsh/plugins/dsh-hashline-edittool`),
- * so a caller without a workspace never writes into an arbitrary cwd.
+ * keyed by a human-navigable directory derived from the workspace cwd —
+ * the same `projectKey` convention used by dsh-session-persistence-jsonl.
+ * A caller without a workspace (tests, previews, startup) writes directly
+ * under the plugin base directory.
  * @param cwd - the workspace root, or undefined for the shared-home fallback.
  */
+
+/**
+ * Build the readable directory key for a project path, following the same
+ * convention as dsh-session-persistence-jsonl: filesystem separators and
+ * drive separators become `-` (consecutive runs collapsed), unsafe code units
+ * use `~XXXX` hex escape. The key is bounded for filesystem component limits.
+ * Separator replacement is intentionally lossy — human-navigable, not injective.
+ * @param cwd - the session's project directory.
+ * @returns a single filesystem-safe project directory name.
+ */
+function projectKey(cwd: string): string {
+	if (cwd.length === 0) throw new Error("cannot encode an empty project path");
+	let readable = "";
+	let separatorRun = false;
+	for (let i = 0; i < cwd.length; i++) {
+		const code = cwd.charCodeAt(i);
+		const ch = String.fromCharCode(code);
+		if (ch === "/" || ch === "\\" || ch === ":") {
+			if (!separatorRun) readable += "-";
+			separatorRun = true;
+		} else if (ch !== "~" && /^[A-Za-z0-9._-]$/.test(ch)) {
+			readable += ch;
+			separatorRun = false;
+		} else {
+			readable += "~" + code.toString(16).toUpperCase().padStart(4, "0");
+			separatorRun = false;
+		}
+	}
+	return `--${(readable.replace(/^-+/, "") || "root").slice(0, 251)}--`;
+}
+
 export function configDir(cwd?: string): string {
-	return cwd !== undefined
-		? join(resolvePath(cwd), ".dsh_hashline_edittool")
-		: join(resolveDshHome(), "plugins", "dsh-hashline-edittool");
+	const base = join(resolveDshHome(), "plugins", "dsh-hashline-edittool");
+	return cwd !== undefined ? join(base, projectKey(resolvePath(cwd))) : base;
 }
 
 export function hashStorePath(cwd?: string): string {
