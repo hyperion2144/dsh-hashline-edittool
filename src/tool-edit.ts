@@ -53,6 +53,8 @@ import {
 import { commit, resolveMissingPath, snapshotIdFor } from "./mutation.js";
 import { recordServedTruncated, recordServedAfterEdit } from "./session-view.js";
 import { editDescription } from "./prompts.js";
+import { asDualChannel } from "./text-input/dual.js";
+import { parseEditText } from "./text-input/parse.js";
 import type { JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
 	computeHunkDiffs,
@@ -171,7 +173,7 @@ function extractFailure(message: string): { code: string; message: string } {
  * @returns the exact disposer that unregisters the tool.
  */
 export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
-	return defineTool({
+	const compiled = defineTool({
 		name: "edit",
 		description: editDescription(getEffectiveConfig()),
 	parameters: {
@@ -444,6 +446,15 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 			});
 		},
 	});
+	// Dual channel (spec #85): a string payload is the edit text DSL — parsed
+	// into the JSON-equivalent args (respecting require_line_content), then the
+	// SAME compiled body runs. Object payloads (JSON channel) pass untouched.
+	return asDualChannel(compiled, (text) =>
+		parseEditText(text, {
+			requireLineContent: getEffectiveConfig().requireLineContent,
+			separator: getEffectiveConfig().separator,
+		}),
+	);
 }
 
 /**
@@ -521,6 +532,7 @@ async function applyFileResultTo(
 						displayPath: ctx.displayPath,
 						count,
 					});
+
 					if (notice) file.warnings.push(notice);
 				}
 				clearNoopLoop(ctx.absolutePath);

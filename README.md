@@ -369,6 +369,19 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row pasted into `lines` (e.g. a `<line>:<anchor>:content` read/diff row); the prefix is stripped when the anchor exists in the file — with a warning. Literal look-alike content is never rewritten. |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
+| `[E_PARSE_EMPTY]` | A text-DSL payload carried no parseable content (missing primary line / no edit items). |
+| `[E_PARSE_TRAILING]` | Unexpected rows after the payload's options/heredoc block. |
+| `[E_PARSE_UNKNOWN_OPTION]` | A `key:` option row names a key the tool does not support. |
+| `[E_PARSE_DUP_OPTION]` | The same option row repeats. |
+| `[E_PARSE_OPTION_VALUE]` | An option value is not the right scalar type (number/boolean). |
+| `[E_PARSE_HEREDOC_EXPECTED]` | A heredoc block (`<<<END`) is required here (write content / edit lines). |
+| `[E_PARSE_HEREDOC_UNTERMINATED]` | A heredoc opened with `<<<END` never closes. |
+| `[E_PARSE_BAD_OP]` | An edit item line does not start with `ins`/`del`/`replace`. |
+| `[E_PARSE_MISSING_ANCHOR]` | An edit item lacks its anchor (or declaration row in require_line_content mode). |
+| `[E_PARSE_BAD_ANCHOR]` | An anchor token is not Base62 (or lacks its declaration row). |
+| `[E_PARSE_BAD_DECLARATION]` | A declared anchor is not a verbatim read row (`<line>:<anchor>: text`). |
+| `[E_PARSE_BAD_SECTION]` | An `@@` file-section row is empty. |
+| `[E_PARSE_NO_FILE]` | An edit item has no target file (no default line and no `@@` section). |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
 | `[E_INS_ANCHOR_DUP]` | `op:"ins"` `lines[0]` matches the `anchor_start` line content — `ins` inserts after the anchor line (preserved automatically); including it in `lines` creates a duplicate. Warning only; the edit proceeds. |
 | `[E_LINE_HINT]` | A `<line>:<anchor>` hint disagreed with the anchor's resolved position; the anchor is authoritative and the edit proceeds. |

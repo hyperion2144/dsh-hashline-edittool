@@ -29,6 +29,8 @@ import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "./session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import { withWorkspace } from "./session-view.js";
+import { asDualChannel } from "./text-input/dual.js";
+import { parseGrepText } from "./text-input/parse.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
 import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
@@ -170,7 +172,7 @@ interface GrepCanonicalValue {
  * @returns the exact disposer that unregisters the tool.
  */
 export function buildGrepTool(io: FileIO) {
-	return defineTool({
+	const compiled = defineTool({
 		name: "grep",
 		description: grepDescription(getEffectiveConfig()),
 		parameters: {
@@ -441,6 +443,10 @@ served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
 			});
 		},
 	});
+	// Dual channel (spec #85): a string payload is the text DSL — parsed into
+	// the JSON-equivalent args, then the SAME compiled body runs. Object
+	// payloads (JSON channel) pass through untouched.
+	return asDualChannel(compiled, parseGrepText);
 }
 
 export function registerGrepTool(

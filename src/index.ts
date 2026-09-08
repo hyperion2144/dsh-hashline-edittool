@@ -26,7 +26,7 @@ import { registerEditTool } from "./tool-edit.js";
 import { installHashlineSettings } from "./config.js";
 import { registerUndoTool } from "./tool-undo.js";
 import { registerGrepTool } from "./tool-grep.js";
-import { registerWriteHook } from "./write-hook.js";
+import { registerWriteShadow } from "./tool-write-shadow.js";
 import { onEditSurfaceRebuild } from "./edit-rebuild.js";
 
 import {
@@ -154,7 +154,7 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		disposers.push(registerReadTool(rootCtx, agent.ctx, io));
 		disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
 		disposers.push(registerUndoTool(rootCtx, agent.ctx, io, sandbox));
-		disposers.push(registerWriteHook(rootCtx, agent.ctx, io));
+		disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
 
 		// Shadow the preset's built-in tool guidance with the hashline
 		// contract. Same section names on the agent's own layer win over the

@@ -107,6 +107,7 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 			outputFormat: "text",
 			contextLines: 3,
 			requireLineContent: false,
+			inputFormat: "text",
 		});
 	});
 

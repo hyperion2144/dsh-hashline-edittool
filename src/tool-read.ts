@@ -42,6 +42,8 @@ import {
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import { withWorkspace } from "./session-view.js";
+import { asDualChannel } from "./text-input/dual.js";
+import { parseReadText } from "./text-input/parse.js";
 
 /**
  * Register the hash-anchored `read` tool on the calling agent's scope.
@@ -51,7 +53,7 @@ import { withWorkspace } from "./session-view.js";
  * @returns the exact disposer that unregisters the tool.
  */
 export function buildReadTool(io: FileIO) {
-	return defineTool({
+	const compiled = defineTool({
 		name: "read",
 		description: readDescription(getEffectiveConfig()),
 		parameters: {
@@ -287,6 +289,11 @@ export function buildReadTool(io: FileIO) {
 			});
 		},
 	});
+
+	// Dual channel (spec #85): a string payload is the text DSL — parsed into
+	// the JSON-equivalent args, then the SAME compiled body runs. Object
+	// payloads (JSON channel) pass through untouched.
+	return asDualChannel(compiled, parseReadText);
 }
 
 /**
