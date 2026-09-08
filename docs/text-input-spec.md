@@ -18,9 +18,9 @@ write 在 text 及其他模式一律由**插件 shadow 版接管**（消灭 post
 
 ## User Stories
 
-1. As a model step running an agent loop, I want to call `read <file_path>` as a one-line text (no JSON braces) — or with `offset:`/`limit:`/`line_numbers:` option lines — so that the most frequent single-path read is free of JSON ceremony.
-2. As a model step, I want to call `grep <pattern>` with optional `path:`/`include:`/`regex:`/`context:`/`limit:`/`line_numbers:` option lines, so that search parameters are written naturally without quoting.
-3. As a model step, I want to write a file as `write <path>` + `<<<END` + arbitrary multi-line body + `<<<END`, so that file bodies with newlines/quotes never need escaping.
+1. As a model step running an agent loop, I want to call `read` with a first-line `<file_path>` payload, plus optional `offset:`/`limit:`/`line_numbers:` option lines — so that the most frequent single-path read is free of JSON ceremony.
+2. As a model step, I want to call `grep` with a first-line `<pattern>` plus optional `path:`/`include:`/`regex:`/`context:`/`limit:`/`line_numbers:` option lines, so that search parameters are written naturally without quoting.
+3. As a model step, I want to write a file with a first-line `<file_path>` followed by `<<<END` + arbitrary multi-line body + `<<<END`, so that file bodies with newlines/quotes never need escaping.
 4. As a model step, I want the heredoc terminator `<<<END` to be the single recognized sentinel across all four tools, so I only learn one boundary rule.
 5. As a model step, I want to express any JSON scalar option (offset, limit, includes, regex, context, line_numbers, sandbox_permissions, justification) as `key: value` option lines, so text mode loses no capability versus JSON.
 6. As a model step, I want to edit with `edit <file>` + an op line (`replace <anchor> [<anchor_end]>` / `del <anchor>` / `ins <anchor>`) plus an optional `<<<END` lines block, so edits read like a script.
@@ -45,7 +45,7 @@ write 在 text 及其他模式一律由**插件 shadow 版接管**（消灭 post
   - The remaining channel is passed unchanged to the JSON continue — i.e., JSON channel is the default runtime when the string parses as an object; text is a pure addition.
 - Heredoc: a single shared sentinel `<<<END` on its own line opens and closes an arbitrary block; content inside heredoc is parsed as a whole (no options/comments/anchors re-parsed); escape-free: nothing inside the block is special except a line exactly `<<<END`.
 - Anchor representation in edit: when `require_line_content` is enabled, anchors in edit ops are written as the full read row `<anchor>:<line>: <current text>` (var-len Base62 + line hint + declaration); decoding keeps the JSON `{ anchor, line }` pair semantics exactly (E_* discrimination for a missing declaration as today).
-- Multi-file edit: `edit <default_path>` is the single-file form; any `@@ <path>` line switches the current target file for subsequent ops (each section is a list of ops). This is isomorphic to JSON edit's per-item `path` override / top-level `path` default — a `@@ <file>` section corresponds to `{ path }` prefix for the group.
+- Multi-file edit: the first-line `<default_path>` is the single-file form; any `@@ <path>` line switches the current target file for subsequent ops (each section is a list of ops). This is isomorphic to JSON edit's per-item `path` override / top-level `path` default — a `@@ <file>` section corresponds to `{ path }` prefix for the group. The DSL never writes the tool name — the tool name is the call symbol, not a payload prefix.
 
 ### 2. Config: `input_format`
 
