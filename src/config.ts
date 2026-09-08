@@ -41,6 +41,8 @@ export interface HashlineSettings {
 	context_lines?: number;
 	/** When true, edit anchors are `{ anchor, line }` declaration pairs (default false). */
 	require_line_content?: boolean;
+	/** Input channel contract the tools advertise: text DSL (default) | json. */
+	input_format?: "text" | "json";
 }
 
 /** Permissive schema — unknown keys tolerated so newer versions don't break older builds. */
@@ -50,6 +52,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		output_format: z.union(["text", "json"]),
 		context_lines: z.number().min(0).max(20),
 		require_line_content: z.boolean(),
+		input_format: z.union(["text", "json"]),
 	})
 	.loose() as unknown as z<HashlineSettings>;
 	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
@@ -64,6 +67,8 @@ export interface EffectiveHashlineConfig {
 	contextLines: number;
 	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
 	requireLineContent: boolean;
+	/** Input channel contract: "text" (text DSL, dual-channel) | "json" (JSON only). */
+	inputFormat: "text" | "json";
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
@@ -71,6 +76,8 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	outputFormat: "text",
 	contextLines: 3,
 	requireLineContent: false,
+	inputFormat: "text",
+
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -83,6 +90,16 @@ export function getEffectiveConfig(): EffectiveHashlineConfig {
 export function isJsonOutput(): boolean {
 	return effective.outputFormat === "json";
 }
+
+/**
+ * True when the tools advertise the text DSL contract (default). Even in
+ * text mode every tool still accepts JSON payloads (dual-channel, spec
+ * #85); this flag only controls what the schema/description teach.
+ */
+export function isTextInput(): boolean {
+	return effective.inputFormat !== "json";
+}
+
 
 /** Validate + apply a settings object onto the effective config and hash shape. */
 export function applyEffective(settings: HashlineSettings | undefined): void {
@@ -106,8 +123,18 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 	// The edit tool's model-facing schema depends on this flag: when it
 	// FLIPS, live agents' edit surfaces must be disposed and re-registered
 	// so the next model step sees the new parameter set (issue #75/#76).
-	const flagChanged = effective.requireLineContent !== requireLine;
-	effective = { separator: sep, outputFormat: fmt, contextLines: nctx, requireLineContent: requireLine };
+	const fmtIn =
+		settings?.input_format === "json" ? "json" : DEFAULT_CONFIG.inputFormat;
+	const flagChanged =
+		effective.requireLineContent !== requireLine || effective.inputFormat !== fmtIn;
+
+	effective = {
+		separator: sep,
+		outputFormat: fmt,
+		contextLines: nctx,
+		requireLineContent: requireLine,
+		inputFormat: fmtIn,
+	};
 	applyHashlineShape({ separator: sep, contextLines: nctx });
 	if (flagChanged) rebuildEditSurfaces();
 }
@@ -158,6 +185,12 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 				out.output_format = value;
 			}
 		}
+		else if (key === "input_format") {
+			if (value === "json" || value === "text") {
+				out.input_format = value;
+			}
+		}
+
 		// NOTE: legacy `hash_length` key is parsed but ignored (v2.0 variable-length).
 		else if (key === "context_lines") {
 			const n = Number(value);
