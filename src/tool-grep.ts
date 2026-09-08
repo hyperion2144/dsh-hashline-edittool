@@ -420,7 +420,7 @@ served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
 				}
 
 				if (fileSections.length === 0) {
-					const noMatchModelText = `No matches for "${params.pattern}" in ${params.path}.`;
+					const noMatchModelText = `No matches for "${params.pattern}" in ${root}.`;
 					return {
 						files: [],
 						truncated: false,
