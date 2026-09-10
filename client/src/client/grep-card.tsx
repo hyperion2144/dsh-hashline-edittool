@@ -14,32 +14,38 @@
  * never parsed, and no matching runs here (the host computed the spans).
  */
 
-import { useCallback, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
-import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconEllipsisOutline16, Menu, writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { GrepCardModel, GrepRowMeta } from "./types.js";
-import { grepGutterLabel, highlightSegments } from "./models.js";
+import { foldTabs, grepGutterLabel, highlightSegments } from "./models.js";
 import type { GrepCardLabels } from "./labels.js";
 
 const CSS_TEXT = [
 	".dshl-grep-block{--dsl-grep-line-height:22px;position:relative;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:12px}",
-	// Tab bar + copy share one row: the tabs scroll, the button never does.
+	// Tab bar + copy share one row. The strip never scrolls sideways: the tabs
+	// that do not fit are folded into the overflow menu by the component.
 	".dshl-grep-head{display:flex;align-items:flex-end;gap:8px;border-bottom:1px solid var(--dsw-alias-border-l1)}",
-	".dshl-grep-tabs{display:flex;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}",
+	".dshl-grep-tabs{display:flex;flex:1 1 auto;min-width:0;overflow:hidden}",
 	".dshl-grep-tab{flex:none;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:6px 12px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13);border-bottom:2px solid transparent;margin-bottom:-1px}",
 	".dshl-grep-tab:hover{color:var(--dsw-alias-label-primary)}",
 	".dshl-grep-tab:focus-visible{outline:1px solid var(--dsw-alias-border-l3);outline-offset:-2px}",
 	".dshl-grep-tabActive{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-state-info-primary)}",
 	".dshl-grep-copyButton{flex:none;background-color:transparent;border:none;padding:0 12px 6px;margin:0;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13)}",
+	".dshl-grep-moreButton{flex:none;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;margin-bottom:2px}",
+	".dshl-grep-moreButton:hover{color:var(--dsw-alias-label-primary);background-color:var(--dsw-alias-interactive-bg-hover)}",
+	".dshl-grep-moreButton:focus-visible{outline:1px solid var(--dsw-alias-border-l3);outline-offset:-2px}",
 	".dshl-grep-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-grep-line{min-height:var(--dsl-grep-line-height);white-space:pre;display:flex}",
 	".dshl-grep-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
 	".dshl-grep-content{white-space:pre}",
-	// The mark's own `color` is overridden deliberately: the UA sheet paints
-	// `mark` with a light background AND black text, which is unreadable in dark
-	// themes. The line's colour is inherited instead.
-	".dshl-grep-mark{background-color:var(--dsw-alias-state-warn-tertiary);color:inherit;border-radius:2px}",
+	// The highlighter yellow is hard-coded because the theme has no yellow token
+	// (its only warm family is amber, whose lightest tier reads as cream, not
+	// yellow). The text colour is forced dark for the same reason the UA's own
+	// `mark` pairing is overridden: dark-on-yellow stays readable in BOTH themes,
+	// whereas an inherited (light, under the dark theme) text colour would not.
+	".dshl-grep-mark{background-color:#ffe066;color:#1f1f1f;border-radius:2px}",
 	".dshl-grep-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-grep-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-grep-empty{padding:12px 14px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
@@ -47,6 +53,13 @@ const CSS_TEXT = [
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/grep-card.css";
+
+/**
+ * Width the overflow trigger occupies on the tab strip's row, gap included
+ * (28px button + the head's 8px gap). The fold reserves it only once the strip
+ * genuinely overflows.
+ */
+const TAB_OVERFLOW_RESERVE = 36;
 
 /** Install the grep sheet once (same tagged style-tag contract as ToolRow). */
 export function ensureGrepStyles(): void {
@@ -66,6 +79,7 @@ const css = {
 	tab: "dshl-grep-tab",
 	tabActive: "dshl-grep-tabActive",
 	copyButton: "dshl-grep-copyButton",
+	moreButton: "dshl-grep-moreButton",
 	body: "dshl-grep-body",
 	line: "dshl-grep-line",
 	gutter: "dshl-grep-gutter",
@@ -113,6 +127,25 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 	const activeIndex = files.length === 0 ? 0 : Math.min(active, files.length - 1);
 	const rows = files[activeIndex]?.rows ?? [];
 
+	// --- tab strip folding ---------------------------------------------------
+	// The strip keeps its width instead of scrolling: unmeasured tabs render
+	// once so their natural widths can be read (they are `flex:none`, so an
+	// overflowing strip still reports every width), then the fold decides which
+	// tabs stay and which move into the overflow menu.
+	const widthsRef = useRef(new Map<string, number>());
+	const tabsRef = useRef<HTMLDivElement | null>(null);
+	const [stripWidth, setStripWidth] = useState(0);
+	const [, bumpWidths] = useState(0);
+	const [menuOpen, setMenuOpen] = useState(false);
+
+	const widths = files.map((file) => widthsRef.current.get(file.path) ?? 0);
+	const measured = widths.every((width) => width > 0);
+	const fold = measured
+		? foldTabs(widths, stripWidth, TAB_OVERFLOW_RESERVE, activeIndex)
+		: { visible: files.map((_, index) => index), folded: [] as number[] };
+	const rendered = fold.visible;
+
+
 	const counts = useMemo(() => {
 		let shown = 0;
 		for (const file of files) {
@@ -159,6 +192,41 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 
 	const onToggle = useCallback(() => setExpanded((value) => !value), []);
 
+	// Track the strip's usable width (`clientWidth` excludes its own padding).
+	useLayoutEffect(() => {
+		const element = tabsRef.current;
+		if (element === null) return;
+		setStripWidth(element.clientWidth);
+	});
+	useEffect(() => {
+		const element = tabsRef.current;
+		if (element === null || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(() => setStripWidth(element.clientWidth));
+		observer.observe(element);
+		return () => observer.disconnect();
+	});
+
+	// Read every tab's natural width while they are all mounted. Only the
+	// unmounted (already-folded) case is skipped: `measured` stays true from the
+	// cached widths, so the strip settles after one measuring pass.
+	useLayoutEffect(() => {
+		if (measured) return;
+		const element = tabsRef.current;
+		if (element === null) return;
+		let changed = false;
+		for (const node of Array.from(element.querySelectorAll<HTMLElement>("[data-tab-index]"))) {
+			const index = Number(node.dataset.tabIndex);
+			const file = files[index];
+			if (file === undefined) continue;
+			const width = node.offsetWidth;
+			if (width > 0 && widthsRef.current.get(file.path) !== width) {
+				widthsRef.current.set(file.path, width);
+				changed = true;
+			}
+		}
+		if (changed) bumpWidths((value) => value + 1);
+	});
+
 	if (files.length === 0) {
 		return jsx_("div", {
 			className: `${css.block} ${className ?? ""}`.trim(),
@@ -201,18 +269,22 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 				children: [
 					// A single-match result keeps its one tab (the requirement is
 					// "keep the tab, there is just one"), so the bar has no
-					// single-file branch — only fewer buttons.
+					// single-file branch — only fewer buttons. Tabs that do not fit
+					// are not scrolled to: they move into the overflow menu.
 					jsx_("div", {
 						className: css.tabs,
 						role: "tablist",
 						"aria-label": labels.tablist,
+						ref: tabsRef,
 						onKeyDown,
-						children: files.map((file, index) =>
-							jsx_("button", {
-								key: index,
+						children: rendered.map((index) => {
+							const file = files[index]!;
+							return jsx_("button", {
+								key: file.path,
 								id: tabId(index),
 								type: "button",
 								role: "tab",
+								"data-tab-index": index,
 								title: file.path,
 								className: `${css.tab} ${index === activeIndex ? css.tabActive : ""}`.trim(),
 								"aria-selected": index === activeIndex,
@@ -220,9 +292,40 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 								tabIndex: index === activeIndex ? 0 : -1,
 								onClick: () => onSelect(index),
 								children: file.path,
-							}),
-						),
+							});
+						}),
 					}),
+					// Overflow: the tabs that did not fit, listed in a portal menu so the
+					// card's own clipping never crops it.
+					...(fold.folded.length > 0
+						? [
+								jsx_(Menu, {
+									key: "overflow",
+									open: menuOpen,
+									onClose: () => setMenuOpen(false),
+									portal: true,
+									align: "end",
+									items: fold.folded.map((index) => ({
+										id: String(index),
+										label: files[index]!.path,
+									})),
+									onSelect: (id: string) => {
+										setMenuOpen(false);
+										onSelect(Number(id));
+									},
+									anchor: jsx_("button", {
+										type: "button",
+										className: css.moreButton,
+										"aria-haspopup": "menu",
+										"aria-expanded": menuOpen,
+										"aria-label": labels.more,
+										title: labels.more,
+										onClick: () => setMenuOpen((value) => !value),
+										children: jsx_(IconEllipsisOutline16, { size: 14 }),
+									}),
+								}),
+							]
+						: []),
 					jsx_("button", {
 						type: "button",
 						className: css.copyButton,

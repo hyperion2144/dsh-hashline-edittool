@@ -701,6 +701,94 @@ export function grepResultCounts(model: GrepCardModel): { shown: number; total: 
  * @param row - a validated card row.
  * @returns the gutter text.
  */
+/**
+ * How a tab strip divides its files between the bar and the overflow menu.
+ */
+export interface TabFold {
+	/** Indices rendered as tabs, ascending (folded ones are excluded). */
+	visible: number[];
+	/** Indices that live in the overflow menu, ascending. */
+	folded: number[];
+}
+
+/**
+ * Fold a file tab strip to the width it actually has, instead of letting it
+ * scroll sideways: as many leading tabs as fit stay in the bar and the rest
+ * move into the overflow menu.
+ *
+ * `widths[i]` is tab `i`'s natural width, so the caller measures once and the
+ * decision stays a pure function (unit-testable, no DOM here). Tab spacing
+ * lives inside each tab's own padding, so no gap term is needed.
+ *
+ * The tab being read is never folded: when `activeIndex` falls past the last
+ * tab that fits, it takes that last slot and the tab it displaces moves into
+ * the menu — a reader must always see which file is on screen. `reserveWidth`
+ * is the room the overflow trigger plus its gap needs; it only applies once
+ * the strip genuinely overflows.
+ *
+ * @param widths - natural width per tab, in file order.
+ * @param containerWidth - the strip's content width (`clientWidth`).
+ * @param reserveWidth - width the overflow trigger needs, gap included.
+ * @param activeIndex - the tab that must stay visible.
+ * @returns the visible and folded index lists.
+ */
+export function foldTabs(
+	widths: readonly number[],
+	containerWidth: number,
+	reserveWidth: number,
+	activeIndex: number,
+): TabFold {
+	const total = widths.length;
+	if (total === 0) return { visible: [], folded: [] };
+	const range = (end: number): number[] => Array.from({ length: end }, (_, i) => i);
+	let all = 0;
+	for (const width of widths) all += width;
+	// Everything fits: no trigger, no folding.
+	if (all <= containerWidth) return { visible: range(total), folded: [] };
+
+	const active = Math.min(Math.max(activeIndex, 0), total - 1);
+	// Longest leading run that still leaves the trigger its room.
+	let fit = 0;
+	let used = 0;
+	for (let i = 0; i < total; i++) {
+		const width = widths[i] ?? 0;
+		if (used + width + reserveWidth > containerWidth) break;
+		used += width;
+		fit += 1;
+	}
+
+	let selected: number[];
+	if (fit === 0) {
+		// Not even one tab fits beside the trigger: the active tab is still the
+		// one thing worth showing, and the menu stays reachable beside it.
+		selected = [active];
+	} else if (active < fit) {
+		selected = range(fit);
+	} else {
+		selected = [...range(fit - 1), active];
+		// The pinned tab may be wider than the one it displaced: drop prefix
+		// tabs until the strip fits again, never dropping the active tab.
+		while (selected.length > 1) {
+			let width = reserveWidth;
+			for (const index of selected) width += widths[index] ?? 0;
+			if (width <= containerWidth) break;
+			const droppable = selected.filter((index) => index !== active);
+			droppable.pop();
+			selected = [...droppable, active];
+		}
+	}
+
+	const visible = [...selected].sort((a, b) => a - b);
+	const shown = new Set(visible);
+	return { visible, folded: range(total).filter((index) => !shown.has(index)) };
+}
+
+/**
+ * The card's gutter cell for one row: the served `<line>:<anchor>`, falling
+ * back to the bare line number when the anchor is unknown.
+ * @param row - a validated card row.
+ * @returns the gutter text.
+ */
 export function grepGutterLabel(row: GrepRowMeta): string {
 	return row.hash !== "" ? `${row.number}:${row.hash}` : `${row.number}`;
 }

@@ -69,6 +69,8 @@ export interface GrepCardLabels {
 	summary: (shown: number, total: number, files: number, truncated: boolean) => string;
 	/** Accessible name of the file tab list. */
 	tablist: string;
+	/** Accessible name of the overflow trigger (falls back to `common.more`). */
+	more: string;
 }
 
 /** Build localized grep-card chrome labels. */
@@ -86,5 +88,8 @@ export function grepCardLabels(t: TBench): GrepCardLabels {
 		// The shipped locale carries no `search.card`; the tool title is the one
 		// localized word that names this tab list.
 		tablist: t("tool.title.grep"),
+		// `more` is a `common` namespace key, which the lookup chain consults
+		// after the entry namespace misses — no new locale key is added.
+		more: t("more"),
 	};
 }

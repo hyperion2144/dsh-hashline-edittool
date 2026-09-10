@@ -15,6 +15,7 @@ import {
 	grepResultCounts,
 	highlightSegments,
 	toolRowModel,
+	foldTabs,
 } from "../src/client/models.js";
 import type { GrepCardModel, ToolCallBlock } from "../src/client/types.js";
 
@@ -210,5 +211,69 @@ describe("grep row chrome", () => {
 		expect(model.summary).toBe("alpha");
 		// A search root is not an openable file: the row draws no file link.
 		expect(model.filePath).toBeUndefined();
+	});
+});
+
+describe("foldTabs", () => {
+	/** `count` tabs of equal width. */
+	const even = (count: number, width: number): number[] => Array.from({ length: count }, () => width);
+
+	it("keeps every tab when the strip fits", () => {
+		expect(foldTabs(even(3, 100), 300, 36, 0)).toEqual({ visible: [0, 1, 2], folded: [] });
+	});
+
+	it("folds trailing tabs once the strip overflows, reserving the trigger", () => {
+		// 6 × 100 = 600 in a 320px strip that must leave 36px for the trigger:
+		// two tabs fit (200 + 36 <= 320), the rest fold.
+		const fold = foldTabs(even(6, 100), 320, 36, 0);
+		expect(fold.visible).toEqual([0, 1]);
+		expect(fold.folded).toEqual([2, 3, 4, 5]);
+	});
+
+	it("keeps the active tab visible when it would have been folded", () => {
+		const fold = foldTabs(even(6, 100), 320, 36, 4);
+		// Two tabs fit; the active one takes the last slot and the tab it
+		// displaced moves into the menu instead.
+		expect(fold.visible).toContain(4);
+		expect(fold.visible).toEqual([0, 4]);
+		expect(fold.folded).not.toContain(4);
+	});
+
+	it("drops prefix tabs when the pinned tab is wider than the one it displaced", () => {
+		const widths = [100, 100, 100, 400];
+		const fold = foldTabs(widths, 320, 36, 3);
+		// 100 + 400 + 36 > 320, so the first tab goes too; the active one stays.
+		expect(fold.visible).toEqual([3]);
+		expect(fold.folded).toEqual([0, 1, 2]);
+	});
+
+	it("still shows the active tab when nothing fits beside the trigger", () => {
+		const fold = foldTabs(even(4, 500), 200, 36, 2);
+		expect(fold.visible).toEqual([2]);
+		expect(fold.folded).toEqual([0, 1, 3]);
+	});
+
+	it("folds everything but the first tab when the active one is first", () => {
+		const fold = foldTabs(even(5, 100), 250, 36, 0);
+		expect(fold.visible).toEqual([0, 1]);
+		expect(fold.folded).toEqual([2, 3, 4]);
+	});
+
+	it("never folds the only tab, even in a strip narrower than it", () => {
+		// A single-match result keeps its tab: fitting is best-effort, the tab
+		// is not.
+		expect(foldTabs([300], 120, 36, 0)).toEqual({ visible: [0], folded: [] });
+	});
+
+	it("handles an empty strip and an out-of-range active index", () => {
+		expect(foldTabs([], 300, 36, 0)).toEqual({ visible: [], folded: [] });
+		const fold = foldTabs(even(3, 200), 100, 36, 99);
+		expect(fold.visible).toEqual([2]);
+	});
+
+	it("treats a zero-width container as unmeasured input without crashing", () => {
+		const fold = foldTabs(even(3, 100), 0, 36, 0);
+		expect(fold.visible).toEqual([0]);
+		expect(fold.folded).toEqual([1, 2]);
 	});
 });
