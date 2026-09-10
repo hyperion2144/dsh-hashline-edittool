@@ -1,10 +1,10 @@
 /**
  * dsh-hashline-edittool-client — browser half (served as `<pkg>/client.js`).
  *
- * Registers keyed `tool.call.toolview` entries for the `read` and `edit` wire
- * tool names at `priority: -1`: the slot ledger shadows by ascending priority
+ * Registers keyed `tool.call.toolview` entries for the `read`, `edit` and
+ * `write` wire tool names at `priority: -1`: the slot ledger shadows by ascending priority
  * (lowest renders; same key + same priority throws), so the explicit -1
- * deterministically takes over the shipped read/edit rows without touching
+ * deterministically takes over the shipped read/edit/write rows without touching
  * them. Plugin unload unwinds the registrations through the caller's fiber —
  * the shipped rows render again, i.e. disabling the plugin leaves no residue.
  *
@@ -15,7 +15,7 @@
  * tool views use, so card visuals share one instance of every primitive.
  */
 
-import { HashlineEditRow, HashlineReadRow } from "./tool-row.js";
+import { HashlineEditRow, HashlineReadRow, HashlineWriteRow } from "./tool-row.js";
 import type { ClientCtx } from "./types.js";
 
 /** Locale namespace of the conversation seat the shipped tool views use. */
@@ -52,6 +52,20 @@ const editToolview = {
 	},
 };
 
+/** Registers the hashline write conversation row (priority -1 takeover). */
+const writeToolview = {
+	name: "hashline-write-toolview",
+	inject: ["slots"],
+	apply(ctx: ClientCtx) {
+		ctx.slots.inject("tool.call.toolview", () =>
+			ctx.slots.register(
+				{ name: "tool.call.toolview", key: "write", locale: CONVERSATION_NS, priority: -1 },
+				HashlineWriteRow,
+			),
+		);
+	},
+};
+
 /**
  * Mount the whole hashline card surface.
  * @param ctx - client root context.
@@ -59,4 +73,5 @@ const editToolview = {
 export function apply(ctx: ClientCtx): void {
 	ctx.plugin(readToolview);
 	ctx.plugin(editToolview);
+	ctx.plugin(writeToolview);
 }

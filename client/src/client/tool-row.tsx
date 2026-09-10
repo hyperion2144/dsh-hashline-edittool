@@ -26,7 +26,7 @@ import {
 import type { DiffBlockProps, ReadBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readBlockLabels } from "./labels.js";
-import { diffCardModel, editAnchorHints, readCardModel, toolRowModel } from "./models.js";
+import { diffCardModel, editAnchorHints, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 
@@ -52,7 +52,7 @@ function stateStatus(state: string, t: ToolViewProps["t"]): string | null {
 
 interface ToolRowProps {
 	t: ToolViewProps["t"];
-	variant: "read" | "edit";
+	variant: "read" | "edit" | "write";
 	toolName: string;
 	icon: ReactNode;
 	title: string;
@@ -323,6 +323,36 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		title: t(model.titleKey),
 		summary: model.summary,
 		summarySuffix: anchors.length > 0 ? `@${anchors.join(" @")}` : null,
+		bodyRaw: model.bodyRaw,
+		output: model.output,
+		errorSummary: model.errorSummary,
+		read: null,
+		diff,
+		state: model.state,
+		filePath: model.filePath,
+		onOpenFile: openFile,
+		inspect,
+	});
+}
+
+/**
+ * The hashline write view: the write card with the SAME `行号:锚点` gutter the
+ * edit card draws, fed by the shadow's structured `meta.diffRows` (one row per
+ * file line, carrying its line number and anchor). A create renders as
+ * all-addition rows; an overwrite renders the applied diff rows. Without
+ * structured rows the card degrades to the built-in intended diff.
+ */
+export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
+	const model = toolRowModel(toolName, block, cwd, home);
+	const diff = writeCardModel(block);
+	return jsx_(ToolRow, {
+		t,
+		variant: model.variant,
+		toolName,
+		icon: jsx_(IconEditOutline16, { size: 14 }),
+		title: t(model.titleKey),
+		summary: model.summary,
+		summarySuffix: null,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
 		errorSummary: model.errorSummary,

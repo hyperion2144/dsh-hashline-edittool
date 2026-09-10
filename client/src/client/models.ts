@@ -127,11 +127,13 @@ function pickString(args: Record<string, unknown>, keys: string[]): string | und
 const VARIANT_TITLE_KEYS: Record<string, string> = {
 	read: "tool.title.read",
 	edit: "tool.title.edit",
+	write: "tool.title.write",
 };
 
 const SUMMARY_KEYS: Record<string, string[]> = {
 	read: ["path", "file_path", "url"],
 	edit: ["path", "file_path"],
+	write: ["file_path", "path"],
 };
 
 const FILE_PATH_KEYS = ["path", "file_path"];
@@ -167,7 +169,7 @@ function deriveSummary(variant: string, argsRaw: string): string {
 }
 
 function deriveFilePath(variant: string, argsRaw: string): string | undefined {
-	if (variant !== "read" && variant !== "edit") return undefined;
+	if (variant !== "read" && variant !== "edit" && variant !== "write") return undefined;
 	const args = parseArgs(argsRaw);
 	if (args === undefined) return undefined;
 	const picked = pickString(args, FILE_PATH_KEYS);
@@ -193,7 +195,7 @@ export function toolRowModel(
 	cwd: string | undefined,
 	home: string | undefined,
 ): ToolRowModel {
-	const variant = toolName === "edit" ? "edit" : "read";
+	const variant = toolName === "edit" ? "edit" : toolName === "write" ? "write" : "read";
 	const done = "kind" in block;
 	const argsRaw = (done ? block.call?.argsRaw : block.argsRaw) ?? "";
 	const state = !done
@@ -414,6 +416,50 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 	const intended = intendedDiff(block);
 	if (intended === null) return null;
 	return intended.tool === "write" ? { path: intended.diff.path, diffs: [intended.diff] } : null;
+}
+
+//#endregion
+
+//#region write card (native parity + hashline gutter rows)
+
+/**
+ * Derive the write card: prefers the hashline structured rows (which carry the
+ * per-line `行号:锚点` gutter facts) over the coarse hunks, so a write renders
+ * exactly like the edit card. Running calls and rows-less writes fall back to
+ * the built-in intended diff (oldText null -> newText = the requested content).
+ * @param block - running or settled Tool block.
+ * @returns the diff-card props, or null for the generic path.
+ */
+export function writeCardModel(block: ToolCallBlock): DiffCard | null {
+	if (block.parentCallId !== undefined) return null;
+	if (!("kind" in block)) {
+		const intended = intendedDiff(block);
+		return intended !== null && intended.tool === "write"
+			? { path: intended.diff.path, diffs: [intended.diff] }
+			: null;
+	}
+	if (block.isError) return null;
+	const rows = metaDiffRows(block.meta);
+	const applied = appliedDiffs(block.meta);
+	const metaPath = readMetaPath(block.meta);
+	if (rows !== null) {
+		const diffs = applied !== null && applied !== "empty" ? applied : [];
+		return { path: metaPath ?? diffs[0]?.path ?? "", diffs, rows };
+	}
+	if (applied !== null && applied !== "empty") {
+		return { path: metaPath ?? applied[0]?.path ?? "", diffs: applied };
+	}
+	const intended = intendedDiff(block);
+	return intended !== null && intended.tool === "write"
+		? { path: intended.diff.path, diffs: [intended.diff] }
+		: null;
+}
+
+/** The persisted meta's `path` when it is a non-empty string. */
+function readMetaPath(meta: unknown): string | undefined {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined;
+	const path = (meta as Record<string, unknown>).path;
+	return typeof path === "string" && path !== "" ? path : undefined;
 }
 
 //#endregion
