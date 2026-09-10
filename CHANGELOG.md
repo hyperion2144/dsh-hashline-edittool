@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-10
+
 ### Changed — edit/write 卡统一为 grep 卡的 tab 形态（wayfinder #91/#96）
 
 - **已发布卡片的行为变更**：#82 定下的「仅多文件画 tab、多文件时换行」被推翻 —— edit / write 卡现在**单文件也画一个 tab**（`≥1`），溢出改为**按宽度折叠 + portal `Menu`**（不再换行、也不滚动），与 grep 卡同构。`DiffRowsBlock` 的 `groups.length > 1` 门槛与体内那行路径（`kind: "path"`）已移除 —— tab 已承载文件身份，体内重复画路径没有意义。
