@@ -282,6 +282,7 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 | ------ | ------ |
 | `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers` 默认 true（行前缀 `<line>:`，仅作位置提示；传 `line_numbers: false` 得到裸锚点）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
 | `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围，`lines` 禁用）或 `replace`（`lines` 行数**任意**——整个范围被整体替换，收缩与展开都是单 hunk）。锚点为变长 Base62（`<anchor>` 或 `<line>:<anchor>` 弱提示）；内容相同的行获得**互不相同**的锚点。对解析出的范围对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。没有 `Shift:` 块——编辑后从 diff 行取新锚点。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
+| `grep` | 在一个或多个文件中搜索。参数：`path` · `pattern`（默认 JavaScript 风格正则；`regex: false` 为字面子串） · `-C N`（上下文行） · `limit`。输出与 `read` 一致：每文件一节，头部 + `<anchor>:<content>` 行，且携带**完整行内容**（不截断——命中行可直接编辑）；仅超过 200KB 的行会隐藏并附 `sed` 提示，与 `read` 完全一致。grep 会记录 observed + served，因此命中后无需再 `read` 即可直接编辑。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。支持 `line_numbers`。 |
 
 ### 错误码
@@ -295,6 +296,19 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
 | `[E_BARE_HASH_PREFIX]` | 粘贴进 `lines` 的锚点前缀行（如 read/diff 行的 `<line>:<anchor>:content`）；锚点在文件中存在时剥离前缀并提示 warning，字面相似内容永不被改写。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
+| `[E_PARSE_EMPTY]` | 文本 DSL 载荷中没有可解析内容（缺少主载荷行 / 没有任何 edit 项）。 |
+| `[E_PARSE_TRAILING]` | 载荷的选项/heredoc 块之后出现了多余行。 |
+| `[E_PARSE_UNKNOWN_OPTION]` | 某个 `key:` 选项行使用了工具不支持的键。 |
+| `[E_PARSE_DUP_OPTION]` | 同一个选项行重复出现。 |
+| `[E_PARSE_OPTION_VALUE]` | 选项值不是正确的标量类型（数字/布尔）。 |
+| `[E_PARSE_HEREDOC_EXPECTED]` | 此处需要 heredoc 块（`<<<END`）（write 正文 / edit 的 lines）。 |
+| `[E_PARSE_HEREDOC_UNTERMINATED]` | 以 `<<<END` 开启的 heredoc 未闭合。 |
+| `[E_PARSE_BAD_OP]` | edit 项行未以 `ins`/`del`/`replace` 开头。 |
+| `[E_PARSE_MISSING_ANCHOR]` | edit 项缺少锚点（require_line_content 模式下缺少声明行）。 |
+| `[E_PARSE_BAD_ANCHOR]` | 锚点 token 不是 Base62（或缺少声明行）。 |
+| `[E_PARSE_BAD_DECLARATION]` | 声明锚点不是逐字 read 行（`<line>:<anchor>: text`）。 |
+| `[E_PARSE_BAD_SECTION]` | `@@` 文件节行为空。 |
+| `[E_PARSE_NO_FILE]` | edit 项没有目标文件（既无默认行也无 `@@` 节）。 |
 | `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠（`ins` 可锚定某范围的 END 行，但不允许起始行/中间行）；请拆分或合并，未写入任何内容。 |
 | `[E_INS_ANCHOR_DUP]` | `op:"ins"` 的 `lines[0]` 与 `anchor_start` 行内容匹配 — `ins` 在锚点行之后插入（该行自动保留）；在 `lines` 中包含它会产生重复。仅警告；编辑照常执行。 |
 | `[E_INVALID_PATCH]` | 粘贴进 `lines` 的 diff 预览 `+`/`-` 标记；剥离前缀并提示 warning。 |

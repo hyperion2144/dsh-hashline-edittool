@@ -19,6 +19,8 @@
 
 import { readdir, lstat } from "node:fs/promises";
 import { lineNumbersSchema } from "./contract.js";
+import { MAX_READ_LINE_BYTES } from "./constants.js";
+import { formatSize } from "./file-view.js";
 import { minimatch } from "minimatch";
 import { basename, join, relative } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
@@ -34,7 +36,7 @@ import { parseGrepText } from "./text-input/parse.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
 import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
-import { visLines, abortIf, clipLine } from "./utils.js";
+import { visLines, abortIf } from "./utils.js";
 import { grepDescription } from "./prompts.js";
 import {
 	grepPresentationFromMeta,
@@ -143,7 +145,19 @@ function renderSection(
 	);
 	const width = anchorWidth(anchors);
 	for (const [i, row] of section.contextRows.entries()) {
-		headerLines.push(fmtHashlineRow("", anchors[i]!, clipLine(row.content), width));
+		// Full line content — the 200-char clip was removed (grep rows carry
+		// editable anchors, and anchors require full lines). Only a row that
+		// exceeds the read tool's per-line byte budget is hidden, with the same
+		// `sed` pointer read emits; never a silent ellipsis.
+		const rendered = fmtHashlineRow("", anchors[i]!, row.content, width);
+		const rowBytes = Buffer.byteLength(rendered, "utf-8");
+		if (rowBytes > MAX_READ_LINE_BYTES) {
+			headerLines.push(
+				`[Line ${row.position + 1} is ${formatSize(rowBytes)}, exceeds ${formatSize(MAX_READ_LINE_BYTES)}; content not shown. Use bash: sed -n '${row.position + 1}p' ${path} | head -c ${MAX_READ_LINE_BYTES}]`,
+			);
+			continue;
+		}
+		headerLines.push(rendered);
 	}
 	return headerLines.join("\n");
 }
