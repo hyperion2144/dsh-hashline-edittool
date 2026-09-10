@@ -7,3 +7,5 @@ coverage/
 .scratch/
 .dsh_hashline_edittool/
 .test/
+.dsh-mattskillsdeck-cache/
+.mnemon/
