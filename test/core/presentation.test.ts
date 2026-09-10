@@ -93,14 +93,26 @@ describe("tool-grep structured presentation", () => {
 				{ path: "g.txt", pattern: "alpha" },
 				exec(ctx),
 			)) as {
-				files: { path: string; matches: { lineNumber: number; line: string }[] }[];
+				files: {
+					path: string;
+					rows: { number: number; hash: string; text: string; match?: true; spans?: [number, number][] }[];
+				}[];
 				truncated: boolean;
 				total: number;
 				modelText: string;
 			};
 			expect(value.files).toHaveLength(1);
 			expect(value.files[0]?.path).toBe("g.txt");
-			expect(value.files[0]?.matches).toHaveLength(2);
+			const rows = value.files[0]!.rows;
+			// Every displayed line is a row; only the real matches carry `match`.
+			// Default context is 0: the card rows are exactly the match rows.
+			expect(rows.map((row) => row.number)).toEqual([1, 3]);
+			expect(rows.map((row) => row.text)).toEqual(["alpha", "alpha-again"]);
+			expect(rows.every((row) => row.match === true)).toBe(true);
+			// Highlights point at every occurrence on the line.
+			expect(rows[0]?.spans).toEqual([[0, 5]]);
+			// "alpha-again" holds ONE occurrence (`-again` is not `alpha`).
+			expect(rows[1]?.spans).toEqual([[0, 5]]);
 			expect(value.total).toBe(2);
 			expect(value.truncated).toBe(false);
 			expect(value.modelText).toMatch(/^--- g\.txt ---$/m);

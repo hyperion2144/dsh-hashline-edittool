@@ -23,6 +23,10 @@ import type {
 	DiffRowGroup,
 	DiffRowMeta,
 	FileDiff,
+	GrepCardModel,
+	GrepFileRowGroup,
+	GrepRowMeta,
+	GrepSegment,
 	ReadCardProps,
 	ReadMetaHashline,
 	ReadMetaLine,
@@ -126,12 +130,15 @@ function pickString(args: Record<string, unknown>, keys: string[]): string | und
 
 const VARIANT_TITLE_KEYS: Record<string, string> = {
 	read: "tool.title.read",
+	grep: "tool.title.grep",
 	edit: "tool.title.edit",
 	write: "tool.title.write",
 };
 
 const SUMMARY_KEYS: Record<string, string[]> = {
 	read: ["path", "file_path", "url"],
+	// Mirrors the shipped search row: the pattern is the grep summary.
+	grep: ["query", "pattern", "url"],
 	edit: ["path", "file_path"],
 	write: ["file_path", "path"],
 };
@@ -195,7 +202,8 @@ export function toolRowModel(
 	cwd: string | undefined,
 	home: string | undefined,
 ): ToolRowModel {
-	const variant = toolName === "edit" ? "edit" : toolName === "write" ? "write" : "read";
+	const variant =
+		toolName === "edit" ? "edit" : toolName === "write" ? "write" : toolName === "grep" ? "grep" : "read";
 	const done = "kind" in block;
 	const argsRaw = (done ? block.call?.argsRaw : block.argsRaw) ?? "";
 	const state = !done
@@ -554,6 +562,147 @@ export function editAnchorHints(argsRaw: string, cap = 3): string[] {
 	}
 	if (hints.length > cap) return [...hints.slice(0, cap), "…"];
 	return hints;
+}
+
+//#endregion
+
+//#region grep card (ADR-0005: rows + match flag + highlight spans)
+
+/**
+ * Soft-validate the persisted grep meta. Mirrors the host's
+ * `grepPresentationFromMeta`: any deviation returns null, which is the card's
+ * tier-1 degradation (the generic body renders instead).
+ */
+export function grepPresentationMeta(meta: unknown): GrepCardModel | null {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+	const value = meta as Record<string, unknown>;
+	if (!Array.isArray(value.files)) return null;
+	const files: GrepFileRowGroup[] = [];
+	for (const entry of value.files) {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
+		const file = entry as Record<string, unknown>;
+		if (typeof file.path !== "string") return null;
+		if (!Array.isArray(file.rows)) return null;
+		const rows: GrepRowMeta[] = [];
+		for (const candidate of file.rows) {
+			const row = grepRowMeta(candidate);
+			if (row === null) return null;
+			rows.push(row);
+		}
+		files.push({ path: file.path, rows });
+	}
+	if (typeof value.truncated !== "boolean") return null;
+	if (typeof value.total !== "number" || !Number.isInteger(value.total) || value.total < 0) return null;
+	return { files, truncated: value.truncated, total: value.total };
+}
+
+/** One validated card row, or null when the payload is not usable. */
+function grepRowMeta(candidate: unknown): GrepRowMeta | null {
+	if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
+	const row = candidate as Record<string, unknown>;
+	if (typeof row.number !== "number" || !Number.isInteger(row.number) || row.number < 1) return null;
+	if (typeof row.hash !== "string" || typeof row.text !== "string") return null;
+	if (row.match !== undefined && row.match !== true) return null;
+	let spans: [number, number][] | undefined;
+	if (row.spans !== undefined) {
+		if (!Array.isArray(row.spans)) return null;
+		spans = [];
+		for (const span of row.spans) {
+			if (!Array.isArray(span) || span.length !== 2) return null;
+			const [start, end] = span as [unknown, unknown];
+			if (typeof start !== "number" || !Number.isInteger(start) || start < 0) return null;
+			if (typeof end !== "number" || !Number.isInteger(end) || end <= start) return null;
+			spans.push([start, end]);
+		}
+	}
+	return {
+		number: row.number,
+		hash: row.hash,
+		text: row.text,
+		...(row.match === true ? { match: true as const } : {}),
+		...(spans !== undefined ? { spans } : {}),
+	};
+}
+
+/**
+ * Derive the settled grep card. Requires the official contract (root, settled,
+ * non-error call of the `grep` tool, valid presentationMeta); a payload without
+ * `rows` (a pre-0.4.4 session log) returns null so the generic body renders.
+ * @param block - running or settled Tool block.
+ * @returns the card model, or null for the generic path.
+ */
+export function grepCardModel(block: ToolCallBlock): GrepCardModel | null {
+	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	if (parsedToolCall(block)?.name !== "grep") return null;
+	return grepPresentationMeta(block.meta);
+}
+
+/**
+ * Split one row's text into renderable segments at its highlight spans.
+ *
+ * Pure and defensive: offsets are clamped to the text, overlaps are skipped
+ * (the scan is non-overlapping, but a hand-edited or older payload may not be)
+ * and the concatenated segments always reproduce the input EXACTLY — the card
+ * highlights text, it never rewrites it.
+ * @param text - the row's verbatim text.
+ * @param spans - `[start, end)` offsets, ascending and non-overlapping.
+ * @returns segments in order; a single unhit segment when there is nothing to mark.
+ */
+export function highlightSegments(
+	text: string,
+	spans: readonly (readonly [number, number])[] | undefined,
+): GrepSegment[] {
+	if (spans === undefined || spans.length === 0) return text === "" ? [] : [{ text, hit: false }];
+	const out: GrepSegment[] = [];
+	// Adjacent same-kind slices merge into one segment, so an overlapping or
+	// abutting payload paints ONE mark instead of a visibly seamed pair.
+	const push = (text: string, hit: boolean): void => {
+		if (text === "") return;
+		const last = out[out.length - 1];
+		if (last !== undefined && last.hit === hit) {
+			last.text += text;
+			return;
+		}
+		out.push({ text, hit });
+	};
+	let cursor = 0;
+	for (const span of spans) {
+		const start = Math.min(Math.max(span[0], cursor), text.length);
+		const end = Math.min(Math.max(span[1], start), text.length);
+		if (end <= start) continue;
+		push(text.slice(cursor, start), false);
+		push(text.slice(start, end), true);
+		cursor = end;
+	}
+	push(text.slice(cursor), false);
+	return out;
+}
+
+/**
+ * The counts the card's footer reports: `shown` counts the match rows across
+ * the WHOLE result (not just the active tab), because `files` is the whole
+ * result's file count too.
+ * @param model - the derived card model.
+ * @returns `shown` (match rows), `total` (found matches) and `files` (groups).
+ */
+export function grepResultCounts(model: GrepCardModel): { shown: number; total: number; files: number } {
+	let shown = 0;
+	for (const file of model.files) {
+		for (const row of file.rows) {
+			if (row.match === true) shown += 1;
+		}
+	}
+	return { shown, total: model.total, files: model.files.length };
+}
+
+/**
+ * The card's gutter cell for one row: the served `<line>:<anchor>`, falling
+ * back to the bare line number when the anchor is unknown.
+ * @param row - a validated card row.
+ * @returns the gutter text.
+ */
+export function grepGutterLabel(row: GrepRowMeta): string {
+	return row.hash !== "" ? `${row.number}:${row.hash}` : `${row.number}`;
 }
 
 //#endregion

@@ -37,15 +37,26 @@ import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
 import { visLines, abortIf } from "./utils.js";
 import { grepDescription } from "./prompts.js";
 import {
+	capGrepMeta,
 	grepPresentationFromMeta,
-	type GrepFileMatches,
+	matchSpans,
+	type GrepFileRows,
+	type MatchSpan,
 } from "./presentation-helpers.js";
 
-/** One row in a grep section's context set (with hash + content, used to render the model text). */
+/**
+ * One row in a grep section's context set (hash + content, used to render the model
+ * text) plus the card facts: whether the capped match list contains it, and the
+ * highlight spans of every pattern occurrence in the line.
+ */
 export interface GrepSectionRow {
 	position: number;
-anchor: string;
+	anchor: string;
 	content: string;
+	/** True for the capped match rows; false for rows that merely echo context. */
+	isMatch: boolean;
+	/** Highlight spans for this line (empty when nothing is markable). */
+	spans: MatchSpan[];
 }
 
 export interface GrepFileSection {
@@ -109,21 +120,23 @@ export async function grepFileContent(
 			contextSet.add(k);
 		}
 	}
-const contextRows: GrepSectionRow[] = [...contextSet]
+	// One row list drives BOTH the model text and the card: the row identity,
+	// the match flag and the highlight spans can never drift apart.
+	const matchSet = new Set(matchPositions);
+	const rows = [...contextSet]
 		.sort((a, b) => a - b)
 		.map((position) => ({
 			position,
 			anchor: hashes[position]!,
 			content: lines[position]!,
+			isMatch: matchSet.has(position),
+			spans: matchSpans(lines[position]!, pattern, opts.regex !== false),
 		}));
+	const rowByPosition = new Map(rows.map((row) => [row.position, row]));
 	return {
 		path,
-matches: matchPositions.map((position) => ({
-			position,
-			anchor: hashes[position]!,
-			content: lines[position]!,
-		})),
-		contextRows,
+		matches: matchPositions.map((position) => rowByPosition.get(position)!),
+		contextRows: rows,
 	};
 }
 
@@ -171,7 +184,7 @@ function buildSectionModelText(
 }
 
 interface GrepCanonicalValue {
-	files: GrepFileMatches[];
+	files: GrepFileRows[];
 	truncated: boolean;
 	total: number;
 }
@@ -233,15 +246,24 @@ export function buildGrepTool(io: FileIO) {
 							additionalProperties: false,
 							properties: {
 								path: { type: "string", required: true },
-								matches: {
+								rows: {
 									type: "array",
 									required: true,
 									items: {
 										type: "object",
 										additionalProperties: false,
 										properties: {
-											lineNumber: { type: "integer", required: true },
-											line: { type: "string", required: true },
+											number: { type: "integer", required: true },
+											hash: { type: "string", required: true },
+											text: { type: "string", required: true },
+											match: { type: "boolean" },
+											spans: {
+												type: "array",
+												items: {
+													type: "array",
+													items: { type: "integer" },
+												},
+											},
 										},
 									},
 								},
@@ -261,11 +283,13 @@ export function buildGrepTool(io: FileIO) {
 			],
 			presentationMeta: (_args, value) => {
 				const v = value as GrepCanonicalValue;
-				return {
+				// The card projection is byte-budgeted independently of the model text:
+				// dropping trailing file groups never changes what the model was told.
+				return capGrepMeta({
 					files: v.files,
 					truncated: v.truncated,
 					total: v.total,
-				} as never;
+				}) as never;
 			},
 		},
 		// grep has no presentCall — per the dsh-tools spec, a search has no
@@ -276,10 +300,19 @@ export function buildGrepTool(io: FileIO) {
 			if (result.isError) return undefined;
 			const meta = grepPresentationFromMeta(result.meta);
 			if (meta === undefined) return undefined;
+			// A built-in-compatible `ToolResultView` built from the persisted meta
+			// alone (`presentResult` cannot reach the canonical value). Only the
+			// rows the capped match list contains become entries — a context row
+			// that happens to contain the pattern is not a result.
 			return {
 				card: "search",
 				shape: "matches",
-				files: meta.files,
+				files: meta.files.map((file) => ({
+					path: file.path,
+					matches: file.rows
+						.filter((row) => row.match === true)
+						.map((row) => ({ lineNumber: row.number, line: row.text })),
+				})),
 				truncated: meta.truncated,
 				total: meta.total,
 			};
@@ -340,7 +373,7 @@ export function buildGrepTool(io: FileIO) {
 				}
 
 				const fileSections: string[] = [];
-				const cardFiles: GrepFileMatches[] = [];
+				const cardFiles: GrepFileRows[] = [];
 				const jsonOutput = isJsonOutput();
 				const jsonFiles: Array<{
 					path: string;
@@ -375,22 +408,17 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string 
 					fileSections.push(
 						buildSectionModelText(displayPath, section, opts.lineNumbers, fileSections.length === 0),
 					);
-					// issue #66/B3: the card's `line` is the pre-rendered
-					// `<line>:<anchor>:content` rows; they begin after `--- path ---` +
-					// (format header on the FIRST section only), so skip 3 for the
-					// first file and 2 for the rest.
-					const cardSection = buildSectionModelText(
-						displayPath,
-						section,
-						opts.lineNumbers,
-						fileSections.length === 0,
-					);
-					const skip = fileSections.length === 0 ? 3 : 2;
+					// The card rows are built from the SAME structured rows the model text
+					// renders (identity + match flag + highlight spans), never by re-parsing
+					// the rendered section text (issue #92 / ADR-0005).
 					cardFiles.push({
 						path: displayPath,
-						matches: section.contextRows.map((row) => ({
-							lineNumber: row.position + 1,
-							line: cardSection.split("\n").slice(skip).join("\n"),
+						rows: section.contextRows.map((row) => ({
+							number: row.position + 1,
+							hash: row.anchor,
+							text: row.content,
+							...(row.isMatch ? { match: true as const } : {}),
+							...(row.spans.length > 0 ? { spans: row.spans } : {}),
 						})),
 					});
 					if (jsonOutput) {

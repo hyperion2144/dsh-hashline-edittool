@@ -4,6 +4,22 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added — grep 卡片 web 渲染接管（wayfinder #88/#89/#90/#92）
+
+- **`grep` 的 web 卡片由本插件 client 半区接管**（keyed `tool.call.toolview` × `key: "grep"`，`priority: -1`，与 read/edit/write 同机制）：卡顶**文件 tab 栏**（只有一个文件匹配时也保留一个 tab）、左 `行号:锚点` gutter / 右内容，**每行命中文本高亮**（含上下文行、一行多出现全高亮、正则整段匹配、零宽跳过）。
+- **host `presentationMeta` 结构化行契约**（ADR-0005）：`files[].rows[] = {number, hash, text, match?, spans?}` —— 行字段对齐 read 的 `hashlines`；`match: true` 只标真命中行（零宽模式下 `spans` 非空 ≢ 命中）；`spans = [[start,end),…]` 为 UTF-16 索引、由 host 计算，client 绝不重跑匹配、绝不解析 modelText。
+- **meta 体积上限 64 KiB**（对齐内置 `SEARCH_META_MAX_BYTES`）：超出则从尾部丢弃整个文件组（至少留 1），`total` 保留、`truncated` 置真。
+- **降级三档**：无 `rows`（旧会话/畸形 meta）→ 通用 I/O 卡；有 `rows` 无 `spans` → 新卡不高亮；有 `spans` → 高亮。
+- 卡体自绘（fork `ReadBlock` 布局），**不含语法着色** —— 版本要求：`ReadBlock`/`CodeBlock` 的行内容只能是 `string`、着色 tokenizer 未导出、无行内 span 注入口，而高亮是本卡的核心；edit / write 卡本来也无着色。
+- 移除旧字段：`files[].matches[]`（实测为「整段 section 文本」重复，非该行文本）与 `lang`；`presentResult` 保留但改为只喂真命中行（纯文本）。
+
+### Added — grep 卡片测试与文档
+
+- `test/core/grep-card-meta.test.ts`（22 项）：span 扫描边界、64 KiB 上限与丢组顺序、三档降级与畸形矩阵、上下文行标记/高亮、0 命中空卡、`presentResult`、模型文本不变。
+- `client/test/grep-card.test.ts`（18 项）：卡模型与降级、切段（含「切段拼接恒等于原文」扫描）、gutter、footer 计数、grep 行 chrome（variant / `tool.title.grep` / pattern 摘要 / 无文件链接）。
+- `client/scripts/verify-bundle.mjs` 断言新增的第 4 个 toolview 注册（`grep:-1:conversation`）。
+- 新增 `docs/adr/0005-grep-card-presentation-meta.md`；`docs/web-ui-structured-views-spec.md` 标注为已被取代。
+
 ## [0.5.1] - 2026-09-10
 
 ### Fixed — 发布产物携带陈旧构建文件（0.5.0 打包缺陷）

@@ -20,14 +20,17 @@ import {
 	StateDot,
 	diffTotals,
 	IconBrowseOutline16,
+	IconSearchOutline16,
 	IconEditOutline16,
 	IconInspectOutline12,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { DiffBlockProps, ReadBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readBlockLabels } from "./labels.js";
-import { diffCardModel, editAnchorHints, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, editAnchorHints, grepCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { GrepCard } from "./grep-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
+import { grepCardLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 
 /** Join class names (tiny clsx stand-in; `clsx` is not a module-table word). */
@@ -52,7 +55,7 @@ function stateStatus(state: string, t: ToolViewProps["t"]): string | null {
 
 interface ToolRowProps {
 	t: ToolViewProps["t"];
-	variant: "read" | "edit" | "write";
+	variant: "read" | "edit" | "write" | "grep";
 	toolName: string;
 	icon: ReactNode;
 	title: string;
@@ -64,6 +67,7 @@ interface ToolRowProps {
 	errorSummary: string | null;
 	read: ReturnType<typeof readCardModel>;
 	diff: ReturnType<typeof diffCardModel>;
+	grep: ReturnType<typeof grepCardModel>;
 	state: "running" | "ok" | "error" | "stopped";
 	filePath: string | undefined;
 	onOpenFile: ((path: string) => void) | undefined;
@@ -100,6 +104,7 @@ function ToolRow({
 	errorSummary,
 	read,
 	diff,
+	grep,
 	state,
 	filePath,
 	onOpenFile,
@@ -110,9 +115,11 @@ function ToolRow({
 	const readLabels = useMemo(() => readBlockLabels(t), [t]);
 	const diffLabels = useMemo(() => diffBlockLabels(t), [t]);
 	const readBody = read ?? null;
+	const grepBody = grep ?? null;
+	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const diffBody = diff ?? null;
 	const outputText = output ?? null;
-	const card = diffBody ?? readBody;
+	const card = diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -221,8 +228,15 @@ function ToolRow({
 										maxLines: 8,
 										className: css.diffBody,
 									})
-							: readBody !== null
-								? jsx_(ReadBlock, {
+							: grepBody !== null
+								? jsx_(GrepCard, {
+									model: grepBody,
+									labels: grepLabels,
+									maxLines: 16,
+									className: css.readBody,
+								})
+								: readBody !== null
+									? jsx_(ReadBlock, {
 										label: readBody.label,
 										// ReadBlock draws its gutter cell verbatim, so the precomposed
 										// `<line>:<anchor>` string rides the number field (the shipped
@@ -296,6 +310,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		output: model.output,
 		errorSummary: model.errorSummary,
 		read,
+		grep: null,
 		diff: null,
 		state: model.state,
 		filePath: model.filePath,
@@ -327,6 +342,7 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		output: model.output,
 		errorSummary: model.errorSummary,
 		read: null,
+		grep: null,
 		diff,
 		state: model.state,
 		filePath: model.filePath,
@@ -357,7 +373,43 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		output: model.output,
 		errorSummary: model.errorSummary,
 		read: null,
+		grep: null,
 		diff,
+		state: model.state,
+		filePath: model.filePath,
+		onOpenFile: openFile,
+		inspect,
+	});
+}
+
+/**
+ * The hashline grep view: the search card the requirement asks for — a file
+ * tab bar (one tab even for a single match), a `行号:锚点` gutter and the
+ * pattern highlighted inside each row, fed by the persisted structured meta
+ * (ADR-0005). Running calls, errors and pre-0.4.4 logs without `rows` fall
+ * back to the shipped presentation (generic body), and the row chrome mirrors
+ * the shipped search row: the search icon, the Grep title and the pattern as
+ * the summary.
+ */
+export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
+	const model = toolRowModel(toolName, block, cwd, home);
+	const grep = grepCardModel(block);
+	return jsx_(ToolRow, {
+		t,
+		variant: model.variant,
+		toolName,
+		icon: jsx_(IconSearchOutline16, { size: 14 }),
+		title: t(model.titleKey),
+		summary: model.summary,
+		summarySuffix: null,
+		// The shipped search row draws no raw-input body: a search has a card or
+		// nothing, and an error body already arrives through `output`.
+		bodyRaw: null,
+		output: model.output,
+		errorSummary: model.errorSummary,
+		read: null,
+		diff: null,
+		grep,
 		state: model.state,
 		filePath: model.filePath,
 		onOpenFile: openFile,

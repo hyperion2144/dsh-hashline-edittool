@@ -63,9 +63,12 @@ npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-hashline-edittool   #
 ```
 
 The profile's next session runs with the hashline tools installed — the **web UI cards**
-ship in the same package: the dsh web read card shows `<line>:<anchor>` gutters and the edit
-card renders the applied multi-hunk diff with anchor hints, using the same official card
-primitives (no upstream changes; see [`client/`](./client/README.md)). To verify the layer is active:
+ship in the same package: the dsh web read card shows `<line>:<anchor>` gutters, the edit
+card renders the applied multi-hunk diff with anchor hints, and the grep card adds a file
+tab bar (one tab even for a single match) with the matched text highlighted in each row —
+all from the same official card primitives (no upstream changes; see
+[`client/`](./client/README.md) and [`docs/adr/0005`](./docs/adr/0005-grep-card-presentation-meta.md)).
+To verify the layer is active:
 
 ```sh
 dsh --profile <name> --dump-config   # shows a "# == dsh-hashline-edittool" layer
