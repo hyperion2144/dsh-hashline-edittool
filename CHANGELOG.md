@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-10
+
 ### Fixed — 发布产物携带陈旧构建文件（0.5.0 打包缺陷）
 
 - **根因**：`build` 只做增量 `tsc`、从不清理输出目录，且 `prepublishOnly` 只重建 client 半（`build --prefix client`）未重建主包——`src/` 中已删除的文件（本轮移除的 text 输入实现 `lib/text-input/*`、`lib/write-hook.js`、`lib/surface-rebuild.js` 及其 `.d.ts`，共 12 个）残留在 `lib/` 内并被 `files: ["lib", …]` 打进 0.5.0 的 npm 包。运行时无影响（`lib/index.js` 不引用它们），但属打包污染且会随每次发布复现。

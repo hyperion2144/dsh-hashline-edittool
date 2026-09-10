@@ -1,108 +1,108 @@
 {
-	"name": "dsh-hashline-edittool",
-	"version": "0.5.0",
-	"type": "module",
-	"description": "Line-anchored read/edit/batch_edit/grep/undo_last_edit tools for DeepSeek Harness (dsh). Every line is addressed by `<line>:<anchor>` so chained edits skip a re-read; stale or ambiguous anchors are rejected and a fresh `<line>:<anchor>` is served back. Undo persists across restarts. Ships a companion web client half rendering hashline-branded read/edit cards.",
-	"main": "lib/index.js",
-	"types": "lib/types/index.d.ts",
-	"exports": {
-		".": {
-			"types": "./lib/types/index.d.ts",
-			"default": "./lib/index.js"
-		},
-		"./client": "./client/lib/client.js",
-		"./package.json": "./package.json"
-	},
-	"files": [
-		"lib",
-		"client/lib",
-		"cordis.patch.yml",
-		"README.md",
-		"LICENSE",
-		"README.zh.md",
-		"CHANGELOG.md"
-	],
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/hyperion2144/dsh-hashline-edittool.git"
-	},
-	"homepage": "https://github.com/hyperion2144/dsh-hashline-edittool",
-	"bugs": {
-		"url": "https://github.com/hyperion2144/dsh-hashline-edittool/issues"
-	},
-	"author": "dsh-hashline-edittool contributors",
-	"keywords": [
-		"dsh",
-		"dsh-plugin",
-		"deepseek-harness",
-		"coding-agent",
-		"oh-my-pi",
-		"hashline",
-		"line-anchored",
-		"line-hash",
-		"hash",
-		"anchors",
-		"read",
-		"edit",
-		"batch-edit",
-		"grep",
-		"undo",
-		"file-editing",
-		"web-ui",
-		"stable"
-	],
-	"license": "MIT",
-	"dsh": {
-		"bundle": {
-			"patch": "./cordis.patch.yml"
-		},
-		"client": {
-			"platform": "web"
-		}
-	},
-	"dependencies": {
-		"diff": "^8.0.2",
-		"file-type": "^21.3.0",
-		"minimatch": "^10.2.6"
-	},
-	"workspaces": [
-		"client"
-	],
-	"engines": {
-		"node": "^22.19.0 || >=24.0.0"
-	},
-	"scripts": {
-		"prepare": "npm run build",
-		"build": "npm run clean && tsc -p tsconfig.json && npm run build -w client",
-		"typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
-		"test": "vitest run",
-		"test:watch": "vitest",
-		"prepublishOnly": "npm run typecheck && npm test && npm run build && node scripts/assert-tagged.mjs",
-		"benchmark": "node benchmark/run.mjs",
-		"postpublish": "node scripts/tag-current.mjs",
-		"release": "node scripts/release.mjs",
-		"dev:reload": "bash scripts/dev-reload.sh",
-		"clean": "node scripts/clean.mjs"
-	},
-	"devDependencies": {
-		"@deepseek-ai/cordis": "^4.0.1",
-		"@deepseek-ai/dsh-agent": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-fs": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-home-paths": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-sandbox": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-session": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-settings": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-tools": "0.1.2-rc.1",
-		"@deepseek-ai/dsh-util-values": "0.1.2-rc.1",
-		"@deepseek-ai/schemastery": "^3.5.6",
-		"@types/node": "^24.0.0",
-		"@vitest/coverage-v8": "^4.1.10",
-		"js-tiktoken": "1.0.21",
-		"typescript": "^5.8.0",
-		"vitest": "^4.1.8"
-	},
-	"peerDependencies": {
-		"@deepseek-ai/dsh-settings": ">=0.1.2-rc.0",
-		"@deepseek-ai/schemastery": ">=3.0.0"
-	}
+  "name": "dsh-hashline-edittool",
+  "version": "0.5.1",
+  "type": "module",
+  "description": "Line-anchored read/edit/batch_edit/grep/undo_last_edit tools for DeepSeek Harness (dsh). Every line is addressed by `<line>:<anchor>` so chained edits skip a re-read; stale or ambiguous anchors are rejected and a fresh `<line>:<anchor>` is served back. Undo persists across restarts. Ships a companion web client half rendering hashline-branded read/edit cards.",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./client/lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client/lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "README.zh.md",
+    "CHANGELOG.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyperion2144/dsh-hashline-edittool.git"
+  },
+  "homepage": "https://github.com/hyperion2144/dsh-hashline-edittool",
+  "bugs": {
+    "url": "https://github.com/hyperion2144/dsh-hashline-edittool/issues"
+  },
+  "author": "dsh-hashline-edittool contributors",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "coding-agent",
+    "oh-my-pi",
+    "hashline",
+    "line-anchored",
+    "line-hash",
+    "hash",
+    "anchors",
+    "read",
+    "edit",
+    "batch-edit",
+    "grep",
+    "undo",
+    "file-editing",
+    "web-ui",
+    "stable"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "diff": "^8.0.2",
+    "file-type": "^21.3.0",
+    "minimatch": "^10.2.6"
+  },
+  "workspaces": [
+    "client"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "prepare": "npm run build",
+    "build": "npm run clean && tsc -p tsconfig.json && npm run build -w client",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && node scripts/assert-tagged.mjs",
+    "benchmark": "node benchmark/run.mjs",
+    "postpublish": "node scripts/tag-current.mjs",
+    "release": "node scripts/release.mjs",
+    "dev:reload": "bash scripts/dev-reload.sh",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-fs": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-home-paths": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-settings": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.5.6",
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "js-tiktoken": "1.0.21",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-settings": ">=0.1.2-rc.0",
+    "@deepseek-ai/schemastery": ">=3.0.0"
+  }
 }
