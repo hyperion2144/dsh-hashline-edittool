@@ -498,6 +498,29 @@ export function metaDiffRows(meta: unknown): DiffRowMeta[] | null {
 }
 
 /**
+ * The per-file groups a diff card renders, from whatever the meta carried.
+ *
+ * `diffRowGroups` is written by the host for MULTI-file edits only; a
+ * single-file edit persists `path` + `diffRows`, and EVERY pre-0.4.4 session log
+ * predates the field entirely. Both cases must still yield one group, because
+ * the card keeps one tab per file either way (issue #96) — so the synthesis
+ * lives here, executed the same way for new and old payloads.
+ *
+ * @param path - the meta's own path (the single-file channel).
+ * @param rows - the meta's own rows (the single-file channel).
+ * @param groups - the persisted per-file groups, when present.
+ * @returns the groups to render, or an empty array when there is nothing to show.
+ */
+export function diffCardGroups(
+	path: string,
+	rows: readonly DiffRowMeta[] | undefined,
+	groups: readonly DiffRowGroup[] | null | undefined,
+): readonly DiffRowGroup[] {
+	if (groups !== null && groups !== undefined && groups.length > 0) return groups;
+	if (rows === undefined || rows.length === 0) return [];
+	return [{ path, rows }];
+}
+/**
  * Soft-validate the persisted per-file diff row groups (issue #82: multi-file
  * tab rendering). Each group has a `path` and a `rows` array validated the same
  * way as `metaDiffRows`.
