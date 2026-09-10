@@ -4,6 +4,24 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added — write 工具 shadow：模型侧 auto-read 内联 + web 卡片 `行号:锚点`（#53，PR #87）
+
+- **`write` 由插件影子接管**（`src/tool-write-shadow.ts`，agent scope 层 `defineTool` 注册）：参数词汇 `{file_path, content, sandbox_permissions?, justification?}` 与返回值 `{path, operation, before, after}` 与内置工具完全一致，JSON 契约不变；`diffRows` / `modelText` 为增量字段。
+- **模型通道内联 auto-read**：execute 内直接 `readAndServe`，写后立即返回 `行号:锚点` 预览，模型无需追加 read 即可继续编辑；原 post-execute `write-hook` 监听器删除（不再依赖 hook 管线）。
+- **web 卡片左栏 `行号:锚点`**：`presentationMeta.diffRows` 携带结构化行（`kind` / `lineNumber` / `anchor` / `text`，由 `genDiff` + 会话锚点分配器计算）；client 新增 `HashlineWriteRow`，以 `priority: -1` 接管 `write` toolview，复用 edit 卡同一 `DiffRowsBlock` gutter——create 渲染全 `+` 行（每行带锚点），overwrite 渲染 `-`（旧锚点）/`+`/context（新锚点）。
+- **降级路径**：无结构化行时 client 回落内置 intended diff；`presentResult` 在 create（无 hunks）时回落为整体新增视图，overwrite 沿用 applied hunks。
+- 测试：write shadow 10 项（契约、auto-read 预览、diffRows 形状与混合行、presentationMeta/presentResult）+ client 卡片 5 项（gutter 行、混合行、降级、running、error）。
+
+### Fixed — grep 长行静默截断（#53，PR #87）
+
+- **grep 不再把每行截断到 200 字符 + `...`**：旧行为破坏「grep 命中可直接 edit」契约（`require_line_content` 下申报必然 `E_CONTENT_MISMATCH`），且与 README「mirrors read」表述不符。
+- 修复后输出**完整行内容**；仅超过 `MAX_READ_LINE_BYTES`(200KB) 的单行隐藏并附 `read` 同款 `sed` 提示，绝不静默省略。README / README.zh 同步。
+- 测试：3 项（全文与逐字一致、grep→edit 直达、200KB 隐藏与提示）。
+
+### Removed — text 输入（text DSL）需求废弃
+
+- 模型走 function calling 时工具参数必然被 JSON 包装传输，纯文本载荷在协议层不可达，text DSL（`input_format` 配置、`E_PARSE_*` 错误码、纯文本 schema 与解析器）整体作废并撤除（决策见 #85 / 地图 #50；实现留档于已关闭的 PR #86 与分支 `research/text-input-mechanism`）。
+
 ## [0.4.3] - 2026-09-07
 
 ### Added — edit 申报行内容校验（content echo，wayfinder map #74，契约定案 #76）
