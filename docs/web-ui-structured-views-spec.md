@@ -1,6 +1,10 @@
 # Spec — Structured web-UI views for `dsh-hashline-edittool` tools
 
-> Status: **Draft** — awaiting review before implementation begins.
+> Status: **Superseded (2026-09-10).** This draft assumed dsh-web would render
+> whatever typed view a tool emitted; rendering now goes through the bundled
+> client plugin instead (`client/`, issues #71 / #82 / #92). The `grep` half is
+> replaced by `docs/adr/0005-grep-card-presentation-meta.md`; the rest is kept
+> as the historical contract record.
 > Scope: emit `ToolResultView` / `ToolCallView` shapes from each tool so
 > dsh-web can render them as line-numbered code views, diff cards, and
 > grouped search cards instead of plain text. **No behavioural change**

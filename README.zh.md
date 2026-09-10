@@ -56,7 +56,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-hashline-edittool   # 从 npm
 npx @deepseek-ai/dsh plugin --profile web add /path/to/dsh-hashline-edittool   # 从本地源码
 ```
 
-该 profile 的下一个会话将带着 hashline 工具运行。验证该层是否生效：
+该 profile 的下一个会话将带着 hashline 工具运行——**web 卡片随同一个包出货**：read 卡显示 `<line>:<anchor>` 行号锚点栏，edit 卡渲染已应用的多 hunk diff（含锚点提示），grep 卡则是卡顶文件 tab（只有一个文件匹配时也保留一个 tab）+ 每行命中文本高亮，全部复用官方卡片原语（不改上游；见 [`client/`](./client/README.md) 与 [`docs/adr/0005`](./docs/adr/0005-grep-card-presentation-meta.md)）。验证该层是否生效：
 
 ```sh
 dsh --profile <name> --dump-config   # 会显示 "# == dsh-hashline-edittool" 层

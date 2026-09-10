@@ -114,6 +114,42 @@ export interface DiffRowGroup {
 	rows: readonly DiffRowMeta[];
 }
 
+/**
+ * One grep card row as persisted by the hashline grep tool (ADR-0005): the
+ * line's identity, its verbatim text and the highlight spans of every pattern
+ * occurrence. `match` is present only on rows the capped match list contains.
+ */
+export interface GrepRowMeta {
+	/** 1-based line number within the file. */
+	number: number;
+	/** The served hashline anchor (empty string when unavailable). */
+	hash: string;
+	/** The line's full text, verbatim. */
+	text: string;
+	/** Present on the capped match rows only. */
+	match?: true | undefined;
+	/** `[start, end)` UTF-16 offsets into `text`; absent when the line has none. */
+	spans?: [number, number][] | undefined;
+}
+
+/** One file's grep card rows (match rows + echoed context rows) in file order. */
+export interface GrepFileRowGroup {
+	path: string;
+	rows: readonly GrepRowMeta[];
+}
+
+/** The grep card derived from the persisted meta (three degradation tiers). */
+export interface GrepCardModel {
+	files: readonly GrepFileRowGroup[];
+	truncated: boolean;
+	total: number;
+}
+
+/** One rendered slice of a card row: plain text, or a highlighted occurrence. */
+export interface GrepSegment {
+	text: string;
+	hit: boolean;
+}
 
 /** A diff card backed by the structured rows projection (gutter-rendering). */
 export interface RowsDiffCard {
@@ -123,7 +159,7 @@ export interface RowsDiffCard {
 
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
-	variant: "read" | "edit" | "write";
+	variant: "read" | "edit" | "write" | "grep";
 	titleKey: string;
 	summary: string;
 	filePath: string | undefined;

@@ -54,3 +54,42 @@ export function diffBlockLabels(t: TBench): DiffBlockLabels {
 		files: (count) => t(count === 1 ? "diff.files.one" : "diff.files.other", { count }),
 	};
 }
+
+/** Grep-card chrome labels (reuses the shipped search-card keys). */
+export interface GrepCardLabels {
+	copy: string;
+	copied: string;
+	collapseAria: string;
+	expandAria: (hidden: number) => string;
+	collapse: string;
+	expand: (hidden: number) => string;
+	/** Empty-result wording (`search.noResults`). */
+	noResults: string;
+	/** Result line for the footer: `search.matches` / `search.matches.truncated`. */
+	summary: (shown: number, total: number, files: number, truncated: boolean) => string;
+	/** Accessible name of the file tab list. */
+	tablist: string;
+	/** Accessible name of the overflow trigger (falls back to `common.more`). */
+	more: string;
+}
+
+/** Build localized grep-card chrome labels. */
+export function grepCardLabels(t: TBench): GrepCardLabels {
+	return {
+		copy: t("copy"),
+		copied: t("copied"),
+		collapseAria: t("search.collapseAria"),
+		expandAria: (count) => t("search.expandAria", { count }),
+		collapse: t("collapse"),
+		expand: (count) => t("search.expandRest", { count }),
+		noResults: t("search.noResults"),
+		summary: (shown, total, files, truncated) =>
+			t(truncated ? "search.matches.truncated" : "search.matches", { shown, total, files }),
+		// The shipped locale carries no `search.card`; the tool title is the one
+		// localized word that names this tab list.
+		tablist: t("tool.title.grep"),
+		// `more` is a `common` namespace key, which the lookup chain consults
+		// after the entry namespace misses — no new locale key is added.
+		more: t("more"),
+	};
+}
