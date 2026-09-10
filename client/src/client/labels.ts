@@ -25,6 +25,8 @@ export interface DiffBlockLabels {
 	collapse: string;
 	expand: (hidden: number) => string;
 	files: (count: number) => string;
+	/** Accessible name of the overflow trigger (falls back to `common.more`). */
+	more: string;
 }
 
 type TBench = (key: string, params?: Record<string, unknown>) => string;
@@ -52,6 +54,8 @@ export function diffBlockLabels(t: TBench): DiffBlockLabels {
 		collapse: t("collapse"),
 		expand: (count) => t("diff.expandRest", { count }),
 		files: (count) => t(count === 1 ? "diff.files.one" : "diff.files.other", { count }),
+		// `more` is a `common` namespace key — no new locale key is added.
+		more: t("more"),
 	};
 }
 

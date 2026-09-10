@@ -4,6 +4,14 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Changed — edit/write 卡统一为 grep 卡的 tab 形态（wayfinder #91/#96）
+
+- **已发布卡片的行为变更**：#82 定下的「仅多文件画 tab、多文件时换行」被推翻 —— edit / write 卡现在**单文件也画一个 tab**（`≥1`），溢出改为**按宽度折叠 + portal `Menu`**（不再换行、也不滚动），与 grep 卡同构。`DiffRowsBlock` 的 `groups.length > 1` 门槛与体内那行路径（`kind: "path"`）已移除 —— tab 已承载文件身份，体内重复画路径没有意义。
+- **tab 条抽为公共组件** `client/src/client/tab-strip.tsx`（issue #96）：测量、`foldTabs`、溢出触发器与菜单、键盘切换、aria 接线全在组件内，grep 卡与 diff 卡共用同一份实现；组件为**受控**（active 索引与行数据仍由各自卡片持有）。
+- **单文件 group 由 client 合成**（`models.ts` 的 `diffCardGroups`）：host 与 `presentationMeta` **零改动**；无 `diffRowGroups` 的单文件 meta（含**所有** 0.5.x 以前的历史会话）与新多文件 meta 走同一条路，各自都有且只有一个 tab。
+- 无新增 locale 键：溢出菜单的可访问名仍复用 `common.more`；tab list 的名字用卡片自己的标题。
+- read 卡不受影响（它没有 tab 栏）。
+
 ### Added — grep 卡片 web 渲染接管（wayfinder #88/#89/#90/#92）
 
 - **`grep` 的 web 卡片由本插件 client 半区接管**（keyed `tool.call.toolview` × `key: "grep"`，`priority: -1`，与 read/edit/write 同机制）：卡顶**文件 tab 栏**（只有一个文件匹配时也保留一个 tab）、左 `行号:锚点` gutter / 右内容，**每行命中文本高亮**（含上下文行、一行多出现全高亮、正则整段匹配、零宽跳过）。

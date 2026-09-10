@@ -11,10 +11,12 @@
  * the structured meta — the model-facing text is never parsed.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
+import { diffCardGroups } from "./models.js";
+import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { DiffBlockLabels } from "./labels.js";
 import type { DiffRowGroup, DiffRowMeta } from "./types.js";
 
@@ -49,12 +51,10 @@ function FoldToggle({ className, expanded, hidden, labels, onToggle }: {
 
 const CSS_TEXT = [
 	".dshl-diff-block{--dsl-diff-radius:12px;--dsl-diff-line-height:22px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-diff-radius)}",
-	".dshl-diff-copyButton{position:absolute;top:8px;right:12px;z-index:1;background-color:transparent;border:none;padding:0;margin:0;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13)}",
 	".dshl-diff-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-diff-line{min-height:var(--dsl-diff-line-height);white-space:pre;display:flex}",
 	".dshl-diff-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
 	".dshl-diff-content{white-space:pre}",
-	".dshl-diff-path{color:var(--dsw-alias-label-primary);font-weight:600;padding-right:56px}",
 	".dshl-diff-gap{color:var(--dsw-alias-label-tertiary)}",
 	".dshl-diff-del{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diff-add{color:var(--dsw-alias-state-success-primary)}",
@@ -62,11 +62,8 @@ const CSS_TEXT = [
 	".dshl-diff-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-diff-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
-	// issue #82: multi-file tab bar
-	".dshl-diff-tabs{display:flex;gap:0;padding:8px 14px 0;flex-wrap:wrap}",
-	".dshl-diff-tab{padding:4px 12px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13);border-bottom:2px solid transparent;margin-bottom:-1px}",
-	".dshl-diff-tab:hover{color:var(--dsw-alias-label-primary)}",
-	".dshl-diff-tab-active{color:var(--dsw-alias-label-primary);border-bottom-color:var(--dsw-alias-state-info-primary)}",
+	// The tab bar is the shared `TabStrip` (issue #96); the card keeps only its
+	// own row classes below.
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -84,21 +81,16 @@ export function ensureDiffStyles(): void {
 
 const css = {
 	block: "dshl-diff-block",
-	copyButton: "dshl-diff-copyButton",
 	body: "dshl-diff-body",
 	line: "dshl-diff-line",
 	gutter: "dshl-diff-gutter",
 	content: "dshl-diff-content",
-	path: "dshl-diff-path",
 	gap: "dshl-diff-gap",
 	del: "dshl-diff-del",
 	add: "dshl-diff-add",
 	ctx: "dshl-diff-ctx",
 	expand: "dshl-diff-expand",
 	footer: "dshl-diff-footer",
-	tabs: "dshl-diff-tabs",
-	tab: "dshl-diff-tab",
-	tabActive: "dshl-diff-tab-active",
 } as const;
 
 /** Localized chrome (DiffBlockLabels shape). */
@@ -110,6 +102,8 @@ export interface DiffRowsLabels {
 	collapse: string;
 	expand: (hidden: number) => string;
 	files: (count: number) => string;
+	/** Accessible name of the overflow trigger (`common.more`). */
+	more: string;
 }
 
 /**
@@ -129,16 +123,22 @@ function gutterLabel(row: DiffRowMeta): string {
 }
 
 interface DisplayRow {
-	kind: "del" | "add" | "ctx" | "gap" | "path";
+	kind: "del" | "add" | "ctx" | "gap";
 	gutter: string;
 	text: string;
-	/** The diff class for the gutter and content cells (del/add/ctx); gap/path draw bare. */
+	/** The diff class for the gutter and content cells (del/add/ctx); gap draws bare. */
 	rowClass: string;
 }
 
-/** Flatten the structured rows: path header, gutter labels, hunk gaps. */
-function buildDisplayRows(path: string, rows: readonly DiffRowMeta[]): DisplayRow[] {
-	const out: DisplayRow[] = [{ kind: "path", gutter: "", text: path, rowClass: css.path }];
+/**
+ * Flatten the structured rows into display rows: gutter labels and hunk gaps.
+ *
+ * There is NO in-body path row any more (issue #96): the tab strip always
+ * carries the file identity, so a second copy inside the body was pure
+ * repetition — the same call the grep card made in #92.
+ */
+function buildDisplayRows(rows: readonly DiffRowMeta[]): DisplayRow[] {
+	const out: DisplayRow[] = [];
 	let prevNew: number | null = null;
 	for (const row of rows) {
 		if (row.kind !== "-" && prevNew !== null && row.lineNumber > prevNew + 1) {
@@ -171,8 +171,15 @@ function copyText(rows: readonly DisplayRow[]): string {
 export interface DiffRowsBlockProps {
 	path: string;
 	rows: readonly DiffRowMeta[];
-	/** Per-file groups for multi-file tab rendering (issue #82). When provided with >1 entries, a tab bar is rendered. */
+	/**
+	 * Per-file groups. Any count >= 1 renders one tab per file (issue #96: the
+	 * single-file case keeps its tab); when absent the card synthesises one group
+	 * from `path` + `rows` — which is also what a pre-0.4.4 session log needs,
+	 * since historical single-file metas carry no `diffRowGroups` at all.
+	 */
 	groups?: readonly DiffRowGroup[] | undefined;
+	/** Accessible name of the tab list (the owning tool's title). */
+	tablistLabel: string;
 	labels: DiffRowsLabels;
 	maxLines?: number | undefined;
 	className?: string | undefined;
@@ -184,19 +191,32 @@ export interface DiffRowsBlockProps {
  * keep their pre-edit anchor, added and context lines carry the served
  * post-edit anchor (the chained-edit currency).
  */
-export function DiffRowsBlock({ path, rows, groups, labels, maxLines = 16, className }: DiffRowsBlockProps): ReactNode {
+export function DiffRowsBlock({
+	path,
+	rows,
+	groups,
+	tablistLabel,
+	labels,
+	maxLines = 16,
+	className,
+}: DiffRowsBlockProps): ReactNode {
 	ensureDiffStyles();
 
-	// issue #82: multi-file tab rendering. When groups are provided with >1
-	// entries, a tab bar lets the user switch between files. The active
-	// group supplies the path + rows for the diff body.
-	const hasGroups = groups !== undefined && groups.length > 1;
+	// issue #96: ONE tab per file, always — a single-file card keeps its tab
+	// (there is no single-file branch, only fewer tabs). A missing `groups` (the
+	// single-file meta channel, and every pre-0.4.4 log) synthesises one group so
+	// the strip has exactly one source of truth.
+	const fileGroups = useMemo<readonly DiffRowGroup[]>(
+		() => diffCardGroups(path, rows, groups ?? null),
+		[groups, path, rows],
+	);
 	const [activeTab, setActiveTab] = useState(0);
-	const activeGroup = hasGroups ? groups![activeTab]! : undefined;
-	const activePath = activeGroup !== undefined ? activeGroup.path : path;
-	const activeRows = activeGroup !== undefined ? activeGroup.rows : rows;
+	const activeIndex = Math.min(activeTab, fileGroups.length - 1);
+	const activeRows = fileGroups[activeIndex]!.rows;
+	const baseId = useId();
+	const panelId = `${baseId}-panel`;
 
-	const display = useMemo(() => buildDisplayRows(activePath, activeRows), [activePath, activeRows]);
+	const display = useMemo(() => buildDisplayRows(activeRows), [activeRows]);
 	// One shared gutter column: the widest label sets the width for every row
 	// (monospace font → `ch` is exact), so all content cells share one edge.
 	const gutterWidth = Math.max(8, ...display.map((row) => row.gutter.length));
@@ -213,6 +233,13 @@ export function DiffRowsBlock({ path, rows, groups, labels, maxLines = 16, class
 	}, [copied, display]);
 
 	const onToggle = useCallback(() => setExpanded((value) => !value), []);
+
+	const onSelect = useCallback((index: number) => {
+		setActiveTab(index);
+		// Switching tabs resets the fold and the copy flash (as the grep card does).
+		setExpanded(false);
+		setCopied(false);
+	}, []);
 
 	const added = activeRows.filter((row) => row.kind === "+").length;
 	const removed = activeRows.filter((row) => row.kind === "-").length;
@@ -241,26 +268,41 @@ export function DiffRowsBlock({ path, rows, groups, labels, maxLines = 16, class
 			],
 		});
 
-	const fileCount = hasGroups ? groups!.length : 1;
-
 	return jsx_("div", {
-		className: `${css.block} ${className ?? ""}`,
+		className: `${css.block} ${className ?? ""}`.trim(),
 		"data-diff": "",
 		children: [
-			jsx_("button", { type: "button", className: css.copyButton, onClick: onCopy, children: copied ? labels.copied : labels.copy }),
-			// issue #82: tab bar for multi-file rendering
-			...(hasGroups ? [jsx_("div", {
-				className: css.tabs,
-				children: groups!.map((group, i) => jsx_("button", {
-					key: i,
+			jsx_(TabStrip, {
+				paths: fileGroups.map((group) => group.path),
+				activeIndex,
+				onSelect,
+				labels: { tablist: tablistLabel, more: labels.more },
+				panelId,
+				idPrefix: baseId,
+				copy: jsx_("button", {
 					type: "button",
-					className: `${css.tab} ${i === activeTab ? css.tabActive : ""}`.trim(),
-					onClick: () => { setActiveTab(i); setExpanded(false); },
-					children: group.path,
-				})),
-			})] : []),
-			jsx_("div", { className: css.body, children: [...head.map(rowEl), ...(hidden > 0 ? [jsx_(FoldToggle, { className: css.expand, expanded, hidden, labels, onToggle })] : []), ...tail.map(rowEl)] }),
-			jsx_("div", { className: css.footer, children: `└ +${added} -${removed} · ${labels.files(fileCount)}` }),
+					className: TAB_STRIP_COPY_CLASS,
+					onClick: onCopy,
+					children: copied ? labels.copied : labels.copy,
+				}),
+			}),
+			jsx_("div", {
+				className: css.body,
+				id: panelId,
+				role: "tabpanel",
+				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
+				children: [
+					...head.map(rowEl),
+					...(hidden > 0
+						? [jsx_(FoldToggle, { className: css.expand, expanded, hidden, labels, onToggle })]
+						: []),
+					...tail.map(rowEl),
+				],
+			}),
+			jsx_("div", {
+				className: css.footer,
+				children: `└ +${added} -${removed} · ${labels.files(fileGroups.length)}`,
+			}),
 		],
 	});
 }

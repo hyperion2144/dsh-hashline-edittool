@@ -203,21 +203,24 @@ function ToolRow({
 					children: [
 						diffBody !== null
 							? diffBody.rowGroups !== undefined
-								? // Multi-file tab rendering (issue #82): per-file groups with tab bar.
+								? // Per-file groups with the shared tab strip (issue #82 → #96).
 								  jsx_(DiffRowsBlock, {
 										path: diffBody.path,
 										rows: diffBody.rowGroups[0]?.rows ?? [],
 										groups: diffBody.rowGroups,
+										tablistLabel: title,
 										labels: diffLabels,
 										maxLines: 8,
 										className: css.diffBody,
 								  })
 							: diffBody.rows !== undefined
 								? // Structured rows from the persisted meta: the forked block
-								  // draws the `行号:锚点` gutter (issue #71).
+								  // draws the `行号:锚点` gutter (issue #71). The single-file case keeps
+								  // its own one tab (issue #96), synthesised from `path` + `rows`.
 								  jsx_(DiffRowsBlock, {
 										path: diffBody.path,
 										rows: diffBody.rows,
+										tablistLabel: title,
 										labels: diffLabels,
 										maxLines: 8,
 										className: css.diffBody,

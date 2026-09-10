@@ -4,6 +4,7 @@ import {
 	diffCardModel,
 	writeCardModel,
 	metaDiffRows,
+	diffCardGroups,
 	metaDiffRowGroups,
 	editAnchorHints,
 	narrowDiffs,
@@ -470,5 +471,40 @@ describe("metaDiffRowGroups (issue #82: multi-file tab rendering)", () => {
 		expect(card?.rowGroups).toHaveLength(2);
 		expect(card?.rowGroups?.[0]?.path).toBe("a.txt");
 		expect(card?.rowGroups?.[1]?.path).toBe("b.txt");
+	});
+});
+
+describe("diffCardGroups (issue #96: one tab per file, always)", () => {
+	const row = { kind: "+" as const, lineNumber: 1, hash: "a1", text: "new" };
+
+	it("keeps the persisted per-file groups when the meta carries them", () => {
+		const groups = [{ path: "b.txt", rows: [row] }];
+		expect(diffCardGroups("ignored", [row], groups)).toBe(groups);
+	});
+
+	it("synthesises one group for the single-file channel", () => {
+		const groups = diffCardGroups("a.txt", [row], null);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.path).toBe("a.txt");
+		expect(groups[0]?.rows).toEqual([row]);
+	});
+
+	it("synthesises the same one group for a pre-0.4.4 log with no groups field", () => {
+		// The whole point: a historical single-file meta carries `path` + rows
+		// only, and must still render its one tab.
+		const groups = diffCardGroups("old.txt", [row], undefined);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.path).toBe("old.txt");
+	});
+
+	it("treats an empty groups array as absent, not as zero tabs", () => {
+		const groups = diffCardGroups("a.txt", [row], []);
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.path).toBe("a.txt");
+	});
+
+	it("returns nothing to render when neither channel has rows", () => {
+		expect(diffCardGroups("a.txt", undefined, null)).toEqual([]);
+		expect(diffCardGroups("a.txt", [], null)).toEqual([]);
 	});
 });
