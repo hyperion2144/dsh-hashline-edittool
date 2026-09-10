@@ -140,6 +140,25 @@ describe("write shadow", () => {
 		).rejects.toThrow("content");
 	});
 
+	it("presentResult falls back to the intended whole-file addition on a create", () => {
+		const view = tool.presentResult?.(
+			{ file_path: "new.txt", content: "a\nb\n" },
+			{ isError: false, meta: { path: "new.txt", diffs: [] } } as never,
+		) as { diffs?: Array<{ oldText: string | null; newText: string }> } | undefined;
+		expect(view?.diffs).toEqual([
+			{ path: "new.txt", oldText: null, newText: "a\nb\n" },
+		]);
+	});
+
+	it("presentResult prefers the applied hunks on an overwrite", () => {
+		const hunks = [{ path: "c.txt", oldText: "old\n", newText: "new\n" }];
+		const view = tool.presentResult?.(
+			{ file_path: "c.txt", content: "new\n" },
+			{ isError: false, meta: { path: "c.txt", diffs: hunks } } as never,
+		) as { diffs?: unknown[] } | undefined;
+		expect(view?.diffs).toEqual(hunks);
+	});
+
 	it("presentationMeta carries path + diffRows (and no hunks on create)", () => {
 		const meta = tool.output.presentationMeta?.(
 			{ file_path: "m.txt" },

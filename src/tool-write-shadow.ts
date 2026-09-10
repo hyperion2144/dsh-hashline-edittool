@@ -138,18 +138,29 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				locations: [{ path: filePath }],
 			};
 		},
-		presentResult(_args, result) {
+		presentResult(args, result) {
 			if (result.isError) return undefined;
-			const meta = result.meta as
-				| { path?: string; diffs?: unknown[]; diffRows?: unknown[] }
-				| undefined;
-			const diffs = Array.isArray(meta?.diffs) ? meta.diffs : [];
-			const diffRows = Array.isArray(meta?.diffRows) ? meta.diffRows : [];
-			if (diffs.length === 0 && diffRows.length === 0) return undefined;
+			const meta = result.meta as { path?: string; diffs?: unknown[] } | undefined;
+			const hunks = Array.isArray(meta?.diffs) ? meta.diffs : [];
+			// Built-in parity: a create carries no hunks, so the card shows the
+			// intended whole-file addition from the call's own content. The
+			// `行号:锚点` gutter is the client plugin's job (meta.diffRows).
+			if (hunks.length === 0) {
+				const filePath = (args as { file_path?: string } | undefined)?.file_path;
+				const content = (args as { content?: string } | undefined)?.content;
+				if (typeof filePath !== "string" || typeof content !== "string") {
+					return undefined;
+				}
+				return {
+					card: "diff",
+					title: `Write ${filePath}`,
+					diffs: [{ path: filePath, oldText: null, newText: content }] as never,
+				};
+			}
 			return {
 				card: "diff",
 				title: `Write ${meta?.path ?? ""}`,
-				diffs: diffs as never,
+				diffs: hunks as never,
 			};
 		},
 		async execute(args, exec) {
