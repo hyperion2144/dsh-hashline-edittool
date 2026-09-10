@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
 ### Added — write 工具 shadow：模型侧 auto-read 内联 + web 卡片 `行号:锚点`（#53，PR #87）
 
 - **`write` 由插件影子接管**（`src/tool-write-shadow.ts`，agent scope 层 `defineTool` 注册）：参数词汇 `{file_path, content, sandbox_permissions?, justification?}` 与返回值 `{path, operation, before, after}` 与内置工具完全一致，JSON 契约不变；`diffRows` / `modelText` 为增量字段。
