@@ -10,7 +10,11 @@ DSH 的所有工具（含 read/write/edit/grep）按协议要求模型产出 `{t
 
 ## Solution
 
-`hashline.input_format`（settings.yaml，`hashline` namespace，无 per-call 覆盖）在 **text**（默认）与 **json** 之间切换模型侧呈现的工具参数契约。text 模式下工具的 wire 参数 schema 仍是 `{type:"object", additionalProperties:true}`——模型既可发 JSON（自动解析为 object，行为与 0.4 完全一致），也可发**纯文本 DSL**（agent-loop 的 `parseArguments` 无法 JSON.parse 时保留为字符串，execute 第一行 `typeof args === "string"` 分流到文本解析管线）。
+`hashline.input_format`（settings.yaml，`hashline` namespace，无 per-call 覆盖）在 **text**（默认）与 **json** 之间切换模型侧呈现的工具参数契约。
+
+> **2026-09-08 决策覆盖（#53 实施期，用户裁定，取代本节原先的「schema 保持 object 根」定案）**：text 模式下工具暴露的 `parameters` **就是 `{"type":"string"}`**——整次调用是一段纯文本，schema 本体即文本契约，不靠 description 引导；`json` 模式保持 object schema 逐字节不变。运行时双通道仍然成立：字符串走文本解析，对象走同一 object schema 校验，两条路最终进入同一个 execute body（payload 等价）。
+
+text 模式的具体形态：`parameters: {type:"string", description:"Plain-text <tool> payload: …"}`；模型产出纯文本 → `parseArguments` 对非 JSON 输入保留字符串 → `execute` 解析为 JSON 等价 args 并校验 → 同一 body 执行。
 
 四个工具 read / write / edit / grep 都有文本形态。DSL 由**共享词法层 + 每工具独立文法**组成，施用于：共享 grammar-core 提供行解析、`key: value` 冒号选项行、heredoc 哨兵、`#` 注释、错误回显；每工具自己的 payload 布局绑定在该 core 上。解析错误整批 abort（与 JSON 批次原子性对齐），错误码新前缀 `E_PARSE_*` / `E_DSL_*`。
 
@@ -49,7 +53,9 @@ write 在 text 及其他模式一律由**插件 shadow 版接管**（消灭 post
 
 ### 2. Config: `input_format`
 
-- Add `hashlane.input_format: "text" | "json"` (default **text**) in the settings schema. No per-call override. It selects no wire-schema change (still dual-channel `additionalProperties`), only which contract the guidance/schema describes; JSON channel is always accepted at runtime regardless of the key.
+- Add `hashline.input_format: "text" | "json"` (default **text**) in the settings schema. No per-call override.
+- **It DOES select the wire schema** (superseding note above): `text` → `parameters: {type:"string"}`; `json` → the compiled object schema. The non-selected channel is still accepted at runtime.
+- **All settings are hot**: any effective change (`input_format`, `require_line_content`, `output_format`, `separator`, `context_lines`) disposes and re-registers every tool + guidance section on every live agent (the issue #75 mechanism, generalized) — no restart.
 
 ### 3. write shadow ownership
 
@@ -63,7 +69,7 @@ write 在 text 及其他模式一律由**插件 shadow 版接管**（消灭 post
 
 ### 5. Description/guidance text
 
-- The per-tool `description` (and the guidance sections) mention the text form when `input_format: text`; the JSON contract is still described for `json` mode. The description remains schema-driven and single per tool (no per-config fork of the whole tool catalog — the text format is structurally presented in the *guidance*, not in a second tool).
+- The per-tool `description` (and the guidance sections) are generated from the effective config: in text mode they teach the plain-text payload grammar (first line = primary payload, `key: value` rows, `<<<END` heredocs, `@@` sections); in json mode they describe the JSON keys. The string parameter carries its own payload description. No second tool is registered — one builder (`buildChannelTool`) emits either contract.
 
 ## Testing Decisions
 
@@ -72,7 +78,7 @@ write 在 text 及其他模式一律由**插件 shadow 版接管**（消灭 post
   - text-input parser core (new, unit): option lines, heredoc open/close, comments, primary-payload ordering, error rows; equivalence tests that a parsed text payload equals a canonical JSON payload.
   - read/grep/write/edit execute channels: same behavior for text and JSON channels (dual-channel parity suite); sandbox and undo keep the existing seams.
   - write shadow: write via text → returns auto-read preview + `before/after`/diff metadata; write via JSON → same channel, and the auto-read preview is present in both contents (assert).
-  - settings: `input_format` default text; toggling to `json` keeps JSON outgoing semantics while the wire schema stays accept-both (regression: JSON call still works while the key is `text`).
+  - settings / channel contract (`test/core/channel-contract.test.ts`): text mode advertises `{type:"string"}` on all four tools (no `properties`/`required` leftovers); json mode keeps the compiled object schema; descriptions switch with the mode; an object payload still executes in text mode and a schema-invalid object still rejects; every effective setting change fires exactly one rebuild and no-change commits fire none; unsubscribing stops rebuilds.
 - **Prior art**: `test/core/hashlane.parse.test.ts`, `error-codes.test.ts`, `multi-file-atomicity-contract.test.ts`, `read-and-serve.test.ts`, `write-shadow` (to be added) — these already assert payload/atomic/parse invariants for the JSON side, reused for the text side via the shared core.
 
 ## Out of Scope
