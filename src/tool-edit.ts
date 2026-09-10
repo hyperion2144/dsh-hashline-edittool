@@ -28,7 +28,7 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+import { buildChannelTool } from "./text-input/channel-tool.js";
 import {
 	normalizeRequest as normReq,
 	assertEditRequest,
@@ -53,7 +53,6 @@ import {
 import { commit, resolveMissingPath, snapshotIdFor } from "./mutation.js";
 import { recordServedTruncated, recordServedAfterEdit } from "./session-view.js";
 import { editDescription } from "./prompts.js";
-import { asDualChannel } from "./text-input/dual.js";
 import { parseEditText } from "./text-input/parse.js";
 import type { JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
@@ -173,7 +172,7 @@ function extractFailure(message: string): { code: string; message: string } {
  * @returns the exact disposer that unregisters the tool.
  */
 export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
-	const compiled = defineTool({
+	return buildChannelTool({
 		name: "edit",
 		description: editDescription(getEffectiveConfig()),
 	parameters: {
@@ -445,16 +444,14 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				return { ok: success.length > 0, success, fail, multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
 			});
 		},
+		parseText: (text) =>
+			parseEditText(text, {
+				requireLineContent: getEffectiveConfig().requireLineContent,
+				separator: getEffectiveConfig().separator,
+			}),
+		textParameterDescription:
+			"Plain-text edit payload: an optional default file path on the first line, then `@@ <path>` file sections and one op line per item (`ins <anchor>`, `del <anchor> [<anchor_end>]`, `replace <anchor> [<anchor_end>]`), each ins/replace followed by a `<<<END` … `<<<END` heredoc of the new lines.",
 	});
-	// Dual channel (spec #85): a string payload is the edit text DSL — parsed
-	// into the JSON-equivalent args (respecting require_line_content), then the
-	// SAME compiled body runs. Object payloads (JSON channel) pass untouched.
-	return asDualChannel(compiled, (text) =>
-		parseEditText(text, {
-			requireLineContent: getEffectiveConfig().requireLineContent,
-			separator: getEffectiveConfig().separator,
-		}),
-	);
 }
 
 /**

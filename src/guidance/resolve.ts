@@ -10,8 +10,8 @@ import { join } from "node:path";
 
 import {
 	editGuidance,
-	GREP_GUIDANCE,
-	READ_GUIDANCE,
+	grepGuidance,
+	readGuidance,
 	UNDO_GUIDANCE,
 	type ToolGuidance,
 } from "../prompts.js";
@@ -50,7 +50,8 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		name: "tool:read",
 		file: "read.md",
 		defaultOrder: 130,
-		renderDefault: () => guidanceText(READ_GUIDANCE),
+		// Input-format aware: text mode teaches the plain-text payload.
+		renderDefault: () => guidanceText(readGuidance(getEffectiveConfig())),
 	},
 	{
 		name: "tool:edit",
@@ -70,7 +71,8 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		name: "tool:grep",
 		file: "grep.md",
 		defaultOrder: 133,
-		renderDefault: () => guidanceText(GREP_GUIDANCE),
+		// Input-format aware: text mode teaches the plain-text payload.
+		renderDefault: () => guidanceText(grepGuidance(getEffectiveConfig())),
 	},
 ];
 

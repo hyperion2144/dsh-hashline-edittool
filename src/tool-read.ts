@@ -16,7 +16,7 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+import { buildChannelTool } from "./text-input/channel-tool.js";
 import {
 	normalizeRequest as normReq,
 	assertReadRequest,
@@ -42,7 +42,6 @@ import {
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import { withWorkspace } from "./session-view.js";
-import { asDualChannel } from "./text-input/dual.js";
 import { parseReadText } from "./text-input/parse.js";
 
 /**
@@ -53,7 +52,7 @@ import { parseReadText } from "./text-input/parse.js";
  * @returns the exact disposer that unregisters the tool.
  */
 export function buildReadTool(io: FileIO) {
-	const compiled = defineTool({
+	return buildChannelTool({
 		name: "read",
 		description: readDescription(getEffectiveConfig()),
 		parameters: {
@@ -288,12 +287,10 @@ export function buildReadTool(io: FileIO) {
 				return { ...presentation, modelText: body };
 			});
 		},
+		parseText: (text) => parseReadText(text),
+		textParameterDescription:
+			"Plain-text read payload: the file path on the first line, then optional `offset:`, `limit:`, `line_numbers:` rows (comments start with `#`).",
 	});
-
-	// Dual channel (spec #85): a string payload is the text DSL — parsed into
-	// the JSON-equivalent args, then the SAME compiled body runs. Object
-	// payloads (JSON channel) pass through untouched.
-	return asDualChannel(compiled, parseReadText);
 }
 
 /**

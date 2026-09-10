@@ -28,7 +28,7 @@ import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { ensureSettingsService } from "./settings-provider.js";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
-import { rebuildEditSurfaces } from "./edit-rebuild.js";
+import { rebuildToolSurfaces } from "./surface-rebuild.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
@@ -120,23 +120,31 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		typeof settings?.require_line_content === "boolean"
 			? settings.require_line_content
 			: DEFAULT_CONFIG.requireLineContent;
-	// The edit tool's model-facing schema depends on this flag: when it
-	// FLIPS, live agents' edit surfaces must be disposed and re-registered
-	// so the next model step sees the new parameter set (issue #75/#76).
 	const fmtIn =
 		settings?.input_format === "json" ? "json" : DEFAULT_CONFIG.inputFormat;
-	const flagChanged =
-		effective.requireLineContent !== requireLine || effective.inputFormat !== fmtIn;
 
-	effective = {
+	const next: EffectiveHashlineConfig = {
 		separator: sep,
 		outputFormat: fmt,
 		contextLines: nctx,
 		requireLineContent: requireLine,
 		inputFormat: fmtIn,
 	};
+	// Hot reload: EVERY model-facing surface follows the effective config —
+	// the advertised parameter contract (`input_format`), the edit schema
+	// (`require_line_content`) and all description/guidance text
+	// (`output_format` + flags). When anything changed, live agents dispose
+	// and re-register their tools + sections so the NEXT model step sees the
+	// new contract (issue #75/#76 mechanism, generalized in #53).
+	const changed =
+		effective.separator !== next.separator ||
+		effective.outputFormat !== next.outputFormat ||
+		effective.contextLines !== next.contextLines ||
+		effective.requireLineContent !== next.requireLineContent ||
+		effective.inputFormat !== next.inputFormat;
+	effective = next;
 	applyHashlineShape({ separator: sep, contextLines: nctx });
-	if (flagChanged) rebuildEditSurfaces();
+	if (changed) rebuildToolSurfaces();
 }
 
 /** Default settings.yaml location (same file the dsh settings layer uses). */

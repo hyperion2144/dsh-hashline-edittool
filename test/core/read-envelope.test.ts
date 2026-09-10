@@ -84,7 +84,8 @@ describe("read file_path spelling (raw args the web validates)", () => {
 		});
 	});
 
-	it("declares file_path in the tool schema (raw-args contract)", async () => {
+	it("declares file_path in the tool schema (raw-args contract, json channel)", async () => {
+		applyEffective({ input_format: "json" });
 		const { buildReadTool } = await import("../../src/tool-read.js");
 		const tool = buildReadTool(localIO()) as unknown as {
 			parameters: Record<string, unknown>;
@@ -100,6 +101,24 @@ describe("read file_path spelling (raw args the web validates)", () => {
 		expect(card?.title).toContain("a.txt");
 		const legacy = tool.presentCall({ path: "b.txt" });
 		expect(legacy?.title).toContain("b.txt");
+	});
+
+	it("text mode (default) advertises ONE string parameter — the whole call is plain text", async () => {
+		// Decision (c), #53: the text channel is a real text contract, not an
+		// object schema with prose. The model sees {type:"string"}.
+		applyEffective({ input_format: "text" });
+		const { buildReadTool } = await import("../../src/tool-read.js");
+		const tool = buildReadTool(localIO()) as unknown as {
+			parameters: Record<string, unknown>;
+			presentCall: (args: unknown) => { title: string } | undefined;
+		};
+		expect(tool.parameters).toEqual({
+			type: "string",
+			description: expect.stringContaining("Plain-text read payload"),
+		});
+		// Runtime still accepts a JSON object (dual channel) and a text payload.
+		const fromText = tool.presentCall("a.txt\noffset: 2");
+		expect(fromText?.title).toContain("a.txt");
 	});
 });
 

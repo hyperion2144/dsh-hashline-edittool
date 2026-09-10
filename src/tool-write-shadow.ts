@@ -30,7 +30,7 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+import { buildChannelTool } from "./text-input/channel-tool.js";
 import type { FileIO } from "./fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { execCwd, execSessionKey } from "./session-view.js";
@@ -38,8 +38,9 @@ import { withWorkspace } from "./session-view.js";
 import { readAndServe } from "./read-and-serve.js";
 import { computeHunkDiffs, type FileDiff } from "./presentation-helpers.js";
 import { abortIf } from "./utils.js";
-import { asDualChannel } from "./text-input/dual.js";
 import { parseWriteText } from "./text-input/parse.js";
+import { writeDescription } from "./prompts.js";
+import { getEffectiveConfig } from "./config.js";
 
 /** Model-facing heading that precedes the auto-read preview. */
 const AUTO_READ_HEADING = "--- Auto-read (hashline anchors) ---";
@@ -54,9 +55,9 @@ export interface WriteValue {
 }
 
 export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
-	const compiled = defineTool({
+	return buildChannelTool({
 		name: "write",
-		description: "Create or fully replace a UTF-8 text file.",
+		description: writeDescription(getEffectiveConfig()),
 		parameters: {
 			file_path: {
 				type: "string",
@@ -189,10 +190,10 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				} as WriteValue;
 			});
 		},
+		parseText: (text) => parseWriteText(text),
+		textParameterDescription:
+			"Plain-text write payload: the file path on the first line, optional `sandbox_permissions:` / `justification:` rows, then the full content inside a `<<<END` … `<<<END` heredoc.",
 	});
-
-	// Dual channel: string payload = write DSL → JSON-equivalent args.
-	return asDualChannel(compiled, (text) => parseWriteText(text) as unknown as object);
 }
 
 /**

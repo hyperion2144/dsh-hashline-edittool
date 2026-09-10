@@ -29,6 +29,17 @@ import type { EffectiveHashlineConfig } from "./config.js";
 
 /** Edit tool description, generated from the effective config (text/json, declaration mode). */
 export function editDescription(cfg: EffectiveHashlineConfig): string {
+	if (cfg.inputFormat === "text") {
+		const textBase = cfg.requireLineContent
+			? "Apply one or more edits atomically. The whole call is ONE plain-text payload: an optional default file path on the first line, then one item per op — a bare `ins` / `del` / `replace` line followed by each anchor as its OWN line in verbatim read-row form `<line>:<anchor>: <current full line text>` (declarations are verified; a mismatch rejects with [E_CONTENT_MISMATCH]). `ins`/`replace` then take a `<<<END` … `<<<END` heredoc of the new lines; `@@ <path>` switches the target file for the items after it."
+			: "Apply one or more edits atomically. The whole call is ONE plain-text payload: an optional default file path on the first line, then one op line per item — `ins <anchor_start>`, `del <anchor_start> [<anchor_end>]`, `replace <anchor_start> [<anchor_end>]` — each `ins`/`replace` followed by a `<<<END` … `<<<END` heredoc of the new lines; `@@ <path>` switches the target file for the items after it.";
+		const textTail =
+			" Anchors are variable-length Base62 markers copied from read/grep/diff rows; items resolve against one file snapshot (overlapping ranges rejected, [E_BATCH_CONFLICT]) and any failure aborts the whole call.";
+		if (cfg.outputFormat === "json") {
+			return textBase + textTail + " JSON output: `{ok, files:[{path, applied, finalLines, noop}], hints, warnings, errors}`.";
+		}
+		return textBase + textTail;
+	}
 	const base = cfg.requireLineContent
 		? "Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines?}` — every anchor is a pair: the anchor PLUS the current full text of its line, verified before applying (mismatch = [E_CONTENT_MISMATCH]). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`)."
 		: "Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
@@ -79,13 +90,34 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 
 /** Read tool description, generated from the effective config (text/json). */
 export function readDescription(cfg: EffectiveHashlineConfig): string {
+	if (cfg.inputFormat === "text") {
+		return "Read a text file. The whole call is ONE plain-text payload: the file path on the first line, then optional `key: value` rows (`offset:`, `limit:`, `line_numbers:`); a row starting with `#` is a comment. Result rows are `<line>:<anchor>:content` under an `ANCHOR:FILELINE` header — the anchor is the edit address (authoritative); the line number is a positional hint only. Binary/directory rejected; page with offset/limit.";
+	}
 	if (cfg.outputFormat === "json") {
 		return "Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {anchor: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is `<line>:<anchor>` (line prefix default on; pass `line_numbers: false` for bare anchors); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.";
 	}
 	return "Read a text file: pass `file_path`. Each row is `<line>:<anchor>:content` (line number on by default; pass `line_numbers: false` for bare `<anchor>:content` rows) under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit.";
 }
 
-export const READ_GUIDANCE: ToolGuidance = {
+/** Read guidance, generated from the effective config (input format aware). */
+export function readGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
+	if (cfg.inputFormat === "text") {
+		return {
+			intro:
+				"Use read, not shell commands, to inspect text files and obtain the variable-length anchors the editing tools require.",
+			lines: [
+				"`read`: the whole call is one plain-text payload — the file path on the first line, then optional `offset:`, `limit:`, `line_numbers:` rows (`#` starts a comment row). Call it only for content the tools have not served: a page you never saw, or lines past the post-edit diff.",
+				"`read`: each result row is `<line>:<anchor>:content` (line number on by default; `line_numbers: false` gives bare `<anchor>:content`); the marker is the anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors).",
+				"`read`: the `<line>:` prefix is a positional hint — copy the anchor part (or the whole `<line>:<anchor>`) into edit; the anchor is authoritative.",
+				"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
+				"`read`: binary/directory rejects; page large files with offset/limit.",
+			],
+		};
+	}
+	return READ_GUIDANCE_JSON;
+}
+
+export const READ_GUIDANCE_JSON: ToolGuidance = {
 	intro:
 		"Use read, not shell commands, to inspect text files and obtain the variable-length anchors the editing tools require.",
 	lines: [
@@ -96,6 +128,14 @@ export const READ_GUIDANCE: ToolGuidance = {
 		"`read`: binary/directory rejects; page large files with offset/limit.",
 	],
 };
+
+/** Write-shadow description, generated from the effective config. */
+export function writeDescription(cfg: EffectiveHashlineConfig): string {
+	if (cfg.inputFormat === "text") {
+		return "Create or fully replace a UTF-8 text file. The whole call is ONE plain-text payload: the file path on the first line, optional `sandbox_permissions:` / `justification:` rows, then the FULL content inside a `<<<END` … `<<<END` heredoc (the sentinel must be on its own line; nothing inside is escaped).";
+	}
+	return "Create or fully replace a UTF-8 text file.";
+}
 
 export const UNDO_DESCRIPTION =
 	"Undo the last edit on a file, reverting it to its previous state. Use when an edit produced " +
@@ -111,13 +151,33 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 
 /** Grep tool description, generated from the effective config (text/json). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
+	if (cfg.inputFormat === "text") {
+		return "Search files. The whole call is ONE plain-text payload: the pattern on the first line (JavaScript-flavre regex by default; `regex: false` for literal), then optional `path:`, `include:`, `regex:`, `context:`, `limit:`, `line_numbers:` rows; `#` starts a comment. Directories recurse the whole tree (hidden and node_modules skipped). Output mirrors read — `<line>:<anchor>:content` rows carrying the FULL line; matches are served, so a hit can be edited directly.";
+	}
 	if (cfg.outputFormat === "json") {
 		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are `<line>:<anchor>` edit anchors (variable-length Base62, line prefix default on), values are verbatim file content; matches are served so they can be edited directly.";
 	}
 	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<line>:<anchor>:content` rows, line number on by default; `line_numbers: false` for bare anchors); matches are served, so they can be edited directly.";
 }
 
-export const GREP_GUIDANCE: ToolGuidance = {
+/** Grep guidance, generated from the effective config (input format aware). */
+export function grepGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
+	if (cfg.inputFormat === "text") {
+		return {
+			intro: "Search files and obtain variable-length anchors in one step.",
+			lines: [
+				"`grep`: the whole call is one plain-text payload — the pattern on the first line, then optional `path:`, `include:`, `regex:`, `context:`, `limit:`, `line_numbers:` rows. Defaults to JavaScript-flavre regex; pass `regex: false` for literal substring matching.",
+				"`grep`: `context: N` adds N marker rows above and below each match — use a small N to keep context cheap; the rows still carry anchors, so a hit from the context window is editable.",
+				"`grep`: one section per file, separated by `--- <path> ---`, each listing `<line>:<anchor>:content` rows carrying the FULL line (no truncation).",
+				"`grep`: every file read is recorded as observed, so the matches can be edited without a separate `read` call.",
+				"`grep`: use `limit` to cap matches per file when probing a noisy file; the cap applies per file, not globally.",
+			],
+		};
+	}
+	return GREP_GUIDANCE_JSON;
+}
+
+export const GREP_GUIDANCE_JSON: ToolGuidance = {
 	intro: "Search files and obtain variable-length anchors in one step.",
 	lines: [
 		"`grep`: defaults to JavaScript-flavre regex; pass `regex: false` for literal substring matching. Only set the flag when a literal pattern would mis-parse as regex (e.g. it contains (, [, *, +, ?).",
@@ -127,3 +187,7 @@ export const GREP_GUIDANCE: ToolGuidance = {
 		"`grep`: use `limit` to cap matches per file when probing a noisy file; the cap applies per file, not globally.",
 	],
 };
+/** @deprecated JSON-channel guidance; prefer readGuidance(cfg). */
+export const READ_GUIDANCE = READ_GUIDANCE_JSON;
+/** @deprecated JSON-channel guidance; prefer grepGuidance(cfg). */
+export const GREP_GUIDANCE = GREP_GUIDANCE_JSON;

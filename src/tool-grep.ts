@@ -24,14 +24,13 @@ import { formatSize } from "./file-view.js";
 import { minimatch } from "minimatch";
 import { basename, join, relative } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+import { buildChannelTool } from "./text-input/channel-tool.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 
 import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "./session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import { withWorkspace } from "./session-view.js";
-import { asDualChannel } from "./text-input/dual.js";
 import { parseGrepText } from "./text-input/parse.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
@@ -186,7 +185,7 @@ interface GrepCanonicalValue {
  * @returns the exact disposer that unregisters the tool.
  */
 export function buildGrepTool(io: FileIO) {
-	const compiled = defineTool({
+	return buildChannelTool({
 		name: "grep",
 		description: grepDescription(getEffectiveConfig()),
 		parameters: {
@@ -456,11 +455,10 @@ served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
 				return value;
 			});
 		},
+		parseText: (text) => parseGrepText(text),
+		textParameterDescription:
+			"Plain-text grep payload: the pattern on the first line, then optional `path:`, `include:`, `regex:`, `context:`, `limit:`, `line_numbers:` rows (comments start with `#`).",
 	});
-	// Dual channel (spec #85): a string payload is the text DSL — parsed into
-	// the JSON-equivalent args, then the SAME compiled body runs. Object
-	// payloads (JSON channel) pass through untouched.
-	return asDualChannel(compiled, parseGrepText);
 }
 
 export function registerGrepTool(

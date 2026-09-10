@@ -25,7 +25,8 @@ import {
 } from "../src/guidance.js";
 import {
 	editGuidance,
-	READ_GUIDANCE,
+	grepGuidance,
+	readGuidance,
 	UNDO_GUIDANCE,
 } from "../src/prompts.js";
 import { getEffectiveConfig } from "../src/config.js";
@@ -74,9 +75,14 @@ describe("guidance sections", () => {
 		]);
 	});
 
-	it("default render matches today's inline section text", () => {
+	it("default render matches the effective-mode section text", () => {
+		// Config-aware since #53: the default text follows the effective
+		// input_format / require_line_content / output_format.
 		expect(renderSectionDefault("tool:read")).toBe(
-			[READ_GUIDANCE.intro, "", bullets(READ_GUIDANCE.lines)].join("\n"),
+			[readGuidance(getEffectiveConfig()).intro, "", bullets(readGuidance(getEffectiveConfig()).lines)].join("\n"),
+		);
+		expect(renderSectionDefault("tool:grep")).toBe(
+			[grepGuidance(getEffectiveConfig()).intro, "", bullets(grepGuidance(getEffectiveConfig()).lines)].join("\n"),
 		);
 		expect(renderSectionDefault("tool:edit")).toBe(
 			[editGuidance(getEffectiveConfig()).intro, "", bullets(editGuidance(getEffectiveConfig()).lines)].join("\n"),

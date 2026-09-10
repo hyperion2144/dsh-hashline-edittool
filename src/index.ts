@@ -27,7 +27,7 @@ import { installHashlineSettings } from "./config.js";
 import { registerUndoTool } from "./tool-undo.js";
 import { registerGrepTool } from "./tool-grep.js";
 import { registerWriteShadow } from "./tool-write-shadow.js";
-import { onEditSurfaceRebuild } from "./edit-rebuild.js";
+import { onToolSurfaceRebuild } from "./surface-rebuild.js";
 
 import {
 	composeSections,
@@ -117,58 +117,58 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		const io = ctxFsIO(rootCtx.fs as FileSystem, rootCtx);
 		const sandbox = new FsSandboxController(rootCtx);
 
-		// The edit surface (tool schema + its guidance section) depends on
-		// `hashline.require_line_content`: when the flag flips, dispose and
-		// re-register so the model's NEXT step sees the new parameter set
-		// (tools are re-assembled per step — not session-snapshotted).
-		let editDispose: (() => void) | undefined;
-		let editSectionDispose: (() => void) | undefined;
+		// EVERY model-facing surface follows the effective hashline config:
+		// the advertised parameter contract (`input_format` = string root vs
+		// object schema), the edit schema (`require_line_content`) and all
+		// description/guidance text. On any config change the whole set is
+		// disposed and re-registered so the model's NEXT step sees it (dsh
+		// reassembles the tool list every step — no restart needed).
+		let disposers: Array<() => void> = [];
 		let reinstall: Promise<void> = Promise.resolve();
-		const installEditSurface = async (): Promise<void> => {
-			editDispose = registerEditTool(rootCtx, agent.ctx, io, sandbox);
-			// Re-resolve per install so a rebuilt surface picks up fresh
-			// flag-aware default text (user overrides stay authoritative).
+
+		const installSurfaces = async (): Promise<void> => {
+			// Tools: the hashline read/grep/edit/undo + the write shadow.
+			disposers.push(registerReadTool(rootCtx, agent.ctx, io));
+			disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
+			disposers.push(registerEditTool(rootCtx, agent.ctx, io, sandbox));
+			disposers.push(registerUndoTool(rootCtx, agent.ctx, io, sandbox));
+			disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
+
+			// Guidance: shadow the preset's built-in sections with the
+			// hashline contract. Same section names on the agent's own layer
+			// win over the preset's; text and order come from the per-preset
+			// resolution (re-resolved on every rebuild, so edits to override
+			// files and config-driven defaults both land live).
 			const sections = await resolveAgentSections(rootCtx, agent);
 			for (const section of sections) {
-				if (section.name !== "tool:edit") continue;
-				editSectionDispose = agent.ctx.systemPrompt.section(section);
+				disposers.push(agent.ctx.systemPrompt.section(section));
 			}
 		};
-		await installEditSurface();
-		const offRebuild = onEditSurfaceRebuild(() => {
+
+		await installSurfaces();
+		const offRebuild = onToolSurfaceRebuild(() => {
 			// Serialize rebuilds; a failure must not unwind the agent install.
 			reinstall = reinstall.then(async () => {
 				try {
-					editDispose?.();
-					editSectionDispose?.();
-					await installEditSurface();
+					for (const dispose of disposers) {
+						try {
+							dispose();
+						} catch {
+							// One stale disposer must not block the rest.
+						}
+					}
+					disposers = [];
+					await installSurfaces();
 				} catch (error) {
 					rootCtx.logger.warn(
-						`dsh-hashline-edittool: edit surface rebuild failed for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
+						`dsh-hashline-edittool: tool surface rebuild failed for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
 					);
 				}
 			});
 		});
-
-		const disposers: Array<() => void> = [offRebuild];
-		disposers.push(registerReadTool(rootCtx, agent.ctx, io));
-		disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
-		disposers.push(registerUndoTool(rootCtx, agent.ctx, io, sandbox));
-		disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
-
-		// Shadow the preset's built-in tool guidance with the hashline
-		// contract. Same section names on the agent's own layer win over the
-		// preset's; text and order come from the per-preset resolution.
-		// tool:edit is managed by the rebuild path above.
-		const sections = await resolveAgentSections(rootCtx, agent);
-		for (const section of sections) {
-			if (section.name === "tool:edit") continue;
-			disposers.push(agent.ctx.systemPrompt.section(section));
-		}
+		disposers.push(offRebuild);
 
 		return () => {
-			editDispose?.();
-			editSectionDispose?.();
 			for (const dispose of disposers) dispose();
 		};
 	});
