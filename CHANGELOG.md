@@ -4,6 +4,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed — 发布产物携带陈旧构建文件（0.5.0 打包缺陷）
+
+- **根因**：`build` 只做增量 `tsc`、从不清理输出目录，且 `prepublishOnly` 只重建 client 半（`build --prefix client`）未重建主包——`src/` 中已删除的文件（本轮移除的 text 输入实现 `lib/text-input/*`、`lib/write-hook.js`、`lib/surface-rebuild.js` 及其 `.d.ts`，共 12 个）残留在 `lib/` 内并被 `files: ["lib", …]` 打进 0.5.0 的 npm 包。运行时无影响（`lib/index.js` 不引用它们），但属打包污染且会随每次发布复现。
+- **修复**：新增 `npm run clean`（`scripts/clean.mjs`，清除 `lib/` 与 `client/lib/`）；`build` 前置 clean；`prepublishOnly` 改为完整 `npm run build`（typecheck + 全量测试 + 干净重建 + tag 门禁）。已验证 `npm pack --dry-run` 不再含任何陈旧文件。
+
 ## [0.5.0] - 2026-09-10
 
 ### Added — write 工具 shadow：模型侧 auto-read 内联 + web 卡片 `行号:锚点`（#53，PR #87）
