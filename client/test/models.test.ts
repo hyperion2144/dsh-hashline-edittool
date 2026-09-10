@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	diffCardModel,
+	writeCardModel,
 	metaDiffRows,
 	metaDiffRowGroups,
 	editAnchorHints,
@@ -205,6 +206,79 @@ describe("diffCardModel", () => {
 		expect(narrowDiffs([{ path: 3, oldText: null, newText: "" }])).toBeNull();
 		expect(narrowDiffs([{ path: "p", oldText: 3, newText: "" }])).toBeNull();
 		expect(narrowDiffs([{ path: "p", oldText: null, newText: "x" }])).toHaveLength(1);
+	});
+});
+
+describe("writeCardModel (native parity + hashline gutter)", () => {
+	const writeArgs = JSON.stringify({ file_path: "/w/src/a.ts", content: "one\ntwo\n" });
+
+	it("prefers structured diffRows so the card draws the `行号:锚点` gutter", () => {
+		const block = settled({
+			call: { name: "write", argsRaw: writeArgs },
+			content: [{ type: "text", text: "ok" }],
+			meta: {
+				path: "/w/src/a.ts",
+				diffs: [],
+				diffRows: [
+					{ kind: "+", lineNumber: 1, hash: "a1", text: "one" },
+					{ kind: "+", lineNumber: 2, hash: "a2", text: "two" },
+				],
+			},
+		});
+		const card = writeCardModel(block);
+		expect(card?.path).toBe("/w/src/a.ts");
+		expect(card?.rows).toHaveLength(2);
+		expect(card?.rows?.[0]).toEqual({ kind: "+", lineNumber: 1, hash: "a1", text: "one" });
+		// A create carries no hunks — the rows are the whole card material.
+		expect(card?.diffs).toEqual([]);
+	});
+
+	it("carries mixed rows for an overwrite (removals keep their pre-write anchor)", () => {
+		const block = settled({
+			call: { name: "write", argsRaw: writeArgs },
+			content: [{ type: "text", text: "ok" }],
+			meta: {
+				path: "/w/src/a.ts",
+				diffs: [{ path: "/w/src/a.ts", oldText: "one\nold\n", newText: "one\nnew\n" }],
+				diffRows: [
+					{ kind: " ", lineNumber: 1, hash: "a1", text: "one" },
+					{ kind: "-", lineNumber: 2, hash: "b9", text: "old" },
+					{ kind: "+", lineNumber: 2, hash: "c3", text: "new" },
+				],
+			},
+		});
+		const card = writeCardModel(block);
+		expect(card?.rows?.map((row) => row.kind)).toEqual([" ", "-", "+"]);
+		expect(card?.diffs).toHaveLength(1);
+	});
+
+	it("degrades to the built-in intended diff when no structured rows exist", () => {
+		const block = settled({
+			call: { name: "write", argsRaw: writeArgs },
+			content: [{ type: "text", text: "ok" }],
+			meta: { path: "/w/src/a.ts", diffs: [] },
+		});
+		const card = writeCardModel(block);
+		expect(card?.rows).toBeUndefined();
+		expect(card?.diffs).toEqual([
+			{ path: "/w/src/a.ts", oldText: null, newText: "one\ntwo\n" },
+		]);
+	});
+
+	it("shows the intended diff while the write is still running", () => {
+		const card = writeCardModel(running(writeArgs, "write"));
+		expect(card?.diffs).toEqual([
+			{ path: "/w/src/a.ts", oldText: null, newText: "one\ntwo\n" },
+		]);
+	});
+
+	it("renders null for error results", () => {
+		const block = settled({
+			call: { name: "write", argsRaw: writeArgs },
+			isError: true,
+			meta: { path: "/w/src/a.ts", diffRows: [{ kind: "+", lineNumber: 1, hash: "a1", text: "one" }] },
+		});
+		expect(writeCardModel(block)).toBeNull();
 	});
 });
 

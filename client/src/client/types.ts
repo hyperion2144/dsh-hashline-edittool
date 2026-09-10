@@ -123,7 +123,7 @@ export interface RowsDiffCard {
 
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
-	variant: "read" | "edit";
+	variant: "read" | "edit" | "write";
 	titleKey: string;
 	summary: string;
 	filePath: string | undefined;

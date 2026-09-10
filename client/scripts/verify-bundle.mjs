@@ -88,22 +88,22 @@ const ctx = {
 };
 exports_.apply(ctx);
 
-if (ctx.plugins.length !== 2) throw new Error(`expected 2 sub-plugins, got ${ctx.plugins.length}`);
+if (ctx.plugins.length !== 3) throw new Error(`expected 3 sub-plugins, got ${ctx.plugins.length}`);
 const keys = ctx.slots.registeredEntries
 	.filter((entry) => entry?.options?.name === "tool.call.toolview")
 	.map((entry) => `${entry.options.key}:${entry.options.priority}:${entry.options.locale}`);
-const expected = ["read:-1:conversation", "edit:-1:conversation"];
+const expected = ["read:-1:conversation", "edit:-1:conversation", "write:-1:conversation"];
 if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 	throw new Error(`unexpected registrations: ${keys.join(", ")}`);
 }
 for (const entry of ctx.slots.registeredEntries) {
 	if (entry && typeof entry === "object" && typeof entry.component !== "function") throw new Error("component is not a function");
 }
-if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 2) {
-	throw new Error("expected both toolviews to inject the tool.call.toolview declaration");
+if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 3) {
+	throw new Error("expected all three toolviews to inject the tool.call.toolview declaration");
 }
 console.log("bundle evaluation OK:");
 console.log("  - factory registered under", registered[0].id);
-console.log("  - exports {inject, apply} mount 2 toolview plugins");
+console.log("  - exports {inject, apply} mount 3 toolview plugins");
 console.log("  - registrations:", keys.join(", "));
 console.log("  - components:", ctx.slots.registeredEntries.filter((e) => e && typeof e === "object").map((e) => e.component.name).join(", "));

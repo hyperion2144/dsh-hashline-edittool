@@ -282,6 +282,7 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 | ------ | ------ |
 | `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers` 默认 true（行前缀 `<line>:`，仅作位置提示；传 `line_numbers: false` 得到裸锚点）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
 | `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围，`lines` 禁用）或 `replace`（`lines` 行数**任意**——整个范围被整体替换，收缩与展开都是单 hunk）。锚点为变长 Base62（`<anchor>` 或 `<line>:<anchor>` 弱提示）；内容相同的行获得**互不相同**的锚点。对解析出的范围对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。没有 `Shift:` 块——编辑后从 diff 行取新锚点。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
+| `grep` | 在一个或多个文件中搜索。参数：`path` · `pattern`（默认 JavaScript 风格正则；`regex: false` 为字面子串） · `-C N`（上下文行） · `limit`。输出与 `read` 一致：每文件一节，头部 + `<anchor>:<content>` 行，且携带**完整行内容**（不截断——命中行可直接编辑）；仅超过 200KB 的行会隐藏并附 `sed` 提示，与 `read` 完全一致。grep 会记录 observed + served，因此命中后无需再 `read` 即可直接编辑。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。支持 `line_numbers`。 |
 
 ### 错误码
