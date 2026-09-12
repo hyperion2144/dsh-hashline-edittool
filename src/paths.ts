@@ -58,6 +58,23 @@ export function configDir(cwd?: string): string {
 	return cwd !== undefined ? join(base, projectKey(resolvePath(cwd))) : base;
 }
 
+/**
+ * Where an npm-installed language server lives.
+ *
+ * DELIBERATELY NOT per-project and NOT the user's global prefix. A server is a
+ * toolchain, not a project artifact, so installing it once should serve every
+ * workspace; and writing into the user's global `npm -g` tree from a settings
+ * card would be this plugin editing an environment it does not own.
+ *
+ * The npm prefix is a real one: `npm install --prefix <here>` produces
+ * `<here>/node_modules/.bin/<command>`, and discovery looks there.
+ *
+ * @returns the absolute path of the plugin's own server prefix.
+ */
+export function lspServersDir(): string {
+	return join(configDir(), "servers");
+}
+
 export function hashStorePath(cwd?: string): string {
 	return join(configDir(cwd), "hash-store.sqlite");
 }

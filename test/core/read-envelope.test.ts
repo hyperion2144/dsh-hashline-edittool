@@ -87,7 +87,10 @@ describe("read file_path spelling (raw args the web validates)", () => {
 	it("declares file_path in the tool schema (raw-args contract)", async () => {
 		const { buildReadTool } = await import("../../src/tool-read.js");
 		const tool = buildReadTool(localIO()) as unknown as {
-			parameters: Record<string, unknown>;
+			// `properties` has to be named: with `Record<string, unknown>` the reads
+			// below are on `unknown` and do not compile, so the assertions that
+			// `file_path` exists and `path` does not were never being checked.
+			parameters: { properties: Record<string, unknown> };
 			presentCall: (args: unknown) => { title: string } | undefined;
 		};
 		expect(tool.parameters.properties.file_path).toBeDefined();

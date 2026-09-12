@@ -63,7 +63,11 @@
   "dependencies": {
     "diff": "^8.0.2",
     "file-type": "^21.3.0",
-    "minimatch": "^10.2.6"
+    "minimatch": "^10.2.6",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "web-tree-sitter": "^0.26.13"
   },
   "workspaces": [
     "client"
@@ -98,6 +102,7 @@
     "@types/node": "^24.0.0",
     "@vitest/coverage-v8": "^4.1.10",
     "js-tiktoken": "1.0.21",
+    "tree-sitter-c": "^0.24.1",
     "typescript": "^5.8.0",
     "vitest": "^4.1.8"
   },

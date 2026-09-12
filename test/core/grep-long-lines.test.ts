@@ -52,7 +52,7 @@ describe("grep long lines", () => {
 			expect(row).toContain("TAIL");
 			expect(row).not.toContain("...");
 			// The row's content equals the file's line verbatim.
-			const content = row!.replace(/^\s*(?:\d+:)?[A-Za-z0-9]{2,8}:\s?/, "");
+			const content = row!.replace(/^\s*(?:[A-Za-z0-9]{2,8}:\d+:)?\s?/, "");
 			expect(content).toBe(long);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -73,10 +73,11 @@ describe("grep long lines", () => {
 			});
 			const row = getText(res).split("\n").find((l) => l.includes("PREFIX"));
 			expect(row).toBeDefined();
-			const m = /^\s*(?:(\d+):)?([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(row!);
+			// `<anchor>:<line>: content` — the anchor first, its line trailing.
+			const m = /^\s*([A-Za-z0-9]{2,8}):(\d+):\s?(.*)$/.exec(row!);
 			expect(m).not.toBeNull();
-			const lineNo = m![1]!;
-			const anchor = m![2]!;
+			const anchor = m![1]!;
+			const lineNo = m![2]!;
 			const fullLine = m![3]!;
 			expect(fullLine).toBe(long); // exactly what grep showed
 
@@ -86,7 +87,7 @@ describe("grep long lines", () => {
 				edits: [
 					{
 						op: "replace",
-						anchor_start: { anchor: `${lineNo}:${anchor}`, line: fullLine },
+						anchor_start: { anchor: `${anchor}:${lineNo}`, line: fullLine },
 						lines: ["REPLACED"],
 					},
 				],

@@ -33,8 +33,9 @@ import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import { withWorkspace } from "./session-view.js";
 import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
-import { fmtHashlineRow, anchorWidth } from "./hashline/hash-assign.js";
+import { fmtHashlineRow, fmtMarker, anchorWidth } from "./hashline/hash-assign.js";
 import { visLines, abortIf } from "./utils.js";
+import { gatherFiles, matchInclude } from "./file-scan.js";
 import { grepDescription } from "./prompts.js";
 import {
 	capGrepMeta,
@@ -151,16 +152,16 @@ function renderSection(
 ): string {
 	const headerLines: string[] = [`--- ${path} ---`];
 	if (includeFormatHeader) headerLines.push(hashlineHeader());
-	const anchors = section.contextRows.map((row) =>
-		lineNumbers ? `${row.position + 1}:${row.anchor}` : row.anchor,
+	const markers = section.contextRows.map((row) =>
+		fmtMarker(row.anchor, row.position + 1, lineNumbers),
 	);
-	const width = anchorWidth(anchors);
+	const width = anchorWidth(markers);
 	for (const [i, row] of section.contextRows.entries()) {
 		// Full line content — the 200-char clip was removed (grep rows carry
 		// editable anchors, and anchors require full lines). Only a row that
 		// exceeds the read tool's per-line byte budget is hidden, with the same
 		// `sed` pointer read emits; never a silent ellipsis.
-		const rendered = fmtHashlineRow("", anchors[i]!, row.content, width);
+		const rendered = fmtHashlineRow(markers[i]!, row.content, width);
 		const rowBytes = Buffer.byteLength(rendered, "utf-8");
 		if (rowBytes > MAX_READ_LINE_BYTES) {
 			headerLines.push(
@@ -430,10 +431,13 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string 
 						const rowsByPos = new Map<number, GrepSectionRow>(
 							section.contextRows.map((r) => [r.position, r]),
 						);
-						const anchorAt = (pos: number) =>
-							opts.lineNumbers
-								? `${pos + 1}:${rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? ""}`
-								: (rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? "");
+						// The key carries its line number the way every other row does —
+						// anchor first, its line trailing — so the JSON view and the text
+						// view name a line IDENTICALLY.
+						const anchorAt = (pos: number) => {
+							const anchor = rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? "";
+							return opts.lineNumbers && anchor !== "" ? `${anchor}:${pos + 1}` : anchor;
+						};
 						for (const m of section.matches) {
 								matches[anchorAt(m.position)] =
 								rowsByPos.get(m.position)?.content ?? linesOf(raw)[m.position] ?? "";
@@ -503,54 +507,4 @@ function linesOf(content: string): string[] {
 }
 
 
-/** Recursive file gather: whole tree, skipping hidden entries and node_modules. */
-async function gatherFiles(
-	root: string,
-	_opts: unknown,
-	signal: AbortSignal | undefined,
-): Promise<string[]> {
-	const out: string[] = [];
-	const stack = [root];
-	while (stack.length > 0) {
-		abortIf(signal);
-		const dir = stack.pop()!;
-		let entries: string[];
-		try {
-			entries = await readdir(dir);
-		} catch {
-			continue; // unreadable dir — skip silently
-		}
-		for (const name of entries) {
-			if (name.startsWith(".") || name === "node_modules") continue;
-			const p = join(dir, name);
-			let st;
-			try {
-				st = await lstat(p);
-			} catch {
-				continue;
-			}
-			if (st.isSymbolicLink()) continue; // no symlink recursion (loop-safe)
-			if (st.isDirectory()) {
-				stack.push(p);
-			} else if (st.isFile()) {
-				out.push(p);
-			}
-		}
-	}
-	return out;
-}
-
-/**
- * Host-style include glob: a pattern without "/" matches the basename at ANY
- * depth (like ripgrep --glob); with "/" it matches the root-relative path.
- */
-function matchInclude(pattern: string, relPath: string): boolean {
-	const bare = pattern.split("/").every((seg) => !seg.includes("*") && !seg.includes("?"));
-	void bare;
-	if (!pattern.includes("/")) {
-		const name = relPath.split("/").pop() ?? relPath;
-		return minimatch(name, pattern, { dot: true });
-	}
-	return minimatch(relPath, pattern, { dot: true });
-}
 

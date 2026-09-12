@@ -6,7 +6,6 @@ import {
 	metaDiffRows,
 	diffCardGroups,
 	metaDiffRowGroups,
-	editAnchorHints,
 	narrowDiffs,
 	readCardModel,
 	toolRowModel,
@@ -283,34 +282,15 @@ describe("writeCardModel (native parity + hashline gutter)", () => {
 	});
 });
 
-describe("editAnchorHints", () => {
-	it("collects `edits[].anchor_start` as displayed `line:anchor` hints", () => {
-		const argsRaw = JSON.stringify({
-			path: "/w/a.ts",
-			edits: [
-				{ anchor_start: "2:b2", lines: ["x"] },
-				{ anchor_start: "9:c3", lines: ["y"] },
-			],
-		});
-		expect(editAnchorHints(argsRaw)).toEqual(["2:b2", "9:c3"]);
-	});
-
-	it("normalizes the legacy `line#hash` spelling", () => {
-		const argsRaw = JSON.stringify({ edits: [{ anchor_start: "2#b2" }] });
-		expect(editAnchorHints(argsRaw)).toEqual(["2:b2"]);
-	});
-
-	it("caps the hint list with an ellipsis", () => {
-		const edits = [1, 2, 3, 4, 5].map((n) => ({ anchor_start: `${n}:h${n}` }));
-		expect(editAnchorHints(JSON.stringify({ edits }))).toEqual(["1:h1", "2:h2", "3:h3", "…"]);
-	});
-
-	it("returns empty for unparseable or non-hashline args (never throws)", () => {
-		expect(editAnchorHints("not json")).toEqual([]);
-		expect(editAnchorHints(JSON.stringify({ file_path: "/w/a.ts" }))).toEqual([]);
-		expect(editAnchorHints(JSON.stringify({ edits: [{ anchor_start: "  " }, "junk"] }))).toEqual([]);
-	});
-});
+// `describe("editAnchorHints")` was here and is deleted with the function.
+//
+// All four cases asserted the collection of bare-string anchors — the shape that
+// only ever appeared when `require_line_content` was OFF. That is the defect they
+// were pinning: a presentation hint whose presence depended on an unrelated
+// setting, which then decided what the collapsed row reported (issue #127).
+//
+// A test for a deleted function is not a regression guard; it is the shape of the
+// bug, kept alive.
 
 describe("toolRowModel", () => {
 	it("derives the summary, file path, and state from the call args", () => {

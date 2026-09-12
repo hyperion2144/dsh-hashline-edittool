@@ -113,7 +113,7 @@ hashline:
 
 ### text 输出（默认）
 
-每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、左侧变长锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。行渲染默认带行号 `<line>:<anchor>`（#69 起默认开启）——仅作提示，锚点仍是权威；每次调用可传 `line_numbers: false` 获得裸 `<anchor>` 行。
+每个 read/grep/diff/echo 输出以 header 行（`ANCHOR:FILELINE`）开头，说明行格式、变长锚点的作用、分隔符之后是文件原文——包括规则：修改文件请传分隔符后的内容，**不要**传锚点部分。**行渲染为 `<anchor>:<line>`——锚点在前、行号在后**，因此调用方首先拷贝的那个 token 就是标识该行的锚点；行号是位置提示（`line_numbers` 默认 true），锚点仍是权威，标记可以带行号也可以不带行号传回。传 `line_numbers: false` 得到裸 `<anchor>` 行。
 
 ### json 输出
 
@@ -280,9 +280,9 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 
 | 工具 | 作用 |
 | ------ | ------ |
-| `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers` 默认 true（行前缀 `<line>:`，仅作位置提示；传 `line_numbers: false` 得到裸锚点）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
-| `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围，`lines` 禁用）或 `replace`（`lines` 行数**任意**——整个范围被整体替换，收缩与展开都是单 hunk）。锚点为变长 Base62（`<anchor>` 或 `<line>:<anchor>` 弱提示）；内容相同的行获得**互不相同**的锚点。对解析出的范围对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。没有 `Shift:` 块——编辑后从 diff 行取新锚点。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
-| `grep` | 在一个或多个文件中搜索。参数：`path` · `pattern`（默认 JavaScript 风格正则；`regex: false` 为字面子串） · `-C N`（上下文行） · `limit`。输出与 `read` 一致：每文件一节，头部 + `<anchor>:<content>` 行，且携带**完整行内容**（不截断——命中行可直接编辑）；仅超过 200KB 的行会隐藏并附 `sed` 提示，与 `read` 完全一致。grep 会记录 observed + served，因此命中后无需再 `read` 即可直接编辑。 |
+| `read` | 以 `ANCHOR:FILELINE` 头部 + `<anchor>:<content>` 行形式返回文件（锚点为变长 Base62，逐行唯一；`line_numbers` 默认 true，此时标记为 `<anchor>:<line>`——锚点在前、行号在后，仅作位置提示；传 `line_numbers: false` 得到裸锚点）。参数：`offset`（1 起始）、`limit`、`line_numbers`。分页输出以 `[Showing lines N-M of T. Use offset=… to continue.]` 结尾。超过 200KB 的行显示为标记并附 `sed` 提示——锚点需要完整行。 |
+| `edit` | 通过 `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }` 原子地应用一项或多项编辑。`op` 为 `ins`（在 `anchor_start` 之后插入）、`del`（删除范围，`lines` 禁用）、`replace`（`lines` 行数**任意**——整个范围被整体替换，收缩与展开都是单 hunk）或 `sed`（对范围内每一行做 `pattern` + `replacement` + 可选 `flags` 的正则替换，逐行、无 `g` 时只替每行首个匹配；sed 的 `\1`/`&` 与 JS 的 `$1`/`$&` 都支持）。锚点为变长 Base62；标记为 `<anchor>` 或 `<anchor>:<line>`，**旧的 `<line>:<anchor>` 顺序仍被接受**（锚点永不含纯数字，两者不可能混淆）。内容相同的行获得**互不相同**的锚点。对解析出的范围对照已提供状态校验；`[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` 拒绝并回传新锚点。没有 `Shift:` 块——编辑后从 diff 行取新锚点。取代旧的 `batch_edit` 工具（每次调用最多 32 项编辑，per-item `path` 支持多文件）。 |
+| `grep` | 在一个或多个文件中搜索。参数：`path` · `pattern`（默认 JavaScript 风格正则；`regex: false` 为字面子串） · `-C N`（上下文行） · `limit`。输出与 `read` 一致：每文件一节，头部 + `<anchor>:<line>:content` 行，且携带**完整行内容**（不截断——命中行可直接编辑）；仅超过 200KB 的行会隐藏并附 `sed` 提示，与 `read` 完全一致。grep 会记录 observed + served，因此命中后无需再 `read` 即可直接编辑。 |
 | `undo_last_edit` | `{ path }` 撤销该文件上一次 hashline 编辑，仅当文件仍与存储的编辑后内容一致时生效；重启后依然有效。支持 `line_numbers`。 |
 
 ### 错误码
@@ -294,7 +294,7 @@ json 的 read 字典每行重复锚点键（大窗口 +3~13%）；小 read 窗�
 | `[E_BAD_OP]` | 范围结束先于范围开始（首尾颠倒时会自动纠正）。 |
 | `[E_BAD_REF]` | `anchor_start`/`anchor_end` 不是从 read/grep/diff 行最左列复制的 `<line>#<hash>`。 |
 | `[E_BAD_SHAPE]` | 请求/字段形态错误（未知字段、缺少 path、非字符串文本等）。 |
-| `[E_BARE_HASH_PREFIX]` | 粘贴进 `lines` 的锚点前缀行（如 read/diff 行的 `<line>:<anchor>:content`）；锚点在文件中存在时剥离前缀并提示 warning，字面相似内容永不被改写。 |
+| `[E_BARE_HASH_PREFIX]` | 粘贴进 `lines` 的锚点前缀行（如 read/diff 行的 `<anchor>:<line>:content`，两种顺序都识别）；锚点在文件中存在时剥离前缀并提示 warning，字面相似内容永不被改写。 |
 | `[E_BATCH_ABORT]` | 批次内某项失败；整个批次被拒绝，未写入任何内容。 |
 | `[E_BATCH_CONFLICT]` | 批次内两项的行范围在同一文件快照上重叠（`ins` 可锚定某范围的 END 行，但不允许起始行/中间行）；请拆分或合并，未写入任何内容。 |
 | `[E_INS_ANCHOR_DUP]` | `op:"ins"` 的 `lines[0]` 与 `anchor_start` 行内容匹配 — `ins` 在锚点行之后插入（该行自动保留）；在 `lines` 中包含它会产生重复。仅警告；编辑照常执行。 |

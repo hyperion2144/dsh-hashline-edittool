@@ -181,7 +181,8 @@ describe("edit / undo structured value shape", () => {
 			// Shift block is suppressed. The model text carries the new
 			// ANCHOR:FILELINE block instead of a unified diff.
 			expect(value.modelText).toMatch(/Successfully edited in e\.txt/);
-			expect(value.modelText).toMatch(/[A-Za-z0-9]{2,8}:B!/);
+			// Diff rows are `<anchor>:<line>: content` — the anchor, its line, content.
+			expect(value.modelText).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*B!/);
 		});
 	});
 

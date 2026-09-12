@@ -127,7 +127,10 @@ describe("genDiff", () => {
   it("renders a literal __ELLIPSIS__ line as content, not as a truncation marker", () => {
     const oldContent = "a\n__ELLIPSIS__\nc\nd\n";
     const newContent = "a\n__ELLIPSIS__\nc\nD\n";
-    const { diff } = genDiff(oldContent, newContent, 3, undefined, undefined, undefined, false);
+    // Seven arguments, six parameters: the trailing `false` is a leftover, and
+    // the `undefined` before it leaves `lineNumbers` on — which the assertions
+    // below depend on, since they match on the rendered `N:hash:content` shape.
+    const { diff } = genDiff(oldContent, newContent, 3, undefined, undefined, undefined);
     const lines = diff.split("\n");
     expect(lines.some((line) => line.endsWith(":__ELLIPSIS__"))).toBe(true);
     expect(lines.filter((line) => line.trim() === "...")).toHaveLength(0);

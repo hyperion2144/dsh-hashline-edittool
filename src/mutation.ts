@@ -23,7 +23,7 @@
  */
 
 import type { FileIO } from "./fs-bridge.js";
-import { anchorOf, type EditParams } from "./contract.js";
+import { anchorOf, type EditOp, type EditParams } from "./contract.js";
 import type { HashStore } from "./hash-store.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
@@ -89,6 +89,13 @@ export interface ExecPipelineOptions {
 	store?: HashStore
 	noPersist?: boolean
 	sessionKey?: string
+	/** Echo rows carry `<line>:<anchor>` markers unless this is false. */
+	lineNumbers?: boolean
+	/**
+	 * The calling execution. Needed so an echo can emit `fs/observed` for the
+	 * rows it just served: an echo the model cannot write with is decorative.
+	 */
+	exec?: ToolExecution
 }
 
 export async function execPipeline(
@@ -110,16 +117,27 @@ export async function execPipeline(
 	// that still use the old `{ path, remove_from, remove_to, replacement_text }`
 	// spelling. We normalize the first item (default `op: "replace"`).
 	const firstItem = params.edits?.[0]
-	const removeFromRaw = (params as { remove_from?: string }).remove_from ?? (firstItem ? anchorOf(firstItem.anchor_start) : undefined)
+	// The first item's anchor comes from whichever field ITS op uses — `ins`
+	// carries `anchor_after`, the others `anchor_start`. Reading only
+	// `anchor_start` here would quietly lose the anchor of an insert.
+	const firstAnchor =
+		firstItem === undefined
+			? undefined
+			: firstItem.op === "ins"
+				? firstItem.anchor_after
+				: firstItem.anchor_start;
+	const removeFromRaw =
+		(params as { remove_from?: string }).remove_from ??
+		(firstAnchor === undefined ? undefined : anchorOf(firstAnchor))
 	const removeToRaw =
 		(params as { remove_to?: string }).remove_to ??
 		(firstItem?.anchor_end !== undefined ? anchorOf(firstItem.anchor_end) : undefined) ??
-		(firstItem ? anchorOf(firstItem.anchor_start) : undefined) ??
+		(firstAnchor === undefined ? undefined : anchorOf(firstAnchor)) ??
 		removeFromRaw
 	const replTextRaw =
 		(params as { replacement_text?: string }).replacement_text ??
 		(firstItem?.lines ?? []).join("\n")
-	const op = (firstItem?.op ?? (params as { op?: "ins" | "del" | "replace" }).op ?? "replace")
+	const op = (firstItem?.op ?? (params as { op?: EditOp }).op ?? "replace")
 	const removeFrom = removeFromRaw ?? ""
 	const removeTo = removeToRaw ?? removeFrom
 	const edit = resEdit(
@@ -166,10 +184,14 @@ export async function execPipeline(
 			removeTo: removeTo,
 			replacementText: op === "del" ? "" : replTextRaw,
 			op,
+			pattern: firstItem?.pattern,
+			replacement: firstItem?.replacement,
+			flags: firstItem?.flags,
 			absolutePath,
 			displayPath: path,
 			signal,
 			warnings: editWarnings,
+			lineNumbers: options?.lineNumbers,
 			store: hashStore,
 			persist: options?.noPersist !== true,
 			edit,
@@ -186,6 +208,13 @@ export async function execPipeline(
 					policy,
 					originalHashes.length,
 				)
+				if (error.servedRows.length > 0) {
+					// The echo IS a read: the session has seen these lines, so the dsh
+					// observation policy must know it too. Otherwise the echoed rows are
+					// servable but not WRITABLE — a retry with a fresh marker from the
+					// echo failed [E_NOT_OBSERVED], which made the echo decorative.
+					await io.emitObserved(absolutePath, options?.exec, options?.signal)
+				}
 			}
 			throw error
 		},
@@ -242,6 +271,8 @@ let driftNotice: string | undefined
 				resultLines: splitLines(result),
 				range: applied.range,
 				path: absolutePath,
+				io,
+				exec: options?.exec,
 			})
 		} catch (error) {
 			console.error('Failed to compute drift notice:', error)
@@ -320,6 +351,8 @@ export async function applySingle(
   signal?: AbortSignal;
   store?: HashStore;
   noPersist?: boolean;
+  /** The calling execution — an echo emits `fs/observed` through it. */
+  exec?: ToolExecution;
  },
 ): Promise<PipelineResult> {
  return execPipeline(io, params, cwd, opts);
@@ -329,7 +362,7 @@ export async function applySingle(
 export async function applySequence(
  io: FileIO,
  items: PreparedItem[],
- ctx: { sessionKey: string; signal?: AbortSignal },
+ ctx: { sessionKey: string; signal?: AbortSignal; exec?: ToolExecution },
 ): Promise<FileEditResult> {
  return runFileEdits(io, items, ctx);
 }

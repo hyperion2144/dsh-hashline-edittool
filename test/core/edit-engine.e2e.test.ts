@@ -36,19 +36,22 @@ async function servedRows(
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
 		if (line.startsWith("ANCHOR:")) continue;
-		// Rows are `<line>:<anchor>:content` by default (#69); tolerate bare
-		// `<anchor>:content` (line_numbers off) and diff +/- prefixes.
+		// Rows are `<anchor>:<line>:content>` by default; tolerate the bare
+		// `<anchor>:content` form (line_numbers off) and diff +/- prefixes.
 		const body = line.replace(/^[+\- ]+/, "");
 		const sep = body.indexOf(":");
 		if (sep === -1) continue;
 		const first = body.slice(0, sep);
 		const rest = body.slice(sep + 1);
 		if (/^\d+$/.test(first)) {
+			// Legacy `<line>:<anchor>:content` — the number came first.
 			const h = rest.indexOf(":");
 			if (h === -1) continue;
 			rows.push({ hash: rest.slice(0, h), content: rest.slice(h + 1) });
 		} else {
-			rows.push({ hash: first, content: rest });
+			// `<anchor>:<line>:content` — drop the hint, keep the content.
+			const h = rest.indexOf(":");
+			rows.push({ hash: first, content: h === -1 ? rest : rest.slice(h + 1) });
 		}
 	}
 	return rows;
@@ -177,7 +180,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					edits: [
 						{ op: "replace", anchor_start: by("l2").hash, anchor_end: by("l3").hash, lines: ["R2", "R3"] },
 						{ op: "del", anchor_start: by("l5").hash },
-						{ op: "ins", anchor_start: by("l7").hash, lines: ["I7"] },
+						{ op: "ins", anchor_after: by("l7").hash, lines: ["I7"] },
 					],
 				});
 				const text = getText(res);
@@ -185,11 +188,11 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				// diff rows carry FINAL line numbers + hashes (unchanged rows keep
 				// their hash; their positions reflect the fully applied batch)
 				// Rows carry a line-number prefix now; match FINAL number + kept hash.
-				expect(text).toMatch(new RegExp(` \\d+:${by("l4").hash}:l4`));
-				expect(text).toMatch(new RegExp(` \\d+:${by("l6").hash}:l6`));
-				expect(text).toMatch(new RegExp(` \\d+:${by("l7").hash}:l7`));
-				expect(text).toMatch(new RegExp(` \\d+:${by("l8").hash}:l8`));
-				expect(text).toMatch(/\+\s*\d+:[A-Za-z0-9]{2,8}:I7/); // inserted row
+				expect(text).toMatch(new RegExp(` ${by("l4").hash}:\\d+:l4`));
+				expect(text).toMatch(new RegExp(` ${by("l6").hash}:\\d+:l6`));
+				expect(text).toMatch(new RegExp(` ${by("l7").hash}:\\d+:l7`));
+				expect(text).toMatch(new RegExp(` ${by("l8").hash}:\\d+:l8`));
+				expect(text).toMatch(/\+\s*[A-Za-z0-9]{2,8}:\d+:I7/); // inserted row
 				expect(await readFile(path, "utf-8")).toBe(
 					"l1\nR2\nR3\nl4\nl6\nl7\nI7\nl8\n",
 				);
@@ -223,8 +226,8 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 					editTool(harness).execute("edit", {
 						path: "t.txt",
 						edits: [
-							{ op: "ins", anchor_start: by("l3").hash, lines: ["A"] },
-							{ op: "ins", anchor_start: by("l3").hash, lines: ["B"] },
+							{ op: "ins", anchor_after: by("l3").hash, lines: ["A"] },
+							{ op: "ins", anchor_after: by("l3").hash, lines: ["B"] },
 						],
 					}),
 				).rejects.toThrow(/E_BATCH_CONFLICT/);
@@ -242,7 +245,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 						path: "t.txt",
 						edits: [
 							{ op: "replace", anchor_start: by("l4").hash, anchor_end: by("l6").hash, lines: ["X", "Y", "Z"] },
-							{ op: "ins", anchor_start: by("l4").hash, lines: ["Y"] },
+							{ op: "ins", anchor_after: by("l4").hash, lines: ["Y"] },
 						],
 					}),
 				).rejects.toThrow(/E_BATCH_CONFLICT/);

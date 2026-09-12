@@ -12,7 +12,13 @@
  */
 
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
+import { containsElisionMarker } from "./read-summary.js";
 import type { SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
+// No `isBlockOp`, no `resolveBlockEdit`, no grammar and no dirname: this engine
+// rewrites nothing and parses nothing. Structural work arrives already resolved
+// as line ops — see the note further down for why that is the right split.
+import type { EditOp } from "./contract.js";
+import { notifyDocumentWritten } from "./lsp/sync.js";
 import type { FileIO } from "./fs-bridge.js";
 import type { HashStore } from "./hash-store.js";
 import type { LineEnding } from "./edit-diff.js";
@@ -113,13 +119,34 @@ export interface PreparedItem {
 	remove_from: string;
 	remove_to: string;
 	replacement_text: string;
+	/** `op: "sed"` only: the regex source, its replacement text, and its flags. */
+	pattern?: string;
+	replacement?: string;
+	flags?: string;
 	pathWarning?: string;
-	/** Edit semantic (0.3+): "ins" | "del" | "replace". Defaults to "replace". */
-	op?: "ins" | "del" | "replace";
+	/** Edit semantic. Defaults to "replace"; the block ops are resolved to a
+	 *  line range before this point (spec §6.3). */
+	op?: EditOp;
 	/** Declared line content for anchor_start (require_line_content ON). */
 	expectedStart?: string;
 	/** Declared line content for anchor_end (only when explicitly passed). */
 	expectedEnd?: string;
+	/**
+	 * Whether the caller actually supplied `anchor_end` (rather than it being
+	 * folded from `anchor_start`). A block op treats a supplied `anchor_end` as
+	 * a **range assertion**, so "omitted" and "asserted equal to the opener"
+	 * must not be confused.
+	 */
+	anchorEndAsserted?: boolean;
+	/**
+	 * The `<line>` hint the caller wrote in `anchor_start` / `anchor_end`.
+	 *
+	 * Normalization strips it (the anchor is authoritative), but a block op
+	 * needs it: the extent is resolved by finding which construct STARTS at
+	 * that line, and an anchor string alone cannot answer that.
+	 */
+	lineStart?: number;
+	lineEnd?: number;
 }
 
 /**
@@ -262,6 +289,8 @@ export interface ApplyOneInput {
 	absolutePath: string;
 	displayPath: string;
 	signal?: AbortSignal;
+	/** Echo rows carry `<line>:<anchor>` markers unless this is false. */
+	lineNumbers?: boolean;
 	/** Shared warnings array; resEdit warnings are pushed here. */
 	warnings: string[];
 	/**
@@ -279,13 +308,37 @@ export interface ApplyOneInput {
 	 * `removeFrom` line (the line's own content is preserved and the
 	 * replacement is prefixed with it); `"del"` deletes the range;
 	 * `"replace"` substitutes the range with `replacementText`
-	 * (the pre-0.3 default). Defaults to `"replace"`.
+	 * (the pre-0.3 default); `"sed"` rewrites the range LINE BY LINE with a
+	 * regular expression, so `replacementText` is unused and `pattern` /
+	 * `replacement` / `flags` are. Defaults to `"replace"`.
 	 */
-	op?: "ins" | "del" | "replace";
+	op?: EditOp;
+	/** `op: "sed"` only: the regex source applied to each line of the range. */
+	pattern?: string;
+	/** `op: "sed"` only: the replacement text (sed's `\1`/`&` also accepted). */
+	replacement?: string;
+	/** `op: "sed"` only: a subset of `gims`. */
+	flags?: string;
 	/** Declared line content for anchor_start (require_line_content ON). */
 	expectedStart?: string;
 	/** Declared line content for anchor_end (only when explicitly passed). */
 	expectedEnd?: string;
+	/**
+	 * Whether the caller actually supplied `anchor_end` (rather than it being
+	 * folded from `anchor_start`). A block op treats a supplied `anchor_end` as
+	 * a **range assertion**, so "omitted" and "asserted equal to the opener"
+	 * must not be confused.
+	 */
+	anchorEndAsserted?: boolean;
+	/**
+	 * The `<line>` hint the caller wrote in `anchor_start` / `anchor_end`.
+	 *
+	 * Normalization strips it (the anchor is authoritative), but a block op
+	 * needs it: the extent is resolved by finding which construct STARTS at
+	 * that line, and an anchor string alone cannot answer that.
+	 */
+	lineStart?: number;
+	lineEnd?: number;
 }
 
 export interface ApplyOneResult {
@@ -303,6 +356,69 @@ export interface ApplyOneResult {
 	anchorWarnings: string[] | undefined;
 }
 
+/**
+ * Translate a sed replacement into JavaScript's replacement dialect, so both
+ * spellings work and neither is a trap:
+ *
+ *   `\1` … `\9`  →  `$1` … `$9`   (sed's group reference)
+ *   `\&`         →  `&`            (a LITERAL ampersand)
+ *   `&`          →  `$&`           (the whole match, as sed means it)
+ *
+ * Everything else passes through unchanged, `$1` / `$&` included — JavaScript's
+ * own syntax is already what `String.replace` will read.
+ *
+ * @param raw - the caller's replacement text.
+ * @returns the same replacement in JavaScript's dialect.
+ */
+export function sedReplacement(raw: string): string {
+	let out = "";
+	for (let i = 0; i < raw.length; i++) {
+		const ch = raw[i]!;
+		if (ch === "\\" && i + 1 < raw.length) {
+			const next = raw[i + 1]!;
+			if (next >= "1" && next <= "9") {
+				out += `$${next}`;
+				i += 1;
+				continue;
+			}
+			if (next === "&") {
+				out += "&";
+				i += 1;
+				continue;
+			}
+		}
+		if (ch === "&") {
+			out += "$&";
+			continue;
+		}
+		out += ch;
+	}
+	return out;
+}
+
+/**
+ * Build the per-line rewrite an `op: "sed"` edit applies to its anchor range.
+ *
+ * Line by line, on purpose: that is what sed does, and it is also what keeps
+ * the edit's line COUNT unchanged, so every downstream hunk calculation stays
+ * honest (the contract refuses a replacement containing a newline for exactly
+ * this reason). Without `g` only the first match on each line is replaced —
+ * sed's own default.
+ *
+ * @param pattern - regular-expression source (already validated).
+ * @param replacement - replacement text, either dialect.
+ * @param flags - a subset of `gims`, or undefined.
+ * @returns a transform over the range's lines.
+ */
+export function sedTransform(
+	pattern: string,
+	replacement: string,
+	flags?: string,
+): (lines: readonly string[]) => string[] {
+	const re = new RegExp(pattern, flags ?? "");
+	const repl = sedReplacement(replacement);
+	return (lines) => lines.map((line) => line.replace(re, repl));
+}
 /**
  * Resolve an `op: "ins"` edit into the range + replacement it really means.
  * `ins` inserts the given lines AFTER the `anchor_start` line while
@@ -351,7 +467,7 @@ export function resolveIns(
 	// The edit applies as-is; the warning guides the model to undo + resubmit.
 	if (insertedLines.length > 0 && insertedLines[0]!.replace(/\s+$/, "") === fromContent.replace(/\s+$/, "")) {
 		warnings.push(
-			`[E_INS_ANCHOR_DUP] op:"ins" lines[0] matches the anchor_start line content (line ${fromLine + 1}). ins inserts AFTER anchor_start — the anchor line is preserved automatically and should NOT be in lines. A duplicate was inserted. If unintended: undo_last_edit and resubmit lines without the anchor line.`,
+			`[E_INS_ANCHOR_DUP] op:"ins" lines[0] matches the anchor_after line content (line ${fromLine + 1}). ins puts lines BELOW that anchor, which is KEPT automatically — so putting its own line in \`lines\` duplicates it. If unintended: undo_last_edit and resubmit without the anchor line.`,
 		);
 	}
 	const effectiveReplacement =
@@ -376,7 +492,11 @@ export async function applyOne(
 	onReject: (error: unknown, edit: HEdit | undefined) => Promise<never>,
 ): Promise<ApplyOneResult> {
 	let edit: HEdit;
-	if (input.edit) {
+	// `sed` ALWAYS resolves here, even when a pre-resolved edit was supplied:
+	// its content is a function of the range's CURRENT lines, and only this
+	// path has the file's text in hand to run the substitution over. A
+	// pre-resolved `sed` (the batch pre-pass) is therefore ignored on purpose.
+	if (input.edit && input.op !== "sed") {
 		edit = input.edit;
 	} else {
 		// `op: "ins"` expands to a single-line replace that preserves the
@@ -421,6 +541,13 @@ export async function applyOne(
 			input.displayPath,
 			input.served,
 			{ start: input.expectedStart, end: input.expectedEnd },
+			{
+				lineNumbers: input.lineNumbers,
+				transform:
+					input.op === "sed"
+						? sedTransform(input.pattern ?? "", input.replacement ?? "", input.flags)
+						: undefined,
+			},
 		);
 	} catch (error) {
 		if (
@@ -479,6 +606,12 @@ export interface NoopLoopOptions {
 	range?: ResolvedRange;
 	/** Batch flavor: precomputed echo rows for the failed item (may be absent). */
 	echoRows?: ServedRow[];
+	/**
+	 * The file handle + execution that make an echo OBSERVED as well as served.
+	 * An echo the model cannot write with is decorative, so both ride along.
+	 */
+	io: FileIO;
+	exec?: ToolExecution;
 }
 
 
@@ -521,6 +654,7 @@ const echoRows = buildRangeEcho(
 				"live",
 				originalHashes.length,
 			);
+			await opts.io.emitObserved(absolutePath, opts.exec);
 			throw new Error(
 				`[E_NOOP_LOOP] identical edit (${removeFrom} → ${removeTo} in ${displayPath}) submitted ${count}×, no changes each time. Range already contains this text; resend will reject. Current range:\n${echo}`,
 			);
@@ -542,6 +676,7 @@ const echoRows = buildRangeEcho(
 				"live",
 				originalHashes.length,
 			);
+			await opts.io.emitObserved(absolutePath, opts.exec);
 		}
 		throw new Error(
 			`[E_NOOP_LOOP] edits[${index}] (${displayPath}): identical edit (${removeFrom} → ${removeTo}) submitted ${count}×, no changes each time. Range already has this text; resend will reject the batch.` +
@@ -578,11 +713,24 @@ function echoRowsForItem(
  * per-file drift notice. All-or-nothing is enforced by the caller's
  * transaction ({@link persistUndoAndWrite}): nothing here writes to disk.
  */
+// The block-op path is GONE — `resolveBlockItems`, `resolveBlockEdit` and the
+// gate below it all existed to turn a symbol-anchored op into a line-range op.
+// That was AST folded into `edit`, and `ast_edit` does it better: it finds the
+// extent by SHAPE and hands an ordinary line edit to this engine, so the
+// conflict detection, application, drift, served migration and undo here never
+// needed to know a grammar existed.
+//
+// The syntax gate went with it. It only ever fired for block ops, and
+// `ast_edit` runs its own — because a structural tool leaving unparsable code
+// behind is that tool's failure mode, not this engine's.
+//
+
 export async function runFileEdits(
 	io: FileIO,
-	items: PreparedItem[],
-	opts: { signal?: AbortSignal; sessionKey: string },
+	rawItems: PreparedItem[],
+	opts: { signal?: AbortSignal; sessionKey: string; lineNumbers?: boolean; exec?: ToolExecution },
 ): Promise<FileEditResult> {
+	const items = [...rawItems];
 	const first = items[0]!;
 	abortIf(opts.signal);
 	const absolutePath = first.absolutePath;
@@ -602,6 +750,24 @@ export async function runFileEdits(
 
 	let served = await loadServed(opts.sessionKey, absolutePath);
 	const warnings: string[] = [];
+	// A literal U+2026 in a payload is almost always a pasted `ast_grep` outline
+	// row rather than source, and writing one puts the fold marker into the file.
+	//
+	// A WARNING, not a refusal — which is a correction. It used to be
+	// `[E_ELISION_IN_PAYLOAD]` in the request contract, and that was wrong twice
+	// over by now: `edit` is a general line editor, so a file that legitimately
+	// CONTAINS the character (a UI string, prose, i18n) could not be edited at
+	// all — it blocked the very edit that wrote this comment — and the original
+	// justification (a pure line-level `replace` ran no syntax check) no longer
+	// distinguishes anything, because the block ops are gone. The signal is worth
+	// keeping; the veto was not.
+	for (const item of items) {
+		if (containsElisionMarker(item.replacement_text)) {
+			warnings.push(
+				`[E_ELISION_IN_PAYLOAD] edits[${item.index}] carries U+2026, which is how an ast_grep outline renders a FOLDED range — not source. If it was meant as literal text the edit is correct as written; if it was pasted from an outline, undo and re-read the lines you meant to change.`
+			);
+		}
+	}
 
 	// --- Phase 1: pre-resolve every hunk against the ORIGINAL snapshot. ---
 	// op: "ins" expands to a single-line replace that preserves the anchor
@@ -642,7 +808,21 @@ export async function runFileEdits(
 					"The whole batch was rejected and NOTHING was written — no file changed and earlier items in the batch were NOT applied.",
 			);
 		}
-		resolvedEdits.push({ item, edit: pinBounds(edit, originalHashes, warnings), isIns: item.op === "ins" });
+		const pinned = pinBounds(edit, originalHashes, warnings);
+		if (item.op === "sed") {
+			// The substitution is a function of the range's CURRENT text, so the
+			// content is produced in `applyOne` (which has the file) — this
+			// pre-pass only needs the right LINE COUNT for the shift report, and
+			// sed preserves the count by construction.
+			const startLine = pinned.hash_bounds[0].line;
+			const endLine = pinned.hash_bounds[1].line;
+			const rows =
+				startLine !== undefined && endLine !== undefined
+					? Math.max(1, endLine - startLine + 1)
+					: 1;
+			pinned.content_lines = new Array<string>(rows).fill("");
+		}
+		resolvedEdits.push({ item, edit: pinned, isIns: item.op === "ins" });
 	}
 
 	// --- Phase 2: conflict detection on original coordinates. ---
@@ -740,12 +920,16 @@ const ordered = [...resolvedEdits].sort(
 				removeTo: item.remove_to,
 				replacementText: item.replacement_text,
 				op: item.op,
+				pattern: item.pattern,
+				replacement: item.replacement,
+				flags: item.flags,
 				expectedStart: item.expectedStart,
 				expectedEnd: item.expectedEnd,
 				absolutePath,
 				displayPath: item.path,
 				signal: opts.signal,
 				warnings,
+				lineNumbers: opts.lineNumbers,
 				countHashes: originalHashes,
 				persist: false,
 				edit,
@@ -768,6 +952,12 @@ const ordered = [...resolvedEdits].sort(
 							"live",
 							originalHashes.length,
 						);
+						// The echo IS a read: the session has now seen these lines, so the
+						// dsh observation policy must know it too. Without this the echoed
+						// rows are servable but not WRITABLE — a retry with a fresh marker
+						// from the echo failed [E_NOT_OBSERVED], which made the echo
+						// decorative.
+						await io.emitObserved(absolutePath, opts.exec, opts.signal);
 					}
 					throw new Error(
 						`[E_BATCH_ABORT] edits[${item.index}] (${item.path}) failed: ${error.message}\n` +
@@ -817,7 +1007,9 @@ const ordered = [...resolvedEdits].sort(
 				sessionKey: opts.sessionKey,
 				originalHashes,
 				originalNormalized,
-echoRows: echoRowsForItem(applied.edit, originalHashes, splitLines(originalNormalized)),
+				echoRows: echoRowsForItem(applied.edit, originalHashes, splitLines(originalNormalized)),
+				io,
+				exec: opts.exec,
 			});
 			if (notice) warnings.push(notice);
 			warnings.push(
@@ -900,11 +1092,14 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 					delta: resultLines.length - originalLines.length,
 				},
 				path: absolutePath,
+				io,
+				exec: opts.exec,
 			});
 		} catch (error) {
 			console.error("Failed to compute drift notice:", error);
 		}
 	}
+
 
 	return {
 		displayPath: first.path,
@@ -1031,6 +1226,9 @@ async function writeWithRetry(
 ): Promise<void> {
 	try {
 		await io.writeText(absolutePath, content, signal, exec, sandboxPolicy);
+		// The file is on disk; tell the language server, if one is running for
+		// it. This never throws and never starts a server (see lsp/sync.ts).
+		notifyDocumentWritten(absolutePath, content);
 		return;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -1039,6 +1237,7 @@ async function writeWithRetry(
 		}
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		await io.writeText(absolutePath, content, signal, exec, sandboxPolicy);
+		notifyDocumentWritten(absolutePath, content);
 	}
 }
 

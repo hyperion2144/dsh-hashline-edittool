@@ -10,8 +10,11 @@
  * not depend on this one.
  *
  * **0.4.0 contract change.** The `edit` tool now takes an `edits:[]` array
- * with named fields (`op` / `anchor_start` / `anchor_end?` / `lines?`) and an `op` semantic
- * distinguishing `ins` / `del` / `replace`. The legacy `batch_edit` tool
+ * with named fields (`op` / `anchor_after?` / `anchor_start?` / `anchor_end?` / `lines?`) and an `op` semantic
+ * distinguishing `ins` / `del` / `replace`. **Which anchor field is legal depends on the
+ * op**: `ins` takes `anchor_after`, the other two take `anchor_start`, and a call that
+ * mixes them is refused. See `EditItemParams.anchor_after` for why the names differ.
+ * (An earlier revision of THIS line said `op` / `anchor_start` / `anchor_end?` / `lines?`).
  * is removed; its multi-file capability is preserved as a per-item
  * optional `path` that overrides the top-level `path`. `remove_from` /
  * `remove_to` / `replacement_text` are gone — use `anchor_start` / `anchor_end` / `lines`
@@ -33,23 +36,71 @@ import { isRec, normalizeFilePath, rejectUnknownFields } from "./utils.js";
  * intent unambiguously; the runtime never has to guess between
  * "replace with empty" and "delete this range".
  */
+/**
+ * The edit vocabulary: line-anchored, and only line-anchored.
+ *
+ * `replace_block` and `del_block` used to live here — a symbol-anchored op whose
+ * extent the engine resolved, so the model could not self-certify an end it had
+ * not checked. That reasoning was sound and the ANSWER was wrong: resolving an
+ * extent from a symbol is a structural question, and answering it inside the
+ * line engine is what made `edit` depend on a grammar.
+ *
+ * `ast_edit` asks it now, by SHAPE, and hands a resolved line edit back here.
+ * The engine stayed what it was: three ops, no grammar, no switch.
+ */
+export type EditOp = "ins" | "del" | "replace" | "sed";
+
+
 export interface EditItemParams {
-	/** Required. Insert / delete / replace semantic. */
-	op: "ins" | "del" | "replace";
+	/** Required. Insert / delete / replace / sed semantic. */
+	op: EditOp;
 	/**
 	 * Required. Anchor of the FIRST line of the affected range. A plain
 	 * anchor string when `require_line_content` is OFF; a
 	 * `{ anchor, line }` declaration pair when ON (see declaration.ts).
 	 */
-	anchor_start: AnchorRef;
+	/**
+	 * Required for `replace` and `del`, forbidden for `ins`. Anchor of the FIRST
+	 * line of the affected RANGE — and for `replace`, `lines` is what that range
+	 * BECOMES, so the range's own lines do belong there.
+	 */
+	anchor_start?: AnchorRef;
+	/**
+	 * Required for `ins`, forbidden for the other two. The anchor whose line the
+	 * new lines are placed BELOW.
+	 *
+	 * NOT CALLED `anchor_start`, DELIBERATELY. Under a shared name, a caller that
+	 * had just used `replace` — where `anchor_start` begins a range whose content
+	 * `lines` CONSUMES — carried that reading into `ins`, wrote the anchor's own
+	 * line into `lines`, and got a duplicate. It was not carelessness: the field
+	 * was the same name, so the habit transferred. Here there is no range for
+	 * `lines` to consume and no `anchor_start` to misread, and a call that sends
+	 * one anyway is REFUSED rather than transliterated.
+	 */
+	anchor_after?: AnchorRef;
 	/**
 	 * Anchor of the LAST line. Optional for `replace` (omit = single-line
 	 * passes the same anchor twice); optional for `del` (omit = one line);
 	 * forbidden for `ins`. Same dual form as `anchor_start`.
 	 */
 	anchor_end?: AnchorRef;
-	/** Required for `ins` and `replace`; ignored for `del` (deletion is anchor-defined). New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
+	/** Required for `ins` and `replace`; ignored for `del` (deletion is anchor-defined); FORBIDDEN for `sed` (its replacement comes from `pattern`/`replacement`). New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
 	lines?: string[];
+	/**
+	 * `op: "sed"` only. Regular-expression SOURCE applied to every line of the
+	 * anchor range, exactly as `sed` works a stream: line by line, so a pattern
+	 * never spans two lines. Without the `g` flag only the FIRST match on each
+	 * line is replaced, which is sed's own default.
+	 */
+	pattern?: string;
+	/**
+	 * `op: "sed"` only. The replacement text. Both dialects work: sed's `\1` and
+	 * `&` are translated to `$1` / `$&`, and JavaScript's `$1` / `$&` pass through
+	 * unchanged. An empty string DELETES what the pattern matched.
+	 */
+	replacement?: string;
+	/** `op: "sed"` only. Any of `g` (every match per line), `i` (ignore case), `m` (multi-line anchors). Default: none. */
+	flags?: string;
 	/** Optional per-item path override (multi-file edits in one call). */
 	path?: string;
 }
@@ -83,6 +134,13 @@ export interface ReadParams {
 	limit?: number;
 	/** Optional: render rows with `<line>:<anchor>` markers (default false). */
 	line_numbers?: boolean;
+	// No `symbol` / `kind` / `anchor` / `references` / `include`.
+	//
+	// They were the AST fold: selectors that made a LINE reader need a grammar
+	// and a global switch. `ast_grep` answers them now (with no pattern it
+	// returns the outline) and `lsp` answers anything semantic — so the parser
+	// no longer accepts them, and a stale call fails loudly instead of being
+	// silently answered as a line window.
 }
 
 export interface UndoParams {
@@ -105,14 +163,28 @@ const EDIT_ITEM_KS = new Set([
 	"op",
 	"anchor_start",
 	"anchor_end",
+	"anchor_after",
 	"lines",
+	"pattern",
+	"replacement",
+	"flags",
 	"path",
 ]);
 
 /** Fields of the `{ anchor, line }` declaration form (require_line_content ON). */
 const ANCHOR_DECLARATION_KS = new Set(["anchor", "line"]);
 
-const READ_KS = new Set(["path", "offset", "limit", "line_numbers"]);
+/**
+ * The AST parameters exist only while `ast.enabled` is true: with AST off the
+ * tool surface is rebuilt without them (spec §7.4), so an AST parameter here
+ * is always a caller error, never a silently ignored extra.
+ */
+const READ_KS = new Set([
+	"path",
+	"offset",
+	"limit",
+	"line_numbers",
+]);
 
 // ---- normalization -----------------------------------------------------------
 
@@ -148,7 +220,7 @@ export const normReq = normalizeRequest;
  */
 function assertAnchorField(
 	value: unknown,
-	field: "anchor_start" | "anchor_end",
+	field: "anchor_start" | "anchor_end" | "anchor_after",
 	index: number,
 	requireLineContent: boolean,
 ): void {
@@ -216,16 +288,51 @@ export function assertEditItem(
 ): asserts item is EditItemParams {
 	if (!isRec(item)) {
 		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}] must be an object with op, anchor_start, and (when applicable) anchor_end / lines.`,
+			`[E_BAD_SHAPE] edits[${index}] must be an object with op and an anchor — \`anchor_after\` for op:"ins", \`anchor_start\` for the other ops — plus (when applicable) anchor_end / lines / pattern.`,
 		);
 	}
 	rejectUnknownFields(item, EDIT_ITEM_KS, `edits[${index}]`);
-	if (item.op !== "ins" && item.op !== "del" && item.op !== "replace") {
+	if (
+		item.op !== "ins" &&
+		item.op !== "del" &&
+		item.op !== "replace" &&
+		item.op !== "sed"
+	) {
 		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}].op must be "ins", "del", or "replace".`,
+			`[E_BAD_SHAPE] edits[${index}].op must be one of "ins", "del", "replace", "sed". Structural changes go through \`ast_edit\`, which resolves a shape into exactly these.`,
 		);
 	}
-	assertAnchorField(item.anchor_start, "anchor_start", index, requireLineContent);
+	// WHICH ANCHOR FIELD IS LEGAL DEPENDS ON THE OP, and the check is hard.
+	//
+	// `ins` takes `anchor_after` and ONLY that; `replace` / `del` take
+	// `anchor_start` and only that. A call that mixes them is rejected rather than
+	// transliterated — accepting `anchor_start` on `ins` for compatibility would
+	// keep the very habit this change exists to break.
+	if (item.op === "ins") {
+		if (item.anchor_start !== undefined) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"ins" takes "anchor_after", not "anchor_start". The anchor is a POSITION to insert below, not the start of a range: the line it names is kept, and \`lines\` holds only what is NEW.`,
+			);
+		}
+		if (item.anchor_end !== undefined) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"ins" has no "anchor_end": insert below "anchor_after" — one anchor, one position.`,
+			);
+		}
+		if (item.anchor_after === undefined) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"ins" requires "anchor_after" — the anchor whose line the new lines go BELOW.`,
+			);
+		}
+		assertAnchorField(item.anchor_after, "anchor_after", index, requireLineContent);
+	} else {
+		if (item.anchor_after !== undefined) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"${item.op}" takes "anchor_start", not "anchor_after" — it names a RANGE, and \`lines\` is what that range becomes.`,
+			);
+		}
+		assertAnchorField(item.anchor_start, "anchor_start", index, requireLineContent);
+	}
 	if (item.anchor_end !== undefined) {
 		assertAnchorField(item.anchor_end, "anchor_end", index, requireLineContent);
 	}
@@ -245,7 +352,53 @@ export function assertEditItem(
 			throw new Error(
 				item.op === "ins"
 					? `[E_BAD_SHAPE] edits[${index}].op:"ins" requires a non-empty "lines" array of strings to insert.`
-					: `[E_BAD_SHAPE] edits[${index}].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`,
+					: `[E_BAD_SHAPE] edits[${index}].op:"${item.op}" requires a non-empty "lines" array of strings. Use op:"del" to delete.`,
+			);
+		}
+	}
+	if (item.op === "sed") {
+		// sed IS the replacement, so `lines` is a contradiction, not a spare
+		// field: accepting both would leave the caller guessing which one won.
+		if (item.lines !== undefined) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"sed" takes "pattern" + "replacement", not "lines" — the substitution IS the new content.`,
+			);
+		}
+		if (typeof item.pattern !== "string" || item.pattern.length === 0) {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"sed" requires a non-empty "pattern" (regular-expression source, applied line by line over the anchor range).`,
+			);
+		}
+		if (typeof item.replacement !== "string") {
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].op:"sed" requires "replacement" (a string; empty deletes what the pattern matched).`,
+			);
+		}
+		if (item.replacement.includes("\n")) {
+			// sed substitutes WITHIN a line: one line in, one line out. Allowing a
+			// newline here would change the range's line count behind every
+			// downstream hunk calculation, and `op:"replace"` already does that job
+			// honestly.
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].replacement must not contain a newline — op:"sed" rewrites each line in place. Use op:"replace" to change the line count.`,
+			);
+		}
+		if (item.flags !== undefined) {
+			if (typeof item.flags !== "string" || !/^[gims]*$/.test(item.flags) || new Set(item.flags).size !== item.flags.length) {
+				throw new Error(
+					`[E_BAD_SHAPE] edits[${index}].flags must be a unique subset of "gims" (g = every match per line, i = ignore case, m = multi-line anchors, s = dot matches newline).`,
+				);
+			}
+		}
+		// Compiled HERE so a bad pattern fails as a shape error with the regex
+		// engine's own words, instead of surfacing later as a mysterious no-op.
+		const flags = item.flags === undefined || item.flags === "" ? "" : item.flags;
+		try {
+			new RegExp(item.pattern, flags);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`[E_BAD_SHAPE] edits[${index}].pattern is not a valid regular expression: ${message}`,
 			);
 		}
 	}
@@ -308,7 +461,15 @@ export function assertReadRequest(
 			'[E_BAD_SHAPE] Read request requires a non-empty "path" string.',
 		);
 	}
+	// No cross-field AST rules any more, and their absence is the point: those
+	// selectors are gone, so `rejectUnknownFields` above is the whole story — a
+	// call still carrying one is rejected as an unknown field, which is the
+	// honest answer. `validateReadAstFields` survived the removal because it
+	// takes `Record<string, unknown>`, so the type checker could not see that the
+	// fields it validates no longer exist and that `rejectUnknownFields` had
+	// already made it unreachable.
 }
+
 
 export function assertUndoRequest(
 	request: unknown,
@@ -390,31 +551,58 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 		properties: {
 			op: {
 				type: "string",
-				enum: ["ins", "del", "replace"],
+				enum: ["ins", "del", "replace", "sed"],
 				required: true,
 				description:
-					'Edit semantic. "ins" inserts `lines` AFTER the `anchor_start` line (the anchor line is preserved — do NOT include it in `lines`); "del" removes the range; "replace" swaps it with `lines`.',
+					'Edit semantic. Line ops name their range: "ins" puts `lines` BELOW the `anchor_after` line, which is KEPT — `lines` holds only what is NEW, so the anchor line must NOT appear in it; "del" removes the `anchor_start..anchor_end` range; "replace" swaps it with `lines`; "sed" rewrites EVERY line of that range with the regular expression in `pattern` (with `replacement` and optional `flags`) — line by line, so the range\'s line count never changes and a pattern never spans two lines. ' +
+					'For a STRUCTURAL change — replace or delete a function, class or method as a whole — use `ast_edit` with a pattern: it resolves the extent from the parse and applies the result through this same engine. That is why there is no block op here.',
 			},
-			anchor_start: requireLineContent
-				? anchorDeclarationSchema(true)
+			// The `ins` anchor, under its own name. See `anchor_after` on the type.
+			anchor_after: requireLineContent
+					// OPTIONAL at the schema level, both of them: which one is REQUIRED
+					// depends on `op`, and a schema cannot express that. `assertEditItem`
+					// enforces the per-op rule, and neither is marked required here so a
+					// `replace` is never asked for an `anchor_after` it must not send.
+					? anchorDeclarationSchema(false)
 				: {
-					type: "string",
-					required: true,
-					description:
-						'Required. Anchor (variable-length Base62 from a read/grep/diff row; `<line>:<anchor>` with the line_numbers option is accepted, anchor authoritative) of the FIRST line of the range. For `op:"ins"`, the lines land AFTER this line.'
-				},
+						type: "string",
+						description:
+							'REQUIRED FOR `op:"ins"`, forbidden otherwise. The anchor whose line the new lines go BELOW. It is a POSITION — the line it names is kept, and `lines` holds ONLY the new lines. Deliberately not named `anchor_start`: under that name a caller who had just used `replace` wrote the anchor\'s own line into `lines` and duplicated it. Sending `anchor_start` with `op:"ins"` is refused.',
+					},
+			anchor_start: requireLineContent
+				? anchorDeclarationSchema(false)
+				: {
+						type: "string",
+						description:
+							'Required for `op:"replace"` and `op:"del"`, forbidden for `op:"ins"` (which takes `anchor_after`). Anchor of the FIRST line of the RANGE — and `lines` is what that range BECOMES, so for `replace` the range\'s own lines DO belong in `lines`.',
+					},
 			anchor_end: requireLineContent
 				? anchorDeclarationSchema(false)
 				: {
 					type: "string",
 					description:
-						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line range (anchor_start only); the replacement `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines. Ignored for `op:"ins"` (a warning is returned instead — ins inserts after `anchor_start`; do not pass anchor_end).'
+						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line range (anchor_start only); the replacement `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines. Forbidden for `op:"ins"`, which has one anchor and no range.'
 				},
 			lines: {
 				type: "array",
 				items: { type: "string" },
 				description:
-					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. For `ins`: lines to insert AFTER `anchor_start` — do NOT include the anchor_start line itself; it is preserved automatically. For `replace`: lines to substitute the anchor_start..anchor_end range with. Pass `[""]` to clear a single line (still a replace, not a del).',
+					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. FORBIDDEN on `op:"sed"`, whose replacement is `pattern`/`replacement`. For `ins`: ONLY the new lines that go BELOW `anchor_after` — the anchor\'s own line is kept, and putting it here duplicates it. For `replace`: the lines that SUBSTITUTE the anchor_start..anchor_end range, so the range\'s original lines do not belong here either. Pass `[""]` to clear a single line (still a replace, not a del).'
+			},
+			pattern: {
+				type: "string",
+				description:
+					'`op:"sed"` only. Regular-expression SOURCE applied to every line of the `anchor_start..anchor_end` range, exactly as command-line sed works a stream: line by line, so a pattern never spans two lines. Without the `g` flag only the FIRST match on each line is replaced — sed\'s own default. Keep it cheap: the regex runs once per line of the range.',
+			},
+			replacement: {
+				type: "string",
+				description:
+					'`op:"sed"` only. The replacement text. Both dialects work: sed\'s `\\1` (group) and `&` (whole match) are translated, and JavaScript\'s `$1` / `$&` pass through unchanged. An empty string DELETES what the pattern matched. It must NOT contain a newline — sed substitutes within a line, so the range\'s line count never changes; use `op:"replace"` when lines must be added or removed.',
+			},
+			flags: {
+				type: "string",
+				description:
+					'`op:"sed"` only. Any unique combination of: `g` (every match per line, not just the first), `i` (ignore case), `m` (^ and $ match line boundaries), `s` (. matches newline). Omit for sed\'s default behaviour.',
 			},
 			path: {
 				type: "string",
@@ -425,7 +613,9 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 	} as const;
 }
 
-export function buildEditsSchema(requireLineContent: boolean): ParameterPropertySpec {
+export function buildEditsSchema(
+	requireLineContent: boolean,
+): ParameterPropertySpec & { items: ParameterPropertySpec } {
 	return {
 		type: "array",
 		required: true,
@@ -461,7 +651,7 @@ export const readFilePathSchema = {
 export const lineNumbersSchema = {
 	type: "boolean",
 	description:
-		"When true, each output row's marker is prefixed with its 1-indexed line as `<line>:<anchor>` (informational positional hint only — the anchor is authoritative; markers remain editable either form). Default true — pass `false` for bare `<anchor>` rows.",
+		"When true, each output row's marker carries its 1-indexed line as `<anchor>:<line>` — the anchor first (the token to copy), its line number trailing as a positional hint. The anchor is authoritative and either half may be sent back. Default true — pass `false` for bare `<anchor>` rows.",
 } as const;
 
 /** @deprecated — kept for backward compat with the pre-0.4 contract. */

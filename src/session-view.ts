@@ -31,6 +31,7 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
+import type { FileIO } from "./fs-bridge.js";
 import { hashRe, canon, contentChecksum } from "./hashline/hash-assign.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "./constants.js";
@@ -427,11 +428,14 @@ const windowPositions = [...windowSet].sort((a, b) => a - b);
   };
 }
 
-export async function scanDrift(input: { sessionKey: string; served: (string | null)[]; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; path: string }): Promise<string | undefined> {
+export async function scanDrift(input: { sessionKey: string; served: (string | null)[]; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; path: string; io?: FileIO; exec?: ToolExecution }): Promise<string | undefined> {
   const reported = await driftReported(input.sessionKey, input.path);
 const result = computeDrift({ ...input, reported });
   if (!result || result.allAlreadyReported) return result?.text;
   await recordServed(input.sessionKey, input.path, result.rows.map((row) => ({ position: row.position, anchor: row.anchor })), input.resultLines.length);
+  // The drift rows are served, so the file is OBSERVED: the anchors printed
+  // here are exactly the ones a corrective edit will use.
+  if (input.io !== undefined) await input.io.emitObserved(input.path, input.exec);
   await markDriftReported(input.sessionKey, input.path, result.rows.filter((row) => row.drifted).map((row) => row.anchor));
   return result.text;
 }

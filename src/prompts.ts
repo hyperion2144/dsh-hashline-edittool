@@ -30,8 +30,8 @@ import type { EffectiveHashlineConfig } from "./config.js";
 /** Edit tool description, generated from the effective config (text/json, declaration mode). */
 export function editDescription(cfg: EffectiveHashlineConfig): string {
 	const base = cfg.requireLineContent
-		? "Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines?}` — every anchor is a pair: the anchor PLUS the current full text of its line, verified before applying (mismatch = [E_CONTENT_MISMATCH]). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`)."
-		: "Apply one or more edits atomically: each item is `{op: ins|del|replace, anchor_start, anchor_end?, lines?}`; anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
+		? "Apply one or more edits atomically: each item is `{op: ins|del|replace|sed, anchor_after?: {anchor, line}, anchor_start?: {anchor, line}, anchor_end?: {anchor, line}, lines?}` — `ins` takes `anchor_after` (the line to insert BELOW, which is KEPT, so `lines` holds only the new lines), `replace`/`del` take `anchor_start`; `sed` takes `anchor_start` plus `pattern`/`replacement`/`flags?` and rewrites each line of the range in place (no `lines`, no newline in `replacement`). Every anchor is a pair: the anchor PLUS the current full text of its line, verified before applying (mismatch = [E_CONTENT_MISMATCH]). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`)."
+		: "Apply one or more edits atomically: each item is `{op: ins|del|replace|sed, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags?}` — `op:\"ins\"` takes `anchor_after` ONLY (the line to insert BELOW; it is KEPT, so `lines` holds only what is NEW); `replace` and `del` take `anchor_start` and never `anchor_after`; `op:\"sed\"` takes `anchor_start` (+ optional `anchor_end`) plus `pattern`/`replacement`/`flags?` and rewrites every line of that range with the regular expression (no `lines`; the replacement must not contain a newline). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
 	if (cfg.outputFormat === "json") {
 		return base + " JSON output: `{ok, files:[{path, applied, finalLines, noop}], hints, warnings, errors}` — `finalLines` keys are fresh anchors for follow-up edits.";
 	}
@@ -47,12 +47,13 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 	if (cfg.requireLineContent) {
 		return {
 			intro:
-				"Edit one or more ranges via `edits:[{op, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines?}]` — every anchor carries a declaration of its line's current text.",
+				"Edit one or more ranges via `edits:[{op, anchor_after?: {anchor, line}, anchor_start?: {anchor, line}, anchor_end?: {anchor, line}, lines?}]` — `ins` anchors on `anchor_after`, the others on `anchor_start`; every anchor carries a declaration of its line's current text.",
 			lines: [
-				"`edit`: each item is `{ op, anchor_start: {anchor, line}, anchor_end?: {anchor, line}, lines? }`. `op` is `ins` (insert after `anchor_start` — the anchor line is preserved, do NOT include it in `lines`), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
+				"`edit`: each item is `{ op, anchor_after?: {anchor, line}, anchor_start?: {anchor, line}, anchor_end?: {anchor, line}, lines? }`. `op` is `ins` (insert BELOW `anchor_after` — that line is KEPT, so `lines` holds only the new lines), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
+				"`edit`: the anchor field follows the OP, and mixing them is REFUSED. `ins` + `anchor_start` is `[E_BAD_SHAPE]` — it was the same field name once, and a caller who had just used `replace` carried that reading over, put the anchor's own line into `lines`, and duplicated it. `anchor_after` names a POSITION, not a range start.",
 				"`edit`: `line` is your declaration of the line's CURRENT full text, verbatim from your latest read — single line, no newlines; an empty string declares an empty line. Trailing whitespace may be omitted and a copied read-row marker prefix is tolerated; anything else must match exactly.",
 				"`edit`: every declared line is verified before the edit applies (after the stale-anchor check) — a mismatch rejects the whole call with `[E_CONTENT_MISMATCH]`, echoing the actual line and where your declared content currently lives. Copy each declaration from the same read the anchors came from.",
-				"`edit`: all three ops require declarations; omitting `anchor_end` (single-line range) declares only `anchor_start`; `lines` may have any number of lines. `op:\"ins\"` accepts ONLY `anchor_start` — the insert lands AFTER that line; do NOT include the anchor line in `lines`.",
+				"`edit`: all three ops require declarations; omitting `anchor_end` (single-line range) declares only `anchor_start`; `lines` may have any number of lines. `op:\"ins\"` takes `anchor_after` and ONLY that — the insert lands BELOW that line; do NOT include the anchor line in `lines`.",
 				"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 				"`edit`: anchors are variable-length Base62 markers copied from the leftmost column of a read/grep/diff row; the legacy `<line>#<hash>` form is rejected (`E_BAD_REF`). Identical content lines get DISTINCT anchors — declare the line you mean.",
 				"`edit`: ALL anchors (and declarations) in one call come from the same ORIGINAL read. The batch is ATOMIC — any hunk failure rejects the WHOLE batch ([E_BATCH_ABORT]) and nothing is written. Do not issue several `edit` calls in one message — one call, one `edits` array.",
@@ -61,12 +62,14 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 	}
 	return {
 		intro:
-			"Edit one or more ranges via `edits:[{op, anchor_start, anchor_end?, lines?}]` — never by line content.",
+			"Edit one or more ranges via `edits:[{op, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags?}]` — `ins` anchors on `anchor_after`, the others on `anchor_start`; `sed` adds `pattern`/`replacement`.",
 		lines: [
-			"`edit`: each item is `{ op, anchor_start, anchor_end?, lines? }`. `op` is `ins` (insert after `anchor_start` — the anchor line is preserved, do NOT include it in `lines`), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
+			"`edit`: each item is `{ op, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags? }`. `op` is `ins` (insert BELOW `anchor_after` — that line is KEPT, so `lines` holds only the new lines), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), `replace` (swap the `anchor_start..anchor_end` range with `lines`), or `sed` (rewrite every line of the `anchor_start..anchor_end` range with the regular expression in `pattern`, using `replacement` and optional `flags` — `g` replaces every match per line, `i` ignores case, `m` makes `^`/`$` match line boundaries, `s` lets `.` match a newline; without `g` only the FIRST match on each line is replaced, as command-line sed does).",
+			"`edit`: `op:\"sed\"` takes `pattern` + `replacement` (and optional `flags`), NOT `lines` — mixing them is `[E_BAD_SHAPE]`. `replacement` accepts both dialects: sed's `\\1` and `&` (whole match) and JavaScript's `$1` and `$&`; an empty `replacement` deletes what the pattern matched. It must not contain a newline: sed substitutes WITHIN a line, so the range's line count never changes — use `op:\"replace\"` when lines must be added or removed.",
+			"`edit`: the anchor field follows the OP, and mixing them is REFUSED. `ins` + `anchor_start` is `[E_BAD_SHAPE]` — it was the same field name once, and a caller who had just used `replace` carried that reading over, put the anchor's own line into `lines`, and duplicated it. `anchor_after` names a POSITION, not a range start.",
 			"`edit`: `replace` swaps the `anchor_start..anchor_end` range for `lines` (any length). Omit `anchor_end` for a single-line range (anchor_start only) — the replacement may still have multiple lines. `ins` anchors on one line only.",
-			"`edit`: op memory: `ins` KEEPS the anchor line and inserts `lines` after it — do NOT include the anchor line content in `lines` (that duplicates it); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means NOTHING was written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
-			"`edit`: `anchor_start` is required and anchors the FIRST line of the range; `anchor_end` anchors the LAST line and is OPTIONAL — omitting it defaults to a single-line range (anchor_start only); `lines` may have any number of lines. Pass `anchor_end` when the RANGE spans multiple original lines. `op:\"ins\"` accepts ONLY `anchor_start` — the insert lands AFTER that line; `anchor_end` is rejected.",
+			"`edit`: op memory: `ins` KEEPS the `anchor_after` line and inserts `lines` below it — do NOT include that line's content in `lines` (it duplicates it); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means NOTHING was written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
+			"`edit`: `anchor_start` is required for `replace` and `del` and anchors the FIRST line of the range; `anchor_end` anchors the LAST line and is OPTIONAL — omitting it defaults to a single-line range; `lines` may have any number of lines. `op:\"ins\"` takes `anchor_after` INSTEAD OF `anchor_start`, and `anchor_end` is rejected on it: one anchor, one position.",
 			"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 			"`edit`: anchors must be variable-length Base62 markers copied from the leftmost column of a read/grep/diff row — never hand-write or paste line content. The legacy `<line>#<hash>` form is rejected (`E_BAD_REF`).",
 			"`edit`: identical content lines get DISTINCT anchors — copy the exact marker of the line you mean.",
@@ -78,11 +81,25 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 }
 
 /** Read tool description, generated from the effective config (text/json). */
+/**
+ * What `read` deliberately does NOT do, said plainly.
+ *
+ * A model that has used the old AST selectors will reach for them; naming their
+ * replacement is cheaper than letting it infer one from a rejection, and it is
+ * the only way it learns that structure moved rather than disappeared.
+ */
+const AST_MOVED_NOTE =
+ " This tool reads LINES and nothing else. For structure — a symbol's block, an outline, cross-file references — use `ast_grep` (no pattern returns the outline) or `lsp`. Structural selectors here are rejected, not silently ignored.";
+
 export function readDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {anchor: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is `<line>:<anchor>` (line prefix default on; pass `line_numbers: false` for bare anchors); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit.";
+		return (
+			"Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {anchor: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is `<anchor>:<line>` (anchor first, its line number trailing; pass `line_numbers: false` for bare anchors); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit." +
+			AST_MOVED_NOTE
+		);
 	}
-	return "Read a text file: pass `file_path`. Each row is `<line>:<anchor>:content` (line number on by default; pass `line_numbers: false` for bare `<anchor>:content` rows) under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit.";
+	return ("Read a text file: pass `file_path`. Each row is `<anchor>:<line>:content` — the anchor FIRST, its line number trailing (pass `line_numbers: false` for bare `<anchor>:content` rows) — under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit." +
+		AST_MOVED_NOTE);
 }
 
 export const READ_GUIDANCE: ToolGuidance = {
@@ -90,8 +107,8 @@ export const READ_GUIDANCE: ToolGuidance = {
 		"Use read, not shell commands, to inspect text files and obtain the variable-length anchors the editing tools require.",
 	lines: [
 		"`read`: call it only for content the tools have not served — a page you never saw, or lines past the post-edit diff.",
-		"`read`: each row is `<line>:<anchor>:content` (line number on by default; `line_numbers: false` gives bare `<anchor>:content`); the marker is the anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors). The header `ANCHOR:FILELINE` separates marker columns from file content.",
-		"`read`: the `<line>:` prefix is a positional hint — copy only the anchor part (or the whole `<line>:<anchor>`, both accepted) into edit; the anchor is authoritative. Pass `line_numbers: false` for bare `<anchor>:content` rows.",
+		"`read`: each row is `<anchor>:<line>:content` — copy the ANCHOR (the first token); the line number trails it and is a hint only (`line_numbers: false` gives bare `<anchor>:content`). Identical content lines get DISTINCT anchors. The header `ANCHOR:FILELINE` separates marker columns from file content.",
+		"`read`: the ANCHOR comes first; the number after it is that line's number, informational only. Either half works as the anchor field (the whole `<anchor>:<line>` marker or the bare anchor both parse — and a bare line number alone is accepted too, resolved to that served line), but the anchor is authoritative. Pass `line_numbers: false` for bare `<anchor>:content` rows.",
 		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
 		"`read`: binary/directory rejects; page large files with offset/limit.",
 	],
@@ -112,9 +129,9 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 /** Grep tool description, generated from the effective config (text/json). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are `<line>:<anchor>` edit anchors (variable-length Base62, line prefix default on), values are verbatim file content; matches are served so they can be edited directly.";
+		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are `<anchor>:<line>` edit markers (the variable-length Base62 anchor first, its line number trailing), values are verbatim file content; matches are served so they can be edited directly.";
 	}
-	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<line>:<anchor>:content` rows, line number on by default; `line_numbers: false` for bare anchors); matches are served, so they can be edited directly.";
+	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:<line>:content` rows — anchor first, line number trailing; `line_numbers: false` for bare anchors); matches are served, so they can be edited directly.";
 }
 
 export const GREP_GUIDANCE: ToolGuidance = {

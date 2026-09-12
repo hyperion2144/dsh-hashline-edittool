@@ -24,6 +24,10 @@ const rebuilders = new Set<EditSurfaceRebuilder>();
 /**
  * Register one agent's edit-surface rebuilder. Returns the unsubscriber
  * (the agent's effect cleanup calls it when the agent is disposed).
+ *
+ * ONLY the edit surface has a rebuild path now. `read` used to need one for the
+ * same reason — its AST parameters came and went with `ast.enabled` — and they
+ * are gone, so there is no longer a state for it to react to.
  */
 export function onEditSurfaceRebuild(rebuild: EditSurfaceRebuilder): () => void {
 	rebuilders.add(rebuild);

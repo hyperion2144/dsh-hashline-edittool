@@ -15,32 +15,50 @@
  *   output_format: text   # "text" (hashline rows) | "json" (pure JSON)
  * ```
  *
- * Precedence: registered settings service (live getter + settings/updated)
- * > direct settings.yaml read (any deployment) > defaults.
- *
+ * Precedence: the registered settings service (live getter + settings/updated)
+ * > defaults. There is NO direct settings.yaml fallback: file access happens
+ * only inside the settings provider's own load/persist, never around it.
  * @module dsh-hashline-edittool/config
  */
-import { readFileSync, watch as watchFile } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
-import { ensureSettingsService } from "./settings-provider.js";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
 import { rebuildEditSurfaces } from "./edit-rebuild.js";
+import { getAstClient } from "./ast/client.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
-/** Poll cadence / give-up window for the deferred settings-section install. */
-const RETRY_INTERVAL_MS = 200;
-const RETRY_GIVE_UP_MS = 30_000;
 export interface HashlineSettings {
 	separator?: string;
 	output_format?: "text" | "json";
 	context_lines?: number;
 	/** When true, edit anchors are `{ anchor, line }` declaration pairs (default false). */
 	require_line_content?: boolean;
+	/**
+	 * The AST capability's namespace entry.
+	 *
+	 * **Default off**: AST is additive, and with it off `read`/`edit` behave
+	 * exactly as they did before it existed. `languages` narrows the master
+	 * switch — an absent entry means enabled, so turning the master on turns a
+	 * language on until someone says otherwise.
+	 */
+	ast?: {
+		enabled?: boolean;
+		languages?: Record<string, { enabled?: boolean } | undefined>;
+	};
+	/**
+	 * Language servers the user NAMED, keyed by language.
+	 *
+	 * A command that cannot be found is NOT rejected here — it is reported by the
+	 * status surface, so a typo stays visible and fixable instead of silently
+	 * dropping the language back to a heuristic scan.
+	 */
+	lsp?: {
+		servers?: Record<string, string | undefined>;
+	};
 }
 
 /** Permissive schema — unknown keys tolerated so newer versions don't break older builds. */
@@ -50,6 +68,17 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		output_format: z.union(["text", "json"]),
 		context_lines: z.number().min(0).max(20),
 		require_line_content: z.boolean(),
+		ast: z.object({
+		// Named servers, by language. A dict rather than a list of objects on
+		// purpose: it matches the shape of `ast.languages`, so the hand-rolled
+		// settings reader handles it with the same indentation rules it already
+		// has, and "which server does typescript use" is the question being asked.
+		lsp: z.object({
+			servers: z.dict(z.string()),
+		}),
+			enabled: z.boolean(),
+			languages: z.dict(z.object({ enabled: z.boolean() })),
+		}),
 	})
 	.loose() as unknown as z<HashlineSettings>;
 	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
@@ -64,6 +93,18 @@ export interface EffectiveHashlineConfig {
 	contextLines: number;
 	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
 	requireLineContent: boolean;
+	/** AST capability master switch (see `HashlineSettings.ast`). */
+	astEnabled: boolean;
+	/** Per-language narrowing, from `ast.languages.<id>.enabled`. */
+	astLanguages: ReadonlySet<string>;
+	/**
+	 * Language -> command for servers the user NAMED, from `lsp.servers.<id>`.
+	 *
+	 * Intent, kept separate from what discovery FINDS: a named server is not a
+	 * running one, and an entry can point at a command that does not exist — a
+	 * fact the card reports rather than an error the setting rejects.
+	 */
+	lspServers: ReadonlyMap<string, string>;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
@@ -71,6 +112,9 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	outputFormat: "text",
 	contextLines: 3,
 	requireLineContent: false,
+	astEnabled: false,
+	astLanguages: new Set<string>(),
+	lspServers: new Map<string, string>(),
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -78,6 +122,42 @@ let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
 /** Effective runtime config (module singleton; defaults = current contract). */
 export function getEffectiveConfig(): EffectiveHashlineConfig {
 	return { ...effective };
+}
+
+/** Whether the AST capability is on (structural summaries, symbol reads). */
+export function isAstEnabled(): boolean {
+	return effective.astEnabled;
+}
+
+/**
+ * Whether AST work may touch a language.
+ *
+ * The master switch is the gate; a per-language entry only narrows it. An
+ * absent entry therefore means enabled — "turn AST on" should not also
+ * require visiting every language row.
+ */
+export function isAstLanguageEnabled(id: string): boolean {
+	if (!effective.astEnabled) return false;
+	const entry = effective.astLanguages;
+	return !entry.has(`!${id}`);
+}
+
+/** The languages explicitly turned off, for the card and for diagnostics. */
+export function astDisabledLanguages(): string[] {
+	return [...effective.astLanguages].filter((key) => key.startsWith("!")).map((key) => key.slice(1));
+}
+
+/**
+ * The language servers the user NAMED, by language.
+ *
+ * Intent only. Whether the command exists, and whether a server is running,
+ * are facts that belong to the status report — this answers "which server did
+ * the user ask for", which is what discovery needs to honour `configured`.
+ *
+ * @returns a copy; mutating it does not change the effective config.
+ */
+export function lspConfiguredServers(): ReadonlyMap<string, string> {
+	return new Map(effective.lspServers);
 }
 
 export function isJsonOutput(): boolean {
@@ -106,10 +186,49 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 	// The edit tool's model-facing schema depends on this flag: when it
 	// FLIPS, live agents' edit surfaces must be disposed and re-registered
 	// so the next model step sees the new parameter set (issue #75/#76).
+	const astOn =
+		typeof settings?.ast?.enabled === "boolean" ? settings.ast.enabled : DEFAULT_CONFIG.astEnabled;
+	// Disabled languages are keyed with a `!` prefix so one Set carries both
+	// "explicitly off" and (by absence) "inherit the master switch".
+	const astLangs = new Set<string>();
+	for (const [id, entry] of Object.entries(settings?.ast?.languages ?? {})) {
+		if (entry !== undefined && entry.enabled === false) astLangs.add(`!${id}`);
+	}
+	// Named language servers, language -> command. Not validated against the
+	// filesystem: a path that does not exist is reported by the status surface
+	// rather than refused here, because refusing would make a typo unresolvable
+	// from the UI that has to show it.
+	const lspServers = new Map<string, string>();
+	for (const [id, command] of Object.entries(settings?.lsp?.servers ?? {})) {
+		if (typeof command === "string" && command.trim() !== "") lspServers.set(id, command.trim());
+	}
 	const flagChanged = effective.requireLineContent !== requireLine;
-	effective = { separator: sep, outputFormat: fmt, contextLines: nctx, requireLineContent: requireLine };
+	const astChanged = effective.astEnabled !== astOn;
+	effective = {
+		separator: sep,
+		outputFormat: fmt,
+		contextLines: nctx,
+		requireLineContent: requireLine,
+		astEnabled: astOn,
+		astLanguages: astLangs,
+		lspServers: lspServers,
+	};
 	applyHashlineShape({ separator: sep, contextLines: nctx });
 	if (flagChanged) rebuildEditSurfaces();
+	if (astChanged && !astOn) {
+		// Only the ARENA release is left of the AST switch's side effects.
+		//
+		// It used to rebuild both tool surfaces, because both carried AST
+		// parameters whose existence had to follow the setting. Neither does now —
+		// structure moved to `ast_grep` / `lsp`, whose surfaces do not vary — so
+		// the rebuild was machinery for a change that can no longer happen.
+		//
+		// The release still matters: an explicit "off" should free the arena now
+		// rather than at the next idle timeout. It can hold up to 2 GiB, and the
+		// user asked for it to stop. Dropping references frees nothing — only
+		// terminate does.
+		void getAstClient().dispose();
+	}
 }
 
 /** Default settings.yaml location (same file the dsh settings layer uses). */
@@ -137,6 +256,17 @@ export function settingsYamlPath(): string {
 export function parseSettingsYaml(text: string): HashlineSettings {
 	const out: HashlineSettings = {};
 	let inSection = false;
+	// The `ast` entry is the one nested value. Without this branch the flat
+	// fallback would drop it silently — the switch would appear to save and do
+	// nothing, which is worse than refusing it.
+	let inAst = false;
+	let astLanguage: string | undefined;
+	const astLangs: Record<string, { enabled?: boolean }> = {};
+	// The `lsp` entry is nested too, and for the same reason: the flat fallback
+	// would drop it silently and a named server would appear to save and do
+	// nothing.
+	let inLsp = false;
+	const lspServers: Record<string, string> = {};
 	for (const raw of text.split("\n")) {
 		const line = raw.trimEnd();
 		if (!inSection) {
@@ -146,6 +276,63 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 			continue;
 		}
 		if (!/^\s/.test(line) && line.trim() !== "") break; // next top-level key
+
+		// --- the `ast` sub-tree ---
+		const astTop = /^ {2}ast:\s*(#.*)?$/.exec(line);
+		if (astTop !== null) {
+			inAst = true;
+			astLanguage = undefined;
+			continue;
+		}
+		if (inAst) {
+			// Four levels: `ast:` → `enabled` / `languages:` → `<id>:` → `enabled`.
+			const langEnabled = /^ {8}enabled:\s*(.*)$/.exec(line);
+			if (langEnabled !== null && astLanguage !== undefined) {
+				const v = langEnabled[1]!.trim();
+				if (v === "true") astLangs[astLanguage] = { enabled: true };
+				else if (v === "false") astLangs[astLanguage] = { enabled: false };
+				continue;
+			}
+			const langName = /^ {6}([A-Za-z_][A-Za-z0-9_]*):\s*(#.*)?$/.exec(line);
+			if (langName !== null) {
+				astLanguage = langName[1]!;
+				continue;
+			}
+			const child = /^ {4}([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
+			if (child !== null) {
+				if (child[1] === "enabled") {
+					const v = child[2]!.trim();
+					if (v === "true") out.ast = { ...out.ast, enabled: true };
+					else if (v === "false") out.ast = { ...out.ast, enabled: false };
+				}
+				// `languages:` is just a container; its children carry the values.
+				continue;
+			}
+			if (/^ {2}\S/.test(line)) inAst = false; // dedented: leave the sub-tree
+			else continue;
+		}
+
+		// --- the `lsp` sub-tree ---
+		// Three levels: `lsp:` → `servers:` → `<id>:` <command>.
+		const lspTop = /^ {2}lsp:\s*(#.*)?$/.exec(line);
+		if (lspTop !== null) {
+			inLsp = true;
+			continue;
+		}
+		if (inLsp) {
+			const entry = /^ {6}([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
+			if (entry !== null) {
+				// Quoted or bare, with a trailing comment stripped: a command is a
+				// path, and paths contain spaces, so quotes are worth honouring.
+				const value = entry[2]!.replace(/\s+#.*$/, "").trim().replace(/^["']|["']$/g, "");
+				if (value !== "") lspServers[entry[1]!] = value;
+				continue;
+			}
+			if (/^ {4}servers:\s*(#.*)?$/.test(line)) continue; // container only
+			if (/^ {2}\S/.test(line)) inLsp = false; // dedented: leave the sub-tree
+			else continue;
+		}
+
 		const m = /^\s{2,}([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
 		if (!m) continue;
 		const key = m[1]!;
@@ -168,209 +355,42 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 			else if (value === "false") out.require_line_content = false;
 		}
 	}
-return out;
+	if (Object.keys(astLangs).length > 0) {
+		out.ast = { ...out.ast, languages: astLangs };
+	}
+	if (Object.keys(lspServers).length > 0) {
+		out.lsp = { ...out.lsp, servers: lspServers };
+	}
+	return out;
 }
 
 
-interface SettingsSnapshotHooks {
-	setSource(current: () => HashlineSettings): void;
-	onChange(): void;
-}
-
-function createSnapshot(
-	initial: HashlineSettings,
-): { hooks: SettingsSnapshotHooks; get(): HashlineSettings } {
-	let source: (() => HashlineSettings) | undefined;
-	let snapshot: HashlineSettings = initial;
-	return {
-		hooks: {
-			setSource(getter) {
-				source = getter;
-				snapshot = getter();
-			},
-			onChange() {
-				if (source !== undefined) snapshot = source();
-			},
-		},
-		get: () => snapshot,
-	};
-}
 
 /**
- * Register the `hashline` settings namespace (when a settings service
- * exists) and ALWAYS sync the effective config — from the service when
- * available, otherwise by reading the settings file directly. Listens to
- * `settings/updated` so live edits take effect immediately.
+ * Attach the `hashline` settings namespace to the settings service and keep
+ * the effective config live.
+ *
+ * No retry, no fallback: `settings` is declared in the plugin's `inject`, so
+ * cordis starts the service BEFORE this plugin's `apply` runs — there is no
+ * race left to poll around. File access happens only inside the settings
+ * provider's own load/persist, never around it.
  */
-/**
- * Direct-file fallback for topologies where the settings service is
- * registered but NOT visible from this context (issue #69: observed on a
- * symlinked dev deployment with dual cordis instances / plugin double-mount).
- * Reads `settings.yaml` once, applies it, then watches the file so live edits
- * keep working without the host service. The watcher is disposed with ctx.
- */
-export function startDirectFileFallback(ctx: Context): () => void {
-	const apply = (): void => {
-			try {
-				applyEffective(parseSettingsYaml(readFileSync(settingsYamlPath(), "utf-8")));
-			} catch (err) {
-				const code = (err as { code?: unknown })?.code;
-				if (code === "ENOENT") {
-					// Absent settings.yaml — defaults apply, nothing to log.
-					applyEffective({});
-					return;
-				}
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(`dsh-hashline-edittool: direct settings.yaml fallback failed: ${message}`);
-			}
-	};
-	apply();
-	let watcher: ReturnType<typeof watchFile> | undefined;
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		watcher = watchFile(settingsYamlPath(), { persistent: false }, () => {
-			// chokidar-style debounce: editors write in multiple chunks.
-			if (timer !== undefined) clearTimeout(timer);
-			timer = setTimeout(apply, 100);
-		});
-	} catch {
-		// settings.yaml absent — defaults apply; no watch without a file.
-	}
-	try {
-		ctx.effect(() => () => {
-			watcher?.close();
-			if (timer !== undefined) clearTimeout(timer);
-		});
-	} catch {
-		// effect registration unavailable — leak the watcher; process-lifetime only.
-	}
-	return () => {
-		watcher?.close();
-		if (timer !== undefined) clearTimeout(timer);
-	};
-}
-
-/**
- * Background retry for the boot-order race (issue #69 restart finding): at
- * plugin apply time the host settings provider may already be registered but
- * its fiber not yet started, so `ctx.get("settings")` (strict on fiber state)
- * returns undefined and the section cannot be installed yet. Until it becomes
- * visible, the direct-file fallback keeps config alive; once visible, the
- * managed section is installed and the fallback is retired.
- */
-function scheduleSettingsRetry(
-	ctx: Context,
-	hooks: SettingsSnapshotHooks,
-	onAcquired: () => void,
-): void {
-	const startedAt = Date.now();
-	let attempts = 0;
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const attempt = (): void => {
-		attempts += 1;
-		const svc = (ctx as unknown as { get(name: string): unknown }).get("settings") as
-			SettingsProvider | undefined;
-		if (svc !== undefined) {
-			try {
-				svc.installSection(
-					ctx,
-					HASHLINE_SETTINGS_NAMESPACE as never,
-					HashlineSettingsSchema,
-					{} as HashlineSettings,
-					hooks,
-				);
-				console.error(
-					`dsh-hashline-edittool: settings service became visible after ${Date.now() - startedAt}ms (${attempts} attempt(s)) — managed section installed, direct-file fallback retired. Please report this if it recurs every boot.`,
-				);
-				onAcquired();
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(
-					`dsh-hashline-edittool: deferred settings install failed (tolerated, direct-file fallback stays): ${message}`,
-				);
-			}
-			return;
-		}
-		if (Date.now() - startedAt >= RETRY_GIVE_UP_MS) return; // fallback keeps working forever
-		timer = setTimeout(attempt, RETRY_INTERVAL_MS);
-	};
-	timer = setTimeout(attempt, RETRY_INTERVAL_MS);
-	try {
-		ctx.effect(() => () => {
-			if (timer !== undefined) clearTimeout(timer);
-		});
-	} catch {
-		// effect registration unavailable — leak the timer; process-lifetime only.
-	}
-}
-
 export function installHashlineSettings(ctx: Context): void {
-	// The settings service must exist for installSection to run. If
-	// the host did not mount one (minimal profile / smoke), provide our own
-	// read-only file-backed provider — the settings.yaml file is the source
-	// of truth in every deployment.
-	if (!ensureSettingsService(ctx)) {
-		// Do NOT reset the effective config here: a sibling apply of this
-		// plugin may have already installed a working service (profiles can
-		// double-mount via bundles + dependencies) — resetting would wipe
-		// its resolved value back to defaults.
-		return;
-	}
-	const snapshot = createSnapshot({});
-	const sync = (): void => {
-		try {
-			applyEffective(snapshot.get());
-		} catch (err) {
-			const message =
-				err instanceof Error ? err.message : String(err);
-			console.error(`dsh-hashline-edittool: settings apply failed: ${message}`);
-		}
-	};
-	const hooks = snapshot.hooks;
-	// installSection drives its inject callback ASYNCHRONOUSLY: our
-	// own sync() below may run before the section ever pushes its value into
-	// the snapshot. Re-apply on every onChange (attach + every commit) so the
-	// resolved value always lands.
-	const hookedOnChange = hooks.onChange;
-	hooks.onChange = () => {
-		hookedOnChange();
-		sync();
-	};
-	const settingsSvc = (ctx as unknown as { get(name: string): unknown }).get("settings") as SettingsProvider | undefined;
-	if (settingsSvc === undefined) {
-		// ensureSettingsService reported success (e.g. the "already registered"
-		// elsewhere" tolerance) but the service is not resolvable from THIS
-		// context. Never silent — and never dead: fall back to the documented
-		// direct settings.yaml reads so config still works in any topology.
-		console.error(
-			"dsh-hashline-edittool: settings service unreachable from this context — hashline section NOT registered; falling back to direct settings.yaml reads. Please report this.",
-		);
-		const stopFallback = startDirectFileFallback(ctx);
-		scheduleSettingsRetry(ctx, hooks, () => stopFallback());
-		return;
-	}
-	try {
-		settingsSvc.installSection(
-			ctx,
-			HASHLINE_SETTINGS_NAMESPACE as never,
-			HashlineSettingsSchema,
-			{} as HashlineSettings,
-			hooks,
-		);
-	} catch (err) {
-		const message =
-			err instanceof Error ? err.message : String(err);
-		console.error(
-			`dsh-hashline-edittool: settings install failed (tolerated): ${message}`,
+	const svc = (ctx as unknown as { get(name: string): unknown }).get("settings") as
+		SettingsProvider | undefined;
+	if (svc === undefined) {
+		// Unreachable with `settings` injected — cordis fails the plugin at load
+		// when an injected service is missing. Guarded anyway so the type-level
+		// contract holds without a cast.
+		throw new Error(
+			"dsh-hashline-edittool: the settings service is missing from the context.",
 		);
 	}
-	// Apply whatever the section resolved at registration, and re-apply on
-	// every committed change (service commit + file reload path both emit).
-	sync();
-	try {
-		ctx.on("settings/updated", sync);
-	} catch {
-		// event already subscribed or unknown — the section's own watch/onChange
-		// hooks still deliver live updates.
-	}
+	// THE DSH CAPABILITY: `register` returns the owner scope for reads,
+	// observation, and updates — and is an effect on the calling plugin's
+	// fiber, so it unwinds with the plugin by itself.
+	const scope = svc.register(HASHLINE_SETTINGS_NAMESPACE, HashlineSettingsSchema);
+	applyEffective(scope.get());
+	// Every committed change (card write, file reload) re-applies.
+	scope.watch((next) => applyEffective(next));
 }

@@ -102,7 +102,37 @@ export function updateAnchorsAfterEdit(args: {
 	const cursorByKey = new Map<number, { offsets: Record<number, number> }>();
 	const merged: string[] = [];
 	let cursor = 0;
+	const oldLines = splitLines(oldContent);
 	for (const h of ordered) {
+		// Lines that SURVIVED this hunk keep their anchors. Releasing the whole
+		// hunk and re-allocating every line made a row whose text had not
+		// changed come back with a different anchor — sometimes a duplicate
+		// sibling's old one, because both were free at the same moment.
+		//
+		// Paired by ALIGNMENT rather than by content alone: with two identical
+		// lines a content-keyed match cannot say which survived, and it handed
+		// the survivor its sibling's anchor. `alignPreserved` pairs latest-first,
+		// so a `replace` keeps the anchor of the line it closed with.
+		const oldSeg = oldLines.slice(h.oldStart1 - 1, Math.min(h.oldEnd1, oldLines.length));
+		const newSeg = newLines.slice(h.finalStart1 - 1, Math.min(h.finalEnd1, newLines.length));
+		const preserved = alignPreserved(oldSeg, newSeg);
+		const segStart = h.finalStart1 - 1;
+		//
+		// RESERVE every anchor a survivor is about to reclaim, BEFORE any fresh
+		// allocation. The whole hunk's anchors were released above, so a changed
+		// line earlier in the hunk could otherwise allocate straight onto the
+		// anchor a later survivor needs — and that survivor would then fail its
+		// reclaim and be re-anchored. Rare, but the property is meant to be a
+		// GUARANTEE: a line that is not in the diff keeps its anchor.
+		//
+		const reserved = new Set<string>();
+		for (const oldIdx of preserved.values()) {
+			const anchor = oldAnchors[h.oldStart1 - 1 + oldIdx];
+			if (anchor !== undefined) {
+				reserved.add(anchor);
+				used.add(anchor);
+			}
+		}
 		merged.push(...oldAnchors.slice(cursor, h.oldStart1 - 1));
 		for (let k = h.finalStart1 - 1; k < h.finalEnd1; k++) {
 			// issue #66/B4: defensively skip out-of-range rows instead of
@@ -113,6 +143,16 @@ export function updateAnchorsAfterEdit(args: {
 			// crashing the next edit.
 			if (k >= newLines.length) continue;
 			const key = contentKey(newLines[k]!);
+			// A surviving line reclaims its own anchor. `used` still guards the
+			// A survivor claims the anchor reserved for it above. No `used` check:
+			// the reservation put it there, and a valid alignment never pairs two
+			// lines onto one old index.
+			const paired = preserved.get(k - segStart);
+			const kept = paired === undefined ? undefined : oldAnchors[h.oldStart1 - 1 + paired];
+			if (kept !== undefined && reserved.has(kept)) {
+				merged.push(kept);
+				continue;
+			}
 			let gc = cursorByKey.get(key);
 			if (!gc) {
 				gc = { offsets: {} };
@@ -127,4 +167,45 @@ export function updateAnchorsAfterEdit(args: {
 	merged.push(...oldAnchors.slice(cursor));
 	upsert(path, contentChecksum(newContent), merged);
 	return merged;
+}
+/**
+ * Pair a hunk's old and new lines by content, latest-first.
+ *
+ * Content alone cannot name the survivor when a line appears twice: a bucket
+ * keyed by content handed the survivor its SIBLING's anchor. Alignment fixes
+ * that by using relative order, and the walk runs from the END so the trailing
+ * match wins — which is what a `replace` means, since its closing line is the
+ * one being kept.
+ *
+ * @param oldSeg - the hunk's old lines.
+ * @param newSeg - the hunk's new lines.
+ * @returns new index -> old index, for the lines worth carrying an anchor over.
+ */
+function alignPreserved(oldSeg: readonly string[], newSeg: readonly string[]): Map<number, number> {
+	const m = oldSeg.length;
+	const n = newSeg.length;
+	const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+	for (let i = 1; i <= m; i++) {
+		for (let j = 1; j <= n; j++) {
+			dp[i]![j] =
+				oldSeg[i - 1] === newSeg[j - 1]
+					? dp[i - 1]![j - 1]! + 1
+					: Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+		}
+	}
+	const pairs = new Map<number, number>();
+	let i = m;
+	let j = n;
+	while (i > 0 && j > 0) {
+		if (oldSeg[i - 1] === newSeg[j - 1]) {
+			pairs.set(j - 1, i - 1);
+			i -= 1;
+			j -= 1;
+		} else if (dp[i - 1]![j]! >= dp[i]![j - 1]!) {
+			i -= 1;
+		} else {
+			j -= 1;
+		}
+	}
+	return pairs;
 }

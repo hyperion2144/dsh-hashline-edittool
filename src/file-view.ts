@@ -525,7 +525,7 @@ return {
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
     bytes: Buffer.byteLength(
-      `${startLine + index}${LINE_HASH_SEP}${selectedHashes[index]}${hashSep()}${line}`,
+      `${selectedHashes[index]}${LINE_HASH_SEP}${startLine + index}${hashSep()}${line}`,
       'utf-8',
     ),
   }));

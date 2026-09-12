@@ -46,8 +46,8 @@ describe("read — header line", () => {
 			const lines = text.split("\n");
 			// Issue #71 direction B: no dsh envelope — the legend is line 1.
 			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[1]).toMatch(/^\d+:[A-Za-z0-9]{2,8}:\s*alpha$/);
-			expect(lines[2]).toMatch(/^\d+:[A-Za-z0-9]{2,8}:beta$/);
+			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*alpha$/);
+			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:beta$/);
 		});
 	});
 });
@@ -58,8 +58,9 @@ describe("edit — remove_to optional", () => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "single.ts" }, undefined, undefined, ctx);
 			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
-			// Extract the bare anchor of line 2 ("two")
-			const lineMarker = lines[1]!.match(/^\d+:([A-Za-z0-9]{2,8})/)![1]!;
+			// Extract the bare anchor of line 2 ("two") — markers are
+			// `<anchor>:<line>`, the anchor first.
+			const lineMarker = lines[1]!.match(/^([A-Za-z0-9]{2,8}):\d+/)![1]!;
 
 			await editTool.execute(
 				"e",
@@ -84,7 +85,7 @@ describe("edit — no Shift block in v2.0", () => {
 			const { ctx, readTool, editTool } = setupIntegrationTest(cwd);
 			const read = await readTool.execute("r", { path: "shift.ts" }, undefined, undefined, ctx);
 			const lines = getText(read).split("\n").filter((l) => l.includes(":") && !l.startsWith("ANCHOR:"));
-			const lineMarker = lines[1]!.match(/^\d+:([A-Za-z0-9]{2,8})/)![1]!;
+			const lineMarker = lines[1]!.match(/^([A-Za-z0-9]{2,8}):\d+/)![1]!;
 			const res = await editTool.execute(
 				"e",
 				{
@@ -97,7 +98,7 @@ describe("edit — no Shift block in v2.0", () => {
 			);
 			const out = getText(res);
 			expect(out).not.toContain("Shift:");
-			expect(out).toMatch(/\+\s*\d+:[A-Za-z0-9]{2,8}:B2/);
+			expect(out).toMatch(/\+\s*[A-Za-z0-9]{2,8}:\d+:B2/);
 		});
 	});
 });
@@ -162,7 +163,7 @@ describe("grep — line#hash output", () => {
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^--- .*g\.txt ---$/);
 			expect(lines[1]).toMatch(/^ANCHOR:FILELINE/);
-			expect(lines[2]).toMatch(/^\d+:[A-Za-z0-9]{2,8}:\s*alpha$/);
+			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
 			expect(lines.some((l) => l.includes("gamma"))).toBe(false);
 			expect(value.files.length).toBe(1);
@@ -188,11 +189,11 @@ describe("grep — line#hash output", () => {
 			)) as { modelText: string };
 			const text = value.modelText;
 			// Should include c (line 3), b (line 2), d (line 4)
-			expect(text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*b/);
-			expect(text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*c/);
-			expect(text).toMatch(/\d+:[A-Za-z0-9]{2,8}:\s*d/);
+			expect(text).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
+			expect(text).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*c/);
+			expect(text).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*d/);
 			// Should not include a (line 1) or e (line 5)
-			expect(text).not.toMatch(/\d+:[A-Za-z0-9]{2,8}:a/);
+			expect(text).not.toMatch(/[A-Za-z0-9]{2,8}:\d+:a/);
 			expect(text).not.toMatch(/[A-Za-z0-9]{2,8}:e/);
 		});
 	});
@@ -217,8 +218,8 @@ describe("fmtRegion — line-number prefix vs configurable separator", () => {
 		const hashes = lineHashesPure("alpha\nbeta\n");
 		const out = fmtRegion(hashes.slice(0, 2), ["alpha", "beta"], 1, { lineNumbers: true });
 		const rows = out.split("\n");
-		expect(rows[0]).toMatch(/^1:[A-Za-z0-9]{2,8}\|\s*alpha$/);
-		expect(rows[1]).toMatch(/^2:[A-Za-z0-9]{2,8}\|\s*beta$/);
+		expect(rows[0]).toMatch(/^[A-Za-z0-9]{2,8}:1\|\s*alpha$/);
+		expect(rows[1]).toMatch(/^[A-Za-z0-9]{2,8}:2\|\s*beta$/);
 		expect(rows[0]).not.toMatch(/^1\|/);
 	});
 

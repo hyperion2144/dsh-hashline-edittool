@@ -59,6 +59,22 @@ function encodeAnchor(idx: number, depth: number): string {
   return out;
 }
 
+/**
+ * Whether an anchor is digits only, and therefore unusable as one.
+ *
+ * The alphabet leads with `0`-`9`, so a small index encodes to something like
+ * `36`. A row is `<line>:<anchor>` and the marker may be passed back with or
+ * without its line part — so `36` on its own is ambiguous with line 36, and the
+ * ambiguity resolves to a WRONG EDIT rather than a rejected one. Allocation
+ * therefore steps over such candidates.
+ *
+ * @param anchor - an encoded anchor.
+ * @returns true when every character is a digit.
+ */
+export function isNumericAnchor(anchor: string): boolean {
+	return /^[0-9]+$/.test(anchor);
+}
+
 function gcd(a: number, b: number): number {
   while (b !== 0) {
     const t = a % b;
@@ -119,8 +135,18 @@ export function allocateAnchor(
 		for (let probe = 0; probe < PROBE_LIMIT; probe++) {
 			const offset = (beginOffset + probe) % total;
 			const idx = (start + offset * step) % total;
+			// Skip anything that encodes to digits only. The alphabet leads with
+			// `0`-`9`, so a small index IS a number like `36` — and a row reads
+			// `<line>:<anchor>`, where the marker may be passed back WITH or
+			// WITHOUT its line part. `36` alone is then indistinguishable from line
+			// 36, which is a wrong edit rather than a rejected one.
 			const candidate = encodeAnchor(idx, depth);
+			// The cursor advances FIRST, whatever happens next. Skipping before it
+			// left `beginOffset` untouched, so every following line of the same
+			// content re-probed from the same place and burned the whole PROBE_LIMIT
+			// before reaching a slot that was free anyway.
 			if (groupCursor) groupCursor.offsets[depth] = (offset + 1) % total;
+			if (isNumericAnchor(candidate)) continue;
 			if (!used.has(candidate)) {
 				return { anchor: candidate, stats: { depth, probes: probe + 1 } };
 			}

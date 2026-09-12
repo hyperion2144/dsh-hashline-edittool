@@ -92,16 +92,24 @@ describe("read json view", () => {
 		const content = "one\ntwo\n\nfour";
 		const hashes = ["aB3", "xY7", "zQ9", "mN0"];
 		const json = buildReadJson(content, hashes, 1, 4, "f.txt") as {
+			// The cast has to name every field the assertions below read:
+			// `buildReadJson` returns `object`, so a narrower cast than this is not
+			// checked against anything and the reads silently fail to compile.
+			path: string;
+			offset: number;
+			totalLines: number;
 			lines: Record<string, string>;
 		};
 		expect(json.path).toBe("f.txt");
 		expect(json.offset).toBe(1);
 		expect(json.totalLines).toBe(4);
+		// Keys are `<anchor>:<line>` — the anchor first, its line trailing, the
+		// SAME naming the text rows use, so a key can be pasted into `edit`.
 		expect(json.lines).toEqual({
-			"aB3": "one",
-			"xY7": "two",
-			"zQ9": "",
-			"mN0": "four",
+			"aB3:1": "one",
+			"xY7:2": "two",
+			"zQ9:3": "",
+			"mN0:4": "four",
 		});
 	});
 
@@ -113,7 +121,7 @@ describe("read json view", () => {
 			lines: Record<string, string>;
 		};
 		expect(json.offset).toBe(4);
-		expect(Object.keys(json.lines)).toEqual(["3ab", "4ab"]);
+		expect(Object.keys(json.lines)).toEqual(["3ab:4", "4ab:5"]);
 	});
 });
 

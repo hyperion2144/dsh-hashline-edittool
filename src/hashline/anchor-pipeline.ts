@@ -39,9 +39,11 @@ import {
 	hashSep,
 	hashlineHeader,
 	fmtHashlineRow,
+	fmtMarker,
 	anchorWidth,
 	hashRe,
 	lineAnchorRe,
+	rowMarkerParts,
 	hlRowAnchorRe,
 	contextLinesCfg,
 	lineHashesPure,
@@ -85,12 +87,17 @@ function parseRef(ref: string): Anchor {
 
 	const lineMatch = lineAnchorRe().exec(trimmed);
 	if (lineMatch) {
-		const lineStr = lineMatch[1]!;
+		// One regex, two orders: `<anchor>:<line>` (what rows emit now) fills
+		// groups 1-2; the legacy `<line>:<anchor>` fills groups 3-4. Anchors are
+		// never all-digits, so which alternative matched IS the information.
+		const anchorFirst = lineMatch[1] !== undefined;
+		const lineStr = (anchorFirst ? lineMatch[2] : lineMatch[3])!;
+		const anchor = (anchorFirst ? lineMatch[1] : lineMatch[4])!;
 		const line = Number.parseInt(lineStr, 10);
 		if (!Number.isInteger(line) || line < 1) {
 			throw new Error(diagRef(ref));
 		}
-		return { anchor: lineMatch[2]!, line };
+		return { anchor, line };
 	}
 
 	const bareMatch = hashRe().exec(trimmed);
@@ -203,8 +210,12 @@ function fmtMismatchWithServes(
 	fileLines: string[],
 	fileAnchors: string[],
 	filePath?: string,
+	opts?: { lineNumbers?: boolean },
 ): { message: string; servedRows: ServedRow[] } {
 	assertAligned(fileLines, fileAnchors, "fmtMismatch");
+	// Echo rows carry `<line>:<anchor>` markers unless the caller turned line
+	// numbers off — the same switch `read` and `grep` honour.
+	const lineNumbers = opts?.lineNumbers !== false;
 
 	const out: string[] = [];
 	const servedRows: ServedRow[] = [];
@@ -223,64 +234,84 @@ function fmtMismatchWithServes(
 	};
 	const notFound = mismatches.filter((m) => m.kind === "not_found");
 
-	const refList = notFound.map((m) => `"${m.ref.anchor}"`).join(", ");
-	if (notFound.length > 0) {
+	// Two DIFFERENT failures land here, and lumping them together is what made
+	// the echo useless for the second: a STALE anchor (was valid, lines moved)
+	// versus a BARE-DIGIT anchor ("105" — a LINE HINT the caller mistook for
+	// an anchor). The stale one needs fresh markers; the bare digit needs a
+	// refusal AND an echo centered on the line it named, so a caller who
+	// passed "105" is shown line 105 instead of an anchor that will never
+	// resolve.
+	// Defensive on shape: a legacy `{ line, hash }` ref reaches here with no
+	// `anchor` string at all, and that is a STALE report, not a bare digit.
+	const isBareDigits = (ref: unknown): boolean =>
+		typeof ref === "string" && /^\d+$/.test(ref.trim());
+	const bareDigits = notFound.filter((m) => isBareDigits(m.ref.anchor));
+	const stale = notFound.filter((m) => !isBareDigits(m.ref.anchor));
+
+	if (stale.length > 0) {
+		const refList = stale.map((m) => `"${m.ref.anchor}"`).join(", ");
 		out.push(
-			`[E_STALE] ${notFound.length} stale anchor${notFound.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
+			`[E_STALE] ${stale.length} stale anchor${stale.length > 1 ? "s" : ""}${filePath ? ` in ${filePath}` : ""}: ${refList}. Re-read for fresh anchors.`,
 		);
-		// Echo windows: single-line edits carry the same anchor in both
-		// remove_from and remove_to, and from/to that are BOTH stale and
-		// adjacent produce nearly identical ±3 windows. Merge windows whose
-		// centers are within 2*contextLinesCfg()+1 of each other so the file
-		// region is echoed once; the header above still reports every stale
-		// anchor and the merged block lists every fresh marker.
-		const centers = notFound.map((m) => {
-			// Echo center: prefer the OTHER anchor's resolved position (when
-			// one anchor resolved and the other didn't), fall back to a
-			// sensible line derived from the hint if any, else line 1.
-			const ctx = m.context ?? pickFallbackCenter(m.ref, fileAnchors);
-			return { m, center: Math.max(1, Math.min(fileLines.length, ctx.line)) };
+	}
+	if (bareDigits.length > 0) {
+		const refList = bareDigits.map((m) => `"${m.ref.anchor}"`).join(", ");
+		out.push(
+			`[E_BAD_REF] Bare-digit anchors are forbidden (received ${refList}). A bare number is a LINE HINT, not an anchor — copy the proper anchor from a read/grep/diff row's <line>:<anchor> marker. The echo below is centered on the line each number names.`,
+		);
+	}
+	const centers = notFound.map((m) => {
+		// Echo center: for a bare digit, THE DIGIT ITSELF is the line the caller
+		// meant — center there. Otherwise prefer the other anchor's resolved
+		// position, then a sensible hint line, else line 1.
+		const digit = isBareDigits(m.ref.anchor)
+			? Number.parseInt(m.ref.anchor, 10)
+			: undefined;
+		const ctx =
+			digit !== undefined && digit >= 1 && digit <= fileLines.length
+				? { anchor: fileAnchors[digit - 1] ?? "?", line: digit, hashMatched: false }
+				: (m.context ?? pickFallbackCenter(m.ref, fileAnchors));
+		return { m, center: Math.max(1, Math.min(fileLines.length, ctx.line)) };
+	});
+	centers.sort((a, b) => a.center - b.center);
+	const groups: typeof centers[] = [];
+	for (const c of centers) {
+		const last = groups[groups.length - 1];
+		if (
+			last &&
+			c.center - last[last.length - 1]!.center <= 2 * contextLinesCfg() + 1
+		) {
+			last.push(c);
+		} else {
+			groups.push([c]);
+		}
+	}
+	for (const group of groups) {
+		const from = Math.max(1, group[0]!.center - contextLinesCfg());
+		const to = Math.min(
+			fileLines.length,
+			group[group.length - 1]!.center + contextLinesCfg(),
+		);
+		const echoLines: string[] = [];
+		for (let ln = from; ln <= to; ln++) {
+			const marker = fmtMarker(fileAnchors[ln - 1] ?? "", ln, lineNumbers !== false);
+			echoLines.push(
+				`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`,
+			);
+			pushRow(ln);
+		}
+		const markers = group.map((c) => {
+			const centerLine = c.center;
+			return `${fileAnchors[centerLine - 1] ?? "?"}`;
 		});
-		centers.sort((a, b) => a.center - b.center);
-		const groups: typeof centers[] = [];
-		for (const c of centers) {
-			const last = groups[groups.length - 1];
-			if (
-				last &&
-				c.center - last[last.length - 1]!.center <= 2 * contextLinesCfg() + 1
-			) {
-				last.push(c);
-			} else {
-				groups.push([c]);
-			}
-		}
-		for (const group of groups) {
-			const from = Math.max(1, group[0]!.center - contextLinesCfg());
-			const to = Math.min(
-				fileLines.length,
-				group[group.length - 1]!.center + contextLinesCfg(),
-			);
-			const echoLines: string[] = [];
-			for (let ln = from; ln <= to; ln++) {
-				const marker = `${fileAnchors[ln - 1]}`;
-				echoLines.push(
-					`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`,
-				);
-				pushRow(ln);
-			}
-			const markers = group.map((c) => {
-				const centerLine = c.center;
-				return `${fileAnchors[centerLine - 1] ?? "?"}`;
-			});
-			const hint =
-				markers.length === 1
-					? `reuse the fresh marker ${markers[0]}`
-					: `reuse a fresh marker from: ${markers.join(", ")}`;
-			out.push("");
-			out.push(
-				`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader()}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
-			);
-		}
+		const hint =
+			markers.length === 1
+				? `reuse the fresh marker ${markers[0]}`
+				: `reuse a fresh marker from: ${markers.join(", ")}`;
+		out.push("");
+		out.push(
+			`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader()}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
+		);
 	}
 
 	return { message: out.join("\n"), servedRows };
@@ -369,8 +400,11 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 		if (hashRe().test(trimmed) || lineAnchorRe().test(trimmed)) return trimmed;
 		const match = trimmed.match(hlRowAnchorRe());
 		if (!match) return ref;
-		const linePart = match[2] !== undefined ? `${match[2]}:` : "";
-		const anchor = match[3]!;
+		// The row regex accepts either marker order; re-emit in the CURRENT one so
+		// the line hint survives to parseHashRef whatever the row used.
+		const parts = rowMarkerParts(match);
+		const anchor =
+			parts.line === undefined ? parts.anchor : `${parts.anchor}:${parts.line}`;
 		const rest = trimmed.slice(match[0].length);
 		if (rest) {
 			// issue #66/B2: any pasted row prefix (diff marker / line hint / anchor
@@ -383,15 +417,17 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 			if (/\r\n?|\n/.test(rest)) {
 				message = `[E_BAD_REF] remove_from/remove_to got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
 			} else if (match[1] === "+") {
-				message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+				message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
 			} else if (match[1] === "-") {
-				message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+				message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
 			} else {
-				message = `[E_BAD_REF] stripped trailing content — using "${linePart}${anchor}" (from "${clipLine(trimmed, 60)}").`;
+				message = `[E_BAD_REF] stripped trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
 			}
 			warnings?.push(message);
 		}
-		return `${linePart}${anchor}`;
+		// Re-emitted in the CURRENT order (`<anchor>:<line>`) either way — the
+		// bounds are re-parsed right below, so only the anchor and the hint matter.
+		return anchor;
 	}) as [string, string];
 	return {
 		content_lines: editLines,
@@ -429,7 +465,8 @@ function stripBarePrefixes(
 		const m = hlRowAnchorRe().exec(line);
 		if (!m) return line;
 		if (m[1] !== '') return line; // diff-marked rows handled by stripDiffPrefixes
-		const prefixAnchor = m[3]!;
+		// Either marker order; the anchor is the group that identifies the line.
+		const prefixAnchor = rowMarkerParts(m).anchor;
 		if (!fileAnchors.includes(prefixAnchor)) {
 			kept.push(`"${prefixAnchor}" (line ${lineIndex + 1})`);
 			return line;
@@ -475,7 +512,7 @@ function stripDiffPrefixes(
 		// diff carry fresh anchors at STALE line numbers (the ins anchor line
 		// shifted them), so the double-check almost never held and such rows
 		// landed VERBATIM in the file, silently, with zero warning.
-		if (!fileAnchors.includes(m[3]!)) return line;
+		if (!fileAnchors.includes(rowMarkerParts(m).anchor)) return line;
 		stripped.push(lineIndex);
 		return line.slice(m[0].length);
 	});
@@ -649,6 +686,52 @@ export function findNewEdge(
 		}
 	}
 	return undefined;
+}
+
+/**
+ * Resolve BARE-DIGIT references to the anchor of the line they name.
+ *
+ * A bare number can never be an anchor: the allocator skips digits-only
+ * encodings (see alloc.ts), so the two spaces are disjoint and a single token
+ * is unambiguous. What was missing was EVIDENCE that the named line is still
+ * the line the caller saw — and the served record IS that evidence: an anchor
+ * is content-derived, so `served[n-1] === fileAnchors[n-1]` means the line at
+ * position n still holds the content that was served, exactly the guarantee an
+ * anchor carries.
+ *
+ * With the evidence, the digit is REPAIRED into that line's anchor and the
+ * edit proceeds (with a warning that teaches the convention). Without it — the
+ * line was never served, is out of range, or its content changed since — the
+ * reference is left untouched and the rejection path reports it with an echo
+ * centered on the line it named.
+ *
+ * @param edit - the edit whose bounds are being resolved.
+ * @param fileAnchors - the file's current per-line anchors.
+ * @param served - the anchors served to this session, per position (`null` = never served).
+ * @param warnings - sink for the repair notice.
+ * @returns the edit, with repairable references rewritten.
+ */
+function resolveLineReferences(
+	edit: HEdit,
+	fileAnchors: string[],
+	served: (string | null)[] | undefined,
+	warnings: string[],
+): HEdit {
+	if (served === undefined || served.length === 0) return edit;
+	const repaired = edit.hash_bounds.map((ref) => {
+		if (!/^\d+$/.test(ref.anchor)) return ref;
+		const line = Number.parseInt(ref.anchor, 10);
+		const anchor = line >= 1 && line <= fileAnchors.length ? fileAnchors[line - 1] : undefined;
+		// The served anchor for that position must be the anchor the file holds
+		// NOW; anything else is a stale or unknown line and stays rejected.
+		if (anchor === undefined || served[line - 1] !== anchor) return ref;
+		warnings.push(
+			`[E_LINE_REF] anchor "${ref.anchor}" is a LINE NUMBER, not an anchor — resolved to the served anchor of line ${line} ("${anchor}"). Pass the anchor (the first token of a row) to avoid this notice.`,
+		);
+		return { anchor, line };
+	});
+	const changed = repaired.some((ref, index) => ref !== edit.hash_bounds[index]);
+	return changed ? { ...edit, hash_bounds: repaired as [Anchor, Anchor] } : edit;
 }
 
 /** @internal — private to anchor-pipeline seam: detection + boundaryDups belongs to AnchorPipeline ordering */
@@ -955,7 +1038,7 @@ export function verifyServedRange(args: {
 		const ctxEchoLines: string[] = [];
 		const ctxServedRows: ServedRow[] = [];
 		for (let ln = ctxFrom; ln <= ctxTo; ln++) {
-			const marker = `${fileAnchors[ln - 1]}`;
+			const marker = fmtMarker(fileAnchors[ln - 1] ?? "", ln);
 			ctxEchoLines.push(
 				`  ${marker}${hashSep()}${clipLine(fileLines[ln - 1] ?? "")}`,
 			);
@@ -1163,6 +1246,17 @@ export function applyEdit(
 	filePath?: string,
 	served?: (string | null)[],
 	expected?: ExpectedLines,
+	opts?: {
+		lineNumbers?: boolean;
+		/**
+		 * `op: "sed"` arrives here as a TRANSFORM rather than as literal lines:
+		 * the substitution is a function of the range's CURRENT text, so it can
+		 * only run once the anchors have resolved. Applied after every
+		 * verification, immediately before the range is replaced — so a rejected
+		 * edit never rewrites anything.
+		 */
+		transform?: (lines: readonly string[]) => string[];
+	},
 ): {
 	content: string;
 	firstChangedLine: number | undefined;
@@ -1196,12 +1290,21 @@ export function applyEdit(
 		warnings,
 	);
 
+	// A bare NUMBER is a LINE REFERENCE, never an anchor: allocation never
+	// emits a digits-only anchor, so the two can never collide. When the line
+	// it names is still the line the session was SERVED (the anchor at that
+	// position equals the served anchor — anchors ARE content identity), resolve
+	// it to that line's anchor and carry on: the caller's intent is unambiguous
+	// and already verified. Without that evidence the reference stays as it is
+	// and the rejection path below reports it with an echo centered on the line.
+	const lineFixed = resolveLineReferences(prefixFixed, fileAnchors, served, warnings);
+
 	const {
 		resolved: initialResolved,
 		mismatches,
 		boundaryDups,
 	} = valEdit(
-		prefixFixed,
+		lineFixed,
 		lineIndex.fileLines,
 		fileAnchors,
 		warnings,
@@ -1213,6 +1316,7 @@ export function applyEdit(
 			lineIndex.fileLines,
 			fileAnchors,
 			filePath,
+			opts,
 		);
 		throw new AnchorMismatchError(message, servedRows);
 	}
@@ -1261,6 +1365,24 @@ export function applyEdit(
 		expected,
 	});
 
+	// `op: "sed"`: the substitution runs HERE — after the anchors resolved and
+	// every gate (served range, declared lines, syntax) has passed, and before
+	// the range becomes its replacement. A rejected edit therefore rewrites
+	// nothing, and the transform sees exactly the lines the anchors selected.
+	if (opts?.transform !== undefined) {
+		const startLine = resolved.hash_bounds[0].line;
+		const endLine = resolved.hash_bounds[1].line;
+		if (startLine === undefined || endLine === undefined) {
+			throw new Error(
+				"[E_BAD_REF] op:\"sed\" needs a resolvable anchor range; the anchors did not resolve to lines.",
+			);
+		}
+		resolved = {
+			...resolved,
+			content_lines: opts.transform(lineIndex.fileLines.slice(startLine - 1, endLine)),
+		};
+	}
+
 	const spanResult = resToSpan(resolved, content, lineIndex);
 	if (spanResult.kind === "noop") {
 		return {
@@ -1307,7 +1429,8 @@ function resolvedRange(resolved: RHEdit): ResolvedRange {
  * Render `anchor:content` rows for a slice of the file. `startLine` is the
  * 1-indexed absolute line number of `lines[0]`. Defaults to 1 — the common case
  * when the whole file is being formatted. With `opts.lineNumbers`, each row is
- * rendered as `line:anchor:content` so the column carries line context.
+ * rendered as `anchor:line:content` — the anchor first, so the token copied
+ * first is the one that identifies the line; the number trails as context.
  */
 export function fmtRegion(
 	anchors: string[],
@@ -1327,17 +1450,15 @@ export function fmtRegion(
 	}
 	const lineNumbers = opts?.lineNumbers !== false;
 	const markers = lines.map((_, index) =>
-		lineNumbers
-			// The line-number prefix is FIXED positional syntax: `<line>:<anchor>` —
-			// the configurable separator only separates the anchor from the content
-			// (issue #69: using hashSep() here made "|"-configured deployments emit
-			// `2|3x|content`, drifting from read's `<line>:<anchor>:content`).
-			? `${startLine + index}:${anchors[index]}`
-			: anchors[index]!,
+		// The line-number half is FIXED positional syntax, `<anchor>:<line>` —
+		// the configurable separator only separates the marker from the content
+		// (issue #69: using hashSep() here made "|"-configured deployments emit
+		// `2|3x|content`, drifting from read's own rows).
+		fmtMarker(anchors[index]!, startLine + index, lineNumbers),
 	);
 	const width = anchorWidth(markers);
 	return lines
-		.map((line, index) => fmtHashlineRow("", markers[index]!, line, width))
+		.map((line, index) => fmtHashlineRow(markers[index]!, line, width))
 		.join("\n");
 }
 

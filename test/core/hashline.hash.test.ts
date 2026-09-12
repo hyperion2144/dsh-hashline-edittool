@@ -34,6 +34,74 @@ describe("strict hashline contract", () => {
     } as any;
 		expect(() => applyEdit(content, stale)).toThrow(/stale anchor/);
 	});
+
+	it("refuses a bare-digit anchor and echoes the line the number names", () => {
+		// A bare number is a LINE HINT, not an anchor. The refusal must not only
+		// say so — the echo must CENTER on what the number names, so the caller
+		// sees the line they meant instead of an anchor that never resolves.
+		const content = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n");
+		const bare = {
+			hash_bounds: [{ anchor: "7" }, { anchor: "7" }],
+			content_lines: ["updated"],
+		} as any;
+		let message = "";
+		try {
+			applyEdit(content, bare);
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		expect(message).toMatch(/Bare-digit anchors are forbidden/);
+		expect(message).toMatch(/LINE HINT, not an anchor/);
+		// Echo centered on line 7: ±3 context covers lines 4..10, and every echo
+		// row carries the `<anchor>:<line>` marker form.
+		expect(message).toMatch(/^\s+[A-Za-z0-9]+:4:/m);
+		expect(message).toMatch(/^\s+[A-Za-z0-9]+:7:/m);
+		expect(message).toMatch(/^\s+[A-Za-z0-9]+:10:/m);
+		expect(message).not.toMatch(/^\s+[A-Za-z0-9]+:11:/m);
+	});
+});
+
+/**
+ * A bare NUMBER is a line reference, and the served record is what makes that
+ * claim checkable: an anchor is derived from its line's content, so
+ * `served[n-1] === fileAnchors[n-1]` proves the line at n is unchanged since
+ * it was served. With that proof the reference is repaired into the anchor;
+ * without it the reference is refused with an echo on the line it named.
+ */
+describe("bare line numbers as references", () => {
+	it("lifts a served line number to that line's anchor, with a notice", () => {
+		const content = "alpha\nbeta\ngamma\n";
+		const anchors = lineHashesPure(content);
+		const result = applyEdit(
+			content,
+			{ content_lines: ["BETA"], hash_bounds: [{ anchor: "2" }, { anchor: "2" }] },
+			undefined,
+			anchors,
+			"probe.txt",
+			[...anchors],
+		);
+		expect(result.content).toBe("alpha\nBETA\ngamma\n");
+		expect(result.warnings?.some((w) => w.includes("[E_LINE_REF]"))).toBe(true);
+	});
+
+	it("refuses a line number the session was NOT served", () => {
+		const content = "alpha\nbeta\ngamma\n";
+		const edit = { content_lines: ["X"], hash_bounds: [{ anchor: "3" }, { anchor: "3" }] } as never;
+		expect(() =>
+			applyEdit(content, edit, undefined, lineHashesPure(content), "probe.txt", [null, null, null]),
+		).toThrow(/Bare-digit anchors are forbidden/);
+	});
+
+	it("refuses a served line number whose content has since changed", () => {
+		const served = lineHashesPure("alpha\nbeta\ngamma\n");
+		// The REFERENCED line changed, so position 3 no longer holds the anchor
+		// that was served there and the claim is stale.
+		const drifted = "alpha\nbeta\nGAMMA-CHANGED\n";
+		const edit = { content_lines: ["X"], hash_bounds: [{ anchor: "3" }, { anchor: "3" }] } as never;
+		expect(() =>
+			applyEdit(drifted, edit, undefined, lineHashesPure(drifted), "probe.txt", [...served]),
+		).toThrow(/Bare-digit anchors are forbidden/);
+	});
 });
 
 describe("perfect hashing", () => {
@@ -86,8 +154,18 @@ describe("perfect hashing", () => {
 				file,
 				{
 					hash_bounds: [
-						{ line: 5, hash: realHashes[0]! },
-						{ line: 5, hash: realHashes[0]! },
+						// `anchor`, not `hash`: `hash_bounds` is the parameter's name, but its
+						// entries are Anchor-shaped and the field has been `anchor` since v2.
+						//
+						// The anchor is EMPTY on purpose. The previous `hash: realHashes[0]`
+						// was an unknown field, so the anchor arrived as `undefined` and the
+						// rejection this test asserts came from "no valid anchor" — NOT from
+						// the out-of-range line the test is named for. With a resolving anchor
+						// the edit is accepted (the line hint is only a hint), which is how the
+						// mismatch surfaced. An empty anchor keeps the subject: a reference
+						// that cannot be resolved is refused, hard.
+						{ line: 5, anchor: "" },
+						{ line: 5, anchor: "" },
 					],
 					content_lines: ["X"],
 				},

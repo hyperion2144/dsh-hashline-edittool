@@ -37,8 +37,12 @@ import {
 	anchorOf,
 	declaredLineOf,
 	lineNumbersSchema,
+	type EditOp,
 } from "./contract.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
+// Marker parsing, not symbol reading: `lineHintOf` moved beside the other
+// `<line>:<anchor>` handling when the block-op path was removed.
+import { lineHintOf } from "./declaration.js";
 import type { AnchorRef } from "./declaration.js";
 import { abortIf, isRec, visLines } from "./utils.js";
 import { contextLinesCfg } from "./hashline/hash-assign.js";
@@ -66,7 +70,7 @@ import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
 import { genDiff } from "./edit-diff.js";
 import { EDIT_DIFF_LEGEND } from "./edit-response.js";
-import { diffRowsFromGenDiff, type EditDiffRow } from "./presentation-helpers.js";
+import { diffDictFrom, diffRowsFromGenDiff, type EditDiffRow } from "./presentation-helpers.js";
 
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
@@ -92,14 +96,30 @@ type EditCanonicalValue = {
  * is still the raw `lines.join("\n")` here because the anchor's own
  * content needs to be read first.
  */
-function buildPreparedItem(
+/** The raw reference string of an anchor field (declaration form → its anchor). */
+function rawAnchor(field: AnchorRef): string {
+	return typeof field === "string" ? field : String((field as { anchor?: unknown }).anchor ?? "");
+}
+
+//
+// Exported so `ast_edit` builds its items the SAME way rather than re-deriving
+// the anchor folding: a second implementation would drift, and the drift would
+// show up as edits that land on the wrong lines only for one of the two tools.
+export function buildPreparedItem(
 	index: number,
 	topLevelPath: string,
 	item: {
-		op?: "ins" | "del" | "replace";
-		anchor_start: AnchorRef;
+		op?: EditOp;
+		// Both optional here: which one is REQUIRED depends on `op`, and the
+		// contract has already enforced that. `ins` arrives with `anchor_after`
+		// and no `anchor_start`; the other two, the reverse.
+		anchor_start?: AnchorRef;
+		anchor_after?: AnchorRef;
 		anchor_end?: AnchorRef;
 		lines?: string[];
+		pattern?: string;
+		replacement?: string;
+		flags?: string;
 		path?: string;
 	},
 	absolutePath: string,
@@ -113,7 +133,13 @@ function buildPreparedItem(
 	// the anchor string here, with the declared text carried as expected*
 	// fields for the pipeline gate (declaration.ts). An OMITTED anchor_end
 	// declares nothing for the end boundary (contract #76: only start).
-	const toResolved = item.anchor_end !== undefined ? anchorOf(item.anchor_end) : anchorOf(item.anchor_start);
+	const startAnchor = item.op === "ins" ? item.anchor_after : item.anchor_start;
+	if (startAnchor === undefined) {
+		throw new Error(
+			`[E_BAD_SHAPE] edits[${index}] has no anchor: op:"ins" takes "anchor_after", the other ops take "anchor_start".`,
+		);
+	}
+	const toResolved = item.anchor_end !== undefined ? anchorOf(item.anchor_end) : anchorOf(startAnchor);
 	const replacementText =
 		item.op === "del"
 			? ""
@@ -122,11 +148,25 @@ function buildPreparedItem(
 		index,
 		path: itemPath,
 		absolutePath,
-		remove_from: anchorOf(item.anchor_start),
+		remove_from: anchorOf(startAnchor),
 		remove_to: toResolved,
 		replacement_text: replacementText,
 		op: item.op ?? "replace",
-		expectedStart: declaredLineOf(item.anchor_start),
+		// `op: "sed"` carries its substitution through untouched: the regex runs
+		// in the engine, over the resolved range's own lines.
+		...(item.pattern !== undefined ? { pattern: item.pattern } : {}),
+		...(item.replacement !== undefined ? { replacement: item.replacement } : {}),
+		...(item.flags !== undefined ? { flags: item.flags } : {}),
+		anchorEndAsserted: item.anchor_end !== undefined,
+		// The numeric hints, when the caller wrote the `<line>:<anchor>` form.
+		// `anchorOf` is what strips them, so read them off the raw field.
+		...(lineHintOf(rawAnchor(startAnchor)) === undefined
+			? {}
+			: { lineStart: lineHintOf(rawAnchor(startAnchor)) }),
+		...(item.anchor_end !== undefined && lineHintOf(rawAnchor(item.anchor_end)) !== undefined
+			? { lineEnd: lineHintOf(rawAnchor(item.anchor_end)) }
+			: {}),
+		expectedStart: declaredLineOf(startAnchor),
 		...(item.anchor_end !== undefined
 			? { expectedEnd: declaredLineOf(item.anchor_end) }
 			: {}),
@@ -331,7 +371,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					const items = group.map(({ index, edit }) =>
 						buildPreparedItem(index, displayPath, edit, absolutePath),
 					);
-					const file = await runFileEdits(io, items, { signal, sessionKey });
+					// `exec` rides along so a rejection's echo can emit `fs/observed` —
+					// with `actor: undefined` the policy records NOTHING, which is what
+					// made an echoed marker un-writable on the single-file path.
+					const file = await runFileEdits(io, items, { signal, sessionKey, lineNumbers, exec });
 					await applyFileResultTo(file, {
 						canonical,
 						displayPath,
@@ -365,7 +408,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							const items = group.map(({ index, edit }) =>
 								buildPreparedItem(index, displayPath, edit, absolutePath),
 							);
-							const file = await runFileEdits(io, items, { signal, sessionKey });
+							const file = await runFileEdits(io, items, { signal, sessionKey, lineNumbers, exec });
 							await applyFileResultTo(file, {
 								canonical,
 								displayPath,
@@ -447,29 +490,30 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 }
 
 /**
- * Apply the file's post-edit state through the undo-persist → write →
- * restore-on-failure transaction, and record the served rows. Side
- * effects only — the returned value is the canonical projection (built
- * by `buildCanonicalFromFileResult`).
+ * Write one prepared result to disk.
+ *
+ * The ONE place a `FileEditResult` becomes bytes. `edit` and `ast_edit` both
+ * go through it, because the alternative is two ideas of what committing means
+ * — and the second one is written by whoever adds the next tool, at a moment
+ * when they are thinking about matching, not about the undo transaction.
+ *
+ * A file whose `appliedCount` is 0 is not written at all: an all-noop batch
+ * must leave the disk alone rather than rewrite identical bytes and stamp a new
+ * undo entry for them.
+ *
+ * @param file - the prepared result.
+ * @param ctx - the write transaction's context.
  */
-async function applyFileResultTo(
+export async function commitFileResult(
 	file: FileEditResult,
 	ctx: {
-		canonical: { path?: string; edits: Array<unknown> };
-		displayPath: string;
-		resolutionWarning: string | undefined;
-		extraWarnings?: string[];
+		io: FileIO;
+		exec: Parameters<typeof commit>[0]["exec"];
 		sandbox: FsSandboxController;
 		sandboxPolicy: Awaited<ReturnType<FsSandboxController["resolvePolicy"]>>;
-		exec: Parameters<typeof commit>[0]["exec"];
 		signal: AbortSignal | undefined;
-		io: FileIO;
-		absolutePath: string;
-		sessionKey: string;
 	},
 ): Promise<void> {
-	// The commit transaction writes every file whose appliedCount > 0; for an
-	// all-noop batch the file list is empty and nothing happens on disk.
 	await commit({
 		io: ctx.io,
 		files: file.appliedCount > 0
@@ -492,6 +536,40 @@ async function applyFileResultTo(
 		undoUnavailableMessage: (displayPath) =>
 			`[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${displayPath} is unchanged. Retry the edit, or use write if the store cannot be recovered.`,
 		restoreUnwrittenUndos: true,
+	});
+}
+
+/**
+ * Apply the file's post-edit state through the undo-persist → write →
+ * restore-on-failure transaction, and record the served rows. Side
+ * effects only — the returned value is the canonical projection (built
+ * by `buildCanonicalFromFileResult`).
+ */
+async function applyFileResultTo(
+	file: FileEditResult,
+	ctx: {
+		canonical: { path?: string; edits: Array<unknown> };
+		displayPath: string;
+		resolutionWarning: string | undefined;
+		extraWarnings?: string[];
+		sandbox: FsSandboxController;
+		sandboxPolicy: Awaited<ReturnType<FsSandboxController["resolvePolicy"]>>;
+		exec: Parameters<typeof commit>[0]["exec"];
+		signal: AbortSignal | undefined;
+		io: FileIO;
+		absolutePath: string;
+		sessionKey: string;
+	},
+): Promise<void> {
+	// ONE implementation, shared with `ast_edit` — see `commitFileResult`. Two
+	// copies of "what committing means" drift, and the copy nobody updates is
+	// the one that writes the file.
+	await commitFileResult(file, {
+		io: ctx.io,
+		exec: ctx.exec,
+		sandbox: ctx.sandbox,
+		sandboxPolicy: ctx.sandboxPolicy,
+		signal: ctx.signal,
 	});
 
 	// No-op loop guard: keyed off the first edit's payload. A noop check
@@ -681,15 +759,15 @@ function buildEditJson(
 	warnings: string[];
 	errors: JsonValue[];
 } {
-	// The json view of the diff is anchor-keyed, exactly like read's lines:
-	// every row is `key: content`, where the key carries the row type in its
-	// prefix — "-<old line#old hash>" for a removed row, "+<final line#new
-	// hash>" for an added row, and the BARE anchor for context rows. No kind
-	// field, no before/after windows.
-	const diff = genDiff(
+	// The json view of the diff is marker-keyed, exactly like read's lines:
+	// every row is `key: content`, where the key is `<anchor>:<line>` with the
+	// row type in its prefix — "-<old anchor>:<old line>" for a removed row,
+	// "+<final anchor>:<final line>" for an added row, bare marker for context.
+	// No kind field, no before/after windows. `ast_edit` shares this builder,
+	// so the two tools cannot name a row differently (diffDictFrom).
+	const diff = diffDictFrom(
 		file.originalNormalized,
 		file.result,
-		contextLinesCfg(),
 		file.resultHashes,
 		file.originalHashes,
 	);
@@ -699,22 +777,10 @@ function buildEditJson(
 			(h) =>
 				`edits[${h.index}]: original ${h.originalStartLine === h.originalEndLine ? "line " + h.originalStartLine : "lines " + h.originalStartLine + ".." + h.originalEndLine} moved to ${h.finalStartLine === h.finalEndLine ? "line " + h.finalStartLine : "lines " + h.finalStartLine + ".." + h.finalEndLine} (${(h.delta > 0 ? "+" : "") + h.delta})`,
 		);
-	const diffDict: Record<string, string> = {};
-	for (const r of diff.rows) {
-		// Key carries the row type + FINAL line number + anchor (mirrors read's
-		// `<line>:<anchor>` keys; '-' rows keep the OLD line number).
-		const key =
-			r.kind === "-"
-				? `-${r.lineNumber}:${r.hash}`
-				: r.kind === "+"
-					? `+${r.lineNumber}:${r.hash}`
-					: `${r.lineNumber}:${r.hash}`;
-		diffDict[key] = r.content;
-	}
 	return {
 		ok: true,
 		path: displayPath,
-		diff: diffDict,
+		diff,
 		hints,
 		warnings: file.warnings,
 		errors: [],

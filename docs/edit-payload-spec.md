@@ -1,6 +1,8 @@
 # Spec — Upstream cherry-picks + merged `edit` payload with `op` semantics
 
 > Status: **Superseded in part by `dynamic-hashline-spec.md`** — authoritative for the 0.4.x `edit` payload shape (op semantics, edits array, per-item path). The 0.5/v2.0 dynamic-anchor contract (variable-length Base62 anchors, no `line#hash`, no Shift blocks, optional `line_numbers`) is governed by [`dynamic-hashline-spec.md`](./dynamic-hashline-spec.md); where the two conflict, that spec wins.
+>
+> **Errata (op anchor field).** Everything below says `op:"ins"` takes `anchor_start`. It does not any more. `ins` takes **`anchor_after`**, and `anchor_start` on it is `[E_BAD_SHAPE]`. The two ops shared a field name, and a caller who had just used `replace` — where `anchor_start` begins a range whose content `lines` CONSUMES — carried that reading into `ins`, wrote the anchor's own line into `lines`, and got a duplicate. Two names make that transit impossible. This document is kept as the historical record and is NOT rewritten; the current contract lives in `src/contract.ts` and the README.
 > Scope: (a) cherry-pick the non-breaking upstream T1+T2+T5 fixes into the
 > current line#hash codebase, (b) adopt a stronger version of upstream T3
 > (merged `edit` payload) that **removes `batch_edit` and adds an `op`
@@ -23,7 +25,7 @@ Two distinct tracks in one commit-set:
       `edit({path, edits:[[hash, hash, text]]})` — 3-tuples with
       positional meaning (from, to, text).
     - Our variant uses **named fields** (`anchor_start` / `anchor_end` / `lines` / `op`)
-      and **explicit op semantics** (`ins` / `del` / `replace`):
+      and **explicit op semantics** (`ins` / `del` / `replace` / `sed`):
       - `op: "ins"` — insert `lines` after the `anchor_start` line. `anchor_start` is
         required; `anchor_end` is forbidden; `lines` is required and non-empty.
       - `op: "del"` — delete the `anchor_start` line, or the `anchor_start..anchor_end` range
@@ -32,6 +34,14 @@ Two distinct tracks in one commit-set:
         range if `anchor_end` is given, with `lines`. `anchor_start` is required;
         `lines` is required and **must be non-empty** (use `del` to
         delete).
+      - `op: "sed"` — rewrite every line of the `anchor_start..anchor_end` range with a
+        regular expression, the way command-line `sed` works a stream. Takes
+        `pattern` + `replacement` (+ optional `flags`), and **no `lines`**. Without
+        `g` only the first match per line is replaced; `i` ignores case, `m` makes
+        `^`/`$` match line boundaries, `s` lets `.` match a newline. `replacement`
+        accepts sed's `\1`/`&` and JavaScript's `$1`/`$&`; an empty replacement
+        deletes the match. A newline in `replacement` is refused — sed substitutes
+        within a line, so the line count never changes.
 
    The user contract becomes: a single `edit` tool with an `edits` array;
    one `batch_edit` tool is removed entirely.
@@ -292,10 +302,13 @@ Zed's "terse notices" was a UX study; the upstream benchmark shows
 {
   path: string;                  // optional default path
   edits: Array<{
-    op: "ins" | "del" | "replace";  // required
+    op: "ins" | "del" | "replace" | "sed";  // required
     anchor_start: string;            // required: anchor of first line
     anchor_end?: string;             // optional: anchor of last line (required for replace)
-    lines?: string[];                // required for ins/replace; forbidden for del
+    lines?: string[];                // required for ins/replace; forbidden for del and sed
+    pattern?: string;                // op:"sed" only: regex source, applied per line
+    replacement?: string;            // op:"sed" only: sed's \1/& or JS's $1/$&; no newline
+    flags?: string;                  // op:"sed" only: unique subset of gims
   }>;
 }
 ```

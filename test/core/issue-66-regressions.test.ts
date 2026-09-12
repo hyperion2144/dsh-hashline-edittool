@@ -113,7 +113,8 @@ describe("#66/B5 — line_numbers renders <line>:<anchor> rows on request", () =
 				lineNumbers: true,
 			});
 			const firstRow = res.text.split("\n")[1] ?? "";
-			expect(firstRow).toMatch(/^1:/);
+			// The anchor comes FIRST; its line number trails it inside the marker.
+			expect(firstRow).toMatch(/^[A-Za-z0-9]{2,8}:1[:|]/);
 		});
 	});
 });
@@ -126,11 +127,12 @@ describe("#66/B1 — json view is v2.0-native and lossless-safe", () => {
 			lines: Record<string, string>;
 			totalLines: number;
 		};
-		expect(view.lines[`${hashes[0]}`]).toBe("alpha");
-		expect(view.lines[`${hashes[1]}`]).toBe("beta");
-		// every key must be a plain anchor — no NaN keys possible
+		// `buildReadJson` names each line `<anchor>:<line>` — the anchor first,
+		// its line trailing — and the key must stay lossless-JSON safe (no NaN).
+		expect(view.lines[`${hashes[0]}:1`]).toBe("alpha");
+		expect(view.lines[`${hashes[1]}:2`]).toBe("beta");
 		for (const key of Object.keys(view.lines)) {
-			expect(key).toMatch(/^[A-Za-z0-9]{1,8}$/);
+			expect(key).toMatch(/^[A-Za-z0-9]{1,8}:\d+$/);
 		}
 		expect(JSON.parse(JSON.stringify(view))).toEqual(view);
 	});
