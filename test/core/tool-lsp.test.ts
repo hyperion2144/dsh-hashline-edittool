@@ -202,11 +202,11 @@ describe("lsp — diagnostics", () => {
 		expect((await run({ operation: "diagnostics" })).raw).toContain("reported NO diagnostics");
 	});
 
-	it("gives every diagnostic its OWN row, with the message in the row", async () => {
-		// A line with several errors used to produce ONE row of source code and put
-		// the messages in `raw`, so the card's body and its messages disagreed: the
-		// reader could not tell which line a message belonged to — or that one line
-		// had three of them.
+	it("gives a line ONE row carrying ALL of its messages", async () => {
+		// Two shapes were wrong before this one. Dedup-only parked the messages in
+		// `raw`, so the body and the messages disagreed. One-row-per-diagnostic
+		// fixed that and then printed the source line once per error — the same text
+		// three times over in a channel the model pays for.
 		install({
 			pushOnOpen: [
 				{ message: "first error", range: { start: { line: 0 } } },
@@ -216,13 +216,17 @@ describe("lsp — diagnostics", () => {
 		});
 		const value = await run({ operation: "diagnostics" });
 		const rows = (value as unknown as { hashlines: Array<{ number: number; hash: string; text: string }> }).hashlines;
-		// Two errors on one line are TWO rows, sorted by line.
-		expect(rows.map((row) => row.number)).toEqual([1, 1, 2]);
-		// The row carries the source line AND its message, joined by a full-width
-		// colon — not the configured separator, which divides marker from content.
-		expect(rows[0]!.text).toBe("export function alpha() {}：first error");
-		expect(rows[1]!.text).toBe("export function alpha() {}：second error");
-		expect(rows[2]!.text).toBe("const b = 1;：third error");
+		// A line is the unit the reader acts on, so there are TWO rows here — and
+		// the line with two errors carries both messages, joined by a full-width
+		// semicolon (never the configured separator, which divides marker from
+		// content and would read as a second marker inside the text).
+		expect(rows.map((row) => row.number)).toEqual([1, 2]);
+		expect(rows[0]!.text).toBe("export function alpha() {}：first error；second error");
+		expect(rows[1]!.text).toBe("const b = 1;：third error");
+		// THE SOURCE LINE APPEARS ONCE. This is the repetition the shape above is
+		// meant to avoid: counting occurrences, not just checking the first.
+		const text = String((value as unknown as { modelText: string }).modelText);
+		expect(text.split("export function alpha() {}").length - 1).toBe(1);
 		// Every row keeps its anchor, so any of them can be acted on.
 		for (const row of rows) expect(row.hash).not.toBe("");
 	});

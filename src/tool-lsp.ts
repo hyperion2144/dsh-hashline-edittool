@@ -316,17 +316,23 @@ export function buildLspTool(io: FileIO) {
 				}
 				const diagLines = splitLines(text);
 				const diagAnchors = lineHashesPure(text);
-				// ONE ROW PER DIAGNOSTIC, and the row text carries the MESSAGE.
+				// ONE ROW PER LINE, carrying that line's messages.
 				//
-				// Deduplicating by line (the first version) made the card's body and its
-				// messages disagree: a line with three errors produced ONE row of source
-				// code and three messages parked in `raw`, so the reader could not tell
-				// which line each message belonged to — or that there were three at all.
+				// Two shapes were wrong before this one, in opposite directions. The
+				// first deduplicated by line and parked the messages in `raw`, so the
+				// body and the messages disagreed. The second gave every diagnostic its
+				// own row, which reads well until a line has three errors: the source
+				// line is then printed three times — the same text, three times over, in
+				// a channel where the model pays for it.
 				//
-				// The joiner is a full-width colon rather than the configured separator:
+				// A line is the unit the reader acts on (and the unit the gutter can
+				// point at), so the line gets the row and its messages are joined inside
+				// it.
+				//
+				// The joiners are full-width punctuation, never the configured separator:
 				// the separator divides marker from content, and a second one inside the
 				// text would read as another marker.
-				const diagRows: { number: number; hash: string; text: string }[] = [];
+				const byLine = new Map<number, string[]>();
 				// Collected in the SAME pass as the rows: deriving `raw` from the rendered
 				// row text afterwards would mean parsing a string this function just built.
 				const diagMessages: string[] = [];
@@ -334,16 +340,18 @@ export function buildLspTool(io: FileIO) {
 					const d = entry as { message?: unknown; range?: { start?: { line?: unknown } } };
 					const at = d.range?.start?.line;
 					if (typeof at !== "number" || at < 0) continue;
-					const sourceLine = diagLines[at] ?? "";
 					const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
 					diagMessages.push(`L${at + 1} ${message}`);
-					diagRows.push({
-						number: at + 1,
-						hash: diagAnchors[at] ?? "",
-						text: `${sourceLine}：${message}`,
-					});
+					const line = at + 1;
+					byLine.set(line, [...(byLine.get(line) ?? []), message]);
 				}
-				diagRows.sort((a, b) => a.number - b.number);
+				const diagRows = [...byLine.entries()]
+					.sort((a, b) => a[0] - b[0])
+					.map(([line, messages]) => ({
+						number: line,
+						hash: diagAnchors[line - 1] ?? "",
+						text: `${diagLines[line - 1] ?? ""}：${messages.join("；")}`,
+					}));
 				// Served and observed like a read's rows, with the VERBATIM line as the
 				// content: the anchors are content-derived, so serving the row TEXT (which
 				// now carries a message) would vouch for a line that does not exist.
@@ -523,17 +531,19 @@ function lspModelText(value: Record<string, unknown>): string {
 	if (isJsonOutput()) {
 		return JSON.stringify({ ...value, hashlines: anchors });
 	}
-	const symbols = Array.isArray(value.symbols)
-		? (value.symbols as Array<{ kind?: unknown; qualifiedName?: unknown; line?: unknown }>)
-		: [];
+	// Whether there is anything to LIST is a question about the rows, not about
+	// `symbols`: diagnostics carry rows and no symbols, and keying off `symbols`
+	// meant their rows were never shown to the model at all — the whole point of
+	// building them.
 	const head = `${value.server ?? "lsp"} — ${value.operation ?? "?"} for ${value.path ?? "?"}`;
-	if (symbols.length === 0) {
+	if (rows.length === 0) {
 		const raw = typeof value.raw === "string" && value.raw !== "" ? value.raw : "nothing to report";
 		return `${head}\n${raw}`;
 	}
 	const width = anchorWidth(rows.map((row) => row.marker));
 	const body = rows.map((row) => `  ${fmtHashlineRow(row.marker, row.text, width)}`);
-	return [`${head} (${symbols.length} symbol(s))`, ...body].join("\n");
+	const symbols = Array.isArray(value.symbols) ? value.symbols.length : 0;
+	return [`${head}${symbols > 0 ? ` (${symbols} symbol(s))` : ""}`, ...body].join("\n");
 }
 /** No server could be had — a refusal, distinct from an empty answer. */
 export const E_LSP_NO_SERVER = "[E_LSP_NO_SERVER]";
