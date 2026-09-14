@@ -18,8 +18,8 @@ import { isAstEnabled, isAstLanguageEnabled, isJsonOutput } from "./config.js";
 import { E_AST_DISABLED } from "./ast/codes.js";
 import { AstError, getAstClient } from "./ast/client.js";
 import { runFileEdits, type PreparedItem } from "./edit-engine.js";
-import { diffDictFrom } from "./presentation-helpers.js";
-import { buildPreparedItem, commitFileResult } from "./tool-edit.js";
+import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
+import { diffsFromMeta, type FileDiff } from "./presentation-helpers.js";
 import { lineHashesPure } from "./hashline/hash-assign.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import { recordEchoServes } from "./hashline/anchor-pipeline.js";
@@ -99,14 +99,25 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 				type: "object",
 				additionalProperties: false,
 				properties: {
+					// The value IS `edit`'s single-file shape, so its schema is too: the
+					// model reads a diff, the card draws one, and the two tools cannot
+					// answer with different forms for the same kind of change.
 					path: { type: "string", required: true },
+					before: { type: "string" },
+					after: { type: "string" },
+					added: { type: "integer" },
+					removed: { type: "integer" },
+					firstChangedLine: { type: "integer" },
+					lastChangedLine: { type: "integer" },
+					warnings: { type: "array", items: { type: "string" } },
+					diffRows: { type: "array" },
+					driftNotice: { type: "string" },
+					noop: { type: "boolean" },
+					// Structural-search extras: this tool's own three fields.
 					pat: { type: "string", required: true },
 					count: { type: "integer", required: true },
 					ok: { type: "boolean", required: true },
-					message: { type: "string", required: true },
-					// THE MODEL CHANNEL, declared because the DSL validates the returned
-					// value: a field the schema does not name is rejected outright
-					// (`value.modelText is not declared`).
+					message: { type: "string" },
 					modelText: { type: "string", required: true },
 				},
 			},
@@ -116,6 +127,26 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 			render: (_args: unknown, value: { readonly modelText: string }) => [
 				{ type: "text", text: value.modelText },
 			],
+			// THE CARD'S DATA, wired exactly as `edit` wires it: the client already
+			// registers a diff row for `ast_edit`, and it draws from these two
+			// structured fields — a meta-less result is what left the call as raw
+			// input/output.
+			presentationMeta: (_args: unknown, value: { readonly path: string; readonly diffRows?: readonly unknown[]; readonly diffs?: readonly unknown[] }) =>
+				({
+					diffs: Array.isArray(value.diffs) ? value.diffs : [],
+					...(Array.isArray(value.diffRows) && value.diffRows.length > 0
+						? { diffRows: value.diffRows }
+						: {}),
+				}) as never,
+		},
+		// The tool-level hooks, siblings of `output` (which is where `edit` keeps
+		// them too): `presentResult` is what makes the web draw the diff card, and
+		// without it the meta alone drew nothing and the call stayed raw I/O.
+		presentResult: (_args, result) => {
+			if (result.isError) return undefined;
+			const diffs: FileDiff[] | undefined = diffsFromMeta(result.meta);
+			if (diffs === undefined || diffs.length === 0) return undefined;
+			return { card: "diff", title: `Ast edit ${diffs[0]!.path}`, diffs };
 		},
 		async execute(args: { readonly pat: string; readonly out: string; readonly path: string }, exec: ToolRunContext) {
 			const cwd = execCwd(exec);
@@ -284,39 +315,24 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 				sandboxPolicy,
 				signal: (exec as { signal?: AbortSignal }).signal,
 			});
-			// The model channel, in BOTH modes, projected from the same facts the
-			// write produced (never re-parsed text): the text mode keeps the body the
-			// engine returned, the JSON mode is the edit envelope with its diff keyed
-			// `<anchor>:<line>` exactly as every other tool's diff is.
-			const file = result as unknown as {
-				result?: string;
-				originalNormalized?: string;
-				resultHashes?: string[];
-				originalHashes?: string[];
-				warnings?: string[];
-			};
-			const body = file.result ?? "";
-			let modelText = body === "" ? "Applied." : body;
-			if (isJsonOutput()) {
-				modelText = JSON.stringify({
-					ok: true,
-					path: args.path,
-					pattern: args.pat,
-					count: matches.length,
-					diff: file.originalNormalized !== undefined && file.result !== undefined
-						? diffDictFrom(file.originalNormalized, file.result, file.resultHashes, file.originalHashes)
-						: {},
-					hints: [],
-					warnings: file.warnings ?? [],
-					errors: [],
-				});
-			}
+			// The model channel IS `edit`'s, from `edit`'s own two builders: the text
+			// mode is the diff block (legend, `-`/`+` rows with fresh anchors, the
+			// success line) and the JSON mode is the pure edit envelope. Returning
+			// the rewritten body instead told the model nothing about the change and
+			// made it re-read what it had just written.
+			const canonical = buildCanonicalFromFileResult(result, args.path, true);
+			const modelText = isJsonOutput()
+				? JSON.stringify({
+						...buildEditJson(result, args.path),
+						pattern: args.pat,
+						count: matches.length,
+					})
+				: canonical.modelText;
 			return {
-				path: args.path,
+				...canonical,
 				pat: args.pat,
 				count: matches.length,
 				ok: true,
-				message: body === "" ? "Applied." : body,
 				modelText,
 			};
 		},

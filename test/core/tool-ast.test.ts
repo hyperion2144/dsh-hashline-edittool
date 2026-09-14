@@ -176,6 +176,34 @@ describe("ast_edit", () => {
 		expect(after).toContain('import Default from "./d";');
 	});
 
+	it("answers with the SAME diff an edit answers with — not the new body", async () => {
+		// The model channel is `edit`'s, from `edit`'s own builder: the diff
+		// legend, the `-`/`+` rows with their fresh anchors, the success line.
+		// Returning the rewritten body instead told the model nothing about the
+		// change and made it re-read what it had just written.
+		applyEffective({ ast: { enabled: true }, output_format: "text" });
+		const value = await run({ pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" });
+		const text = String((value as unknown as { modelText: string }).modelText);
+		expect(text).toContain("Diff rows:");
+		// Diff rows carry no space after the separator (unlike read rows).
+		expect(text).toMatch(/^-[A-Za-z0-9]{2,8}:\d+:const x = f\(1, 2\);$/m);
+		expect(text).toMatch(/^\+[A-Za-z0-9]{2,8}:\d+:const x = g\(1, 2\);$/m);
+		expect(text).toContain("Successfully edited in");
+		// And the JSON mode is the edit envelope, its diff keyed `anchor:line`.
+		// The file is reset first: the run above already applied the change, and
+		// a second identical edit would be a noop with an empty diff.
+		await writeFile(file, SOURCE, "utf-8");
+		applyEffective({ ast: { enabled: true }, output_format: "json" });
+		const json = await run({ pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" });
+		const parsed = JSON.parse(String((json as unknown as { modelText: string }).modelText)) as {
+			ok: boolean;
+			diff: Record<string, string>;
+		};
+		expect(parsed.ok).toBe(true);
+		const added = Object.keys(parsed.diff).find((key) => key.startsWith("+")) ?? "";
+		expect(added).toMatch(/^\+[A-Za-z0-9]{2,8}:\d+$/);
+	});
+
 	it("refuses the WHOLE batch when the change breaks syntax, writing nothing", async () => {
 		const before = await readFile(file, "utf-8");
 		// Deleting the closing brace leaves the function unterminated. The engine's

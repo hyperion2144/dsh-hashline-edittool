@@ -655,7 +655,7 @@ function enforceNoopLoopSync(opts: {
 	return undefined;
 }
 
-function buildCanonicalFromFileResult(
+export function buildCanonicalFromFileResult(
 	file: FileEditResult,
 	displayPath: string,
 	lineNumbers = true,
@@ -748,7 +748,7 @@ export function registerEditTool(
 
 
 /** Pure-JSON edit result: per-hunk before/after + final window lines. */
-function buildEditJson(
+export function buildEditJson(
 	file: FileEditResult,
 	displayPath: string,
 ): {
