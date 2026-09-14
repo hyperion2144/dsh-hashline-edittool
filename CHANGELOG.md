@@ -4,6 +4,27 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added — AST / LSP 拆为独立工具（wayfinder #124）
+
+- **`ast_grep`**（结构搜索 + 大纲；省略 `pat` 即大纲）、**`ast_edit`**（模式化结构改写）、**`lsp`**（`symbols` / `code_actions` / `diagnostics` / `request`）三个独立工具，双双带 **text + json 两种输出模式**；AST 与 LSP 能力均由设置门控，关闭时显式拒绝而非静默回退。
+- **`ast_edit` 复用 `edit` 的全部机制**：同一个 `runFileEdits` 引擎、同一个 served-state 校验、同一个语法闸门、同一条 `commitFileResult` 事务 —— 因此 **undo 免费继承**（此前它写在别的 workspace 下，`undo_last_edit` 找不到条目）。模型侧输出**就是 `edit` 的 diff**（图例 + `-`/`+` 行 + 新锚点），卡片走 `edit` 的 diff 行。
+- **`lsp` 自带客户端**（`src/lsp/`：会话、发现、传输、安装、状态路由）：`initialize` 声明 **push 诊断**（`publishDiagnostics`，与 pull 的 `textDocument/diagnostic` 是两件事）、诊断等待窗口 5s（冷启动实测 2.6–3.1s，等待循环在推送到达即返回）、**URI 规范化**（客户端 `pathToFileURL` 与服务器回声的 `d%3A`／盘符大小写是同一文件的两种拼法）。
+- **`lsp diagnostics` 卡片**：自己的 block（与 diff 卡同套外框声明）+ 共享 `TabStrip` 头部（复制固定在右上角）——行是**原样源码行**（带 `anchor:line` gutter），诊断**缩进在下方**、红色引用块、**一条一行**；标题后是 `2 errors · 1 warning` 统计，计数取自宿主发出的 **severity 码**（不解析 `error:` 文本）；复制带走卡片所见（源码行 + 诊断）。
+- 行标记格式改为 **`<anchor>:<line>`（锚点在前）**：模型最先拷贝的那个 token 就是锚点。旧顺序 `<line>:<anchor>` 仍接受（锚点永不含纯数字，两者不可能混淆），**裸行号**按「行引用」处理 —— 该行已服务且内容未变则自动修复为该行锚点并执行（附提示），否则拒绝并给出以该行为中心的 echo。
+
+### Added — 其他
+
+- `edit` 新增 **`op:"sed"`**：在锚点范围内做逐行正则替换（`pattern`/`replacement`/`flags`，支持 `gims`；sed 的 `\1`/`&` 与 JS 的 `$1`/`$&` 都识别，但 `replacement` 不得含换行）。
+- `ast_grep` 捕获高亮：有捕获时高亮捕获，无捕获时高亮匹配节点（ADR-0005 的渲染通道），并修掉 `entry.install` 这类点号模式匹配 0 结果的隐藏 bug（`compilePattern` 解开 `expression_statement`）。
+
+### Fixed
+
+- **工具输出 schema**：`ast_grep` / `ast_edit` / `lsp` 的 `modelText`（及诊断行的 `messages`/`severities`）此前未在 output schema 声明 —— DSL 会在**真实会话挂载时**拒绝未声明字段（`value.modelText is not declared`），而单测直接调 `execute` 看不到。
+- **观察策略**：所有「服务出去的行」现在都同时 emit `fs/observed`（read / grep / edit 回声 / diff / write auto-read / ast_* / lsp / drift）；**单文件编辑路径漏传 `exec`** 会让 `actor: undefined` 的观察**什么都记录不了**，导致回声给出的锚点写不进去（`[E_NOT_OBSERVED]`）—— 已修 + 回归测试。
+- **分隔符审计**：`lsp` 曾用手拼的 `:` 而非配置的 `separator`；`undo` 的 diff 上下文硬编码为 1；`file-view` 的字节测量用旧 `line#hash` 标记 —— 均已改为配置值/同一渲染器。
+- **`ast_edit` / `undo_last_edit` / `lsp` 的卡片**：分别缺 `presentationMeta` + `presentResult`、客户端行注册、独立 body —— 此前都回落为原始输入输出。
+- **Windows（LSP 启动）**：`fs.access(X_OK)` 在 Windows 是「存在且可读」的假阳性，于是 npm 并排安装的**无扩展名 Unix shim** 被选中，`CreateProcessW` 起不了而真正的 `.cmd` 永远轮不到 —— 可执行判定改为「扩展名 ∈ `.exe`/`.com`/`.cmd`/`.bat` 且是文件」；启动命令经 `cmd.exe /d /s /c`，且**命令与参数保持独立 argv entry**（合并成一条会被参数层加引号，cmd 遂把整行当成一个程序名）。
+
 ## [0.5.2] - 2026-09-10
 
 ### Changed — edit/write 卡统一为 grep 卡的 tab 形态（wayfinder #91/#96）
