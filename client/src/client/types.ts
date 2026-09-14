@@ -145,6 +145,26 @@ export interface GrepCardModel {
 	total: number;
 }
 
+/**
+ * One `lsp` diagnostics row: the source line, plus the diagnostics ON it.
+ *
+ * Two fields, not one string: the line is the file's text and the messages are
+ * a server's opinion of it, and the card gives them different weights because a
+ * reader has to be able to see which is which.
+ */
+export interface LspRowMeta {
+	readonly number: number;
+	readonly hash: string;
+	readonly text: string;
+	readonly messages: readonly string[];
+}
+
+/** The `lsp` diagnostics card: one row per line, its messages attached. */
+export interface LspCardModel {
+	readonly path: string;
+	readonly rows: readonly LspRowMeta[];
+}
+
 /** One rendered slice of a card row: plain text, or a highlighted occurrence. */
 export interface GrepSegment {
 	text: string;

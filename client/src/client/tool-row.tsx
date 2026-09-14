@@ -27,7 +27,8 @@ import {
 import type { DiffBlockProps, ReadBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readBlockLabels } from "./labels.js";
-import { diffCardModel, grepCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { LspCard } from "./lsp-card.js";
 import { GrepCard } from "./grep-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import { grepCardLabels } from "./labels.js";
@@ -66,6 +67,8 @@ interface ToolRowProps {
 	read: ReturnType<typeof readCardModel>;
 	diff: ReturnType<typeof diffCardModel>;
 	grep: ReturnType<typeof grepCardModel>;
+	/** The `lsp` diagnostics card: rows whose messages belong to them. */
+	lsp: ReturnType<typeof lspCardModel>;
 	state: "running" | "ok" | "error" | "stopped";
 	filePath: string | undefined;
 	onOpenFile: ((path: string) => void) | undefined;
@@ -102,6 +105,7 @@ function ToolRow({
 	read,
 	diff,
 	grep,
+	lsp,
 	state,
 	filePath,
 	onOpenFile,
@@ -113,10 +117,13 @@ function ToolRow({
 	const diffLabels = useMemo(() => diffBlockLabels(t), [t]);
 	const readBody = read ?? null;
 	const grepBody = grep ?? null;
+	const lspBody = lsp ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const diffBody = diff ?? null;
 	const outputText = output ?? null;
-	const card = diffBody ?? grepBody ?? readBody;
+	// `lsp` first: its rows carry annotations, and the read body would draw the
+	// messages as if they were part of the file.
+	const card = lspBody ?? diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -237,7 +244,9 @@ function ToolRow({
 									maxLines: 16,
 									className: css.readBody,
 								})
-								: readBody !== null
+								: lspBody !== null
+									? jsx_(LspCard, { model: lspBody, maxLines: 16 })
+									: readBody !== null
 									? jsx_(ReadBlock, {
 										label: readBody.label,
 										// ReadBlock draws its gutter cell verbatim, so the precomposed
@@ -466,11 +475,34 @@ export function HashlineUndoRow(props: ToolViewProps): ReactNode {
 /**
  * `lsp` — semantic operations.
  *
- * It borrows the READ row rather than inventing a shape: `symbols` returns
- * `line:anchor| content` rows, `diagnostics` returns file lines with a message per
- * line. A symbol list is not a file read, which is exactly why the title says so.
+ * A symbol list is not a file read, and a DIAGNOSTIC is not a line of the file:
+ * `diagnostics` returns each line with its messages, and those two must not be
+ * drawn alike — hence `LspCard` below rather than the read body.
  */
 export function HashlineLspRow(props: ToolViewProps): ReactNode {
-	return HashlineReadRow({ ...props, titleOverride: "LSP" });
+	// NOT the read row: `lsp` rows carry diagnostics beside their text, and the
+	// read body would draw those messages as if they were lines of the file. The
+	// diagnostics get their own drawer; a file's rows and a server's opinion of
+	// them must not look alike.
+	const model = toolRowModel(props.toolName, props.block, props.cwd, props.home);
+	return jsx_(ToolRow, {
+		t: props.t,
+		variant: "read",
+		toolName: props.toolName,
+		icon: jsx_(IconBrowseOutline16, { size: 14 }),
+		title: "LSP",
+		summary: model.summary,
+		bodyRaw: model.bodyRaw,
+		output: model.output,
+		errorSummary: model.errorSummary,
+		read: null,
+		grep: null,
+		diff: null,
+		lsp: lspCardModel(props.block),
+		state: model.state,
+		filePath: model.filePath,
+		onOpenFile: props.openFile,
+		inspect: props.inspect,
+	});
 }
 

@@ -192,9 +192,9 @@ describe("lsp — code_actions lists and never applies", () => {
 
 describe("lsp — diagnostics", () => {
 	it("reports what was pushed, with the line", async () => {
-		install({ pushOnOpen: [{ message: "unused", range: { start: { line: 1 } } }] });
+		install({ pushOnOpen: [{ message: "unused", severity: 1, range: { start: { line: 1 } } }] });
 		const value = await run({ operation: "diagnostics" });
-		expect(value.raw).toBe("L2 unused");
+		expect(value.raw).toBe("L2 error: unused");
 	});
 
 	it("says NO diagnostics when a server looked and pushed an empty list", async () => {
@@ -209,24 +209,33 @@ describe("lsp — diagnostics", () => {
 		// three times over in a channel the model pays for.
 		install({
 			pushOnOpen: [
-				{ message: "first error", range: { start: { line: 0 } } },
-				{ message: "second error", range: { start: { line: 0 } } },
-				{ message: "third error", range: { start: { line: 1 } } },
+				{ message: "first error", severity: 1, range: { start: { line: 0 } } },
+				{ message: "second error", severity: 1, range: { start: { line: 0 } } },
+				{ message: "third error", severity: 2, range: { start: { line: 1 } } },
 			],
 		});
 		const value = await run({ operation: "diagnostics" });
-		const rows = (value as unknown as { hashlines: Array<{ number: number; hash: string; text: string }> }).hashlines;
-		// A line is the unit the reader acts on, so there are TWO rows here — and
-		// the line with two errors carries both messages, joined by a full-width
-		// semicolon (never the configured separator, which divides marker from
-		// content and would read as a second marker inside the text).
+		const rows = (value as unknown as { hashlines: Array<{ number: number; hash: string; text: string; messages?: string[] }> }).hashlines;
+		// A line is the unit the reader acts on, so there are TWO rows here. The row
+		// IS the source line (nothing appended), and the diagnostics ride beside it
+		// as data — one entry per error, never merged into the text — because a card
+		// cannot style a diagnostic differently from the line it sits under while
+		// both are the same string.
 		expect(rows.map((row) => row.number)).toEqual([1, 2]);
-		expect(rows[0]!.text).toBe("export function alpha() {}：first error；second error");
-		expect(rows[1]!.text).toBe("const b = 1;：third error");
-		// THE SOURCE LINE APPEARS ONCE. This is the repetition the shape above is
-		// meant to avoid: counting occurrences, not just checking the first.
+		expect(rows[0]!.text).toBe("export function alpha() {}");
+		expect(rows[0]!.messages).toEqual(["error: first error", "error: second error"]);
+		expect(rows[1]!.messages).toEqual(["warning: third error"]);
+		expect(rows[1]!.text).toBe("const b = 1;");
+		// THE SOURCE LINE APPEARS ONCE in the model text — this is the repetition the
+		// shape exists to avoid, so it is COUNTED rather than merely matched.
 		const text = String((value as unknown as { modelText: string }).modelText);
 		expect(text.split("export function alpha() {}").length - 1).toBe(1);
+		// And the diagnostics are on their own INDENTED lines under it, one each, so
+		// no reader has to guess which text is the file and which is a machine's
+		// opinion of the file.
+		expect(text).toMatch(/^\s*↳ error: first error$/m);
+		expect(text).toMatch(/^\s*↳ error: second error$/m);
+		expect(text).toMatch(/^\s*↳ warning: third error$/m);
 		// Every row keeps its anchor, so any of them can be acted on.
 		for (const row of rows) expect(row.hash).not.toBe("");
 	});

@@ -166,6 +166,11 @@ export function buildLspTool(io: FileIO) {
 					// has a line, every diagnostic has a line — so the honest card is the
 					// read card's gutter, and this is its shape (`{number, hash, text}`).
 					//
+					// `messages` is a DIAGNOSTIC row's second half: the row stays the verbatim
+					// source line (what `edit` addresses, and what the served-state check must
+					// vouch for), and the diagnostics sit beside it as data, so each channel
+					// can present them as what they are.
+					//
 					// Emitted rather than derived on the client because the ANCHORS live
 					// here: they are the same variable-length markers `read` hands out, so
 					// a symbol row is directly editable without a second read.
@@ -179,6 +184,7 @@ export function buildLspTool(io: FileIO) {
 								number: { type: "integer", required: true },
 								hash: { type: "string", required: true },
 								text: { type: "string", required: true },
+								messages: { type: "array", items: { type: "string" } },
 							},
 						},
 					},
@@ -316,41 +322,46 @@ export function buildLspTool(io: FileIO) {
 				}
 				const diagLines = splitLines(text);
 				const diagAnchors = lineHashesPure(text);
-				// ONE ROW PER LINE, carrying that line's messages.
+				// ONE ROW PER LINE: the row IS the source line, its diagnostics are a
+				// SEPARATE field.
 				//
-				// Two shapes were wrong before this one, in opposite directions. The
-				// first deduplicated by line and parked the messages in `raw`, so the
-				// body and the messages disagreed. The second gave every diagnostic its
-				// own row, which reads well until a line has three errors: the source
-				// line is then printed three times — the same text, three times over, in
-				// a channel where the model pays for it.
+				// Three shapes have now been wrong, and each one taught the same lesson
+				// from a different side: dedup-only parked the messages in `raw` (body and
+				// messages disagreed); one-row-per-diagnostic printed the source line once
+				// per error (the same text three times, in a channel the model pays for);
+				// and joining the messages INTO the row text made one string serve two
+				// readings — the card cannot style a diagnostic differently from the line
+				// it sits under if both are the same string.
 				//
-				// A line is the unit the reader acts on (and the unit the gutter can
-				// point at), so the line gets the row and its messages are joined inside
-				// it.
-				//
-				// The joiners are full-width punctuation, never the configured separator:
-				// the separator divides marker from content, and a second one inside the
-				// text would read as another marker.
+				// So the row keeps the verbatim line (which is also what `served` must
+				// vouch for, since anchors are content-derived) and `messages` carries the
+				// diagnostics as data. Both channels then read the same two fields: the
+				// model prints the messages indented under their line, and the card gives
+				// them a style of their own.
 				const byLine = new Map<number, string[]>();
 				// Collected in the SAME pass as the rows: deriving `raw` from the rendered
 				// row text afterwards would mean parsing a string this function just built.
 				const diagMessages: string[] = [];
 				for (const entry of pushed) {
-					const d = entry as { message?: unknown; range?: { start?: { line?: unknown } } };
+					const d = entry as { message?: unknown; severity?: unknown; range?: { start?: { line?: unknown } } };
 					const at = d.range?.start?.line;
 					if (typeof at !== "number" || at < 0) continue;
+					// The severity the protocol sent, as a word: a warning that reads like an
+					// error is worse than no label at all.
+					const severity = DIAGNOSTIC_SEVERITY[d.severity as number] ?? "diagnostic";
 					const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
-					diagMessages.push(`L${at + 1} ${message}`);
+					const labelled = `${severity}: ${message}`;
+					diagMessages.push(`L${at + 1} ${labelled}`);
 					const line = at + 1;
-					byLine.set(line, [...(byLine.get(line) ?? []), message]);
+					byLine.set(line, [...(byLine.get(line) ?? []), labelled]);
 				}
 				const diagRows = [...byLine.entries()]
 					.sort((a, b) => a[0] - b[0])
 					.map(([line, messages]) => ({
 						number: line,
 						hash: diagAnchors[line - 1] ?? "",
-						text: `${diagLines[line - 1] ?? ""}：${messages.join("；")}`,
+						text: diagLines[line - 1] ?? "",
+						messages,
 					}));
 				// Served and observed like a read's rows, with the VERBATIM line as the
 				// content: the anchors are content-derived, so serving the row TEXT (which
@@ -513,19 +524,22 @@ export function buildLspTool(io: FileIO) {
  */
 function lspModelText(value: Record<string, unknown>): string {
 	const hashlines = Array.isArray(value.hashlines)
-		? (value.hashlines as Array<{ number?: unknown; hash?: unknown; text?: unknown }>)
+		? (value.hashlines as Array<{ number?: unknown; hash?: unknown; text?: unknown; messages?: unknown }>)
 		: [];
 	// ONE row renderer, the same one `read`/`grep`/`ast_grep` use: the divider is
 	// the CONFIGURED separator (a hardcoded `:` here emitted `anchor:line: text`
 	// in a deployment configured with `|`) and the markers align into a column
 	// exactly as they do everywhere else.
-	const rows: Array<{ marker: string; text: string }> = [];
+	const rows: Array<{ marker: string; text: string; messages: string[] }> = [];
 	const anchors: Record<string, string> = {};
 	for (const row of hashlines) {
 		if (typeof row.number !== "number" || typeof row.hash !== "string" || row.hash === "") continue;
 		const marker = fmtMarker(row.hash, row.number);
 		const text = typeof row.text === "string" ? row.text : "";
-		rows.push({ marker, text });
+		const messages = Array.isArray(row.messages)
+			? row.messages.filter((message): message is string => typeof message === "string")
+			: [];
+		rows.push({ marker, text, messages });
 		anchors[marker] = text;
 	}
 	if (isJsonOutput()) {
@@ -541,7 +555,16 @@ function lspModelText(value: Record<string, unknown>): string {
 		return `${head}\n${raw}`;
 	}
 	const width = anchorWidth(rows.map((row) => row.marker));
-	const body = rows.map((row) => `  ${fmtHashlineRow(row.marker, row.text, width)}`);
+	// Two parts per row, and they must not be confusable: the hashline row IS the
+	// source line (what an `edit` addresses), and every diagnostic for it follows
+	// indented under a `↳` — one per line, never merged into the row text. The
+	// indent is the point: a reader (and a model) can tell at a glance which text
+	// is the FILE and which text is a machine's opinion OF the file.
+	const indent = " ".repeat(2 + width + 2);
+	const body = rows.flatMap((row) => {
+		const line = `  ${fmtHashlineRow(row.marker, row.text, width)}`;
+		return [line, ...row.messages.map((message) => `${indent}↳ ${message}`)];
+	});
 	const symbols = Array.isArray(value.symbols) ? value.symbols.length : 0;
 	return [`${head}${symbols > 0 ? ` (${symbols} symbol(s))` : ""}`, ...body].join("\n");
 }
@@ -562,6 +585,20 @@ export const E_LSP_NO_SERVER = "[E_LSP_NO_SERVER]";
  * server nothing.
  */
 const DIAGNOSTIC_WAIT_MS = 5_000;
+
+/**
+ * LSP `DiagnosticSeverity` as a word, so a message says what it is.
+ *
+ * A warning labelled like an error is worse than no label at all: the reader has
+ * to be able to tell "this will not compile" from "you could write this
+ * better".
+ */
+const DIAGNOSTIC_SEVERITY: Record<number, string> = {
+	1: "error",
+	2: "warning",
+	3: "information",
+	4: "hint",
+};
 
 /**
  * Register the tool on an agent's context.
