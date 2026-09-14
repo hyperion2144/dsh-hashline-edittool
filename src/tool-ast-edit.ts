@@ -104,16 +104,18 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 					count: { type: "integer", required: true },
 					ok: { type: "boolean", required: true },
 					message: { type: "string", required: true },
+					// THE MODEL CHANNEL, declared because the DSL validates the returned
+					// value: a field the schema does not name is rejected outright
+					// (`value.modelText is not declared`).
+					modelText: { type: "string", required: true },
 				},
 			},
-			render: (_args: unknown, value: { readonly path: string; readonly pat: string; readonly count: number; readonly ok: boolean; readonly message: string }) => {
-				if (!value.ok) {
-					// The engine's own words: it is the one that knows whether the refusal
-					// was syntax, a stale anchor, or a guard.
-					return [{ type: "text", text: `Nothing was written to ${value.path}. ${value.message}` }];
-				}
-				return [{ type: "text", text: `Applied \`${value.pat}\` ${value.count} time(s) in ${value.path}.\n\n${value.message}` }];
-			},
+			// The model reads modelText, built in `execute` so it is the right mode
+			// (text prose or the JSON envelope) — the old render always spoke prose,
+			// which would have shown text while JSON mode was selected.
+			render: (_args: unknown, value: { readonly modelText: string }) => [
+				{ type: "text", text: value.modelText },
+			],
 		},
 		async execute(args: { readonly pat: string; readonly out: string; readonly path: string }, exec: ToolRunContext) {
 			const cwd = execCwd(exec);
@@ -152,12 +154,18 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 				throw error;
 			}
 			if (matches.length === 0) {
+				const message =
+					"No match, so nothing was written. A pattern the grammar could not parse would have been an error instead.";
 				return {
 					path: args.path,
 					pat: args.pat,
 					count: 0,
 					ok: true,
-					message: "No match, so nothing was written. A pattern the grammar could not parse would have been an error instead.",
+					message,
+					// The model channel is required by the output schema, in every mode.
+					modelText: isJsonOutput()
+						? JSON.stringify({ ok: true, path: args.path, pattern: args.pat, count: 0, diff: {}, hints: [], warnings: [], errors: [] })
+						: `No match for \`${args.pat}\` in ${args.path}. ${message}`,
 				};
 			}
 			// The anchors come from the hashline allocator — the SAME primitive

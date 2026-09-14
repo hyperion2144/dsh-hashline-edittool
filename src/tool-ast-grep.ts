@@ -164,24 +164,20 @@ export function buildAstGrepTool(io: FileIO) {
 					},
 					truncated: { type: "boolean", required: true },
 					total: { type: "integer", required: true },
+					// THE MODEL CHANNEL. Declared because the DSL validates the returned
+					// value against this schema: a field the tool returns but the schema
+					// does not name is rejected outright (`value.modelText is not
+					// declared`), which is how this was found.
+					modelText: { type: "string", required: true },
 				},
 			},
-		// The model reads THIS, and it is the same shape a `read` returns — so a
-		// match can be pasted into `edit` without translating anything.
-		render: (_args: unknown, value: { readonly path: string; readonly pat?: string; readonly outline?: string; readonly matches: readonly { readonly startLine: number; readonly endLine: number; readonly rows: readonly string[]; readonly captures: readonly string[] }[] }) => {
-			if (value.outline !== undefined) return [{ type: "text", text: value.outline }];
-			if (value.matches.length === 0) {
-				return [{ type: "text", text: `No match for \`${value.pat}\` in ${value.path}. A pattern the grammar could not parse would have been an error, so this is an absence.` }];
-			}
-			const out: string[] = [];
-			for (const match of value.matches) {
-				const caption = `${value.path}:${match.startLine}${match.endLine > match.startLine ? `-${match.endLine}` : ""}`;
-				out.push(match.captures.length === 0 ? caption : `${caption}  ${match.captures.join("  ")}`);
-				out.push(...match.rows);
-				out.push("");
-			}
-			return [{ type: "text", text: `${value.matches.length} match(es) in ${value.path}:\n\n${out.join("\n").trimEnd()}` }];
-		},
+		// The model reads modelText — built in `execute`, so BOTH output modes are
+		// projections of the same facts instead of being re-derived here. The old
+		// render rebuilt the text from `matches`, which put two renderers on one
+		// answer and would have shown text while JSON mode was selected.
+		render: (_args: unknown, value: { readonly modelText: string }) => [
+			{ type: "text", text: value.modelText },
+		],
 		// The card's projection, and the reason `ast_grep` can wear the GREP card
 		// rather than a copy of it: `cardFiles` is the same shape `grep` emits, so
 		// the same component draws both and a fix to one is a fix to the other.
@@ -269,7 +265,12 @@ export function buildAstGrepTool(io: FileIO) {
 						cardFiles: [],
 						truncated: false,
 						total: 0,
-						outline: `${args.path}: no outline — ${tooBig}. Read it in windows instead, or use \`ast_grep\` with a pattern to find something specific.`
+						outline: `${args.path}: no outline — ${tooBig}. Read it in windows instead, or use \`ast_grep\` with a pattern to find something specific.`,
+						// A refusal still speaks through the model channel, in whatever mode
+						// is active — the schema declares it, so it must always be present.
+						modelText: isJsonOutput()
+							? JSON.stringify({ path: args.path, outline: [], reason: tooBig })
+							: `${args.path}: no outline — ${tooBig}. Read it in windows instead, or use \`ast_grep\` with a pattern to find something specific.`
 					};
 				}
 				let spans;
@@ -285,11 +286,14 @@ export function buildAstGrepTool(io: FileIO) {
 					if (error instanceof AstError) {
 						return {
 							path: args.path,
+							outline: `${args.path}: no outline — ${error.message}`,
+							modelText: isJsonOutput()
+								? JSON.stringify({ path: args.path, outline: [], reason: error.message })
+								: `${args.path}: no outline — ${error.message}`,
 							matches: [],
 							cardFiles: [],
 							truncated: false,
 							total: 0,
-							outline: `${args.path}: no outline — ${error.message}`
 						};
 					}
 					throw error;
@@ -304,7 +308,10 @@ export function buildAstGrepTool(io: FileIO) {
 						cardFiles: [],
 						truncated: false,
 						total: 0,
-						outline: `${args.path}: nothing to fold — the file is short enough to \`read\` whole (${lines.length} lines).`
+						outline: `${args.path}: nothing to fold — the file is short enough to \`read\` whole (${lines.length} lines).`,
+						modelText: isJsonOutput()
+							? JSON.stringify({ path: args.path, outline: [], reason: `nothing to fold — short enough to read whole (${lines.length} lines)` })
+							: `${args.path}: nothing to fold — the file is short enough to \`read\` whole (${lines.length} lines).`,
 					};
 				}
 				const outlineLines = rendered.rows.map((row) => {
@@ -331,9 +338,11 @@ export function buildAstGrepTool(io: FileIO) {
 					cardFiles: [],
 					truncated: false,
 					total: 0,
-					// Both modes are a projection of `outlineLines`: the same markers
-					// (`<anchor>:<line>`) key the JSON dict and label the text rows.
-					outline: isJsonOutput()
+					// `outline` is the CARD's sentence and stays the rendered text;
+					// `modelText` is what the model reads, in the active mode. Both are
+					// projections of `outlineLines`, so the markers cannot drift.
+					outline: `${hashlineHeader()}\n${body}\n\n${summaryFooter({ path: args.path, rendered })}`,
+					modelText: isJsonOutput()
 						? JSON.stringify({
 								path: args.path,
 								totalLines: lines.length,
@@ -452,6 +461,11 @@ export function buildAstGrepTool(io: FileIO) {
 			// Every row is built ONCE from the structured facts (line, anchor, text)
 			// and used by BOTH channels: the rendered text rows and the JSON dict
 			// keyed `<anchor>:<line>`. Rows are never re-parsed (ADR-0005).
+			//
+			// The dict stays a LOCAL: the tool DSL has no map type, so a dictionary
+			// reaches the model inside `modelText` (a string) and never as a schema
+			// field — a returned `dict` is rejected as `not declared`.
+			const dicts: Array<Record<string, string>> = [];
 			const rows = matches.map((match) => {
 				const body: string[] = [];
 				const dict: Record<string, string> = {};
@@ -461,11 +475,11 @@ export function buildAstGrepTool(io: FileIO) {
 					body.push(fmtHashlineRow(fmtMarker(anchor, line), text, width));
 					if (anchor !== "") dict[`${anchor}:${line}`] = text;
 				}
+				dicts.push(dict);
 				return {
 					startLine: match.startLine,
 					endLine: match.endLine,
 					rows: body,
-					dict,
 					captures: Object.entries(match.captures).map(
 						([name, values]) => `${name}=${values.map((v) => JSON.stringify(v)).join(", ")}`),
 				};
@@ -482,11 +496,11 @@ export function buildAstGrepTool(io: FileIO) {
 						path: args.path,
 						pattern: args.pat,
 						total,
-						matches: rows.map((row) => ({
+						matches: rows.map((row, index) => ({
 							startLine: row.startLine,
 							endLine: row.endLine,
 							captures: row.captures,
-							rows: row.dict,
+							rows: dicts[index] ?? {},
 						})),
 					})
 				: [`${args.path} — ${total} match(es) for \`${args.pat}\``, ...rows.flatMap((row) => [...row.rows, ...row.captures.map((c) => `  ${c}`), ""])]

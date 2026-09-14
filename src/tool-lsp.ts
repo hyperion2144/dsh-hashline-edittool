@@ -183,22 +183,18 @@ export function buildLspTool(io: FileIO) {
 						},
 					},
 					totalLines: { type: "integer", required: true },
+					// THE MODEL CHANNEL, declared because the DSL validates the returned
+					// value against this schema (`value.modelText is not declared` is the
+					// error a returned-but-undeclared field produces).
+					modelText: { type: "string", required: true },
 				},
 			},
-		render: (_args: unknown, value: { readonly path: string; readonly operation: string; readonly server: string; readonly symbols: readonly FlatSymbol[]; readonly raw?: string }) => {
-			if (value.raw !== undefined) {
-				return [{ type: "text", text: `${value.server} answered on ${value.path}:\n\n${value.raw}` }];
-			}
-			if (value.symbols.length === 0) {
-				// A server that answered with nothing is a fact about the file, not a
-				// failure — say so, because the refusal path already covered "no server".
-				return [{ type: "text", text: `${value.server} reported no symbols for ${value.path}.` }];
-			}
-			const lines = value.symbols.map(
-				(s) => `${"  ".repeat(s.depth)}${s.kind.padEnd(12)}${s.name}${s.line > 0 ? `  (line ${s.line})` : ""}`,
-			);
-			return [{ type: "text", text: `${value.server} reported ${value.symbols.length} symbol(s) for ${value.path}:\n\n${lines.join("\n")}` }];
-		},
+			// The model reads modelText, built by the wrapper below for EVERY branch
+			// (text listing or JSON envelope) — this render used to re-derive prose
+			// from `symbols`/`raw`, which would have ignored JSON mode entirely.
+			render: (_args: unknown, value: { readonly modelText: string }) => [
+				{ type: "text", text: value.modelText },
+			],
 		// The card's projection. The component that draws a `read` draws this too,
 		// because the DATA is the same shape — a line, its anchor, its content.
 		//
@@ -234,6 +230,10 @@ export function buildLspTool(io: FileIO) {
 				content: [{ type: "text", text }],
 			};
 		},
+		// The return type is left open ON PURPOSE: the branches build the structured
+		// value and the wrapper below adds the model channel, so the inline body is
+		// one field short of the declared schema. The HOST validates the wrapped
+		// value at runtime, which is where the schema must hold.
 		async execute(
 			args: {
 				readonly operation: string;
@@ -246,7 +246,11 @@ export function buildLspTool(io: FileIO) {
 				readonly symbol?: string;
 			},
 			exec: ToolRunContext,
-		) {
+			// The wrapper below supplies the one field the schema adds — `modelText` —
+			// so this body is typed loosely ON PURPOSE: demanding the schema here
+			// would require building a field the wrapper owns.
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		): Promise<any> {
 			const cwd = (exec as { agent?: { session?: { header?: { cwd?: string } } } }).agent?.session?.header?.cwd ?? process.cwd();
 			const absolutePath = await io.resolve(args.path, cwd);
 			const language = languageForPath(absolutePath);
@@ -455,10 +459,14 @@ export function buildLspTool(io: FileIO) {
 			};
 		},
 	});
+	// The branches build the structured value; the wrapper adds the model channel.
+	// It is the WRAPPER's return that must satisfy the schema — one place, so no
+	// branch can forget its mode, and the inner signature above is left open
+	// because the wrapped field is what the host validates.
 	return {
 		...tool,
 		async execute(args: never, exec: never) {
-			const value = (await tool.execute(args, exec)) as Record<string, unknown>;
+			const value = (await tool.execute(args, exec)) as unknown as Record<string, unknown>;
 			return { ...value, modelText: lspModelText(value) };
 		},
 	} as typeof tool;
