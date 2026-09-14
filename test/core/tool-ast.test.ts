@@ -18,6 +18,7 @@ import { buildAstGrepTool } from "../../src/tool-ast-grep.js";
 import { buildAstEditTool } from "../../src/tool-ast-edit.js";
 import { localIO } from "../../src/fs-bridge.js";
 import { applyEffective } from "../../src/config.js";
+import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 
 function inProcessWorker(): WorkerLike {
 	let respond: ((response: AstWorkerResponse) => void) | undefined;
@@ -81,7 +82,25 @@ describe("ast_grep", () => {
 			outline?: string;
 			modelText?: string;
 		};
-	};
+	}
+
+	// The declaration, not just the body: `defineTool` types `execute` FROM the
+	// output schema and the host validates the value against it at mount time,
+	// so a field the schema does not name passes every body-level test and then
+	// fails in a session (`value.modelText is not declared`).
+	it("returns a value that matches its own declared output schema", async () => {
+		const tool = buildAstGrepTool(localIO());
+		for (const args of [{ pat: "export function $N() { $$$B }" }, {}]) {
+			for (const mode of ["text", "json"] as const) {
+				applyEffective({ ast: { enabled: true }, output_format: mode });
+				const value = await tool.execute({ path: file, ...args }, exec(dir)(args));
+				expect(
+					schemaViolations(outputSchemaOf(tool), value),
+					`${mode} ${JSON.stringify(args)}`,
+				).toEqual([]);
+			}
+		}
+	});
 
 	it("carries BOTH output modes, both keyed `<anchor>:<line>`", async () => {
 		// Text mode: rendered rows the caller can act on directly.

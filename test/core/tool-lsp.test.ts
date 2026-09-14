@@ -10,6 +10,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { applyEffective } from "../../src/config.js";
+import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildLspTool } from "../../src/tool-lsp.js";
 import { E_LSP_NO_SERVER } from "../../src/tool-lsp.js";
@@ -123,6 +124,15 @@ describe("lsp — symbols", () => {
 		const keys = Object.keys(parsed.hashlines);
 		expect(keys.length).toBeGreaterThan(0);
 		for (const key of keys) expect(key).toMatch(/^[A-Za-z0-9]{2,8}:1$/);
+		// And the DECLARATION holds: the host validates the returned value against
+		// the output schema, so a field the schema does not name fails in a
+		// session even though every body-level assertion passes.
+		const tool = buildLspTool(io);
+		for (const mode of ["text", "json"] as const) {
+			applyEffective({ output_format: mode });
+			const value = await tool.execute({ operation: "symbols", path: FILE }, exec);
+			expect(schemaViolations(outputSchemaOf(tool), value), mode).toEqual([]);
+		}
 	});
 
 	it("reads SymbolInformation's location.range too, not only DocumentSymbol's range", async () => {
