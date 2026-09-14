@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-14
+
 ### Added — AST / LSP 拆为独立工具（wayfinder #124）
 
 - **`ast_grep`**（结构搜索 + 大纲；省略 `pat` 即大纲）、**`ast_edit`**（模式化结构改写）、**`lsp`**（`symbols` / `code_actions` / `diagnostics` / `request`）三个独立工具，双双带 **text + json 两种输出模式**；AST 与 LSP 能力均由设置门控，关闭时显式拒绝而非静默回退。
