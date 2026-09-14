@@ -106,9 +106,9 @@ const ctx = {
 };
 exports_.apply(ctx);
 
-// Six: read, edit, grep, write, the AST rows (which register TWO entries under
-// one sub-plugin), and the settings card.
-if (ctx.plugins.length !== 6) throw new Error(`expected 6 sub-plugins, got ${ctx.plugins.length}`);
+// Seven: read, edit, undo_last_edit, grep, write, the AST rows (which register
+// TWO entries under one sub-plugin), and the settings card.
+if (ctx.plugins.length !== 7) throw new Error(`expected 7 sub-plugins, got ${ctx.plugins.length}`);
 const keys = ctx.slots.registeredEntries
 	.filter((entry) => entry?.options?.name === "tool.call.toolview")
 	.map((entry) => `${entry.options.key}:${entry.options.priority}:${entry.options.locale}`);
@@ -120,6 +120,9 @@ const keys = ctx.slots.registeredEntries
 const expected = [
 	"read:-1:conversation",
 	"edit:-1:conversation",
+	// `undo_last_edit` answers with the diff of the revert and now wears that
+	// same row — without a registration the web drew raw input/output for it.
+	"undo_last_edit:-1:conversation",
 	"grep:-1:conversation",
 	"write:-1:conversation",
 	"ast_grep:-1:conversation",
@@ -148,15 +151,16 @@ if (ctx.slots.injectCalls.filter((key) => key === "settings.plugin.item").length
 if (JSON.stringify(ctx.boundNamespaces) !== JSON.stringify(["hashline"])) {
 	throw new Error(`settings card bound to the wrong namespace: ${ctx.boundNamespaces.join(", ")}`);
 }
-// SEVEN, not five: the AST sub-plugin loops over its THREE keys, and each iteration
-// asks the slot for its entry. Four originals plus three. The count is asserted
-// rather than assumed so a sub-plugin added without a key cannot pass quietly.
-if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 7) {
+// EIGHT, not seven: the AST sub-plugin loops over its THREE keys and each
+// iteration asks the slot for its entry, so five single-key sub-plugins plus
+// three. The count is asserted rather than assumed so a sub-plugin added
+// without a key cannot pass quietly.
+if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 8) {
 	throw new Error("expected every toolview to inject the tool.call.toolview declaration");
 }
 console.log("bundle evaluation OK:");
 console.log("  - factory registered under", registered[0].id);
-console.log("  - exports {inject, apply} mount 5 toolview plugins + 1 settings card");
+console.log("  - exports {inject, apply} mount 6 toolview plugins + 1 settings card");
 console.log("  - registrations:", keys.join(", "));
 console.log("  - components:", ctx.slots.registeredEntries.filter((e) => e && typeof e === "object").map((e) => e.component.name).join(", "));
 console.log("  - settings card:", settingsCards.join(", "));

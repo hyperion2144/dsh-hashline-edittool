@@ -22,6 +22,7 @@ import {
 	HashlineGrepRow,
 	HashlineLspRow,
 	HashlineReadRow,
+	HashlineUndoRow,
 	HashlineWriteRow,
 } from "./tool-row.js";
 import { HashlineSettingsCard } from "./settings-card.js";
@@ -59,6 +60,29 @@ const editToolview = {
 			ctx.slots.register(
 				{ name: "tool.call.toolview", key: "edit", locale: CONVERSATION_NS, priority: -1 },
 				HashlineEditRow,
+			),
+		);
+	},
+};
+
+/**
+ * Registers the hashline UNDO row.
+ *
+ * `undo_last_edit` already answers with the diff of the revert — the host hands
+ * over `{card: "diff", diffs}` — but nothing registered the row, so the web drew
+ * the default view and an undo looked like raw input/output. It borrows the edit
+ * row for the same reason `ast_edit` does: a revert IS a diff, and one
+ * implementation of what a diff row looks like means a fix to one is a fix to
+ * all of them.
+ */
+const undoToolview = {
+	name: "hashline-undo-toolview",
+	inject: ["slots"],
+	apply(ctx: ClientCtx) {
+		ctx.slots.inject("tool.call.toolview", () =>
+			ctx.slots.register(
+				{ name: "tool.call.toolview", key: "undo_last_edit", locale: CONVERSATION_NS, priority: -1 },
+				HashlineUndoRow,
 			),
 		);
 	},
@@ -161,6 +185,7 @@ const settingsCard = {
 export function apply(ctx: ClientCtx): void {
 	ctx.plugin(readToolview);
 	ctx.plugin(editToolview);
+	ctx.plugin(undoToolview);
 	ctx.plugin(grepToolview);
 	ctx.plugin(writeToolview);
 	ctx.plugin(astToolviews);

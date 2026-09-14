@@ -458,6 +458,11 @@ export function HashlineAstEditRow(props: ToolViewProps): ReactNode {
 	return HashlineEditRow({ ...props, titleOverride: "AST_EDIT" });
 }
 
+/** `undo_last_edit` — a revert IS a diff, so it wears the edit card. */
+export function HashlineUndoRow(props: ToolViewProps): ReactNode {
+	return HashlineEditRow({ ...props, titleOverride: "UNDO" });
+}
+
 /**
  * `lsp` — semantic operations.
  *
