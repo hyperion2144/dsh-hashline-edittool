@@ -27,8 +27,6 @@ import type {
 	GrepFileRowGroup,
 	GrepRowMeta,
 	GrepSegment,
-	LspCardModel,
-	LspRowMeta,
 	ReadCardProps,
 	ReadMetaHashline,
 	ReadMetaLine,
@@ -670,25 +668,43 @@ export function grepCardModel(block: ToolCallBlock): GrepCardModel | null {
  * @param block - the settled tool block.
  * @returns the card model, or null when the call carries nothing drawable.
  */
-export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
+export function lspCardModel(
+	block: ToolCallBlock,
+	cwd: string | undefined,
+	home: string | undefined,
+): ReadCardProps | null {
 	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
 	const meta = block.meta;
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
 	const value = meta as Record<string, unknown>;
 	if (typeof value.path !== "string" || !Array.isArray(value.hashlines)) return null;
-	const rows: LspRowMeta[] = [];
+	const lines: Array<{ number: number | string; text: string }> = [];
+	let counted = 0;
 	for (const candidate of value.hashlines) {
 		if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
 		const row = candidate as Record<string, unknown>;
 		if (typeof row.number !== "number" || !Number.isInteger(row.number) || row.number < 1) return null;
 		if (typeof row.hash !== "string" || typeof row.text !== "string") return null;
-		const messages = Array.isArray(row.messages)
-			? row.messages.filter((message): message is string => typeof message === "string")
-			: [];
-		rows.push({ number: row.number, hash: row.hash, text: row.text, messages });
+		// The gutter cell is the marker, verbatim — the same `<anchor>:<line>` a read
+		// shows, so the row is directly editable.
+		const marker: number | string = row.hash !== "" ? `${row.number}:${row.hash}` : row.number;
+		lines.push({ number: marker, text: row.text });
+		counted += 1;
+		if (!Array.isArray(row.messages)) continue;
+		for (const message of row.messages) {
+			if (typeof message === "string") lines.push({ number: marker, text: `   ↳ ${message}` });
+		}
 	}
-	if (rows.length === 0) return null;
-	return { path: value.path, rows };
+	if (counted === 0) return null;
+	const totalLines =
+		typeof value.totalLines === "number" && Number.isInteger(value.totalLines) && value.totalLines > 0
+			? value.totalLines
+			: counted;
+	return {
+		label: abbreviateHomePath(relativizeToCwd(value.path, cwd), home),
+		lines,
+		totalLines,
+	};
 }
 
 /**

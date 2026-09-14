@@ -42,17 +42,6 @@ const CSS_TEXT = [
 	".dshl-ioText{white-space:pre-wrap;word-break:break-word;min-width:0;color:var(--dsw-alias-label-secondary)}",
 	".dshl-ioText[data-error]{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diffBody,.dshl-readBody{margin:4px 0 4px 4px}",
-	// --- lsp diagnostics: the source line, then its diagnostics as a red quote ---
-	// The two must not read alike, so a line's messages are indented under it
-	// behind a red rule, ONE message per row: a wrapped paragraph would blur which
-	// error ends where.
-	".dshl-lspBody{flex-direction:column;display:flex;padding:8px 16px 10px 4px;gap:2px}",
-	".dshl-lspRow{display:flex;gap:10px;align-items:baseline;font-family:var(--ds-font-family-code);font-size:var(--dsh-content-font-size-secondary,13px);line-height:1.6;white-space:pre-wrap;word-break:break-word}",
-	".dshl-lspGutter{flex:none;min-width:44px;text-align:right;color:var(--dsw-alias-label-caption);border-right:1px solid var(--dsw-alias-border-l1);padding-right:10px;font-variant-numeric:tabular-nums}",
-	".dshl-lspSrc{color:var(--dsw-alias-label-primary);min-width:0}",
-	".dshl-lspDiags{margin:2px 0 8px 54px;padding:2px 0 2px 10px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);flex-direction:column;display:flex;gap:2px}",
-	".dshl-lspDiag{color:var(--dsw-alias-state-error-primary);font-family:var(--ds-font-family-code);font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);line-height:1.5;white-space:pre-wrap;word-break:break-word}",
-	".dshl-lspMore{color:var(--dsw-alias-label-caption);font-size:calc(var(--dsh-content-font-size-secondary,13px) - 2px);padding:2px 0 0 54px}",
 	".dshl-visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}",
 ].join("");
 
@@ -92,12 +81,5 @@ export const css = {
 	ioText: "dshl-ioText",
 	readBody: "dshl-readBody",
 	diffBody: "dshl-diffBody",
-	lspBody: "dshl-lspBody",
-	lspRow: "dshl-lspRow",
-	lspGutter: "dshl-lspGutter",
-	lspSrc: "dshl-lspSrc",
-	lspDiags: "dshl-lspDiags",
-	lspDiag: "dshl-lspDiag",
-	lspMore: "dshl-lspMore",
 	visuallyHidden: "dshl-visuallyHidden",
 } as const;
