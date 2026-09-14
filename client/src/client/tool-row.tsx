@@ -153,13 +153,16 @@ function ToolRow({
 			}
 		}
 		if (errors + warnings + other === 0) return null;
+		// Words rather than glyphs: the suffix sits next to a file path in a row a
+		// reader scans, and `2 errors · 1 warning` needs no legend.
+		const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 		return [
-			errors > 0 ? `✕${errors}` : "",
-			warnings > 0 ? `⚠${warnings}` : "",
-			other > 0 ? `·${other}` : "",
+			errors > 0 ? plural(errors, "error", "errors") : "",
+			warnings > 0 ? plural(warnings, "warning", "warnings") : "",
+			other > 0 ? plural(other, "diagnostic", "diagnostics") : "",
 		]
 			.filter((part) => part !== "")
-			.join(" ");
+			.join(" · ");
 	}, [lspBody]);
 	const diffStat = useMemo(() => {
 		if (diffBody === null) return null;
