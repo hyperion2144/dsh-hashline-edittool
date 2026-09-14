@@ -29,7 +29,6 @@ import type { LspCardModel, LspRowMeta } from "./types.js";
 const CSS_TEXT = [
 	// Same frame as the diff card: one card look across the plugin.
 	".dshl-lsp-block{--dsl-lsp-radius:12px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-lsp-radius)}",
-	".dshl-lsp-head{display:flex;align-items:center;gap:8px;padding:8px 14px 4px}",
 	".dshl-lsp-body{padding:8px 14px 12px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-lsp-line{display:flex;min-height:22px;white-space:pre}",
 	".dshl-lsp-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
@@ -57,7 +56,6 @@ function ensureStyles(): void {
 
 const css = {
 	block: "dshl-lsp-block",
-	head: "dshl-lsp-head",
 	body: "dshl-lsp-body",
 	line: "dshl-lsp-line",
 	gutter: "dshl-lsp-gutter",
@@ -128,21 +126,22 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 	return jsx_("div", {
 		className: css.block,
 		children: [
-			jsx_("div", {
-				className: css.head,
-				children: jsx_(TabStrip, {
-					paths: [model.path],
-					activeIndex: 0,
-					onSelect: () => undefined,
-					labels: labels,
-					panelId,
-					copy: jsx_("button", {
-						type: "button",
-						className: TAB_STRIP_COPY_CLASS,
-						onClick: onCopy,
-						"aria-label": labels.copy,
-						children: copied ? labels.copied : labels.copy,
-					}),
+			// The strip is the block's FIRST CHILD, exactly as the diff card mounts it:
+			// it owns the head row, its tab list is `flex:1`, and that is what pins the
+			// copy button to the trailing corner. A wrapper of our own made the strip a
+			// shrunk flex item, and the button sat right after the last tab instead.
+			jsx_(TabStrip, {
+				paths: [model.path],
+				activeIndex: 0,
+				onSelect: () => undefined,
+				labels: labels,
+				panelId,
+				copy: jsx_("button", {
+					type: "button",
+					className: TAB_STRIP_COPY_CLASS,
+					onClick: onCopy,
+					"aria-label": labels.copy,
+					children: copied ? labels.copied : labels.copy,
 				}),
 			}),
 			jsx_("div", {
