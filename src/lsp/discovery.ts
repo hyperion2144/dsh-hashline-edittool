@@ -24,6 +24,7 @@ import { access, constants } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { lspServersDir } from "../paths.js";
+import { platformSpawnArgv } from "./spawn-argv.js";
 
 /** A server this plugin knows how to talk to. */
 export interface KnownServer {
@@ -389,9 +390,24 @@ export function serverForLanguage(
 }
 
 /** The argv a discovered server is launched with. */
-export function serverArgv(server: DiscoveredServer): string[] {
+/**
+ * The argv a discovered server is launched with, for the platform it runs on.
+ *
+ * On Windows an npm-installed server is a `.cmd` shim, which neither `spawn`
+ * nor the OS can execute directly — see {@link platformSpawnArgv}, which owns
+ * that translation. The `--stdio` default stays here: it is a property of the
+ * server, not of the shell that launches it.
+ *
+ * @param server - the discovered server.
+ * @param platform - the platform the argv will be spawned on.
+ * @returns argv to hand to the subprocess seam.
+ */
+export function serverArgv(
+	server: DiscoveredServer,
+	platform: NodeJS.Platform = process.platform,
+): string[] {
 	// Servers that default to stdio take no flag; the ones that do not carry
 	// their own. `--stdio` used to be hardcoded, which was right for exactly the
 	// two entries the list had.
-	return [server.executable, ...(server.args ?? ["--stdio"])];
+	return platformSpawnArgv([server.executable, ...(server.args ?? ["--stdio"])], platform);
 }

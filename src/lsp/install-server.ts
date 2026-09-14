@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { KNOWN_SERVERS, type KnownServer } from "./discovery.js";
 import { lspServersDir } from "../paths.js";
 import type { SubprocessLike } from "./transport.js";
+import { platformSpawnArgv } from "./spawn-argv.js";
 
 /** How a spawn is performed; structurally the platform's `subprocess.spawn`. */
 export type SpawnLike = (spec: {
@@ -145,10 +146,14 @@ export async function installLspServer(
 					plan.package,
 				]
 				: [...(plan.via === "argv" ? plan.argv : (platformArgv ?? []))];
+	// Windows: `npm` is `npm.cmd`, and a `.cmd` shim is not executable — it needs
+	// the command interpreter. The SAME translation the server launch uses, so
+	// both paths work or fail together instead of one being the odd one out.
+	const spawnArgv = platformSpawnArgv(argv);
 	let handle: SubprocessLike;
 	try {
 		handle = spawn({
-			argv,
+			argv: spawnArgv,
 			cwd: prefix,
 			stdio: { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
 			graceMs: 5_000,
