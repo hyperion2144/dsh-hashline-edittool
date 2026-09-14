@@ -31,7 +31,7 @@ import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "./session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
 import { withWorkspace } from "./session-view.js";
-import { lineHashes, LINE_HASH_SEP } from "./hashline/index.js";
+import { lineHashes } from "./hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
 import { fmtHashlineRow, fmtMarker, anchorWidth } from "./hashline/hash-assign.js";
 import { visLines, abortIf } from "./utils.js";

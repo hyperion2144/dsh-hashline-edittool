@@ -191,7 +191,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const undoDiffResult = genDiff(
 				currentNormalized,
 				undo.content,
-				1,
+				// The CONFIGURED context, like the sibling diff above: a hardcoded 1 here
+				// made the revert's diff — model text AND card rows — ignore
+				// `context_lines`.
+				contextLinesCfg(),
 				undo.hashes,
 				currentHashes,
 				lineNumbers,

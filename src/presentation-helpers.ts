@@ -26,7 +26,7 @@
  */
 
 import { structuredPatch } from "diff";
-import { LINE_HASH_SEP, hashSep, hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
+import { hashSep, hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
 import { genDiff } from "./edit-diff.js";
 
 /** Extension → syntax-highlighting language hint (mirrored from dsh-tool-fs; extended for the hashline corpus). */

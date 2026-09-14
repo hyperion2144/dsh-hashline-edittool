@@ -23,7 +23,7 @@ import type { FileIO } from "./fs-bridge.js";
 import { splitLines } from "./utils.js";
 // The SAME anchor assigner `read` uses, so a row the card shows carries the
 // marker an `edit` accepts — otherwise the card would be decorative.
-import { lineHashesPure } from "./hashline/hash-assign.js";
+import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "./hashline/hash-assign.js";
 import { recordServed, execSessionKey } from "./session-view.js";
 import { readMetaFromMeta } from "./presentation-helpers.js";
 import { isJsonOutput } from "./config.js";
@@ -486,10 +486,18 @@ function lspModelText(value: Record<string, unknown>): string {
 	const hashlines = Array.isArray(value.hashlines)
 		? (value.hashlines as Array<{ number?: unknown; hash?: unknown; text?: unknown }>)
 		: [];
+	// ONE row renderer, the same one `read`/`grep`/`ast_grep` use: the divider is
+	// the CONFIGURED separator (a hardcoded `:` here emitted `anchor:line: text`
+	// in a deployment configured with `|`) and the markers align into a column
+	// exactly as they do everywhere else.
+	const rows: Array<{ marker: string; text: string }> = [];
 	const anchors: Record<string, string> = {};
 	for (const row of hashlines) {
 		if (typeof row.number !== "number" || typeof row.hash !== "string" || row.hash === "") continue;
-		anchors[`${row.hash}:${row.number}`] = typeof row.text === "string" ? row.text : "";
+		const marker = fmtMarker(row.hash, row.number);
+		const text = typeof row.text === "string" ? row.text : "";
+		rows.push({ marker, text });
+		anchors[marker] = text;
 	}
 	if (isJsonOutput()) {
 		return JSON.stringify({ ...value, hashlines: anchors });
@@ -502,8 +510,9 @@ function lspModelText(value: Record<string, unknown>): string {
 		const raw = typeof value.raw === "string" && value.raw !== "" ? value.raw : "nothing to report";
 		return `${head}\n${raw}`;
 	}
-	const rows = Object.entries(anchors).map(([marker, text]) => `  ${marker}: ${text}`);
-	return [`${head} (${symbols.length} symbol(s))`, ...rows].join("\n");
+	const width = anchorWidth(rows.map((row) => row.marker));
+	const body = rows.map((row) => `  ${fmtHashlineRow(row.marker, row.text, width)}`);
+	return [`${head} (${symbols.length} symbol(s))`, ...body].join("\n");
 }
 /** No server could be had — a refusal, distinct from an empty answer. */
 export const E_LSP_NO_SERVER = "[E_LSP_NO_SERVER]";

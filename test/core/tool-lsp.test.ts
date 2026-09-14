@@ -135,6 +135,23 @@ describe("lsp — symbols", () => {
 		}
 	});
 
+	it("renders its rows with the CONFIGURED separator, not a hardcoded colon", async () => {
+		// The divider between a row's marker and its content is `separator` from the
+		// settings. A hardcoded `:` here emitted `anchor:line: …` in a deployment
+		// configured with `|` while every other tool emitted `anchor:line| …`.
+		// The marker's own colon is NOT the separator and stays a colon: it is the
+		// contract `edit` parses, whichever divider is configured.
+		install({
+			answers: {
+				"textDocument/documentSymbol": [{ name: "alpha", kind: 12, location: { range: { start: { line: 0 } } } }],
+			},
+		});
+		applyEffective({ output_format: "text", separator: "|" });
+		const text = String((await run({ operation: "symbols" })).modelText);
+		expect(text).toMatch(/[A-Za-z0-9]{2,8}:1\| export function alpha/);
+		expect(text).not.toMatch(/[A-Za-z0-9]{2,8}:1: /);
+	});
+
 	it("reads SymbolInformation's location.range too, not only DocumentSymbol's range", async () => {
 		// A server sends whichever the client advertised. Reading one shape would
 		// report every line as 0 against half of them.
