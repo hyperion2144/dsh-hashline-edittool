@@ -6,7 +6,7 @@
  * it keeps its own view of documents straight.
  */
 import { describe, expect, it, vi } from "vitest";
-import { LspSession, LspSessionError, type LspTransport } from "../../src/lsp/session.js";
+import { LspSession, LspSessionError, normalizeFileUri, type LspTransport } from "../../src/lsp/session.js";
 import { encodeMessage, MessageReader } from "../../src/lsp/framing.js";
 
 /** A transport whose two directions the test drives by hand. */
@@ -279,4 +279,43 @@ describe("notifications from the server", () => {
 		// A notification has no id, so nothing may be written back.
 		expect(h.sent()).toEqual([]);
 	});
+
+describe("diagnostics URI normalization", () => {
+	it("finds a push stored under the server's spelling of the same file", async () => {
+		// Measured on Windows: the client asks with `file:///D:/vault/x.ts`
+		// (`pathToFileURL`) and the server pushes under `file:///d%3A/vault/x.ts`
+		// (lower-case drive, percent-encoded colon). Keyed by the raw string, the
+		// lookup missed and every diagnostic call answered "nothing has arrived".
+		const h = harness();
+		const pending = h.session.initialize("/repo");
+		const [initialize] = h.sent() as Array<{ id: number }>;
+		h.deliver({ jsonrpc: "2.0", id: initialize!.id, result: { capabilities: {} } });
+		await pending;
+		const serverUri = "file:///d%3A/vault/projects/x.ts";
+		const clientUri = "file:///D:/vault/projects/x.ts";
+		h.deliver({
+			jsonrpc: "2.0",
+			method: "textDocument/publishDiagnostics",
+			params: { uri: serverUri, diagnostics: [{ message: "boom" }] },
+		});
+		expect(h.session.getDiagnostics(clientUri)).toEqual([{ message: "boom" }]);
+		// And the other direction, so neither spelling is privileged.
+		expect(h.session.getDiagnostics(serverUri)).toEqual([{ message: "boom" }]);
+	});
+
+	it("canonicalizes the spellings, and leaves the rest of the path alone", () => {
+		// A drive letter is the only place a colon may appear in the first segment,
+		// so that is the only decoding this rule does: on POSIX the path IS
+		// case-sensitive and lower-casing it here would be a different bug.
+		const same = "file:///d:/vault/x.ts";
+		expect(normalizeFileUri("file:///D:/vault/x.ts")).toBe(same);
+		expect(normalizeFileUri("file:///d%3A/vault/x.ts")).toBe(same);
+		expect(normalizeFileUri("file:///D%3a/vault/x.ts")).toBe(same);
+		expect(normalizeFileUri("file:///d%3A")).toBe("file:///d:");
+		expect(normalizeFileUri("file://localhost/c:/x.ts")).toBe("file:///c:/x.ts");
+		expect(normalizeFileUri("file:///Vault/Case/x.ts")).toBe("file:///Vault/Case/x.ts");
+		expect(normalizeFileUri("file://Server/Share/x.ts")).toBe("file://server/Share/x.ts");
+		expect(normalizeFileUri("untitled:Untitled-1")).toBe("untitled:Untitled-1");
+	});
+});
 });

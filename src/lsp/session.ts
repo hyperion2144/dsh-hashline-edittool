@@ -68,6 +68,46 @@ export const E_LSP_TIMEOUT = "[E_LSP_TIMEOUT]";
 export const E_LSP_NOT_READY = "[E_LSP_NOT_READY]";
 export const E_LSP_CLOSED = "[E_LSP_CLOSED]";
 
+/**
+ * The canonical spelling of a `file://` URI, for keying and looking up state.
+ *
+ * A URI is not a string equality problem: the client builds one with
+ * `pathToFileURL` (`file:///D:/vault/x.ts`) and the server echoes its OWN
+ * normalization of the same document (`file:///d%3A/vault/x.ts`) — lower case
+ * drive letter, percent-encoded colon. Both name one file, and a map keyed by
+ * the raw string therefore MISSES: `publishDiagnostics` was stored under the
+ * server's spelling and looked up under the client's, so every diagnostic
+ * lookup answered "nothing has arrived yet" while the diagnostics were in the
+ * map the whole time.
+ *
+ * This collapses the two spellings into one: lower-case scheme and host, an
+ * optionally-ravelled drive letter in lower case, and that drive colon in its
+ * literal form. The rest of the path is left byte-for-byte alone — on POSIX the
+ * path IS case-sensitive, and re-encoding it here would be a different bug.
+ *
+ * @param uri - a URI as either side spelled it.
+ * @returns the canonical form; a non-`file:` URI is returned unchanged.
+ */
+export function normalizeFileUri(uri: string): string {
+	const match = /^file:\/\/([^/]*)(\/.*)?$/i.exec(uri);
+	if (match === null) return uri;
+	// `localhost` is the same host as no host at all; anything else is a real
+	// (UNC) host and keeps its identity, lower-cased because hosts are.
+	const host = (match[1] ?? "").toLowerCase();
+	const path = match[2] ?? "";
+	const canonicalHost = host === "localhost" ? "" : host;
+	// A drive colon may arrive percent-encoded, so decode it FIRST; the case rule
+	// below then sees the same shape whichever spelling it came from.
+	//
+	// Both rules are pattern-based because a URI carries no platform: on POSIX a
+	// root entry literally named `D:` is legal, and this would fold it together
+	// with `d:` — a vanishingly unlikely directory, against a definitely broken
+	// lookup on Windows.
+	const canonicalPath = path
+		.replace(/^\/([a-z])%3a(?=\/|$)/i, (_, drive: string) => `/${drive}:`)
+		.replace(/^\/([a-z]):(?=\/|$)/i, (_, drive: string) => `/${drive.toLowerCase()}:`);
+	return `file://${canonicalHost}${canonicalPath}`;
+}
 /** What a session needs to start. */
 export interface LspSessionOptions {
 	/** Default per-request deadline in ms. */
@@ -123,7 +163,10 @@ export class LspSession {
 		this.on("textDocument/publishDiagnostics", (params) => {
 			const payload = params as { uri?: unknown; diagnostics?: unknown } | null;
 			if (typeof payload?.uri !== "string") return undefined;
-			this.#diagnostics.set(payload.uri, Array.isArray(payload.diagnostics) ? payload.diagnostics : []);
+			// Keyed by the CANONICAL form: the server echoes a URI it normalized its
+			// own way (`file:///d%3A/…` for a path the client spelled `file:///D:/…`),
+			// and a lookup by either spelling must land on the same entry.
+			this.#diagnostics.set(normalizeFileUri(payload.uri), Array.isArray(payload.diagnostics) ? payload.diagnostics : []);
 			// Bumped on every push, so a caller can tell "nothing arrived yet" from
 			// "a server said there is nothing" — an empty list and silence are
 			// different answers and a reader has to be able to tell them apart.
@@ -143,7 +186,7 @@ export class LspSession {
 	 * @returns the diagnostics, or undefined when none has been pushed.
 	 */
 	getDiagnostics(uri: string): readonly unknown[] | undefined {
-		return this.#diagnostics.get(uri);
+		return this.#diagnostics.get(normalizeFileUri(uri));
 	}
 
 	/** How many pushes have arrived; waiters compare it against a snapshot. */
