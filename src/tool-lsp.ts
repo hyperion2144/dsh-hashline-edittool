@@ -185,6 +185,7 @@ export function buildLspTool(io: FileIO) {
 								hash: { type: "string", required: true },
 								text: { type: "string", required: true },
 								messages: { type: "array", items: { type: "string" } },
+								severities: { type: "array", items: { type: "integer" } },
 							},
 						},
 					},
@@ -339,6 +340,7 @@ export function buildLspTool(io: FileIO) {
 				// model prints the messages indented under their line, and the card gives
 				// them a style of their own.
 				const byLine = new Map<number, string[]>();
+				const bySeverity = new Map<number, number[]>();
 				// Collected in the SAME pass as the rows: deriving `raw` from the rendered
 				// row text afterwards would mean parsing a string this function just built.
 				const diagMessages: string[] = [];
@@ -348,12 +350,17 @@ export function buildLspTool(io: FileIO) {
 					if (typeof at !== "number" || at < 0) continue;
 					// The severity the protocol sent, as a word: a warning that reads like an
 					// error is worse than no label at all.
-					const severity = DIAGNOSTIC_SEVERITY[d.severity as number] ?? "diagnostic";
+					const code = typeof d.severity === "number" ? d.severity : 0;
+					const severity = DIAGNOSTIC_SEVERITY[code] ?? "diagnostic";
 					const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
 					const labelled = `${severity}: ${message}`;
 					diagMessages.push(`L${at + 1} ${labelled}`);
 					const line = at + 1;
 					byLine.set(line, [...(byLine.get(line) ?? []), labelled]);
+					// The CODES ride beside the labels: the card counts errors and warnings
+					// for its title suffix, and counting them out of an "error: …" prefix
+					// would be the card parsing a string this same function just built.
+					bySeverity.set(line, [...(bySeverity.get(line) ?? []), code]);
 				}
 				const diagRows = [...byLine.entries()]
 					.sort((a, b) => a[0] - b[0])
@@ -362,6 +369,7 @@ export function buildLspTool(io: FileIO) {
 						hash: diagAnchors[line - 1] ?? "",
 						text: diagLines[line - 1] ?? "",
 						messages,
+						severities: bySeverity.get(line) ?? [],
 					}));
 				// Served and observed like a read's rows, with the VERBATIM line as the
 				// content: the anchors are content-derived, so serving the row TEXT (which

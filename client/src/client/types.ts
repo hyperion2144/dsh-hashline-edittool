@@ -157,6 +157,8 @@ export interface LspRowMeta {
 	readonly hash: string;
 	readonly text: string;
 	readonly messages: readonly string[];
+	/** LSP severity codes (1 error, 2 warning, 3 info, 4 hint), same order as messages. */
+	readonly severities: readonly number[];
 }
 
 /** The `lsp` diagnostics card: one row per line, its messages attached. */

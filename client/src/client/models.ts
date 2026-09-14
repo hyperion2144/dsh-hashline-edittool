@@ -685,7 +685,10 @@ export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
 		const messages = Array.isArray(row.messages)
 			? row.messages.filter((message): message is string => typeof message === "string")
 			: [];
-		rows.push({ number: row.number, hash: row.hash, text: row.text, messages });
+		const severities = Array.isArray(row.severities)
+			? row.severities.filter((code): code is number => typeof code === "number")
+			: [];
+		rows.push({ number: row.number, hash: row.hash, text: row.text, messages, severities });
 	}
 	if (rows.length === 0) return null;
 	return { path: value.path, rows };

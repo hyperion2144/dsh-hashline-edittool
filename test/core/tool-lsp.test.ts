@@ -215,7 +215,7 @@ describe("lsp — diagnostics", () => {
 			],
 		});
 		const value = await run({ operation: "diagnostics" });
-		const rows = (value as unknown as { hashlines: Array<{ number: number; hash: string; text: string; messages?: string[] }> }).hashlines;
+		const rows = (value as unknown as { hashlines: Array<{ number: number; hash: string; text: string; messages?: string[]; severities?: number[] }> }).hashlines;
 		// A line is the unit the reader acts on, so there are TWO rows here. The row
 		// IS the source line (nothing appended), and the diagnostics ride beside it
 		// as data — one entry per error, never merged into the text — because a card
@@ -225,6 +225,10 @@ describe("lsp — diagnostics", () => {
 		expect(rows[0]!.text).toBe("export function alpha() {}");
 		expect(rows[0]!.messages).toEqual(["error: first error", "error: second error"]);
 		expect(rows[1]!.messages).toEqual(["warning: third error"]);
+		// The severity CODES ride beside the labels, so the card can count errors
+		// and warnings for its title suffix without parsing "error: …" back apart.
+		expect(rows[0]!.severities).toEqual([1, 1]);
+		expect(rows[1]!.severities).toEqual([2]);
 		expect(rows[1]!.text).toBe("const b = 1;");
 		// THE SOURCE LINE APPEARS ONCE in the model text — this is the repetition the
 		// shape exists to avoid, so it is COUNTED rather than merely matched.

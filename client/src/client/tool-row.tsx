@@ -134,6 +134,33 @@ function ToolRow({
 	const status = stateStatus(state, t);
 	const failureLine = state === "error" ? (errorSummary ?? null) : null;
 	const summaryText = failureLine ?? summary;
+	// The diagnostics stat, shaped like the diff stat next to it (`+3 -1`): the
+	// count comes from the severity CODES the host put beside each message, never
+	// from parsing an "error: …" label back apart.
+	const lspStat = useMemo(() => {
+		if (lspBody === null) return null;
+		let errors = 0;
+		let warnings = 0;
+		let other = 0;
+		for (const row of lspBody.rows) {
+			// A row without codes still carries messages (an older payload): count
+			// them as plain diagnostics rather than dropping them from the total.
+			const codes = row.severities.length > 0 ? row.severities : row.messages.map(() => 0);
+			for (const code of codes) {
+				if (code === 1) errors += 1;
+				else if (code === 2) warnings += 1;
+				else other += 1;
+			}
+		}
+		if (errors + warnings + other === 0) return null;
+		return [
+			errors > 0 ? `✕${errors}` : "",
+			warnings > 0 ? `⚠${warnings}` : "",
+			other > 0 ? `·${other}` : "",
+		]
+			.filter((part) => part !== "")
+			.join(" ");
+	}, [lspBody]);
 	const diffStat = useMemo(() => {
 		if (diffBody === null) return null;
 		if (diffBody.rows !== undefined) {
@@ -149,7 +176,7 @@ function ToolRow({
 	// `require_line_content` decided whether a reader saw `@oN @6I @4E` or `+3 -1`.
 	// The prop is gone rather than defaulted to null: a prop with no producer is a
 	// switch the next change can flip back on (issue #127).
-	const suffix = failureLine === null ? diffStat : null;
+	const suffix = failureLine === null ? (lspStat ?? diffStat) : null;
 	const fileLink = filePath !== undefined && onOpenFile !== undefined && failureLine === null;
 	const toggleExpand = () => {
 		setExpanded((value) => !value);

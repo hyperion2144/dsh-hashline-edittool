@@ -209,7 +209,16 @@ function rowNodes(row: LspRowMeta, gutterWidth: number): ReactNode[] {
 	return out;
 }
 
-/** What the reader copies: the source lines as shown, gutter excluded. */
+/**
+ * What the reader copies: the rows as SHOWN — each source line followed by its
+ * diagnostics, indented the way the card draws them, gutter excluded.
+ *
+ * Copying only the source lines was the first version, and it silently dropped
+ * every message: the card shows two kinds of text, so its copy has to carry both
+ * or the button lies about what is on screen.
+ */
 function copyText(rows: readonly LspRowMeta[]): string {
-	return rows.map((row) => row.text).join("\n");
+	return rows
+		.flatMap((row) => [row.text, ...row.messages.map((message) => `   ↳ ${message}`)])
+		.join("\n");
 }
