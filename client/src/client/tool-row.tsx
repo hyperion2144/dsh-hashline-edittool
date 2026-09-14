@@ -29,8 +29,9 @@ import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readBlockLabels } from "./labels.js";
 import { diffCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { GrepCard } from "./grep-card.js";
+import { LspDiagBlock } from "./lsp-block.js";
 import { DiffRowsBlock } from "./diff-block.js";
-import { grepCardLabels } from "./labels.js";
+import { grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 
 /** Join class names (tiny clsx stand-in; `clsx` is not a module-table word). */
@@ -66,6 +67,8 @@ interface ToolRowProps {
 	read: ReturnType<typeof readCardModel>;
 	diff: ReturnType<typeof diffCardModel>;
 	grep: ReturnType<typeof grepCardModel>;
+	/** The `lsp` diagnostics card, drawn by our own block (see `LspDiagBlock`). */
+	lsp: ReturnType<typeof lspCardModel>;
 	state: "running" | "ok" | "error" | "stopped";
 	filePath: string | undefined;
 	onOpenFile: ((path: string) => void) | undefined;
@@ -102,6 +105,7 @@ function ToolRow({
 	read,
 	diff,
 	grep,
+	lsp,
 	state,
 	filePath,
 	onOpenFile,
@@ -113,10 +117,14 @@ function ToolRow({
 	const diffLabels = useMemo(() => diffBlockLabels(t), [t]);
 	const readBody = read ?? null;
 	const grepBody = grep ?? null;
+	const lspBody = lsp ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
+	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
 	const diffBody = diff ?? null;
 	const outputText = output ?? null;
-	const card = diffBody ?? grepBody ?? readBody;
+	// `lsp` first: it owns its body outright (frame included), so the read body
+	// never sees diagnostic rows masquerading as lines of a file.
+	const card = lspBody ?? diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -237,7 +245,13 @@ function ToolRow({
 									maxLines: 16,
 									className: css.readBody,
 								})
-								: readBody !== null
+								: lspBody !== null
+									? jsx_(LspDiagBlock, {
+										model: lspBody,
+										labels: lspLabels,
+										maxLines: 16,
+									})
+									: readBody !== null
 									? jsx_(ReadBlock, {
 										label: readBody.label,
 										// ReadBlock draws its gutter cell verbatim, so the precomposed
@@ -466,14 +480,17 @@ export function HashlineUndoRow(props: ToolViewProps): ReactNode {
 /**
  * `lsp` — semantic operations.
  *
- * The READ row, fed with rows that already separate the two kinds of text: a
- * symbol's line, or a diagnostic line followed by its messages indented under a
- * `↳`. The read primitive owns the card's chrome — frame, gutter, copy button,
- * collapse — and a hand-rolled body loses all of it, so what `lsp` needs is
- * different CONTENT, not a different card.
+ * It draws its OWN body, exactly as the edit card does with `DiffRowsBlock`: the
+ * rows carry two kinds of text (the source line and a server's diagnostics of it)
+ * and the read primitive can only draw plain strings, while replacing the
+ * primitive's body outright lost its frame and copy button. A vendored block with
+ * its own stylesheet and the shared `TabStrip` head keeps both.
  */
 export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
+	// The diagnostics rows are drawn by our own block below, so the read/grep/diff
+	// bodies stay out of it — this row owns its body.
+	const lsp = lspCardModel(block);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
@@ -484,13 +501,12 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		bodyRaw: model.bodyRaw,
 		output: model.output,
 		errorSummary: model.errorSummary,
-		// The synthesized rows: the marker gutter the model addresses, and one
-		// indented row per diagnostic instead of one blob of prose.
-		read: lspCardModel(block, cwd, home),
+		read: null,
 		grep: null,
 		diff: null,
+		lsp,
 		state: model.state,
-		filePath: model.filePath,
+		filePath: undefined,
 		onOpenFile: openFile,
 		inspect,
 	});

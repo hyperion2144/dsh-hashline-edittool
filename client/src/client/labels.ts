@@ -59,6 +59,29 @@ export function diffBlockLabels(t: TBench): DiffBlockLabels {
 	};
 }
 
+import type { LspBlockLabels } from "./lsp-block.js";
+
+/**
+ * Diagnostics-card chrome labels (`lsp`).
+ *
+ * `tablist` and `more` are the `TabStrip`'s chrome, whose accessibility names
+ * cannot be empty; the rest reuses the keys the read card already ships, so the
+ * same three words do not get a second locale entry.
+ */
+export function lspBlockLabels(t: TBench): LspBlockLabels {
+	return {
+		tablist: t("lsp.title"),
+		more: t("more"),
+		copy: t("copy"),
+		copied: t("copied"),
+		collapseAria: t("read.collapseAria"),
+		expandAria: (count) => t("read.expandAria", { count }),
+		collapse: t("collapse"),
+		expand: (count) => t("read.expandRest", { count }),
+		summary: (lines, messages) => t("lsp.diagnostics.summary", { lines, messages }),
+	};
+}
+
 /** Grep-card chrome labels (reuses the shipped search-card keys). */
 export interface GrepCardLabels {
 	copy: string;
