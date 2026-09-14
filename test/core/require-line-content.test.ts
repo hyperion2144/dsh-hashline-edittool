@@ -38,8 +38,15 @@ async function servedRows(
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
 		if (line.startsWith("ANCHOR:")) continue;
-		const m = /^(?:[+\- ])?(\d+):([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line);
-		if (m) rows.push({ hash: m[2]!, content: m[3]! });
+		// CURRENT rows are `<anchor>:<line>: content`; the legacy order stays
+		// tolerated so a helper written before the flip keeps parsing.
+		const current = /^(?:[+\- ])?([A-Za-z0-9]{2,8}):(\d+):\s?(.*)$/.exec(line);
+		if (current) {
+			rows.push({ hash: current[1]!, content: current[3]! });
+			continue;
+		}
+		const legacy = /^(?:[+\- ])?(\d+):([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line);
+		if (legacy) rows.push({ hash: legacy[2]!, content: legacy[3]! });
 		else {
 			const bare = /^([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line.replace(/^[+\- ]/, ""));
 			if (bare) rows.push({ hash: bare[1]!, content: bare[2]! });
@@ -78,16 +85,30 @@ describe("schema shape — both switch states", () => {
 		};
 		const start = item.properties.anchor_start!;
 		expect(start.type).toBe("object");
-		expect(start.required).toBe(true);
+		// NEITHER anchor field is `required` at the schema level any more, and
+		// that is deliberate. Which one a call must send depends on its `op` —
+		// `ins` takes `anchor_after`, the other two take `anchor_start` — and a
+		// JSON Schema property cannot say "required only when op is replace".
+		// Marking either one required makes the OTHER op demand a field it is
+		// forbidden to send, which is exactly what happened first time round.
+		// `assertEditItem` is where the per-op rule lives.
+		expect(start.required).toBeUndefined();
 		expect(start.properties.anchor!.type).toBe("string");
 		expect(start.properties.anchor!.required).toBe(true);
 		expect(start.properties.line!.type).toBe("string");
 		expect(start.properties.line!.required).toBe(true);
 
+		const after = item.properties.anchor_after!;
+		expect(after.type).toBe("object");
+		expect(after.required).toBeUndefined();
+		expect(after.properties.anchor!.required).toBe(true);
+		expect(after.properties.line!.required).toBe(true);
+
 		const end = item.properties.anchor_end!;
 		expect(end.type).toBe("object");
 		// anchor_end stays optional at the schema level (fold rules unchanged).
 		expect(end.required).toBeUndefined();
+
 	});
 
 	it("buildEditItemSchema matches buildEditsSchema's items in both states", () => {
@@ -371,7 +392,7 @@ describe("require_line_content ON — behavior", () => {
 				edits: [
 					{
 						op: "ins",
-						anchor_start: { anchor: gamma.hash, line: "gamma" },
+						anchor_after: { anchor: gamma.hash, line: "gamma" },
 						lines: ["delta"],
 					},
 				],

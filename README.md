@@ -89,10 +89,11 @@ ANCHOR:FILELINE
  5mR:}
 ```
 
-`edit` targets one or more ranges of anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace`). The contract is **exact**:
+`edit` targets one or more ranges of anchors via an `edits:[]` array, each with an `op` semantic (`ins` / `del` / `replace` / `sed`). The contract is **exact**:
 - `replace` takes `anchor_end` **optionally**: omitting it defaults to a **single-line replace** (range = the `anchor_start` line); passing the same marker twice is still valid. `lines` has **any length** — the whole range is swapped for it (shrink and expand are single-hunk `replace`s). **A multi-line replacement (`lines.length > 1`) MUST pass `anchor_end`** — the tool will not guess the range from the replacement length.
-- `ins` inserts into the **gap after** its anchor line (the anchor line's content is untouched) and may anchor on **another hunk's range END line** (half-open `N ∉ [hs, he)`) — never its start or interior.
+- `ins` takes **`anchor_after`**, not `anchor_start` — the field names differ so the two ops cannot be confused. `anchor_after` names a **position**: `lines` goes into the **gap below it** (that line's content is untouched), and must hold **only the new lines** — repeating the anchor's own line duplicates it (`[E_INS_ANCHOR_DUP]`, a warning). An `ins` may anchor on **another hunk's range END line** (half-open `N ∉ [hs, he)`) — never its start or interior. Sending `anchor_start` or `anchor_end` with `op:"ins"` is **[E_BAD_SHAPE]**.
 - `del` deletes the range (lines must be empty).
+- `sed` rewrites the `anchor_start..anchor_end` range **line by line** with a regular expression, the way command-line `sed` works a stream: it takes `pattern` + `replacement` (+ optional `flags`) and **no `lines`** (mixing them is `[E_BAD_SHAPE]`). Without `g` only the **first match per line** is replaced — sed's own default; `i` ignores case, `m` makes `^`/`$` match line boundaries, `s` lets `.` match a newline. `replacement` accepts **both dialects**: sed's `\1` (group) and `&` (whole match) are translated, and JavaScript's `$1` / `$&` pass through. An empty `replacement` deletes what matched. A **newline in `replacement` is refused**: sed substitutes within a line, so the range's line count never changes — use `op:"replace"` when lines must be added or removed. A pattern that is not a valid regular expression is refused at the shape gate, with the engine's own words.
 
 A single-line replace:
 
@@ -131,7 +132,7 @@ Hardening switch against wrong-anchor edits. When enabled, the `edit` tool's sch
 
 ### text output (default)
 
-Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the left variable-length anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part. Rows render as `<line>:<anchor>` by default (line number on since #69) — informational only, the anchor stays authoritative; pass `line_numbers: false` per call for bare `<anchor>` rows.
+Every read/grep/diff/echo starts with a header row (`ANCHOR:FILELINE`) describing the row format, the variable-length anchor, and that the text after the separator is the verbatim file content — including the rule: to modify the file, pass the content after the separator, never the anchor part. **Rows render as `<anchor>:<line>` — the anchor FIRST, its line number trailing** — so the token a caller copies first is the one that identifies the line. The line number is an informational hint (`line_numbers` defaults to true); the anchor stays authoritative, and a marker may be passed back with or without its line part. Pass `line_numbers: false` per call for bare `<anchor>` rows.
 
 ### json output
 
@@ -357,9 +358,9 @@ this README are a snapshot of that run; regenerate, don't trust.
 
 | Tool | What it does |
 | ------ | -------------- |
-| `read` | Returns a file as `ANCHOR:FILELINE` header + `<anchor>:<content>` rows (anchors are variable-length Base62, unique per line; `line_numbers` defaults to true (a `<line>:` prefix is added as a positional hint; `line_numbers: false` gives bare anchors). Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — anchors need full lines. |
-| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_start, anchor_end?, lines? }, …] }`. `op` is `ins` (insert `lines` after `anchor_start`), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines` — `anchor_end` optional, defaults to the single `anchor_start` line; REQUIRED when `lines` has more than one line). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`); identical content lines get DISTINCT anchors. Verifies each resolved range against served state (anchor + content); `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` / `[E_STALE]` reject-and-serve fresh anchors. There is no `Shift:` block — re-read for fresh anchors after an edit. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
-| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (JavaScript-flavre regex by default; `regex: false` for literal substring) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<anchor>:<content>` rows carrying the **full line** (no truncation — a hit is directly editable). Only a row exceeding 200KB is hidden with a `sed` pointer, exactly like `read`. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
+| `read` | Returns a file as `ANCHOR:FILELINE` header + `<anchor>:<content>` rows (anchors are variable-length Base62, unique per line; `line_numbers` defaults to true, which makes each marker `<anchor>:<line>` — anchor first, its line number trailing as a positional hint; `line_numbers: false` gives bare anchors). Parameters: `offset` (1-based), `limit`. Paged output ends with `[Showing lines N-M of T. Use offset=… to continue.]`. Lines >200KB are shown as a marker with a `sed` hint — anchors need full lines. |
+| `edit` | Applies one or more edits atomically via `{ path, edits: [{ op, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags? }, …] }`. `op` is `ins` (insert `lines` BELOW `anchor_after` — that line is kept, so `lines` holds only what is new; `anchor_start` and `anchor_end` are refused on it), `del` (delete the `anchor_start..anchor_end` range, or the single `anchor_start` line when `anchor_end` is omitted), `replace` (swap the `anchor_start..anchor_end` range with `lines` — `anchor_end` optional, defaults to the single `anchor_start` line; REQUIRED when `lines` has more than one line), or `sed` (rewrite every line of the `anchor_start..anchor_end` range with the regular expression in `pattern` + `replacement` + optional `flags` — line by line, first match per line unless `g`, sed's `\1`/`&` and JavaScript's `$1`/`$&` both accepted, no `lines` and no newline in `replacement`). **The anchor field follows the op, and mixing them is `[E_BAD_SHAPE]`.** Anchors are variable-length Base62; a marker is `<anchor>` or `<anchor>:<line>`, and the LEGACY `<line>:<anchor>` order is still accepted (anchors are never all-digits, so the two can never be confused). Identical content lines get DISTINCT anchors. Verifies each resolved range against served state (anchor + content); `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` / `[E_STALE]` reject-and-serve fresh anchors, and every served row is also emitted as `fs/observed` so it can be written with immediately. There is no `Shift:` block — re-read for fresh anchors after an edit. Replaces the legacy `batch_edit` tool (up to 32 edits per call, per-item `path` for multi-file). |
+| `grep` | Search for a pattern in one or more files. Parameters: `path` · `pattern` (JavaScript-flavre regex by default; `regex: false` for literal substring) · `-C N` (context rows) · `limit`. Output mirrors `read`: one section per file, header + `<anchor>:<line>:content` rows carrying the **full line** (no truncation — a hit is directly editable). Only a row exceeding 200KB is hidden with a `sed` pointer, exactly like `read`. Grep is observed + recorded as served so a hit can be edited directly without a separate `read`. |
 | `undo_last_edit` | `{ path }` reverts the last hashline edit, only while the file still matches the stored post-edit content; survives restarts. |
 
 ### Error codes
@@ -370,11 +371,12 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when the pair was reversed). |
 | `[E_BAD_REF]` | `anchor_start`/`anchor_end` is not a variable-length Base62 anchor copied from the leftmost column of a read/grep/diff row. The legacy `<line>#<hash>` form is rejected. |
 | `[E_BAD_SHAPE]` | Request/field shape is wrong (unknown fields, missing path, non-string text, …). |
-| `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row pasted into `lines` (e.g. a `<line>:<anchor>:content` read/diff row); the prefix is stripped when the anchor exists in the file — with a warning. Literal look-alike content is never rewritten. |
+| `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row pasted into `lines` (e.g. an `<anchor>:<line>:content` read/diff row, either marker order); the prefix is stripped when the anchor exists in the file — with a warning. Literal look-alike content is never rewritten. |
 | `[E_BATCH_ABORT]` | A batch item failed; the whole batch was rejected, nothing written. |
 | `[E_BATCH_CONFLICT]` | Two batch items' row ranges overlap on the same file snapshot; split or merge them, nothing written (an `ins` may anchor on a range's END line, never its start/interior). |
-| `[E_INS_ANCHOR_DUP]` | `op:"ins"` `lines[0]` matches the `anchor_start` line content — `ins` inserts after the anchor line (preserved automatically); including it in `lines` creates a duplicate. Warning only; the edit proceeds. |
+| `[E_INS_ANCHOR_DUP]` | `op:"ins"` `lines[0]` matches the `anchor_after` line content — `ins` inserts BELOW the anchor line (preserved automatically); including it in `lines` creates a duplicate. Warning only; the edit proceeds. `anchor_after` lowers the odds of this, it does not make it impossible, which is why the warning stays. |
 | `[E_LINE_HINT]` | A `<line>:<anchor>` hint disagreed with the anchor's resolved position; the anchor is authoritative and the edit proceeds. |
+| `[E_LINE_REF]` | A bare NUMBER was passed as an anchor. Numbers are never anchors (allocation skips digits-only encodings), so it is read as a LINE REFERENCE: when that line was served to this session and still holds the content it held then (`served[n-1] === fileAnchors[n-1]` — an anchor IS content identity), the reference is resolved to that line's anchor and the edit proceeds. Otherwise the call is refused as `[E_BAD_REF]` with an echo centered on the line the number named. Warning only on the repaired path; pass the anchor (a row's first token) to avoid the notice. |
 | `[E_PASTE_DUP]` | A replacement line exactly matches an adjacent file line (possible pasted read/diff row); the line is KEPT verbatim and the edit proceeds — the tool never silently drops content. |
 | `[E_INVALID_PATCH]` | Diff-preview `+`/`-` markers pasted into `lines`; the marker prefix is stripped with a warning. |
 | `[E_NOOP_LOOP]` | The exact same edit keeps producing no change; resubmitting is rejected. |
@@ -388,9 +390,32 @@ this README are a snapshot of that run; regenerate, don't trust.
 | `[E_RANGE_UNVERIFIED]` | Boundary anchor cannot be verified against served state. |
 | `[E_STALE]` | The resolved anchor no longer matches the served content (the line changed since it was read); call `read` for fresh anchors. |
 | `[E_UNDO_STALE]` | Cannot undo: the file was modified (or deleted) after the edit. |
+| `[E_AST_DISABLED]` | The AST capability is switched off (globally or for that language), so `ast_grep` / `ast_edit` will not run. A REFUSAL, not an empty result — "switched off" is a fact about the session, and "nothing matched" is a claim about the code. |
+| `[E_SYNTAX_AFTER_EDIT]` | `ast_edit`'s replacement would leave the file unparsable; the batch is not written. The engine has the same check for its own ops. |
+| `[E_LSP_NO_SERVER]` | The `lsp` tool could not get a usable language server, and says why. A REFUSAL rather than an empty answer: "no server" and "no symbols" are different facts, and the AST tools still work without one. |
+| `[E_LSP_BAD_OPERATION]` | The `lsp` tool was asked for an operation it does not have, or `request` arrived without the LSP method to send. |
+| `[E_LSP_UNAVAILABLE]` | `ctx.lsp` asked this provider for a query but no language server is running for that language. Distinct from "no results": the question could not be asked. |
+| `[E_LSP_ABORTED]` | The caller's abort signal fired before the query was sent. |
+| `[E_LSP_TIMEOUT]` | A language-server request did not answer within its deadline; the caller falls back to the heuristic backend for that call. |
+| `[E_LSP_NOT_READY]` | A session was used before its handshake completed, or `initialize` was called twice. |
+| `[E_LSP_CLOSED]` | The language server exited; in-flight requests were failed with this code. |
+| `[E_GRAMMAR_FETCH_FAILED]` | A grammar download failed (network, HTTP status, or the response was not a gzipped tarball). Nothing was written. |
+| `[E_GRAMMAR_NOT_IN_TARBALL]` | The downloaded archive does not contain the catalog entry's `.wasm`, or the catalog id is unknown. |
+| `[E_GRAMMAR_HASH_MISMATCH]` | A downloaded grammar did not match the curated catalog's pinned SHA-256; **nothing was installed**. |
+| `[E_GRAMMAR_UNKNOWN]` | The requested language is not in the curated catalog — arbitrary URLs are never fetched. |
+| `[E_GRAMMAR_NO_DESCRIPTOR]` | The language is listed in the catalog but has no semantic descriptor, so its grammar could not be classified — installing it would parse but enumerate nothing. |
+| `[E_GRAMMAR_BUILTIN]` | A language that ships inside the plugin was asked to uninstall itself; its assets are not in the writable grammar directory. |
+| `[E_SYNTAX_AFTER_EDIT]` | A batch containing a block op would leave the file unparsable, so **nothing was written**. The rejected `lines` are echoed for repair — the usual cause is a dropped or duplicated brace. |
+| `[E_ELISION_IN_PAYLOAD]` | An edit payload contains the structural-summary marker `…`; that is an outline row, not source. Re-read the ranges the summary's footer named. |
+| `[E_AST_TOO_LARGE]` | The file is over the AST limit (or its worst-case node estimate cannot fit the parse arena, or it aborted the parser twice). Read it with line mode instead. |
+| `[E_AST_WORKER_FAILED]` | The parse worker failed or exited before answering (and `[E_AST_WORKER_ABORTED]`, internal, when the wasm instance dies — it is retried on a fresh worker, then reported as `[E_AST_TOO_LARGE]`). |
+| `[E_PARSE_FAILED]` | The parser returned no tree at all for the file. |
+| `[E_AST_PATTERN]` | A structural pattern did not parse, or parsed as something other than one node. Wrap fragments the grammar cannot accept on their own (`class $_ { … }`), and remember that a grammar may demand a specific token where a metavariable cannot stand — a module specifier is a string, so write `from "$MODULE"`. |
 | `[E_UNDO_UNAVAILABLE]` | Undo history could not be persisted; the edit was not applied. |
 | `[E_WIN_REPLACE]` | Windows atomic replace failed (ReplaceFileW / error 1175): the target is held open by another process (IDE watcher, antivirus, sync) or is write-protected — close it and retry. |
 | `[E_WOULD_EMPTY]` | An edit would empty a non-empty file; use `write` to clear it. |
+| `[E_LSP_NO_SERVER]` | The `lsp` tool could not get a usable language server, and says why. A REFUSAL rather than an empty answer: "no server" and "no symbols" are different facts, and the AST tools still work without one. |
+| `[E_LSP_BAD_OPERATION]` | The `lsp` tool was asked for an operation it does not have, or `request` arrived without the LSP method to send. |
 | `[E_HASH_SPACE]` | Anchor space exhausted (file > 62^8 lines) — practically unreachable; layers auto-expand. |
 
 ## How It Replaces the Built-in Tools

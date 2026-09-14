@@ -31,10 +31,15 @@ async function servedRows(
 	const rows: Array<{ hash: string; content: string }> = [];
 	for (const line of getText(res).split("\n")) {
 		if (line.startsWith("ANCHOR:")) continue; // skip the header row
-		// Rows are `<line>:<anchor>:content` by default (#69); tolerate bare
-		// `<anchor>:content` and diff +/- prefixes.
-		const m = /^(?:[+\- ])?(\d+):([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line);
-		if (m) rows.push({ hash: m[2]!, content: m[3]! });
+		// Rows are `<anchor>:<line>: content` by default; the legacy order stays
+		// tolerated, and a bare `<anchor>: content` row (line_numbers off) too.
+		const current = /^(?:[+\- ])?([A-Za-z0-9]{2,8}):(\d+):\s?(.*)$/.exec(line);
+		if (current) {
+			rows.push({ hash: current[1]!, content: current[3]! });
+			continue;
+		}
+		const legacy = /^(?:[+\- ])?(\d+):([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line);
+		if (legacy) rows.push({ hash: legacy[2]!, content: legacy[3]! });
 		else {
 			const bare = /^([A-Za-z0-9]{2,8}):\s?(.*)$/.exec(line.replace(/^[+\- ]/, ""));
 			if (bare) rows.push({ hash: bare[1]!, content: bare[2]! });
@@ -136,7 +141,7 @@ describe("exact line-count edit contract", () => {
 					path: "t.txt",
 					edits: [
 						{ op: "replace", anchor_start: by("a").hash, anchor_end: by("c").hash, lines: ["A", "B", "C"] },
-						{ op: "ins", anchor_start: by("a").hash, lines: ["X"] },
+						{ op: "ins", anchor_after: by("a").hash, lines: ["X"] },
 					],
 				}),
 			).rejects.toThrow(/E_BATCH_CONFLICT/);
@@ -147,7 +152,7 @@ describe("exact line-count edit contract", () => {
 					path: "t.txt",
 					edits: [
 						{ op: "replace", anchor_start: by("a").hash, anchor_end: by("c").hash, lines: ["A", "B", "C"] },
-						{ op: "ins", anchor_start: by("b").hash, lines: ["X"] },
+						{ op: "ins", anchor_after: by("b").hash, lines: ["X"] },
 					],
 				}),
 			).rejects.toThrow(/E_BATCH_CONFLICT/);
@@ -157,7 +162,7 @@ describe("exact line-count edit contract", () => {
 				path: "t.txt",
 				edits: [
 					{ op: "replace", anchor_start: by("a").hash, anchor_end: by("c").hash, lines: ["A", "B", "C"] },
-					{ op: "ins", anchor_start: by("c").hash, lines: ["X"] },
+					{ op: "ins", anchor_after: by("c").hash, lines: ["X"] },
 				],
 			});
 			expect(getText(ok)).toContain("Successfully edited in t.txt");
@@ -174,7 +179,7 @@ describe("exact line-count edit contract", () => {
 				path: "t.txt",
 				edits: [
 					{ op: "replace", anchor_start: by("b").hash, anchor_end: by("b").hash, lines: ["B"] },
-					{ op: "ins", anchor_start: by("b").hash, lines: ["I"] },
+					{ op: "ins", anchor_after: by("b").hash, lines: ["I"] },
 				],
 			});
 			expect(getText(res)).toContain("Successfully edited in t.txt");
@@ -197,12 +202,13 @@ describe("exact line-count edit contract", () => {
 			});
 			const out = JSON.parse(getText(res)) as { ok: boolean; diff: Record<string, string> };
 			expect(out.ok).toBe(true);
-			// removed row: "-<old line>:<old anchor>"; added row: "+<final line>:<final anchor>";
-			// context rows: "<line>:<anchor>" (mirrors read's keys).
-			expect(out.diff[`-2:${by("b").hash}`]).toBe("b");
+			// Key order matches every other row: the ANCHOR first with its line
+			// trailing — removed row `-<old anchor>:<old line>`, added row
+			// `+<final anchor>:<final line>`, context row `<anchor>:<line>`.
+			expect(out.diff[`-${by("b").hash}:2`]).toBe("b");
 			const added = Object.keys(out.diff).find((k) => k.startsWith("+")) ?? "";
-			expect(out.diff[`1:${by("a").hash}`]).toBe("a");
-			expect(out.diff[`3:${by("c").hash}`]).toBe("c");
+			expect(out.diff[`${by("a").hash}:1`]).toBe("a");
+			expect(out.diff[`${by("c").hash}:3`]).toBe("c");
 		});
 	});
 
@@ -217,7 +223,7 @@ describe("exact line-count edit contract", () => {
 			const line3Anchor = served[2]!.hash;
 			const res = await editTool(harness).execute("edit", {
 				path: "t.txt",
-				edits: [{ op: "ins", anchor_start: line3Anchor, lines: ["IN"] }],
+				edits: [{ op: "ins", anchor_after: line3Anchor, lines: ["IN"] }],
 			});
 			expect(getText(res)).toContain("Successfully edited in t.txt");
 			expect(await readFile(path, "utf-8")).toBe("dup\na\ndup\nIN\n");
@@ -236,10 +242,11 @@ describe("exact line-count edit contract", () => {
 				files: Array<{ path: string; matches: Record<string, string> }>;
 			};
 			const matches = out.files[0]!.matches;
-			// match row and its context rows all live in the one dict (key = line#hash)
-			expect(matches[`2:${served[1]!.hash}`]).toBe("beta");
-			expect(matches[`1:${served[0]!.hash}`]).toBe("alpha");
-			expect(matches[`3:${served[2]!.hash}`]).toBe("gamma");
+			// Match row and its context rows all live in the one dict, keyed
+			// `<anchor>:<line>` like every other row.
+			expect(matches[`${served[1]!.hash}:2`]).toBe("beta");
+			expect(matches[`${served[0]!.hash}:1`]).toBe("alpha");
+			expect(matches[`${served[2]!.hash}:3`]).toBe("gamma");
 		});
 	});
 

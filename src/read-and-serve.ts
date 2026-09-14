@@ -12,6 +12,7 @@ import { abortIf } from "./utils.js";
 import { readView } from "./file-view.js";
 import { recordServed, clearDriftReported } from "./session-view.js";
 import type { FileIO } from "./fs-bridge.js";
+import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { ServedRow } from "./hashline/served.js";
 
 /** Appended when the file had non-UTF-8 bytes; editing rewrites it as UTF-8. */
@@ -27,6 +28,13 @@ export interface ReadAndServeOptions {
 	limit?: number;
 	/** v2.0: prefix every row marker with `<line>:<anchor>`. */
 	lineNumbers?: boolean;
+	/**
+	 * The calling execution. Serving rows IS observing the file, so the dsh
+	 * observation policy has to hear about it — otherwise the rows a caller
+	 * just read are servable but not WRITABLE (`[E_NOT_OBSERVED]` on the next
+	 * edit), which makes serving decorative.
+	 */
+	exec?: ToolExecution;
 }
 
 export interface ReadAndServeResult {
@@ -54,9 +62,9 @@ export interface ReadAndServeResult {
  * the reported-drift marks (a fresh read resets them). The returned text
  * carries the UTF-8 rewrite note when the file had decode errors.
  *
- * Emits nothing on the fs-observation gate — callers that need the
- * observation recorded (the `read` tool) do that themselves with their exec
- * context.
+ * Records the shown rows as served AND emits `fs/observed` for the file when an
+ * exec context was supplied: a caller that can see the lines can also write
+ * with them, and the observation is what makes that true.
  */
 export async function readAndServe(
 	io: FileIO,
@@ -79,6 +87,12 @@ export async function readAndServe(
 			view.served.map((r) => ({ position: r.position, anchor: r.anchor })),
 			view.hashes.length,
 		);
+		// The rows are served, so the session has SEEN this file: tell the dsh
+		// observation policy, or the very rows just handed over cannot be
+		// edited with until an explicit read re-observes the file.
+		if (options.exec !== undefined) {
+			await io.emitObserved(view.absolutePath, options.exec, signal);
+		}
 	}
 	await clearDriftReported(sessionKey, view.absolutePath);
 	const text = view.hadUtf8DecodeErrors

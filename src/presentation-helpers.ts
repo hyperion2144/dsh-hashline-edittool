@@ -26,7 +26,8 @@
  */
 
 import { structuredPatch } from "diff";
-import { LINE_HASH_SEP, hashSep, hashlineHeader } from "./hashline/hash-assign.js";
+import { hashSep, hashlineHeader, contextLinesCfg } from "./hashline/hash-assign.js";
+import { genDiff } from "./edit-diff.js";
 
 /** Extension → syntax-highlighting language hint (mirrored from dsh-tool-fs; extended for the hashline corpus). */
 const LANG_BY_EXTENSION: Record<string, string> = {
@@ -188,11 +189,11 @@ export function buildReadPresentation(
 
 	// issue #66/B5: the tool-layer presentation rebuilds the model text from
 	// the structured value (not from readAndServe's text), so the line_numbers
-	// switch must be honored HERE too — rows render as <line>:<anchor>:content.
+	// switch must be honored HERE too — rows render as `<anchor>:<line>:content`.
 	const body = lineRenders
 		.map(({ number, hash, text }) =>
 			opts.lineNumbers !== false
-				? `${number}:${hash}${hashSep()}${text}`
+				? `${hash}:${number}${hashSep()}${text}`
 				: `${hash}${hashSep()}${text}`,
 		)
 		.join("\n");
@@ -351,7 +352,40 @@ export type EditDiffRow = {
 	text: string;
 };
 
-/** Project genDiff's structured rows into the persisted meta shape. */
+
+/**
+ * The JSON-mode diff dictionary: `{"<anchor>:<line>": content}` with `+`/`-`
+ * prefixes on changed rows, exactly the keys the edit tool's json envelope
+ * uses. ONE implementation, so `edit` and `ast_edit` cannot name a row
+ * differently.
+ *
+ * @param before - the pre-edit content.
+ * @param after - the post-edit content.
+ * @param afterHashes - anchors for `after` (allocated when omitted).
+ * @param beforeHashes - anchors for `before` (allocated when omitted).
+ * @returns the keyed diff rows.
+ */
+export function diffDictFrom(
+	before: string,
+	after: string,
+	afterHashes?: readonly string[],
+	beforeHashes?: readonly string[],
+): Record<string, string> {
+	const { rows } = genDiff(
+		before,
+		after,
+		contextLinesCfg(),
+		afterHashes === undefined ? undefined : [...afterHashes],
+		beforeHashes === undefined ? undefined : [...beforeHashes],
+		true,
+	);
+	const dict: Record<string, string> = {};
+	for (const row of rows) {
+		const marker = `${row.hash}:${row.lineNumber}`;
+		dict[row.kind === "-" ? `-${marker}` : row.kind === "+" ? `+${marker}` : marker] = row.content;
+	}
+	return dict;
+}
 export function diffRowsFromGenDiff(
 	rows: ReadonlyArray<{ kind: "+" | "-" | " "; content: string; lineNumber: number; hash: string }>,
 ): EditDiffRow[] {
@@ -592,23 +626,28 @@ function splitLines(content: string): string[] {
 	return lines;
 }
 
-/** Parse the leading `<line>#<hash>` from a `remove_from` / `remove_to` argument. */
+/** Parse the line number from a marker, in EITHER order (`<anchor>:<line>` or legacy `<line>:<anchor>`). */
 export function parseLineFromHash(ref: string): number | undefined {
 	if (typeof ref !== "string") return undefined;
 	const idx = ref.indexOf(":");
 	if (idx <= 0) return undefined;
-	const n = Number.parseInt(ref.slice(0, idx), 10);
+	// The CURRENT order puts the line AFTER the anchor, so the trailing half
+	// is tried first — a leading number means the legacy spelling.
+	const head = ref.slice(0, idx);
+	const num = /^\d+$/.test(head) ? head : ref.slice(idx + 1).replace(/[:|].*$/, "");
+	const n = Number.parseInt(num, 10);
 	return Number.isInteger(n) && n >= 1 ? n : undefined;
 }
 
 
-/** Pure-JSON read view: `lines` is a dict {anchor: content} for the window. */
+/** Pure-JSON read view: `lines` is a dict {`<anchor>:<line>`: content} for the window. */
 export function buildReadJson(
 	content: string,
 	hashes: readonly string[],
 	offset: number,
 	limit: number,
 	path: string,
+	lineNumbers = true,
 ): object {
 	const allLines = splitLines(content);
 	const totalLines = allLines.length;
@@ -618,7 +657,11 @@ export function buildReadJson(
 	const lines: Record<string, string> = {};
 	for (let i = startIdx; i < endIdx; i++) {
 		const anchor = `${hashes[i] ?? ""}`;
-		lines[anchor] = allLines[i] ?? "";
+		// The key carries its line number exactly as every other row does —
+		// anchor first, its line trailing — so the JSON view and the text view
+		// name a line IDENTICALLY and a key can be pasted straight into `edit`.
+		const key = lineNumbers && anchor !== "" ? `${anchor}:${i + 1}` : anchor;
+		lines[key] = allLines[i] ?? "";
 	}
 	return {
 		path,

@@ -25,10 +25,14 @@ import {
 } from "./contract.js";
 
 import { readAndServe, UTF8_REWRITE_NOTE } from "./read-and-serve.js";
+// Everything the AST forms needed is gone with them: this module reads LINES.
+// Keeping the imports would keep the illusion that it does more.
 import { readDescription } from "./prompts.js";
 import { DEFAULT_MAX_LINES } from "./file-view.js";
 import { splitLines } from "./utils.js";
 import { isJsonOutput, getEffectiveConfig } from "./config.js";
+import { readView } from "./file-view.js";
+import { recordServed } from "./session-view.js";
 import {
 	buildReadPresentation,
 	buildReadJson,
@@ -103,6 +107,17 @@ export function buildReadTool(io: FileIO) {
 					},
 					truncatedByBytes: { type: "boolean" },
 					modelText: { type: "string", required: true },
+					// Present only on a symbol/anchor read; JSON mode's extra projection.
+					symbol: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							name: { type: "string", required: true },
+							kind: { type: "string", required: true },
+							start: { type: "integer", required: true },
+							end: { type: "integer", required: true },
+						},
+					},
 				},
 			},
 			render: (_args, value) => [
@@ -170,6 +185,17 @@ export function buildReadTool(io: FileIO) {
 				assertReadRequest(canonical);
 				const rawPath = canonical.path;
 
+				// `read` READS LINES. It used to answer structural questions too — a
+				// symbol's block, an outline, cross-file references — until those
+				// selectors were the reason a line reader needed a grammar and a global
+				// switch. They now live where they belong: `ast_grep` for shape (with no
+				// pattern it returns the outline), `lsp` for anything semantic.
+				//
+				// A call still carrying one of the old selectors must FAIL rather than
+				// silently read lines instead: `assertReadRequest` rejects unknown
+				// fields, so the model is told what changed rather than handed a
+				// different answer to the question it asked.
+
 				// A read of a file deleted mid-session must clear the stale
 				// "present" observation: the policy would otherwise keep
 				// demanding a re-read that can never succeed (read → not-found
@@ -187,6 +213,7 @@ export function buildReadTool(io: FileIO) {
 							offset: canonical.offset,
 							limit: canonical.limit,
 							lineNumbers: canonical.line_numbers !== false,
+							exec,
 						},
 					);
 				} catch (err) {
@@ -202,10 +229,9 @@ export function buildReadTool(io: FileIO) {
 					}
 					throw err;
 				}
-				// Record the present observation with the fs policy gate so later
-				// built-in write/edit calls see this file as observed at the
-				// version the model just read (a no-op when no policy listens).
-				await io.emitObserved(result.absolutePath, exec, signal);
+				// The present observation is emitted by `readAndServe` itself: serving
+				// rows IS observing the file, and one choke point beats a call per
+				// caller (the duplicate here made every read observe twice).
 
 				if (result.hashes === undefined || result.normalized === undefined) {
 					// Defensive fallback: if the file didn't normalize cleanly, fall
@@ -245,8 +271,8 @@ export function buildReadTool(io: FileIO) {
 							lines.push({ number, text });
 							hashlines.push({ number, hash, text });
 							// anchor-keyed dict (grep/edit symmetry); with line_numbers on
-							// the key renders as <line>:<anchor> like the text rows.
-							lineDict[canonical.line_numbers !== false ? `${number}:${hash}` : hash] = text;
+							// the key renders as `<anchor>:<line>`, matching the text rows.
+							lineDict[canonical.line_numbers !== false ? `${hash}:${number}` : hash] = text;
 						}
 						const modelView = {
 							path: rawPath,
@@ -289,6 +315,7 @@ export function buildReadTool(io: FileIO) {
 	});
 }
 
+
 /**
  * Register the hashline tool on the calling agent's scope (own layer).
  */
@@ -299,3 +326,4 @@ export function registerReadTool(
 ): () => void {
 	return agentCtx.tools.register(buildReadTool(io));
 }
+

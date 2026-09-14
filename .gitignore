@@ -9,3 +9,9 @@ coverage/
 .test/
 .dsh-mattskillsdeck-cache/
 .mnemon/
+
+# Working artefacts, deliberately untracked:
+#  - the #112 smoke checklist is a script for a human session, not source;
+#  - the language-manager prototype is a throwaway that no doc references.
+docs/manual-smoke-ast.md
+docs/prototype/

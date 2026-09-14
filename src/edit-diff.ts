@@ -35,7 +35,7 @@ export function stripBOM(content: string): { bom: string; text: string } {
  * Render one diff row. `prefix` is the diff marker (`+`/`-`/space); the second
  * column is the anchor (variable-length Base62, or a space-filled placeholder
  * when unknown — the original anchor is preferred via `oldHash`). With
- * `lineNumbers` the anchor is prefixed `<line>:<anchor>` (informational only).
+ * `lineNumbers` the anchor carries its line as a trailing hint,
  */
 function fmtDiffLine(
 	prefix: " " | "+" | "-",
@@ -46,7 +46,7 @@ function fmtDiffLine(
 	lineNumbers = true,
 ): string {
 	const anchor = oldHash ?? hash ?? " ".repeat(4);
-	const marker = lineNumbers ? `${lineNumber}:${anchor}` : anchor;
+	const marker = lineNumbers ? `${anchor}:${lineNumber}` : anchor;
 	if (prefix === "-" && oldHash !== undefined) {
 		return `${prefix}${marker}${hashSep()}${line}`;
 	}
@@ -171,9 +171,11 @@ servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChe
 	// marker is a stable visual column (copy boundary for the model). Built
 	// from the structured fields — anchored on the LIVE shape (anchor length /
 	// separator), no regex parsing of rendered rows.
+	// The ANCHOR comes first and its line number trails it, so the token a
+	// caller copies first is the one that identifies the line.
 	const markerFor = (row: DiffRow): string =>
 		lineNumbers
-			? `${row.lineNumber}:${row.oldHash ?? row.hash ?? " ".repeat(4)}`
+			? `${row.oldHash ?? row.hash ?? " ".repeat(4)}:${row.lineNumber}`
 			: `${row.oldHash ?? row.hash ?? " ".repeat(4)}`;
 	let anchorWidth = 0;
 	const rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }> = [];

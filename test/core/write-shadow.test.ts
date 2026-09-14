@@ -80,9 +80,9 @@ describe("write shadow", () => {
 			execFor({}),
 		)) as WriteOut;
 		expect(result.modelText).toContain("Auto-read (hashline anchors)");
-		// Every written line appears with its `行号:锚点` marker.
-		expect(result.modelText).toMatch(/\b1:[A-Za-z0-9]{2,8}\b/);
-		expect(result.modelText).toMatch(/\b2:[A-Za-z0-9]{2,8}\b/);
+		// Every written line appears with its `<anchor>:<line>` marker.
+		expect(result.modelText).toMatch(/\b[A-Za-z0-9]{2,8}:1\b/);
+		expect(result.modelText).toMatch(/\b[A-Za-z0-9]{2,8}:2\b/);
 	});
 
 	it("returns update + the pre-write content when the file exists", async () => {

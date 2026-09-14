@@ -15,7 +15,7 @@
  * @module dsh-hashline-edittool/test/hashline-settings-integration
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFile, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Context } from "@deepseek-ai/cordis";
@@ -25,12 +25,18 @@ import {
 	getEffectiveConfig,
 	installHashlineSettings,
 	isJsonOutput,
-	startDirectFileFallback,
 } from "../../src/config.js";
+import { FileSettingsProvider } from "../../src/settings-provider.js";
 import { getHashlineShape } from "../../src/hashline/hash-assign.js";
 
 /** In-memory provider: constructor registers the `settings` service on ctx. */
 class MemSettingsProvider extends SettingsProvider {
+	/**
+	 * Read-only, and that is the TRUTH about this fake rather than a way to
+	 * satisfy the base class: its `persist` throws.
+	 */
+	override readonly writable = false;
+
 	constructor(ctx: InstanceType<typeof Context>, private readonly doc: Record<string, unknown>) {
 		super(ctx);
 	}
@@ -39,6 +45,14 @@ class MemSettingsProvider extends SettingsProvider {
 	}
 	protected override async persist(): Promise<never> {
 		throw new Error("read-only test provider");
+	}
+
+	/**
+	 * `publish` is protected, so the tests cannot drive it from outside.
+	 * Exposing it here is the fake's own API, not a weakening of the base class.
+	 */
+	republish(doc: Record<string, unknown>): void {
+		this.publish(doc);
 	}
 }
 
@@ -62,7 +76,7 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 		const ctx = new Context();
 		const doc = jsonDoc();
 		const provider = new MemSettingsProvider(ctx, doc);
-		provider.publish(doc);
+		provider.republish(doc);
 		installHashlineSettings(ctx);
 		expect(isJsonOutput()).toBe(true);
 		expect(getEffectiveConfig().outputFormat).toBe("json");
@@ -76,18 +90,17 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 		expect(isJsonOutput()).toBe(false);
 		// Boot completes: init publishes → publish re-resolves every section →
 		// commit → scope.watch → hooks.onChange → sync. Config must land.
-		provider.publish(jsonDoc());
+		provider.republish(jsonDoc());
 		await until(() => isJsonOutput());
 	});
 
-	it("self-mounts a read-only file provider when the host has none", () => {
-		const home = mkdtempSync(join(tmpdir(), "hashline-it-"));
-		mkdirSync(home, { recursive: true });
-		writeFileSync(join(home, "settings.yaml"), "hashline:\n  output_format: json\n");
-		process.env.DSH_HOME = home;
+	it("no settings service on the context: refuses loudly (inject contract)", () => {
+		// `settings` is declared in the plugin's `inject`, so cordis guarantees the
+		// service is started before apply runs. A context WITHOUT one cannot occur
+		// in a real deployment — and if it ever does, refusing loudly beats
+		// silently running on defaults.
 		const ctx = new Context();
-		installHashlineSettings(ctx);
-		expect(isJsonOutput()).toBe(true);
+		expect(() => installHashlineSettings(ctx)).toThrow(/settings service is missing/);
 	});
 
 	it("resolves an invalid stored section to defaults without throwing", () => {
@@ -100,45 +113,40 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 		const provider = new MemSettingsProvider(ctx, {
 			hashline: { output_format: "bogus", separator: "|" },
 		});
-		provider.publish({ hashline: { output_format: "bogus", separator: "|" } });
+		provider.republish({ hashline: { output_format: "bogus", separator: "|" } });
 		expect(() => installHashlineSettings(ctx)).not.toThrow();
 		expect(getEffectiveConfig()).toEqual({
 			separator: ":",
 			outputFormat: "text",
 			contextLines: 3,
 			requireLineContent: false,
+			// AST is an additive capability: off unless explicitly enabled, so an
+			// invalid stored section resolves to exactly the pre-AST behaviour.
+			astEnabled: false,
+			astLanguages: new Set<string>(),
+			// No named servers: naming one is a separate setting from the AST
+			// switch, and an invalid stored section must resolve to no servers too.
+			lspServers: new Map<string, string>(),
 		});
 	});
 
 	it("round-trips separator through the hash shape, not just the format flag", () => {
 		const ctx = new Context();
 		const provider = new MemSettingsProvider(ctx, { hashline: { separator: "|" } });
-		provider.publish({ hashline: { separator: "|" } });
+		provider.republish({ hashline: { separator: "|" } });
 		installHashlineSettings(ctx);
 		expect(getEffectiveConfig().separator).toBe("|");
 		expect(getHashlineShape().separator).toBe("|");
 	});
 
-	it("direct-file fallback applies json without any settings service (issue #69 restart finding)", () => {
-		const home = mkdtempSync(join(tmpdir(), "hashline-fallback-"));
-		writeFileSync(join(home, "settings.yaml"), "hashline:\n  output_format: json\n");
-		process.env.DSH_HOME = home;
-		const ctx = new Context();
-		// No provider registered anywhere: this is the topology where the
-		// service is unreachable (registered elsewhere but invisible). The
-		// fallback reads the file directly instead of registering a section.
-		startDirectFileFallback(ctx);
-		expect(isJsonOutput()).toBe(true);
-		// Absent file → defaults, silently.
-		process.env.DSH_HOME = join(home, "empty");
-		startDirectFileFallback(ctx);
-		expect(getEffectiveConfig().outputFormat).toBe("text");
-	});
-
-	// NOTE: the unreachable-service retry branch (scheduleSettingsRetry) cannot
-	// be exercised in a single-cordis-copy test process — it only triggers when
-	// the host registered the service somewhere ctx.get cannot see (dual
-	// instance / realm topologies, issue #69 restart finding). Verified by
-	// restart smoke test: fallback applies config, retry installs the section
-	// once the service becomes visible and logs "became visible".
+	// The self-mount tests that used to live here were deleted with the
+	// self-mount itself: `settings` is injected now, so cordis guarantees the
+	// service before apply runs, and a bare `new Context()` without one is
+	// covered by the refusal test above. The provider's own load/persist
+	// round-trip is pinned by the settings-provider unit tests. The old
+	// scheduleSettingsRetry note is gone with the retry itself.
+	//
+	// The WRITE half (persist round-trips to settings.yaml) is covered by the
+	// settings-provider tests, which drive `persist` directly — the provider
+	// is the storage seam, so that is where its serialization belongs.
 });

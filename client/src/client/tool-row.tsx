@@ -27,10 +27,11 @@ import {
 import type { DiffBlockProps, ReadBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readBlockLabels } from "./labels.js";
-import { diffCardModel, editAnchorHints, grepCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { GrepCard } from "./grep-card.js";
+import { LspDiagBlock } from "./lsp-block.js";
 import { DiffRowsBlock } from "./diff-block.js";
-import { grepCardLabels } from "./labels.js";
+import { grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 
 /** Join class names (tiny clsx stand-in; `clsx` is not a module-table word). */
@@ -60,14 +61,14 @@ interface ToolRowProps {
 	icon: ReactNode;
 	title: string;
 	summary: string;
-	/** Caption-styled extra suffix (hashline anchor hints); null draws none. */
-	summarySuffix: string | null;
 	bodyRaw: string | null;
 	output: string | null;
 	errorSummary: string | null;
 	read: ReturnType<typeof readCardModel>;
 	diff: ReturnType<typeof diffCardModel>;
 	grep: ReturnType<typeof grepCardModel>;
+	/** The `lsp` diagnostics card, drawn by our own block (see `LspDiagBlock`). */
+	lsp: ReturnType<typeof lspCardModel>;
 	state: "running" | "ok" | "error" | "stopped";
 	filePath: string | undefined;
 	onOpenFile: ((path: string) => void) | undefined;
@@ -98,13 +99,13 @@ function ToolRow({
 	icon,
 	title,
 	summary,
-	summarySuffix,
 	bodyRaw,
 	output,
 	errorSummary,
 	read,
 	diff,
 	grep,
+	lsp,
 	state,
 	filePath,
 	onOpenFile,
@@ -116,10 +117,14 @@ function ToolRow({
 	const diffLabels = useMemo(() => diffBlockLabels(t), [t]);
 	const readBody = read ?? null;
 	const grepBody = grep ?? null;
+	const lspBody = lsp ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
+	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
 	const diffBody = diff ?? null;
 	const outputText = output ?? null;
-	const card = diffBody ?? grepBody ?? readBody;
+	// `lsp` first: it owns its body outright (frame included), so the read body
+	// never sees diagnostic rows masquerading as lines of a file.
+	const card = lspBody ?? diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -129,6 +134,36 @@ function ToolRow({
 	const status = stateStatus(state, t);
 	const failureLine = state === "error" ? (errorSummary ?? null) : null;
 	const summaryText = failureLine ?? summary;
+	// The diagnostics stat, shaped like the diff stat next to it (`+3 -1`): the
+	// count comes from the severity CODES the host put beside each message, never
+	// from parsing an "error: …" label back apart.
+	const lspStat = useMemo(() => {
+		if (lspBody === null) return null;
+		let errors = 0;
+		let warnings = 0;
+		let other = 0;
+		for (const row of lspBody.rows) {
+			// A row without codes still carries messages (an older payload): count
+			// them as plain diagnostics rather than dropping them from the total.
+			const codes = row.severities.length > 0 ? row.severities : row.messages.map(() => 0);
+			for (const code of codes) {
+				if (code === 1) errors += 1;
+				else if (code === 2) warnings += 1;
+				else other += 1;
+			}
+		}
+		if (errors + warnings + other === 0) return null;
+		// Words rather than glyphs: the suffix sits next to a file path in a row a
+		// reader scans, and `2 errors · 1 warning` needs no legend.
+		const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+		return [
+			errors > 0 ? plural(errors, "error", "errors") : "",
+			warnings > 0 ? plural(warnings, "warning", "warnings") : "",
+			other > 0 ? plural(other, "diagnostic", "diagnostics") : "",
+		]
+			.filter((part) => part !== "")
+			.join(" · ");
+	}, [lspBody]);
 	const diffStat = useMemo(() => {
 		if (diffBody === null) return null;
 		if (diffBody.rows !== undefined) {
@@ -139,7 +174,12 @@ function ToolRow({
 		const { added, removed } = diffTotals(diffBody.diffs as never);
 		return `+${added} -${removed}`;
 	}, [diffBody]);
-	const suffix = failureLine === null ? (summarySuffix ?? diffStat) : null;
+	// The suffix is the diff stat, and only that. `summarySuffix` used to sit to the
+	// left of the `??`, fed by the anchors a call was addressed with — which is how
+	// `require_line_content` decided whether a reader saw `@oN @6I @4E` or `+3 -1`.
+	// The prop is gone rather than defaulted to null: a prop with no producer is a
+	// switch the next change can flip back on (issue #127).
+	const suffix = failureLine === null ? (lspStat ?? diffStat) : null;
 	const fileLink = filePath !== undefined && onOpenFile !== undefined && failureLine === null;
 	const toggleExpand = () => {
 		setExpanded((value) => !value);
@@ -190,10 +230,7 @@ function ToolRow({
 									}),
 							suffix !== null &&
 								jsx_("span", {
-									className: cx(
-										summarySuffix !== null ? css.anchorHints : css.summarySuffix,
-										suffix === diffStat && css.diffStat,
-									),
+									className: css.summarySuffix,
 									children: suffix,
 								}),
 						],
@@ -238,7 +275,13 @@ function ToolRow({
 									maxLines: 16,
 									className: css.readBody,
 								})
-								: readBody !== null
+								: lspBody !== null
+									? jsx_(LspDiagBlock, {
+										model: lspBody,
+										labels: lspLabels,
+										maxLines: 16,
+									})
+									: readBody !== null
 									? jsx_(ReadBlock, {
 										label: readBody.label,
 										// ReadBlock draws its gutter cell verbatim, so the precomposed
@@ -298,17 +341,19 @@ function ToolRow({
  * `hashlines` meta. Without hashline data it degrades to the exact shipped
  * presentation (bare numbers, or the generic input/output body).
  */
-export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
+export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride, icon }: ToolViewProps & { readonly titleOverride?: string; readonly icon?: ReactNode }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const read = readCardModel(block, cwd, home);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
 		toolName,
-		icon: jsx_(IconBrowseOutline16, { size: 14 }),
-		title: t(model.titleKey),
+		icon: icon ?? jsx_(IconBrowseOutline16, { size: 14 }),
+		// `titleOverride` is how a tool that WEARS this row says its own name. Without
+		// it the title falls back to the variant's label, which is right for `read`
+		// and wrong for everything borrowing it.
+		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
 		summary: model.summary,
-		summarySuffix: null,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
 		errorSummary: model.errorSummary,
@@ -329,18 +374,24 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
  * the call's own `edits[].anchor_start`. Non-hashline calls fall back to the
  * shipped behavior (intended diff while running, generic body otherwise).
  */
-export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
+export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride }: ToolViewProps & { readonly titleOverride?: string }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const diff = diffCardModel(block);
-	const anchors = useMemo(() => editAnchorHints(callArgsRaw(block)), [block]);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
 		toolName,
 		icon: jsx_(IconEditOutline16, { size: 14 }),
-		title: t(model.titleKey),
+		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
 		summary: model.summary,
-		summarySuffix: anchors.length > 0 ? `@${anchors.join(" @")}` : null,
+		// ALWAYS the diff stat, never the anchor hints.
+		//
+		// The hints were passed here whenever the call carried bare anchors — which is
+		// exactly when `require_line_content` is OFF — and an anchor hint beats the
+		// diff stat in the row's own precedence. So a setting about whether a MODEL
+		// re-states the lines it touches decided what a READER saw: `@oN @6I @4E` with
+		// it off, `-3 +1` with it on, for the same edit. The title answers "what did
+		// this change", and that answer does not depend on the switch.
 		bodyRaw: model.bodyRaw,
 		output: model.output,
 		errorSummary: model.errorSummary,
@@ -371,7 +422,6 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		icon: jsx_(IconEditOutline16, { size: 14 }),
 		title: t(model.titleKey),
 		summary: model.summary,
-		summarySuffix: null,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
 		errorSummary: model.errorSummary,
@@ -394,7 +444,7 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
  * the shipped search row: the search icon, the Grep title and the pattern as
  * the summary.
  */
-export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
+export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride }: ToolViewProps & { readonly titleOverride?: string }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const grep = grepCardModel(block);
 	return jsx_(ToolRow, {
@@ -402,9 +452,11 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		variant: model.variant,
 		toolName,
 		icon: jsx_(IconSearchOutline16, { size: 14 }),
-		title: t(model.titleKey),
+		// `titleOverride` lets `ast_grep` wear this row under its own name: the card
+		// data is grep-shaped (files/rows/spans), so the drawing is identical and
+		// only the label differs.
+		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
 		summary: model.summary,
-		summarySuffix: null,
 		// The shipped search row draws no raw-input body: a search has a card or
 		// nothing, and an error body already arrives through `output`.
 		bodyRaw: null,
@@ -420,7 +472,73 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 	});
 }
 
-/** The paired call head's raw args (running calls carry their own). */
-function callArgsRaw(block: ToolCallBlock): string {
-	return ("kind" in block ? block.call?.argsRaw : block.argsRaw) ?? "";
+// ---------------------------------------------------------------------------
+// The AST tools and `lsp` get their OWN rows, not the read/edit ones.
+//
+// Registering `ast_grep` AS `HashlineReadRow` was reuse taken one step too far.
+// The row a read draws is right — same `line:anchor| content` rows — but the
+// TITLE is derived from `variant`, and `variant` is `read` for anything that
+// wears this component. So an AST search announced itself as 读取, an AST edit as
+// 编辑, and `lsp` had no row at all and fell through to raw input/output.
+//
+// Reusing the ROW is the point; reusing the IDENTITY is the mistake. These pass a
+// title of their own into the same composition, which is what "reuse the component"
+// should have meant the first time.
+// ---------------------------------------------------------------------------
+
+/** `ast_grep` — STRUCTURAL SEARCH, and it wears the GREP row on purpose:
+ * `presentationMeta` emits the same `files/rows/spans` shape `grep` does, so the
+ * search card — gutter, anchors, highlight — draws it directly. Delegating to the
+ * READ row instead was the bug: the read card wants `hashlines`, got none, and
+ * fell through to raw input/output.
+ * The label is uppercase and the icon is the search icon, matching `grep`.
+ */
+export function HashlineAstGrepRow(props: ToolViewProps): ReactNode {
+	return HashlineGrepRow({ ...props, titleOverride: "AST_GREP" });
 }
+
+/** `ast_edit` — structural rewrite. Draws the edit diff card, announces itself. */
+export function HashlineAstEditRow(props: ToolViewProps): ReactNode {
+	return HashlineEditRow({ ...props, titleOverride: "AST_EDIT" });
+}
+
+/** `undo_last_edit` — a revert IS a diff, so it wears the edit card. */
+export function HashlineUndoRow(props: ToolViewProps): ReactNode {
+	return HashlineEditRow({ ...props, titleOverride: "UNDO" });
+}
+
+/**
+ * `lsp` — semantic operations.
+ *
+ * It draws its OWN body, exactly as the edit card does with `DiffRowsBlock`: the
+ * rows carry two kinds of text (the source line and a server's diagnostics of it)
+ * and the read primitive can only draw plain strings, while replacing the
+ * primitive's body outright lost its frame and copy button. A vendored block with
+ * its own stylesheet and the shared `TabStrip` head keeps both.
+ */
+export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
+	const model = toolRowModel(toolName, block, cwd, home);
+	// The diagnostics rows are drawn by our own block below, so the read/grep/diff
+	// bodies stay out of it — this row owns its body.
+	const lsp = lspCardModel(block);
+	return jsx_(ToolRow, {
+		t,
+		variant: model.variant,
+		toolName,
+		icon: jsx_(IconBrowseOutline16, { size: 14 }),
+		title: "LSP",
+		summary: model.summary,
+		bodyRaw: model.bodyRaw,
+		output: model.output,
+		errorSummary: model.errorSummary,
+		read: null,
+		grep: null,
+		diff: null,
+		lsp,
+		state: model.state,
+		filePath: undefined,
+		onOpenFile: openFile,
+		inspect,
+	});
+}
+

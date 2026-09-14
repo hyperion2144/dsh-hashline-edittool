@@ -76,7 +76,8 @@ describe("genDiff multi-hunk row numbering (issue #71 regression)", () => {
 		// own content — the padStart alignment puts spaces after the prefix, so the
 		// lookup is marker+content co-occurrence on one line, not exact prefix.
 		for (const row of rows) {
-			const marker = `${row.lineNumber}:${row.hash}`;
+			// The marker is `<anchor>:<line>` — the anchor first, its line trailing.
+			const marker = `${row.hash}:${row.lineNumber}`;
 			const line = diff.split("\n").find((l) => l.includes(marker) && l.includes(row.content.slice(0, 20)));
 			expect(line, `row ${row.kind} ${marker} ${row.content.slice(0, 30)}`).toBeDefined();
 		}
@@ -84,7 +85,7 @@ describe("genDiff multi-hunk row numbering (issue #71 regression)", () => {
 		const endRow = rows.find((row) => row.content === "End of demo file.");
 		expect(endRow).toBeDefined();
 		const endLine = diff.split("\n").find((l) => l.includes("End of demo file."));
-		expect(endLine).toContain(`${endRow!.lineNumber}:${endRow!.hash}`);
+		expect(endLine).toContain(`${endRow!.hash}:${endRow!.lineNumber}`);
 	});
 });
 

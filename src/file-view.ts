@@ -23,8 +23,8 @@ import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "./constants.js";
-import { lineHashes, fmtRegion, HASH_SEP, LINE_HASH_SEP } from "./hashline/index.js";
-import { hashlineHeader, hashSep, canon, contentChecksum } from "./hashline/hash-assign.js";
+import { lineHashes, fmtRegion, hashSep } from "./hashline/index.js";
+import { fmtMarker, hashlineHeader, canon, contentChecksum } from "./hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "./utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "./edit-diff.js";
 import { resolveTarget, toCwd } from "./paths.js";
@@ -525,7 +525,11 @@ return {
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
     bytes: Buffer.byteLength(
-      `${startLine + index}${LINE_HASH_SEP}${selectedHashes[index]}${hashSep()}${line}`,
+      // The SAME marker `fmtRegion` renders (`fmtMarker`), not the pre-0.5
+      // `line#hash` spelling: the two are one character apart TODAY, so the
+      // limit math happened to hold — and would drift silently the moment the
+      // marker changed shape.
+      `${fmtMarker(selectedHashes[index] ?? "", startLine + index)}${hashSep()}${line}`,
       'utf-8',
     ),
   }));

@@ -211,6 +211,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				const served = await readAndServe(io, rawPath, cwd, {
 					sessionKey,
 					signal,
+					exec,
 				}).catch(() => undefined);
 
 				const modelText =

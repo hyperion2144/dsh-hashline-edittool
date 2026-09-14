@@ -10,7 +10,14 @@ import { useTestHome } from "../support/fixtures.js";
 const home = useTestHome();
 
 describe("hashline size limits — removed in v2.0", () => {
-	it("hashes far more lines than the old 62^3 ceiling without error", () => {
+	// An explicit timeout, because the default is what this test actually fails
+	// on: allocating anchors for 238,000+ identical lines is a real computation,
+	// and under a full parallel run it has crossed the 5s default while passing
+	// comfortably alone. That is the worst kind of test failure — it reports the
+	// machine's load as a defect and teaches everyone to re-run until it is
+	// green. The number here is a budget for work that is genuinely large, not a
+	// way to hide a hang.
+	it("hashes far more lines than the old 62^3 ceiling without error", { timeout: 30_000 }, () => {
 		// v2.0 has no fixed line-count ceiling; layers auto-expand.
 		const line = "const x = 1; // padding padding padding padding";
 		const content = Array.from({ length: 62 ** 3 + 5 }, () => line).join("\n");
@@ -20,7 +27,13 @@ describe("hashline size limits — removed in v2.0", () => {
 		expect(new Set(hashes).size).toBe(hashes.length);
 	});
 
-	it("does not throw E_FILE_TOO_LARGE through the persistence path", async () => {
+	// Same budget and the same reason as the test above: 300,000 lines through the
+	// PERSISTENCE path is real work, and the 5s default is what it fails on under a
+	// full parallel run while passing comfortably alone. Fixing only one of the two
+	// in this file left the other one failing the suite at random — which is worse
+	// than either, because a suite that is red one run in three teaches everyone to
+	// re-run instead of to look.
+	it("does not throw E_FILE_TOO_LARGE through the persistence path", { timeout: 30_000 }, async () => {
 		const line = "x";
 		const content = Array.from({ length: 300_000 }, () => line).join("\n");
 		const hashes = await lineHashes(content, home.testPath);

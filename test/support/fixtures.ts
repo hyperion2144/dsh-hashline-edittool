@@ -161,7 +161,10 @@ export async function makeTempDir(prefix: string): Promise<string> {
 export function makeExec(
 	cwd: string,
 	sessionKey = "test-session",
-): (args: unknown) => ToolExecution {
+): (args: unknown) => ToolRunContext {
+	// `ToolRunContext extends ToolExecution`, so the narrower type is what the
+	// tools actually accept — declaring the narrow one made every caller fail
+	// against `execute(args, exec: ToolRunContext)`.
 	return (args: unknown) =>
 		({
 			signal: new AbortController().signal,
@@ -170,13 +173,21 @@ export function makeExec(
 				session: { id: sessionKey, header: { cwd } },
 			},
 			arguments: args,
-		}) as unknown as ToolExecution;
+			// The two context methods are part of the contract the tools are typed
+			// against; no-ops here because nothing in these tests defers context or
+			// concludes a turn, and a missing member would be a type error rather
+			// than a behavioural one.
+			deferContext() {},
+			concludeTurn() {},
+		}) as unknown as ToolRunContext;
 }
 
 /** pi-hashline-compatible wrapper: execute(id, params, signal, onUpdate, ctx) → { content } */
 function wrapTool(
 	tool: { execute: (args: unknown, exec: ToolRunContext) => Promise<unknown> },
-	makeExecFor: (args: unknown) => unknown,
+	// `ToolRunContext`, not `unknown`: the wrapper below hands this straight to
+	// `execute`, so an `unknown` here is what made that call fail to typecheck.
+	makeExecFor: (args: unknown) => ToolRunContext,
 ): {
 	execute(
 		_callId: string,

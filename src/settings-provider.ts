@@ -1,18 +1,23 @@
 /**
- * FileSettingsProvider — a minimal dsh settings provider backed by the
- * settings.yaml file, so hashline configuration works even in deployments
- * without a host-mounted settings service (e.g. a minimal smoke profile).
+ * FileSettingsProvider — a full dsh settings provider backed by
+ * `settings.yaml`, mounted by this plugin when the host did not bring a
+ * settings service (e.g. a minimal smoke profile).
  *
- * dsh-settings' `installSettingsSection` is inert without a `settings`
- * service on the context; instead of falling back to ad-hoc file reads, we
- * PROVIDE the service ourselves when the host did not: the file stays the
- * single source of truth (`writable: false`, so in-process UI writes are
- * refused and the document is only ever read from disk).
+ * This IS the dsh capability, not a bypass: SettingsProvider's own
+ * `load`/`persist` contract is how dsh settings storage works, and this
+ * provider implements both sides — `load` parses the document, `persist`
+ * merges the changed namespace back and writes it. It is READ-WRITE: a
+ * read-only provider made every card write fail with "read-only", which
+ * is the "无法读写设置" error that was reported.
+ *
+ * Only the `hashline` namespace is structured. Other namespaces are
+ * preserved verbatim on write — this plugin never rewrites configuration
+ * it does not own.
  *
  * @module dsh-hashline-edittool/settings-provider
  */
 import type { Context } from "@deepseek-ai/cordis";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import SettingsProvider from "@deepseek-ai/dsh-settings";
 import {
 	parseSettingsYaml,
@@ -68,9 +73,75 @@ export function loadYamlDocument(): Record<string, unknown> {
 	}
 }
 
-/** Minimal read-only file provider; install it only when the host has none. */
+/**
+ * Serialize a whole settings document back to YAML.
+ *
+ * The hashline namespace is emitted structured (scalars bare, strings
+ * double-quoted so a hash or spaces survive the round-trip); every other
+ * namespace is a passthrough string written verbatim under its key.
+ */
+export function serializeYamlDocument(doc: Record<string, unknown>): string {
+	const out: string[] = [];
+	for (const [key, value] of Object.entries(doc)) {
+		if (key === "hashline" && typeof value === "object" && value !== null && !Array.isArray(value)) {
+			const body = serializeHashlineSection(value as Record<string, unknown>);
+			out.push(body.trim() === "" ? key + ":" : key + ":\n" + body);
+			continue;
+		}
+		if (typeof value === "string" && value.trim() !== "") {
+			out.push(key + ":\n" + value.trimEnd());
+			continue;
+		}
+		out.push(key + ":");
+	}
+	return out.join("\n") + "\n";
+}
+
+/** Emit the hashline section: scalars, and up to three levels of nesting. */
+function serializeHashlineSection(section: Record<string, unknown>): string {
+	const lines: string[] = [];
+	const scalar = (v: unknown): string | undefined => {
+		if (typeof v === "boolean" || typeof v === "number") return String(v);
+		if (typeof v === "string") return JSON.stringify(v);
+		return undefined;
+	};
+	for (const [key, value] of Object.entries(section)) {
+		const flat = scalar(value);
+		if (flat !== undefined) {
+			lines.push("  " + key + ": " + flat);
+			continue;
+		}
+		if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+			lines.push("  " + key + ":");
+			for (const [k2, v2] of Object.entries(value as Record<string, unknown>)) {
+				const flat2 = scalar(v2);
+				if (flat2 !== undefined) {
+					lines.push("    " + k2 + ": " + flat2);
+					continue;
+				}
+				if (typeof v2 === "object" && v2 !== null && !Array.isArray(v2)) {
+					lines.push("    " + k2 + ":");
+					for (const [k3, v3] of Object.entries(v2 as Record<string, unknown>)) {
+						const flat3 = scalar(v3);
+						if (flat3 !== undefined) lines.push("      " + k3 + ": " + flat3);
+					}
+				}
+			}
+		}
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Minimal file-backed dsh provider; installed only when the host has none.
+ *
+ * READ-WRITE. persist merges the changed namespace back into the document
+ * and serializes it through serializeYamlDocument — the dsh provider
+ * contract's own storage step. Other namespaces round-trip verbatim: this
+ * plugin never rewrites configuration it does not own.
+ */
 export class FileSettingsProvider extends SettingsProvider {
-	readonly writable = false;
+	readonly writable = true;
 
 	constructor(ctx: Context) {
 		super(ctx);
@@ -81,9 +152,15 @@ export class FileSettingsProvider extends SettingsProvider {
 		return loadYamlDocument();
 	}
 
-	protected async persist(): Promise<void> {
-		// writable: false — never reached; the file is the source of truth.
-		throw new Error("dsh-hashline-edittool: file settings provider is read-only");
+	protected async persist(ns: string, section: Record<string, unknown>): Promise<void> {
+		// The dsh provider contract's own storage step: merge the changed
+		// namespace into the document and write it back. The hashline namespace
+		// is this plugin's and is written structured; every other namespace
+		// round-trips verbatim so nothing the host owns is ever rewritten.
+		const doc = loadYamlDocument();
+		doc[ns] = section;
+		writeFileSync(settingsYamlPath(), serializeYamlDocument(doc), "utf-8");
+		this.publish(loadYamlDocument());
 	}
 
 	get documentPath(): string {

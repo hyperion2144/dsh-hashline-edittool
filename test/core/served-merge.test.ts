@@ -103,8 +103,10 @@ describe("merge doesn't corrupt under repeated serve", () => {
     const merged = _mergeServedRows(
       base,
       [
-        { position: 3, anchor: "dd", contentKey: "x" },
-        { position: 4, anchor: "ee", contentKey: "y" },
+        // `ServedEntry` is position + anchor; the persisted shape has no
+        // contentKey, and these fixtures assert nothing about one.
+        { position: 3, anchor: "dd" },
+        { position: 4, anchor: "ee" },
       ],
     );
     expect(merged).toEqual(["aa", "bb", "cc", "dd", "ee"]);

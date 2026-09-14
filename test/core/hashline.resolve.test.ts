@@ -105,7 +105,7 @@ describe("resEdit", () => {
 		expect(resolved.hash_bounds[0]).toEqual({ anchor: "MQX", line: 12 });
 		expect(resolved.hash_bounds[1]).toEqual({ anchor: "MQX", line: 12 });
 		expect(warnings[0]).toMatch(/stripped trailing content/);
-		expect(warnings[0]).toMatch(/using "12:MQX"/);
+		expect(warnings[0]).toMatch(/using "MQX:12"/);
 	});
 
 	it("strips + and - diff markers from pasted rows, keeping the anchor", () => {
@@ -137,7 +137,7 @@ describe("resEdit", () => {
 		expect(resolved.hash_bounds[0]).toEqual({ anchor: "MQX", line: 12 });
 		expect(resolved.hash_bounds[1]).toEqual({ anchor: "MQX", line: 12 });
 		expect(warnings[0]).toMatch(/multi-line block/);
-		expect(warnings[0]).toMatch(/only the first row's anchor "MQX" was used/);
+		expect(warnings[0]).toMatch(/only the first row's anchor "MQX:12" was used/);
 	});
 
 	it("does not warn when a pasted row has empty content after the separator", () => {

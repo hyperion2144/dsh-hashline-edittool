@@ -1,7 +1,7 @@
 import type { ServedRow } from "./hashline/served.js";
 import { genDiff } from "./edit-diff.js";
 import { visLines, clipLine } from "./utils.js";
-import { LINE_HASH_SEP, contextLinesCfg } from "./hashline/index.js";
+import { contextLinesCfg } from "./hashline/index.js";
 
 /**
  * Compact legend opening every edit diff block. Replaces the long

@@ -250,14 +250,21 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 		});
 
 		it("E_BAD_REF fail block strips the batch-abort tail (multi-file context)", async () => {
-			applyEffective({ hash_length: 2, output_format: "text" });
+			// No `hash_length` here. It was passed as 2 and the comment below claimed
+			// it made a 3-character anchor illegal — but that key is DELIBERATELY
+			// IGNORED (src/config.ts: v2.0 anchors are variable-length by
+			// construction), so it never had that effect and the type does not
+			// declare it. The rejection below comes from `!zzz` not being a valid
+			// Base62 anchor at all, which is what the comment now says.
+			applyEffective({ output_format: "text" });
 			try {
 				await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 					await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
 					const harness = setupIntegrationTest(cwd);
 					const a1 = await readAnchors(harness, "b1.txt");
 
-					// 非法 anchor: hash_length=2 下 "!zzz" 3 位 hash 长度非法 → E_BAD_REF
+					// Invalid anchor: `!zzz` is not Base62, so it cannot name a line.
+					// (This used to say the length was wrong under hash_length=2 — see above.)
 					const res = await harness.editTool.execute("edit", {
 						path: "b1.txt",
 						edits: [
@@ -280,25 +287,66 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 			}
 		});
 
-		it("ins with anchor_end: accepted (no throw) + drop-the-field warning — SRC BUG: ins replaces its anchor line instead of inserting after it (same root as duplicate-line ins); needs src fix", async () => {
+		it("ins with anchor_end: REFUSED at the contract, and the file is untouched", async () => {
 			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 				const harness = setupIntegrationTest(cwd);
 				const a1 = await readAnchors(harness, "b1.txt");
 
-				// ins 带 anchor_end — 不再拒绝, 返回 warning 提示
+				// `ins` has ONE anchor and no range, so `anchor_end` is not a field it
+				// can carry. This used to be accepted with a warning and the field
+				// dropped — which meant a caller could believe it had named a range
+				// and be told, in a warning it may not read, that it had not.
+				await expect(
+					harness.editTool.execute("edit", {
+						path: "b1.txt",
+						edits: [
+							{ op: "ins", anchor_after: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
+						],
+					}),
+				).rejects.toThrow(/E_BAD_SHAPE.*has no "anchor_end"/);
+				// And nothing reached the disk: a refused call is refused whole.
+				expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
+			});
+		});
+
+		it("ins with anchor_start: REFUSED — the field names differ so the replace habit cannot transfer", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// THE MISTAKE THIS EXISTS TO STOP. `ins` and `replace` used to share
+				// `anchor_start`; a caller who had just used `replace` — where the
+				// anchor begins a range whose content `lines` CONSUMES — carried that
+				// reading into `ins` and wrote the anchor's own line into `lines`,
+				// duplicating it. Under two names the habit has nowhere to land, and a
+				// call that sends the wrong one is told so instead of being
+				// transliterated into something it did not ask for.
+				await expect(
+					harness.editTool.execute("edit", {
+						path: "b1.txt",
+						edits: [{ op: "ins", anchor_start: a1[0]!.hash, lines: ["X"] }],
+					}),
+				).rejects.toThrow(/E_BAD_SHAPE.*ins.*anchor_after.*not "anchor_start"/);
+				expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
+			});
+		});
+
+		it("ins with anchor_after: the duplicate warning STILL fires when lines repeats the anchor line", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// `anchor_after` lowers the odds, it does not make the mistake
+				// impossible — the caller can still write the anchor's line into
+				// `lines`. So the warning stays, and this pins that it does.
 				const res = await harness.editTool.execute("edit", {
 					path: "b1.txt",
-					edits: [
-						{ op: "ins", anchor_start: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
-					],
+					edits: [{ op: "ins", anchor_after: a1[0]!.hash, lines: ["a", "X"] }],
 				});
 				const text = getText(res);
-
-				expect(text).toContain("Successfully edited in b1.txt.");
-				expect(text).toContain("Warnings:");
-				expect(text).toContain('edits[0].op:"ins" ignores anchor_end');
-				// ins 生效: 在 anchor_start 行后插入
-				expect(await readFile(p1, "utf-8")).toBe("a\nX\nb\nc\n");
+				expect(text).toContain("[E_INS_ANCHOR_DUP]");
+				// The edit still applies as written — a warning, not a veto.
+				expect(await readFile(p1, "utf-8")).toBe("a\na\nX\nb\nc\n");
 			});
 		});
 		it("TD3#7 auto-fold normalizer: item.path === topLevelPath treated as single-file default", async () => {

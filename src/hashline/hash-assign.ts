@@ -79,16 +79,39 @@ function compileShape(s: HashlineShape): CompiledShape {
 	return {
 		hashClassSource: anchorClass,
 		hashRe: new RegExp(`^${anchorClass}$`),
-		lineAnchorRe: new RegExp(`^(\\d+):(${anchorClass})$`),
+		// A LINE-NUMBER part may be a RANGE (`20-34`), which is what a structural
+		// summary's merged row carries (spec §5.3): a positional hint only, with
+		// the anchor authoritative.
+		//
+		// BOTH ORDERS are accepted, and the order is read off the token itself:
+		// anchors are never all-digits, so `<anchor>:<line>` (what rows emit now)
+		// and `<line>:<anchor>` (the legacy form, still accepted) cannot collide.
+		lineAnchorRe: new RegExp(
+			`^(?:(${anchorClass}):(\\d+(?:-\\d+)?)|(\\d+(?:-\\d+)?):(${anchorClass}))$`,
+		),
 		// issue #66/B2 follow-up: pasted rows often keep the LEADING INDENTATION of
 		// the destination code block (the model copies the row into its patch with
 		// the indent it plans to insert at), so the row prefix may not be at line
 		// start. Allow leading horizontal whitespace before the marker; the strip
 		// preserves it (only the marker prefix is removed, indent stays).
-		rowRe: new RegExp(`^[\\t ]*([+-]?)(?:(\\d+):)?(${anchorClass})\\s*${seps}`),
+		// A pasted row may carry a leading diff marker (`+`/`-`) or the `*` this
+		// plugin uses to flag a reference's definition row; all three are stripped
+		// so a WHOLE copied row is never mistaken for content. `*` is unambiguous
+		// here: it is not in the Base62 anchor alphabet.
+		// The marker may carry its line number in EITHER order: `<anchor>:<line>`
+		// (what rows emit) or `<line>:<anchor>` (legacy). Groups: 1 = diff marker,
+		// 2 = anchor-first anchor, 3 = anchor-first line, 4 = legacy line,
+		// 5 = legacy anchor.
+		rowRe: new RegExp(
+			`^[\\t ]*([+*-]?)(?:(?:(${anchorClass}):(\\d+(?:-\\d+)?)|(\\d+(?:-\\d+)?):(${anchorClass}))\\s*${seps}|(${anchorClass})\\s*${seps})`,
+		),
 		hashSpace: 62 ** 8,
 		header:
-			`ANCHOR${s.separator}FILELINE — each row is <anchor>${s.separator}<content>; edit uses the LEFT "<anchor>" marker as its anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors); everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part. With the line-numbers option on, rows read <line>${s.separator}<anchor>${s.separator}<content> and a marker may be passed back with or without its line part — the anchor is authoritative.`
+				// The line-number half is FIXED positional syntax — now `<anchor>:<line>` —
+				// and ONLY the anchor↔content separator is configurable. The ANCHOR comes
+				// FIRST so the token a caller copies first is the one that identifies the
+				// line; the number trails it as a positional hint, in the same marker.
+				`ANCHOR${s.separator}FILELINE — each row is <anchor>${s.separator}<content>; edit uses the FIRST "<anchor>" marker as its anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors); everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part. With the line-numbers option on, rows read <anchor>:<line>${s.separator}<content> and a marker may be passed back with or without its line part — the anchor is authoritative.`,
 	};
 }
 
@@ -125,9 +148,34 @@ export function hashRe(): RegExp {
 export function lineAnchorRe(): RegExp {
 	return getCompiled().lineAnchorRe;
 }
-/** Row-prefix regex used to strip pasted read/grep/diff rows: `[+-]?[line:]anchor:`. */
+/** Row-prefix regex used to strip pasted read/grep/diff rows: `[+-]?<marker><sep>`. */
 export function hlRowAnchorRe(): RegExp {
 	return getCompiled().rowRe;
+}
+
+/**
+ * The parts of a PASTED-ROW match: which diff marker it carried, its anchor,
+ * and the line number it named (when it named one).
+ *
+ * The row regex accepts BOTH marker orders, so its group layout is an
+ * implementation detail — every consumer reads the parts through here instead
+ * of indexing the groups, which is how the order flip broke three strippers at
+ * once the first time.
+ *
+ * @param match - a successful {@link hlRowAnchorRe} match.
+ * @returns the marker parts; `line` is absent when the row carried no number.
+ */
+export function rowMarkerParts(match: RegExpMatchArray | RegExpExecArray): {
+	diff: string;
+	anchor: string;
+	line?: string;
+} {
+	const diff = match[1] ?? "";
+	// Groups: 2-3 anchor-first (`<anchor>:<line>`), 4-5 legacy
+	// (`<line>:<anchor>`), 6 the bare anchor with no number at all.
+	const anchor = match[2] ?? match[5] ?? match[6] ?? "";
+	const line = match[3] ?? match[4];
+	return line === undefined ? { diff, anchor } : { diff, anchor, line };
 }
 export function hashlineHeader(): string {
 	return getCompiled().header;
@@ -207,18 +255,39 @@ export function lineHashesPure(content: string): string[] {
 }
 
 /**
- * Render one hashline row with a right-aligned anchor column: the anchor
- * (`line#hash`) is padded to `width` (the longest anchor in the current
- * output block) so every read/grep/diff echo shares one visual column and
- * the model copies exactly the left marker. Content stays verbatim.
+ * One row's MARKER: the anchor, plus its line number when line numbers are on.
+ *
+ * The anchor comes FIRST and the number trails it, because the anchor is what
+ * identifies the line and the number is a positional convenience — and because
+ * the first token of a row is the one a caller copies. Both orders are still
+ * ACCEPTED on input (`<line>:<anchor>` is the legacy spelling), since anchors
+ * are never all-digits and the two forms can never be confused.
+ *
+ * @param anchor - the allocated anchor.
+ * @param line - 1-based line number, when the caller knows it.
+ * @param lineNumbers - whether the number belongs in the marker.
+ * @returns the marker text.
+ */
+export function fmtMarker(
+	anchor: string,
+	line: number | undefined,
+	lineNumbers = true,
+): string {
+	return lineNumbers && line !== undefined ? `${anchor}:${line}` : anchor;
+}
+
+/**
+ * Render one hashline row: the MARKER (anchor, and its line number when line
+ * numbers are on) right-aligned to `width`, then the separator, then the
+ * content verbatim. Every read/grep/diff/echo row goes through here, so the
+ * marker column cannot drift between them.
  */
 export function fmtHashlineRow(
-	prefix: string,
-	anchor: string,
+	marker: string,
 	content: string,
 	width: number,
 ): string {
-	return `${prefix}${anchor.padStart(width)}${shape.separator} ${content}`;
+	return `${marker.padStart(width)}${shape.separator} ${content}`;
 }
 
 /** Width of the anchor column for a block of `line#hash` anchors. */

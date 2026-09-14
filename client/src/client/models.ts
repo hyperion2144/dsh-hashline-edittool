@@ -27,6 +27,8 @@ import type {
 	GrepFileRowGroup,
 	GrepRowMeta,
 	GrepSegment,
+	LspCardModel,
+	LspRowMeta,
 	ReadCardProps,
 	ReadMetaHashline,
 	ReadMetaLine,
@@ -251,8 +253,14 @@ export function toolRowModel(
 
 function validReadCall(block: ToolCallBlock): boolean {
 	const call = parsedToolCall(block);
-	if (call?.name !== "read") return false;
-	const { file_path: path, offset, limit } = call.args;
+	// `lsp` wears the read card: its symbols/diagnostics answers are line-anchored
+	// rows in the same meta shape. Two things differ from `read` and BOTH must be
+	// accepted: the tool name, and the arg naming the file (`path`, not
+	// `file_path`). Missing either is why lsp rendered as raw input/output.
+	if (call?.name !== "read" && call?.name !== "lsp") return false;
+	const { file_path: declared, path: named } = call.args;
+	const path = declared ?? named;
+	const { offset, limit } = call.args;
 	if (typeof path !== "string" || path.trim() === "") return false;
 	if (offset !== undefined && (typeof offset !== "number" || !Number.isInteger(offset) || offset < 1)) return false;
 	if (limit !== undefined && (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1)) return false;
@@ -560,32 +568,16 @@ export interface DiffCard {
 	rowGroups?: readonly DiffRowGroup[] | undefined;
 }
 
-/**
- * The anchors a hashline edit was addressed with, read back from the call's
- * own `edits[].anchor_start` arguments. These are presentation hints only —
- * an unparseable call yields no hints, never a card failure.
- * @param argsRaw - the paired call head's raw argument JSON.
- * @param cap - maximum anchors returned before an ellipsis marker.
- * @returns anchor strings (`12:a3f`), or an empty array when none apply.
- */
-export function editAnchorHints(argsRaw: string, cap = 3): string[] {
-	const args = parseArgs(argsRaw);
-	if (args === undefined) return [];
-	const edits = args.edits;
-	if (!Array.isArray(edits)) return [];
-	const hints: string[] = [];
-	for (const edit of edits) {
-		if (typeof edit !== "object" || edit === null) continue;
-		const anchor = (edit as Record<string, unknown>).anchor_start;
-		if (typeof anchor !== "string" || anchor.trim() === "") continue;
-		// Normalise a `12:a3f` / `12#a3f` spelling to the displayed `12:a3f`.
-		const normalized = anchor.includes(":") ? anchor : anchor.replace("#", ":");
-		hints.push(normalized);
-		if (hints.length > cap) break;
-	}
-	if (hints.length > cap) return [...hints.slice(0, cap), "…"];
-	return hints;
-}
+// `editAnchorHints` lived here and is DELETED, with the row that used it.
+//
+// It collected `edits[].anchor_start` as display hints and skipped anything that
+// was not a string — which is exactly the `{ anchor, line }` declaration form, so
+// the hints appeared when `require_line_content` was OFF and vanished when it was
+// ON. The row preferred them over the diff stat, so that switch decided whether a
+// reader saw `@oN @6I @4E` or `+3 -1` for the same edit (issue #127).
+//
+// Removing it is the point rather than a tidy-up: a function with no consumer is a
+// switch the next change can flip back on.
 
 //#endregion
 
@@ -656,8 +648,50 @@ function grepRowMeta(candidate: unknown): GrepRowMeta | null {
  */
 export function grepCardModel(block: ToolCallBlock): GrepCardModel | null {
 	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
-	if (parsedToolCall(block)?.name !== "grep") return null;
+	// `ast_grep` wears the grep card: its presentationMeta is the same
+	// files/rows/spans shape, capped by the same helper. The name was locked to
+	// `grep`, which is why ast_grep rendered as raw IO while carrying drawable
+	// meta.
+	if (parsedToolCall(block)?.name !== "grep" && parsedToolCall(block)?.name !== "ast_grep") return null;
 	return grepPresentationMeta(block.meta);
+}
+
+/**
+ * Derive the `lsp` diagnostics card: one row per line, each carrying that
+ * line's diagnostics BESIDE its text.
+ *
+ * The row's `text` is the verbatim source line (it is also what the anchors
+ * serve, since anchors are content-derived) and `messages` carries the
+ * diagnostics. They are two fields because they are two kinds of thing, and a
+ * card that renders them as one string cannot style them differently: the
+ * reader is looking for `which line, what is wrong`, and the indented red block
+ * is how that reads at a glance.
+ *
+ * @param block - the settled tool block.
+ * @returns the card model, or null when the call carries nothing drawable.
+ */
+export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
+	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	const meta = block.meta;
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+	const value = meta as Record<string, unknown>;
+	if (typeof value.path !== "string" || !Array.isArray(value.hashlines)) return null;
+	const rows: LspRowMeta[] = [];
+	for (const candidate of value.hashlines) {
+		if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
+		const row = candidate as Record<string, unknown>;
+		if (typeof row.number !== "number" || !Number.isInteger(row.number) || row.number < 1) return null;
+		if (typeof row.hash !== "string" || typeof row.text !== "string") return null;
+		const messages = Array.isArray(row.messages)
+			? row.messages.filter((message): message is string => typeof message === "string")
+			: [];
+		const severities = Array.isArray(row.severities)
+			? row.severities.filter((code): code is number => typeof code === "number")
+			: [];
+		rows.push({ number: row.number, hash: row.hash, text: row.text, messages, severities });
+	}
+	if (rows.length === 0) return null;
+	return { path: value.path, rows };
 }
 
 /**

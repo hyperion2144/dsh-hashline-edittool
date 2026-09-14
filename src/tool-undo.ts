@@ -26,6 +26,7 @@ import { UNDO_DESCRIPTION } from "./prompts.js";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
+	diffRowsFromGenDiff,
 	type FileDiff,
 } from "./presentation-helpers.js";
 import type { FileIO } from "./fs-bridge.js";
@@ -78,16 +79,23 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 					removed: { type: "integer", required: true },
 					modelText: { type: "string", required: true },
 					empty: { type: "boolean", required: true },
+					// The card's structured rows (declared because the DSL validates the
+					// returned value): the revert's diff, with the anchors the reader sees.
+					diffRows: { type: "array" },
 				},
 			},
 			render: (_args, value) => [
 				{ type: "text", text: (value as UndoCanonicalValue).modelText },
 			],
+			// The card's data, projected from the value: the hunks of the revert and
+			// the anchored rows beside them — the same two fields `edit` emits, so an
+			// undo wears the edit card instead of the default view.
 			presentationMeta: (_args, value) => {
 				const v = value as UndoCanonicalValue;
 				if (v.empty) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
-				return { diffs } as never;
+				const diffRows = Array.isArray(v.diffRows) && v.diffRows.length > 0 ? v.diffRows : undefined;
+				return { diffs, ...(diffRows !== undefined ? { diffRows } : {}) } as never;
 			},
 		},
 		presentCall: (args) => {
@@ -183,7 +191,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const undoDiffResult = genDiff(
 				currentNormalized,
 				undo.content,
-				1,
+				// The CONFIGURED context, like the sibling diff above: a hardcoded 1 here
+				// made the revert's diff — model text AND card rows — ignore
+				// `context_lines`.
+				contextLinesCfg(),
 				undo.hashes,
 				currentHashes,
 				lineNumbers,
@@ -249,6 +260,10 @@ await recordServedTruncated(
 				after: undo.content,
 				added: linesAddedByEdit,
 				removed: linesRemovedByEdit,
+				// The CARD's rows: the revert's own diff, built once and used by both
+				// the meta and the model text, so the gutter anchors the same lines
+				// the reader sees (ADR-0005 — never a re-parse of `modelText`).
+				diffRows: diffRowsFromGenDiff(undoDiffResult.rows),
 				modelText: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join("\n"),
 				empty: false,
 			} satisfies UndoCanonicalValue;

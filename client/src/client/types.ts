@@ -145,6 +145,28 @@ export interface GrepCardModel {
 	total: number;
 }
 
+/**
+ * One `lsp` diagnostics row: the source line, plus the diagnostics ON it.
+ *
+ * Two fields, not one string: the line is the file's text and each message is a
+ * server's opinion of it, and the card gives them different weights because a
+ * reader has to be able to see which is which.
+ */
+export interface LspRowMeta {
+	readonly number: number;
+	readonly hash: string;
+	readonly text: string;
+	readonly messages: readonly string[];
+	/** LSP severity codes (1 error, 2 warning, 3 info, 4 hint), same order as messages. */
+	readonly severities: readonly number[];
+}
+
+/** The `lsp` diagnostics card: one row per line, its messages attached. */
+export interface LspCardModel {
+	readonly path: string;
+	readonly rows: readonly LspRowMeta[];
+}
+
 /** One rendered slice of a card row: plain text, or a highlighted occurrence. */
 export interface GrepSegment {
 	text: string;
@@ -176,4 +198,57 @@ export interface ClientCtx {
 		inject(key: string, create: () => () => void): void;
 		register(options: Record<string, unknown>, component: unknown): () => void;
 	};
+	/**
+	 * The revision-fenced settings writer. Bound to a namespace, it reads the
+	 * current snapshot and refuses a write made against a stale revision —
+	 * which is why a card never needs its own reader.
+	 */
+	settingsScope: SettingsScopeService;
+}
+
+/**
+ * The structural mirror of `ctx.settingsScope`, transcribed from the SHIPPED
+ * implementation rather than from the cookbook's prose.
+ *
+ * That distinction is the whole point of this comment: the first version of
+ * this mirror guessed `scope.snapshot` as a *property* because the cookbook
+ * says "the scope snapshot carries…". The real accessor is
+ * `scope.getSnapshot()` — a method — so the card threw during render and was
+ * removed from the settings tab by the slot host's entry-error handling. It
+ * was invisible in every test we had, which is exactly why the guess is worth
+ * naming here.
+ */
+export interface SettingsScopeSnapshot {
+	/** Host-side state: a form is only usable once this reads `"ready"`. */
+	readonly status: string;
+	/** Whether a write would be accepted at all. */
+	readonly writable: boolean;
+	/** Monotonic revision; a write made against a stale one is refused. */
+	readonly revision: number;
+	/** Resolved value: the base layer merged with the user layer. */
+	readonly value: Record<string, unknown>;
+	/** The composition layer, for "reset to default". */
+	readonly base: Record<string, unknown>;
+	/**
+	 * The raw user layer. **Key PRESENCE, not the value, marks a field
+	 * overridden** — which is why clearing is `unset` rather than writing the
+	 * base value back.
+	 */
+	readonly user: Record<string, unknown>;
+}
+
+/** The bound scope a card reads and writes through. */
+export interface SettingsScope {
+	/** Current snapshot. A METHOD, not a property. */
+	getSnapshot(): SettingsScopeSnapshot;
+	/** Subscribe to changes; returns the unsubscribe. */
+	subscribe(listener: () => void): () => void;
+	set(field: string, value: unknown): Promise<void>;
+	unset(field: string): Promise<void>;
+	mutate?(mutator: unknown): Promise<void>;
+}
+
+/** The `settingsScope` service, structurally. */
+export interface SettingsScopeService {
+	bind(options: { readonly namespace: string }): SettingsScope;
 }

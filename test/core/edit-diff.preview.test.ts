@@ -34,10 +34,9 @@ describe("genDiff", () => {
 			undefined,
 			["H1", "H2", "H3", "H4"],
 			undefined,
-			false,
 		);
-		expect(diff).toMatch(/-\d+:H2:b/);
-		expect(diff).toMatch(/-\d+:H3:c/);
+		expect(diff).toMatch(/-H2:\d+:b/);
+		expect(diff).toMatch(/-H3:\d+:c/);
 	});
 
 	it("marks every diff row with the line#hash marker prefix", () => {
@@ -74,7 +73,10 @@ describe("genDiff", () => {
 		const before = "BEFORE\n" + lines.join("\n") + "\nAFTER";
 		const after = "BEFORE_CHANGED\n" + lines.join("\n") + "\nAFTER_CHANGED";
 
-		const { diff } = genDiff(before, after, 4, undefined, undefined, undefined, false);
+		// Seven arguments, six parameters: the trailing `false` belongs to a
+		// parameter that no longer exists, and the `undefined` before it leaves
+		// `lineNumbers` at its default — which the assertions below rely on.
+		const { diff } = genDiff(before, after, 4, undefined, undefined, undefined);
 		const diffLines = diff.split("\n");
 
 		expect(diffLines.length).toBeLessThan(50);

@@ -41,6 +41,30 @@ export type AnchorRef = string | AnchorDeclaration;
  */
 const MARKER_PREFIX = /^[ \t]*(?:\d+:)?[A-Za-z0-9]{2,4}\| ?/;
 
+/**
+ * The line number a copied `<line>:<anchor>` marker carries, if any.
+ *
+ * The line half is a HINT and never authoritative — the anchor is what a row
+ * is addressed by — but the engine keeps it so an error can point at the row
+ * the model was looking at. It lives here, beside the other marker parsing,
+ * rather than in a module about reading symbols: this is hashline syntax and
+ * has nothing to do with what the marker denotes.
+ *
+ * @param reference - a raw anchor field, possibly `<line>:<anchor>` or a range
+ *   prefix like `<from>-<to>:`.
+ * @returns the line number, or undefined when the field carries none.
+ */
+export function lineHintOf(reference: string): number | undefined {
+	const trimmed = reference.trim();
+	// The CURRENT order first: `<anchor>:<line>`. Anchors are never all-digits,
+	// so the two orders cannot be confused — a LEADING number means the legacy
+	// spelling, anything else means the anchor comes first.
+	const modern = /:[ \t]*(\d+)(?:-\d+)?[ \t]*$/.exec(trimmed);
+	if (modern !== null) return Number.parseInt(modern[1]!, 10);
+	const legacy = /^(\d+)(?:-\d+)?:/.exec(trimmed);
+	return legacy === null ? undefined : Number.parseInt(legacy[1]!, 10);
+}
+
 function trimEnd(text: string): string {
 	return text.replace(/\s+$/, "");
 }
