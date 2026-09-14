@@ -18,10 +18,10 @@ import { isAstEnabled, isAstLanguageEnabled, isJsonOutput } from "./config.js";
 import { E_AST_DISABLED } from "./ast/codes.js";
 import { AstError, getAstClient } from "./ast/client.js";
 import { runFileEdits, type PreparedItem } from "./edit-engine.js";
+import { execCwd, execSessionKey, withWorkspace } from "./session-view.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
-import { diffsFromMeta, type FileDiff } from "./presentation-helpers.js";
+import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "./presentation-helpers.js";
 import { lineHashesPure } from "./hashline/hash-assign.js";
-import { execCwd, execSessionKey } from "./session-view.js";
 import { recordEchoServes } from "./hashline/anchor-pipeline.js";
 import { canon, contentChecksum } from "./hashline/hash-assign.js";
 import type { FileIO } from "./fs-bridge.js";
@@ -127,13 +127,17 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 			render: (_args: unknown, value: { readonly modelText: string }) => [
 				{ type: "text", text: value.modelText },
 			],
-			// THE CARD'S DATA, wired exactly as `edit` wires it: the client already
-			// registers a diff row for `ast_edit`, and it draws from these two
-			// structured fields — a meta-less result is what left the call as raw
-			// input/output.
-			presentationMeta: (_args: unknown, value: { readonly path: string; readonly diffRows?: readonly unknown[]; readonly diffs?: readonly unknown[] }) =>
+			// THE CARD'S DATA, computed the way `edit` computes it: the hunks come
+			// from before/after HERE, because the canonical value carries the content
+			// and not a `diffs` field. Deriving them instead of carrying them is not
+			// a style choice — an empty `diffs` array reads to the client as "nothing
+			// was applied", so the card silently fell back to raw input/output.
+			presentationMeta: (_args: unknown, value: { readonly path: string; readonly before?: string; readonly after?: string; readonly diffRows?: readonly unknown[] }) =>
 				({
-					diffs: Array.isArray(value.diffs) ? value.diffs : [],
+					diffs:
+						value.before !== undefined && value.after !== undefined
+							? computeHunkDiffs(value.path, value.before, value.after)
+							: [],
 					...(Array.isArray(value.diffRows) && value.diffRows.length > 0
 						? { diffRows: value.diffRows }
 						: {}),
@@ -148,195 +152,219 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 			if (diffs === undefined || diffs.length === 0) return undefined;
 			return { card: "diff", title: `Ast edit ${diffs[0]!.path}`, diffs };
 		},
+		// EVERY tool that touches a file runs inside the workspace, and this one has
+		// to as well: the undo entry (and the session-scoped stores beside it) is
+		// resolved against the ambient workspace, so a body that skipped this wrote
+		// its undo history under a DIFFERENT workspace — and `undo_last_edit`, which
+		// does wrap, answered "No undo history" for an edit that had happened.
 		async execute(args: { readonly pat: string; readonly out: string; readonly path: string }, exec: ToolRunContext) {
-			const cwd = execCwd(exec);
-			const absolutePath = await io.resolve(args.path, cwd);
-			const language = languageForPath(absolutePath);
-			if (language === undefined) {
-				throw new Error(
-					`[E_AST_PATTERN] no grammar is registered for ${args.path}. Structural search needs a language whose descriptor exists; use \`grep\` for a text search.`
-				);
-			}
-			// THE SWITCH, now that these ARE the AST tools — the same gate `ast_grep`
-			// runs, for the same reason: a switch that does not gate the thing it names
-			// is worse than no switch, and reporting "switched off" as "nothing matched"
-			// would be a claim about the code.
-			if (!isAstEnabled()) {
-				throw new Error(
-					`${E_AST_DISABLED} the AST capability is off, so \`ast_edit\` will not run. Turn it on in the hashline settings (\`ast.enabled\`), or use \`edit\` with anchors for a line-level change.`
-				);
-			}
-			if (!isAstLanguageEnabled(language.id)) {
-				throw new Error(
-					`${E_AST_DISABLED} AST is on, but turned off for ${language.displayName} — the per-language switches sit under the master switch in the hashline settings.`
-				);
-			}
-			const text = await io.readText(absolutePath);
-			let matches: readonly GrepMatchLike[];
-			try {
-				matches = await getAstClient().grepPattern({
-					path: args.path,
-					text,
-					languageId: language.id,
-					pat: args.pat,
-				});
-			} catch (error) {
-				if (error instanceof AstError) throw new Error(error.message);
-				throw error;
-			}
-			if (matches.length === 0) {
-				const message =
-					"No match, so nothing was written. A pattern the grammar could not parse would have been an error instead.";
-				return {
-					path: args.path,
-					pat: args.pat,
-					count: 0,
-					ok: true,
-					message,
-					// The model channel is required by the output schema, in every mode.
-					modelText: isJsonOutput()
-						? JSON.stringify({ ok: true, path: args.path, pattern: args.pat, count: 0, diff: {}, hints: [], warnings: [], errors: [] })
-						: `No match for \`${args.pat}\` in ${args.path}. ${message}`,
-				};
-			}
-			// The anchors come from the hashline allocator — the SAME primitive
-			// `read` uses — so what is edited is what a read would have shown.
-			const anchors = lineHashesPure(text);
-			const sourceLines = splitLines(text);
-			const sessionKey = execSessionKey(exec);
-			// SERVE what this tool is about to edit, exactly as `read` serves what it
-			// returns. Without this the engine's served-state check rejects every edit:
-			// the anchors exist, but nothing ever published them, so the mirror has no
-			// entry for the line and the range comes back unverifiable — `ast_edit`
-			// could not touch a file the model had not read first.
-			//
-			// The check is NOT bypassed; it is satisfied the way it is meant to be.
-			// Publishing these rows makes the same statement `read` makes: "these are
-			// the lines I found, and this is their content". A later edit against a
-			// stale view still fails, which is the guarantee, kept intact.
-			//
-			// Only the MATCHED lines are served, not the whole file: the model was
-			// shown the matches and nothing else, and serving more would be this tool
-			// vouching for lines nobody looked at.
-			const served = matches.flatMap((match) => {
-				const rows = [];
-				for (let line = match.startLine; line <= match.endLine; line++) {
-					rows.push({
-						position: line - 1,
-						anchor: anchors[line - 1] ?? "",
-						contentKey: contentChecksum(canon(sourceLines[line - 1] ?? "")),
-					});
-				}
-				return rows;
-			});
-			await recordEchoServes(sessionKey, absolutePath, served, "live", anchors.length);
-			// An echo is a read: the session has seen these lines, so the dsh
-			// observation policy must know it too, or the fresh anchors in the echo
-			// cannot be written with.
-			await io.emitObserved(absolutePath, exec, exec.signal);
-			const items: PreparedItem[] = matches.map((match, index) => {
-				const start = anchors[match.startLine - 1];
-				const end = anchors[match.endLine - 1];
-				if (start === undefined || end === undefined) {
-					throw new Error(`[E_AST_PATTERN] match ${index} spans lines the file does not have; re-read and retry.`);
-				}
-				const replacement = fillTemplate(args.out, match.captures);
-				// PUT THE INDENTATION BACK.
-				//
-				// A match covers the NODE, and a node does not include the whitespace its
-				// line begins with — the pattern `return `hello ${name}`;` starts at
-				// `return`, while the line is `\treturn …`. The hunk replaces whole LINES,
-				// so replacing with the bare replacement dropped that tab: every structural
-				// edit silently de-indented the code it touched.
-				//
-				// The fix re-applies the start line's own leading whitespace, and applies
-				// the SAME indent delta to the replacement's later lines so a multi-line
-				// `out` stays structurally clear instead of losing its interior shape.
-				const originalStart = sourceLines[match.startLine - 1] ?? "";
-				// The leading whitespace the NODE does not own.
-				const indent = /^[ \t]*/.exec(originalStart)?.[0] ?? "";
-				return buildPreparedItem(
-					index,
-					args.path,
-					{
-						op: replacement === "" ? "del" : "replace",
-						anchor_start: start,
-						anchor_end: end,
-						...(replacement === ""
-							? {}
-							: {
-									lines: splitLines(replacement).map((line, index_) =>
-										// Only the FIRST line gets the recovered indent: the rest of a
-										// multi-line `out` carries the indentation its author wrote, and
-										// adding more would double it.
-										index_ === 0 ? indent + line : line,
-									),
-								}),
-					},
-					absolutePath,
-				);
-			});
-			// `runFileEdits` PREPARES; it does not write. The commit below is the same
-			// one `edit` performs — without it this tool computed a result, reported
-			// `ok: true`, and left the file untouched, which is the worst shape a
-			// failure can take: the caller is told it worked.
-			const sandboxPolicy = await sandbox.resolvePolicy("ast_edit", {} as never, exec as never);
-			const result = await runFileEdits(io, items, { sessionKey, exec });
-			// THE SYNTAX GATE, which this tool must run ITSELF.
-			//
-			// The engine has one — `assertSyntaxAfterBlockEdit` — but it fires only for
-			// BLOCK ops. This tool sends anchored line ops, so that path never runs, and
-			// a pattern whose replacement drops a brace used to reach the disk while the
-			// description promised otherwise.
-			//
-			// A structural tool leaving unparsable code behind is exactly its failure
-			// mode, so the check belongs here rather than in the description.
-			if (result.appliedCount > 0) {
-				// An over-limit file or an unparsable SERVICE must not block the write:
-				// that is the engine's own rule for the same check, and it is right —
-				// "we could not ask" is not "it is broken".
-				const clean = await getAstClient()
-					.parsesCleanly({ path: absolutePath, text: result.result, languageId: language.id })
-					.catch((error: unknown) => {
-						if (error instanceof AstError) return true;
-						throw error;
-					});
-				if (!clean) {
-					throw new Error(
-						`[E_SYNTAX_AFTER_EDIT] \`${args.pat}\` would leave ${args.path} unparsable, so NOTHING was written. ` +
-							"The usual cause is a pattern whose replacement drops or duplicates a brace.",
-					);
-				}
-			}
-			await commitFileResult(result, {
-				io,
-				exec: exec as never,
-				sandbox,
-				sandboxPolicy,
-				signal: (exec as { signal?: AbortSignal }).signal,
-			});
-			// The model channel IS `edit`'s, from `edit`'s own two builders: the text
-			// mode is the diff block (legend, `-`/`+` rows with fresh anchors, the
-			// success line) and the JSON mode is the pure edit envelope. Returning
-			// the rewritten body instead told the model nothing about the change and
-			// made it re-read what it had just written.
-			const canonical = buildCanonicalFromFileResult(result, args.path, true);
-			const modelText = isJsonOutput()
-				? JSON.stringify({
-						...buildEditJson(result, args.path),
-						pattern: args.pat,
-						count: matches.length,
-					})
-				: canonical.modelText;
-			return {
-				...canonical,
-				pat: args.pat,
-				count: matches.length,
-				ok: true,
-				modelText,
-			};
+			return withWorkspace(execCwd(exec), () => runAstEdit(args, exec, io, sandbox));
 		},
 	});
+}
+
+/**
+ * The body of `ast_edit`'s execute, run inside the calling session's workspace
+ * (see the note at the call site — the undo entry lives under it).
+ *
+ * @param args - the pattern, its replacement, and the file to rewrite.
+ * @param exec - execution identity, cancellation and cwd.
+ * @param io - the session's file access.
+ * @param sandbox - the sandbox controller for the write.
+ * @returns the canonical value `edit` returns for the same kind of change.
+ */
+async function runAstEdit(
+	args: { readonly pat: string; readonly out: string; readonly path: string },
+	exec: ToolRunContext,
+	io: FileIO,
+	sandbox: FsSandboxController,
+) {
+	const cwd = execCwd(exec);
+	const absolutePath = await io.resolve(args.path, cwd);
+	const language = languageForPath(absolutePath);
+	if (language === undefined) {
+		throw new Error(
+			`[E_AST_PATTERN] no grammar is registered for ${args.path}. Structural search needs a language whose descriptor exists; use \`grep\` for a text search.`
+		);
+	}
+	// THE SWITCH, now that these ARE the AST tools — the same gate `ast_grep`
+	// runs, for the same reason: a switch that does not gate the thing it names
+	// is worse than no switch, and reporting "switched off" as "nothing matched"
+	// would be a claim about the code.
+	if (!isAstEnabled()) {
+		throw new Error(
+			`${E_AST_DISABLED} the AST capability is off, so \`ast_edit\` will not run. Turn it on in the hashline settings (\`ast.enabled\`), or use \`edit\` with anchors for a line-level change.`
+		);
+	}
+	if (!isAstLanguageEnabled(language.id)) {
+		throw new Error(
+			`${E_AST_DISABLED} AST is on, but turned off for ${language.displayName} — the per-language switches sit under the master switch in the hashline settings.`
+		);
+	}
+	const text = await io.readText(absolutePath);
+	let matches: readonly GrepMatchLike[];
+	try {
+		matches = await getAstClient().grepPattern({
+			path: args.path,
+			text,
+			languageId: language.id,
+			pat: args.pat,
+		});
+	} catch (error) {
+		if (error instanceof AstError) throw new Error(error.message);
+		throw error;
+	}
+	if (matches.length === 0) {
+		const message =
+			"No match, so nothing was written. A pattern the grammar could not parse would have been an error instead.";
+		return {
+			path: args.path,
+			pat: args.pat,
+			count: 0,
+			ok: true,
+			message,
+			// The model channel is required by the output schema, in every mode.
+			modelText: isJsonOutput()
+				? JSON.stringify({ ok: true, path: args.path, pattern: args.pat, count: 0, diff: {}, hints: [], warnings: [], errors: [] })
+				: `No match for \`${args.pat}\` in ${args.path}. ${message}`,
+		};
+	}
+	// The anchors come from the hashline allocator — the SAME primitive
+	// `read` uses — so what is edited is what a read would have shown.
+	const anchors = lineHashesPure(text);
+	const sourceLines = splitLines(text);
+	const sessionKey = execSessionKey(exec);
+	// SERVE what this tool is about to edit, exactly as `read` serves what it
+	// returns. Without this the engine's served-state check rejects every edit:
+	// the anchors exist, but nothing ever published them, so the mirror has no
+	// entry for the line and the range comes back unverifiable — `ast_edit`
+	// could not touch a file the model had not read first.
+	//
+	// The check is NOT bypassed; it is satisfied the way it is meant to be.
+	// Publishing these rows makes the same statement `read` makes: "these are
+	// the lines I found, and this is their content". A later edit against a
+	// stale view still fails, which is the guarantee, kept intact.
+	//
+	// Only the MATCHED lines are served, not the whole file: the model was
+	// shown the matches and nothing else, and serving more would be this tool
+	// vouching for lines nobody looked at.
+	const served = matches.flatMap((match) => {
+		const rows = [];
+		for (let line = match.startLine; line <= match.endLine; line++) {
+			rows.push({
+				position: line - 1,
+				anchor: anchors[line - 1] ?? "",
+				contentKey: contentChecksum(canon(sourceLines[line - 1] ?? "")),
+			});
+		}
+		return rows;
+	});
+	await recordEchoServes(sessionKey, absolutePath, served, "live", anchors.length);
+	// An echo is a read: the session has seen these lines, so the dsh
+	// observation policy must know it too, or the fresh anchors in the echo
+	// cannot be written with.
+	await io.emitObserved(absolutePath, exec, exec.signal);
+	const items: PreparedItem[] = matches.map((match, index) => {
+		const start = anchors[match.startLine - 1];
+		const end = anchors[match.endLine - 1];
+		if (start === undefined || end === undefined) {
+			throw new Error(`[E_AST_PATTERN] match ${index} spans lines the file does not have; re-read and retry.`);
+		}
+		const replacement = fillTemplate(args.out, match.captures);
+		// PUT THE INDENTATION BACK.
+		//
+		// A match covers the NODE, and a node does not include the whitespace its
+		// line begins with — the pattern `return `hello ${name}`;` starts at
+		// `return`, while the line is `\treturn …`. The hunk replaces whole LINES,
+		// so replacing with the bare replacement dropped that tab: every structural
+		// edit silently de-indented the code it touched.
+		//
+		// The fix re-applies the start line's own leading whitespace, and applies
+		// the SAME indent delta to the replacement's later lines so a multi-line
+		// `out` stays structurally clear instead of losing its interior shape.
+		const originalStart = sourceLines[match.startLine - 1] ?? "";
+		// The leading whitespace the NODE does not own.
+		const indent = /^[ \t]*/.exec(originalStart)?.[0] ?? "";
+		return buildPreparedItem(
+			index,
+			args.path,
+			{
+				op: replacement === "" ? "del" : "replace",
+				anchor_start: start,
+				anchor_end: end,
+				...(replacement === ""
+					? {}
+					: {
+							lines: splitLines(replacement).map((line, index_) =>
+								// Only the FIRST line gets the recovered indent: the rest of a
+								// multi-line `out` carries the indentation its author wrote, and
+								// adding more would double it.
+								index_ === 0 ? indent + line : line,
+							),
+						}),
+			},
+			absolutePath,
+		);
+	});
+	// `runFileEdits` PREPARES; it does not write. The commit below is the same
+	// one `edit` performs — without it this tool computed a result, reported
+	// `ok: true`, and left the file untouched, which is the worst shape a
+	// failure can take: the caller is told it worked.
+	const sandboxPolicy = await sandbox.resolvePolicy("ast_edit", {} as never, exec as never);
+	const result = await runFileEdits(io, items, { sessionKey, exec });
+	// THE SYNTAX GATE, which this tool must run ITSELF.
+	//
+	// The engine has one — `assertSyntaxAfterBlockEdit` — but it fires only for
+	// BLOCK ops. This tool sends anchored line ops, so that path never runs, and
+	// a pattern whose replacement drops a brace used to reach the disk while the
+	// description promised otherwise.
+	//
+	// A structural tool leaving unparsable code behind is exactly its failure
+	// mode, so the check belongs here rather than in the description.
+	if (result.appliedCount > 0) {
+		// An over-limit file or an unparsable SERVICE must not block the write:
+		// that is the engine's own rule for the same check, and it is right —
+		// "we could not ask" is not "it is broken".
+		const clean = await getAstClient()
+			.parsesCleanly({ path: absolutePath, text: result.result, languageId: language.id })
+			.catch((error: unknown) => {
+				if (error instanceof AstError) return true;
+				throw error;
+			});
+		if (!clean) {
+			throw new Error(
+				`[E_SYNTAX_AFTER_EDIT] \`${args.pat}\` would leave ${args.path} unparsable, so NOTHING was written. ` +
+					"The usual cause is a pattern whose replacement drops or duplicates a brace.",
+			);
+		}
+	}
+	await commitFileResult(result, {
+		io,
+		exec: exec as never,
+		sandbox,
+		sandboxPolicy,
+		signal: (exec as { signal?: AbortSignal }).signal,
+	});
+	// The model channel IS `edit`'s, from `edit`'s own two builders: the text
+	// mode is the diff block (legend, `-`/`+` rows with fresh anchors, the
+	// success line) and the JSON mode is the pure edit envelope. Returning
+	// the rewritten body instead told the model nothing about the change and
+	// made it re-read what it had just written.
+	const canonical = buildCanonicalFromFileResult(result, args.path, true);
+	const modelText = isJsonOutput()
+		? JSON.stringify({
+				...buildEditJson(result, args.path),
+				pattern: args.pat,
+				count: matches.length,
+			})
+		: canonical.modelText;
+	return {
+		...canonical,
+		pat: args.pat,
+		count: matches.length,
+		ok: true,
+		modelText,
+	};
 }
 
 /**

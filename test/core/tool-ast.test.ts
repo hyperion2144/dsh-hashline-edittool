@@ -204,6 +204,50 @@ describe("ast_edit", () => {
 		expect(added).toMatch(/^\+[A-Za-z0-9]{2,8}:\d+$/);
 	});
 
+	it("hands the web card real hunks — an empty `diffs` reads as 'nothing applied'", async () => {
+		// The card falls back to raw input/output when the meta carries no hunks, so
+		// the derived-from-before/after part is load-bearing, not decorative: the
+		// first version passed an empty array and the card silently disappeared.
+		const { FsSandboxController } = await import("../../src/sandbox.js");
+		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+		const tool = buildAstEditTool(localIO(), sandbox);
+		const value = await tool.execute(
+			{ path: file, pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" },
+			exec(dir)({}),
+		);
+		const { presentationMeta } = tool.output as unknown as {
+			presentationMeta?: (args: unknown, value: unknown) => { diffs?: unknown[]; diffRows?: unknown[] };
+		};
+		const meta = presentationMeta?.({}, value);
+		expect(Array.isArray(meta?.diffs)).toBe(true);
+		expect(meta?.diffs?.length).toBeGreaterThan(0);
+		expect(meta?.diffRows?.length).toBeGreaterThan(0);
+		// `presentResult` is NOT asserted here: it is wrapped by the tool DSL (its
+		// own `result` argument carries the runtime outcome), and a direct call
+		// returns undefined for `edit` too — so a unit call would pin nothing. The
+		// META is the half this layer owns, and it is the half that was empty.
+	});
+
+	it("is undoable by `undo_last_edit` — the same commit, so the same entry", async () => {
+		// `ast_edit` commits through `commitFileResult`, which owns persist-undo,
+		// so the entry is written by the same transaction an `edit` writes. This
+		// pins that: a structural change is revertible like any other edit.
+		const before = await readFile(file, "utf-8");
+		const { buildUndoTool } = await import("../../src/tool-undo.js");
+		const { FsSandboxController } = await import("../../src/sandbox.js");
+		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+		const applied = await run({ pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" });
+		expect(applied.count).toBe(1);
+		expect(await readFile(file, "utf-8")).toContain("const x = g(1, 2);");
+		const undo = buildUndoTool(localIO(), sandbox);
+		const value = (await undo.execute({ path: file }, exec(dir)({}))) as { empty?: boolean };
+		// `empty: false` means an entry was found AND reverted. The bug this pins
+		// was the tool answering "No undo history" for an `ast_edit` that had
+		// happened, because the entry was written under another workspace.
+		expect(value.empty).toBe(false);
+		expect(await readFile(file, "utf-8")).toBe(before);
+	});
+
 	it("refuses the WHOLE batch when the change breaks syntax, writing nothing", async () => {
 		const before = await readFile(file, "utf-8");
 		// Deleting the closing brace leaves the function unterminated. The engine's
