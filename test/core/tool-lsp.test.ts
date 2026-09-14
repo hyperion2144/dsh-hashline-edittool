@@ -201,6 +201,31 @@ describe("lsp — diagnostics", () => {
 		install({ pushOnOpen: [] });
 		expect((await run({ operation: "diagnostics" })).raw).toContain("reported NO diagnostics");
 	});
+
+	it("gives every diagnostic its OWN row, with the message in the row", async () => {
+		// A line with several errors used to produce ONE row of source code and put
+		// the messages in `raw`, so the card's body and its messages disagreed: the
+		// reader could not tell which line a message belonged to — or that one line
+		// had three of them.
+		install({
+			pushOnOpen: [
+				{ message: "first error", range: { start: { line: 0 } } },
+				{ message: "second error", range: { start: { line: 0 } } },
+				{ message: "third error", range: { start: { line: 1 } } },
+			],
+		});
+		const value = await run({ operation: "diagnostics" });
+		const rows = (value as unknown as { hashlines: Array<{ number: number; hash: string; text: string }> }).hashlines;
+		// Two errors on one line are TWO rows, sorted by line.
+		expect(rows.map((row) => row.number)).toEqual([1, 1, 2]);
+		// The row carries the source line AND its message, joined by a full-width
+		// colon — not the configured separator, which divides marker from content.
+		expect(rows[0]!.text).toBe("export function alpha() {}：first error");
+		expect(rows[1]!.text).toBe("export function alpha() {}：second error");
+		expect(rows[2]!.text).toBe("const b = 1;：third error");
+		// Every row keeps its anchor, so any of them can be acted on.
+		for (const row of rows) expect(row.hash).not.toBe("");
+	});
 });
 
 describe("lsp — request", () => {

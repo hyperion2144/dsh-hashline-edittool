@@ -314,30 +314,48 @@ export function buildLspTool(io: FileIO) {
 						raw: `${language.displayName} has not reported diagnostics for this file within ${DIAGNOSTIC_WAIT_MS}ms. That is "no answer yet", not "no problems".`
 					};
 				}
-				const lines = pushed.map((raw) => {
-					const d = raw as { severity?: unknown; message?: unknown; range?: { start?: { line?: unknown } } };
-					const line = d.range?.start?.line;
-					return `${typeof line === "number" ? `L${line + 1} ` : ""}${typeof d.message === "string" ? d.message : JSON.stringify(raw)}`;
-				});
-				// Diagnostics are line-anchored too — each carries the line its range
-				// starts on — so the same card draws them, with the error line in the
-				// gutter rather than only in the sentence.
 				const diagLines = splitLines(text);
 				const diagAnchors = lineHashesPure(text);
-				const diagSeen = new Set<number>();
+				// ONE ROW PER DIAGNOSTIC, and the row text carries the MESSAGE.
+				//
+				// Deduplicating by line (the first version) made the card's body and its
+				// messages disagree: a line with three errors produced ONE row of source
+				// code and three messages parked in `raw`, so the reader could not tell
+				// which line each message belonged to — or that there were three at all.
+				//
+				// The joiner is a full-width colon rather than the configured separator:
+				// the separator divides marker from content, and a second one inside the
+				// text would read as another marker.
 				const diagRows: { number: number; hash: string; text: string }[] = [];
-				for (const raw of pushed) {
-					const d = raw as { range?: { start?: { line?: unknown } } };
+				// Collected in the SAME pass as the rows: deriving `raw` from the rendered
+				// row text afterwards would mean parsing a string this function just built.
+				const diagMessages: string[] = [];
+				for (const entry of pushed) {
+					const d = entry as { message?: unknown; range?: { start?: { line?: unknown } } };
 					const at = d.range?.start?.line;
-					if (typeof at !== "number" || at < 0 || diagSeen.has(at + 1)) continue;
-					diagSeen.add(at + 1);
+					if (typeof at !== "number" || at < 0) continue;
+					const sourceLine = diagLines[at] ?? "";
+					const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
+					diagMessages.push(`L${at + 1} ${message}`);
 					diagRows.push({
 						number: at + 1,
 						hash: diagAnchors[at] ?? "",
-						text: diagLines[at] ?? "",
+						text: `${sourceLine}：${message}`,
 					});
 				}
 				diagRows.sort((a, b) => a.number - b.number);
+				// Served and observed like a read's rows, with the VERBATIM line as the
+				// content: the anchors are content-derived, so serving the row TEXT (which
+				// now carries a message) would vouch for a line that does not exist.
+				await recordServed(
+					execSessionKey(exec),
+					absolutePath,
+					diagRows
+						.filter((row) => row.hash !== "")
+						.map((row) => ({ position: row.number - 1, anchor: row.hash })),
+					diagLines.length,
+				);
+				await io.emitObserved(absolutePath, exec, exec.signal);
 				return {
 					path: args.path,
 					operation: args.operation,
@@ -345,7 +363,10 @@ export function buildLspTool(io: FileIO) {
 					symbols: [],
 					hashlines: diagRows,
 					totalLines: diagLines.length,
-					raw: lines.length === 0 ? `${language.displayName} reported NO diagnostics for this file.` : lines.join("\n"),
+					raw:
+						diagMessages.length === 0
+							? `${language.displayName} reported NO diagnostics for this file.`
+							: diagMessages.join("\n"),
 				};
 			}
 
