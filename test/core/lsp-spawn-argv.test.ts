@@ -7,10 +7,16 @@
  * failure mode is a server that silently never starts on a machine nobody is
  * sitting in front of.
  *
+ * The FIRST version of this rule wrapped the line in double quotes. On Windows
+ * 11 that produced `'"typescript-language-server --stdio"' is not recognized`:
+ * the argument layer escapes an inner `"` as `\"`, and cmd.exe reads that as a
+ * backslash plus a quote toggle, not as an escaped quote. So these tests also pin
+ * the ABSENCE of quotes — that is the regression, not a style preference.
+ *
  * @module
  */
 import { describe, expect, it } from "vitest";
-import { needsCommandShell, platformSpawnArgv, quoteForCmd } from "../../src/lsp/spawn-argv.js";
+import { escapeForCmd, needsCommandShell, platformSpawnArgv } from "../../src/lsp/spawn-argv.js";
 import { serverArgv } from "../../src/lsp/discovery.js";
 import type { DiscoveredServer } from "../../src/lsp/discovery.js";
 
@@ -23,22 +29,38 @@ describe("platformSpawnArgv", () => {
 		expect(platformSpawnArgv(["npm", "install", "x"], "linux")).toEqual(["npm", "install", "x"]);
 	});
 
-	it("launches a bare name through cmd.exe on Windows", () => {
-		// The case that failed: npm's shim is `typescript-language-server.cmd`,
-		// and a bare name is exactly what PATH/PATHEXT resolves to a shim.
+	it("launches a bare name through cmd.exe on Windows, without quoting it", () => {
+		// Measured working on Windows 11: no quotes anywhere, so the argument layer
+		// wraps the line in the pair `/s` strips and cmd resolves the shim itself.
 		expect(platformSpawnArgv(["typescript-language-server", "--stdio"], "win32", "cmd.exe")).toEqual([
 			"cmd.exe",
 			"/d",
 			"/s",
 			"/c",
-			'"typescript-language-server --stdio"',
+			"typescript-language-server --stdio",
 		]);
 	});
 
 	it("launches npm.cmd through cmd.exe too", () => {
-		expect(
-			platformSpawnArgv(["npm.cmd", "install", "--prefix", "C:\\x", "y"], "win32", "cmd.exe"),
-		).toEqual(["cmd.exe", "/d", "/s", "/c", '"npm.cmd install --prefix C:\\x y"']);
+		expect(platformSpawnArgv(["npm.cmd", "install", "--prefix", "C:\\x", "y"], "win32", "cmd.exe")).toEqual([
+			"cmd.exe",
+			"/d",
+			"/s",
+			"/c",
+			"npm.cmd install --prefix C:\\x y",
+		]);
+	});
+
+	it("never emits a double quote on the /c line", () => {
+		// The invariant behind the Windows failure: an inner quote cannot survive
+		// the argument layer, so a spaced path is caret-escaped instead.
+		const argv = platformSpawnArgv(
+			["npm", "--prefix", "C:\\Program Files\\x", "--flag=a&b"],
+			"win32",
+			"cmd.exe",
+		);
+		expect(argv.join(" ")).not.toContain('"');
+		expect(argv[4]).toBe("npm --prefix C:\\Program^ Files\\x --flag^=a^&b");
 	});
 
 	it("runs an absolute executable directly — no interpreter needed", () => {
@@ -49,19 +71,13 @@ describe("platformSpawnArgv", () => {
 		]);
 	});
 
-	it("quotes an argument cmd would otherwise read as syntax", () => {
-		// A path with a space, and one with cmd metacharacters: both must survive
-		// as ONE argument, which a joined shell string silently loses.
-		expect(platformSpawnArgv(["npm", "--prefix", "C:\\Program Files\\x"], "win32", "cmd.exe")).toEqual([
-			"cmd.exe",
-			"/d",
-			"/s",
-			"/c",
-			'"npm --prefix "C:\\Program Files\\x""',
-		]);
-		expect(quoteForCmd("a&b")).toBe('"a&b"');
-		expect(quoteForCmd('say "hi"')).toBe('"say ""hi"""');
-		expect(quoteForCmd("")).toBe('""');
+	it("escapes what cmd would read as syntax", () => {
+		expect(escapeForCmd("a&b")).toBe("a^&b");
+		expect(escapeForCmd("a b")).toBe("a^ b");
+		expect(escapeForCmd("plain")).toBe("plain");
+		// `%` has no escape on a /c line (expansion happens before caret handling)
+		// and no language-server path needs one.
+		expect(escapeForCmd("100%")).toBe("100%");
 	});
 });
 
@@ -89,7 +105,7 @@ describe("serverArgv", () => {
 			"/d",
 			"/s",
 			"/c",
-			'"typescript-language-server --stdio"',
+			"typescript-language-server --stdio",
 		]);
 	});
 });
