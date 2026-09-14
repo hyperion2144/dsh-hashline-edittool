@@ -523,8 +523,14 @@ export const E_LSP_NO_SERVER = "[E_LSP_NO_SERVER]";
  * Bounded on purpose: the push is on the SERVER's schedule, and waiting forever
  * would turn a slow server into a hung tool. Past the budget the answer is "no
  * answer yet", which is a different sentence from "no problems".
+ *
+ * 5s, not 2s: a cold `typescript-language-server` needs to load the compiler and
+ * `lib.d.ts` before its first push, and measured arrival is 2.6-3.1s on a real
+ * Windows workspace — under a 2s budget the answer was ALWAYS "no answer yet".
+ * The wait loop returns the moment a push arrives, so the ceiling costs a fast
+ * server nothing.
  */
-const DIAGNOSTIC_WAIT_MS = 2_000;
+const DIAGNOSTIC_WAIT_MS = 5_000;
 
 /**
  * Register the tool on an agent's context.

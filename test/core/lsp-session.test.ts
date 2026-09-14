@@ -74,13 +74,19 @@ describe("the handshake", () => {
 		await expect(h.session.initialize("/repo")).rejects.toBeInstanceOf(LspSessionError);
 	});
 
-	it("does not advertise pull diagnostics, which nothing consumes yet", async () => {
+	it("advertises PUSH diagnostics and not PULL — two capabilities, one word", async () => {
 		const h = harness();
 		const pending = h.session.initialize("/repo");
 		const [initialize] = h.sent() as Array<{ id: number; params: { capabilities: Record<string, unknown> } }>;
 		const textDocument = initialize!.params.capabilities.textDocument as Record<string, unknown>;
-		// Advertising a capability we ignore is how a server ends up waiting
-		// for a pull request that never comes.
+		// `textDocument/publishDiagnostics` is the NOTIFICATION the server sends, and
+		// declaring it is what allows the push: without it `typescript-language-server`
+		// stayed silent and the `diagnostics` operation always answered "no answer yet"
+		// for a file full of errors.
+		expect(textDocument.publishDiagnostics).toEqual({});
+		// `textDocument/diagnostic` is the REQUEST the client sends (pull). Advertising
+		// a capability we ignore is how a server ends up waiting for a pull that never
+		// comes, so this one stays undeclared.
 		expect(textDocument.diagnostic).toBeUndefined();
 		expect(textDocument.documentSymbol).toBeDefined();
 		h.deliver({ jsonrpc: "2.0", id: initialize!.id, result: { capabilities: {} } });

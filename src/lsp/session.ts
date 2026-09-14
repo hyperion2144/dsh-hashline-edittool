@@ -266,9 +266,20 @@ export class LspSession {
 			clientInfo: { name: this.#options.clientName ?? "dsh-hashline-edittool" },
 			capabilities: this.#options.capabilities ?? {
 				textDocument: {
-					// Pull diagnostics are NOT advertised: nothing consumes them
-					// yet, and advertising a capability we ignore is how a server
-					// ends up waiting for a pull that never comes.
+					// PUSH diagnostics are advertised, PULL diagnostics are not — and the
+					// two are different capabilities that share a word:
+					//
+					//   `textDocument/publishDiagnostics` is a NOTIFICATION the SERVER
+					//   sends. Declaring `{}` is what ALLOWS it, and the `diagnostics`
+					//   operation is built on exactly that push — without this line the
+					//   server stayed silent and every call spent its whole budget to
+					//   report "no answer yet" for a file full of errors.
+					//
+					//   `textDocument/diagnostic` is a REQUEST the CLIENT sends (pull),
+					//   and THAT one stays unadvertised: nothing consumes it, and
+					//   advertising a capability we ignore is how a server ends up
+					//   waiting for a pull that never comes.
+					publishDiagnostics: {},
 					documentSymbol: { hierarchicalDocumentSymbolSupport: true },
 					definition: {},
 					references: {},
