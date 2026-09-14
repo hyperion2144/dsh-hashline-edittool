@@ -20,7 +20,7 @@
  *
  * @module dsh-hashline-edittool/lsp/discovery
  */
-import { access, constants } from "node:fs/promises";
+import { access, constants, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { lspServersDir } from "../paths.js";
@@ -256,10 +256,49 @@ export interface DiscoveryOptions {
 	readonly isExecutable?: (path: string) => Promise<boolean>;
 	/** Windows needs `.cmd`/`.exe` suffixes; injected for the same reason. */
 	readonly executableSuffixes?: readonly string[];
+	/**
+	 * The platform whose rules decide what counts as executable; defaults to the
+	 * running one. Injected because the Windows rule (an extension CreateProcessW
+	 * can launch, and a FILE at that) is exactly the kind of thing that is only
+	 * ever exercised on the platform you are not sitting in front of.
+	 */
+	readonly platform?: NodeJS.Platform;
 }
 
-/** Default executable check: exists and is executable. */
-async function defaultIsExecutable(path: string): Promise<boolean> {
+/**
+ * Extensions `CreateProcessW` can launch. A file without one is not runnable at
+ * all, which is the trap this list closes: npm installs a server as THREE files
+ * side by side — `typescript-language-server` (a `/bin/sh` script), `.cmd` and
+ * `.ps1` — and only the `.cmd` can be launched on Windows.
+ */
+const WINDOWS_EXECUTABLE_EXTENSIONS = [".exe", ".com", ".cmd", ".bat"];
+
+/**
+ * Default executable check: exists, is executable, and — on Windows — is a file
+ * the OS can actually start.
+ *
+ * `fs.access(X_OK)` is a false positive on Windows: it reports a readable file as
+ * executable, so the extensionless Unix shim above won the candidate race and
+ * every launch died in `CreateProcessW` (`ERROR_BAD_EXE` / ENOENT) while the
+ * `.cmd` shim sitting next to it was never reached. A directory passes that same
+ * check, so the file test is here for the same reason.
+ *
+ * @param path - absolute candidate path.
+ * @param platform - the platform whose rule applies; defaults to the running one.
+ * @returns whether this file can be launched on that platform.
+ */
+export async function isExecutableFile(path: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
+	if (platform === "win32") {
+		const dot = path.lastIndexOf(".");
+		const extension = dot === -1 ? "" : path.slice(dot).toLowerCase();
+		if (!WINDOWS_EXECUTABLE_EXTENSIONS.includes(extension)) return false;
+		try {
+			const info = await stat(path);
+			return info.isFile();
+		} catch {
+			return false;
+		}
+	}
 	try {
 		await access(path, constants.X_OK);
 		return true;
@@ -280,10 +319,9 @@ function candidateNames(command: string, suffixes: readonly string[]): string[] 
  * @returns one entry per (command, location) that resolved, project bins first.
  */
 export async function discoverServers(options: DiscoveryOptions = {}): Promise<DiscoveredServer[]> {
-	const isExecutable = options.isExecutable ?? defaultIsExecutable;
-	const suffixes =
-		options.executableSuffixes ??
-		(process.platform === "win32" ? [".cmd", ".exe", ".bat"] : []);
+	const platform = options.platform ?? process.platform;
+	const isExecutable = options.isExecutable ?? ((path: string) => isExecutableFile(path, platform));
+	const suffixes = options.executableSuffixes ?? (platform === "win32" ? [".cmd", ".exe", ".bat"] : []);
 	const pathDirs = options.pathDirs ?? (process.env.PATH ?? "").split(delimiter).filter((dir) => dir.length > 0);
 
 	const out: DiscoveredServer[] = [];

@@ -3,9 +3,11 @@
  * a CI machine's `PATH` is not a fixture, and a test that depended on it would
  * pass or fail by accident.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverServers, serverArgv, serverForLanguage } from "../../src/lsp/discovery.js";
+import { discoverServers, isExecutableFile, serverArgv, serverForLanguage } from "../../src/lsp/discovery.js";
 
 /** An `isExecutable` that answers from a fixed set of paths. */
 function fakeFs(...present: string[]) {
@@ -82,6 +84,52 @@ describe("windows suffixes", () => {
 			isExecutable: fakeFs(suffixed),
 		});
 		expect(servers[0]!.executable).toBe(suffixed);
+	});
+
+	});
+
+/**
+ * What counts as EXECUTABLE on Windows — the rule that decides which of npm's
+ * three side-by-side shims a launch gets.
+ *
+ * `access(X_OK)` is a readability check there, so the extensionless `/bin/sh`
+ * shim (installed next to the real one, and executable on POSIX) passed it and
+ * won the candidate race; `CreateProcessW` then refused it and the working
+ * `.cmd` was never reached. Tested against REAL files with the platform
+ * injected, so the rule is exercised from macOS.
+ */
+describe("windows executability", () => {
+	let dir: string;
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "lsp-exec-"));
+	});
+	afterEach(async () => {
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	it("accepts the shims CreateProcessW can launch, and nothing else", async () => {
+		const unixShim = join(dir, "typescript-language-server");
+		const cmdShim = `${unixShim}.cmd`;
+		const ps1Shim = `${unixShim}.ps1`;
+		await writeFile(unixShim, '#!/bin/sh\nexec node cli.mjs "$@"\n', { mode: 0o755 });
+		await writeFile(cmdShim, "@echo off\r\n");
+		await writeFile(ps1Shim, "Write-Host\r\n");
+
+		// On POSIX the extensionless shim IS the executable — which is exactly why
+		// the Windows rule cannot be `access(X_OK)`.
+		expect(await isExecutableFile(unixShim, "darwin")).toBe(true);
+
+		expect(await isExecutableFile(cmdShim, "win32")).toBe(true);
+		expect(await isExecutableFile(unixShim, "win32")).toBe(false);
+		// PowerShell is not launchable by CreateProcessW either.
+		expect(await isExecutableFile(ps1Shim, "win32")).toBe(false);
+	});
+
+	it("rejects a DIRECTORY that happens to carry an executable name", async () => {
+		// A directory passes the X_OK check as well; a launch would fail the same way.
+		const asDir = join(dir, "srv.cmd");
+		await mkdir(asDir);
+		expect(await isExecutableFile(asDir, "win32")).toBe(false);
 	});
 });
 
