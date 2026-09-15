@@ -16,7 +16,6 @@ import { jsx as jsx_ } from "react/jsx-runtime";
 import {
 	DisclosureRow,
 	DiffBlock,
-	ReadBlock,
 	StateDot,
 	diffTotals,
 	IconBrowseOutline16,
@@ -24,11 +23,12 @@ import {
 	IconEditOutline16,
 	IconInspectOutline12,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { DiffBlockProps, ReadBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
-import { diffBlockLabels, readBlockLabels } from "./labels.js";
+import { diffBlockLabels, readCardLabels } from "./labels.js";
 import { diffCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { GrepCard } from "./grep-card.js";
+import { ReadCard } from "./read-card.js";
 import { LspDiagBlock } from "./lsp-block.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import { grepCardLabels, lspBlockLabels } from "./labels.js";
@@ -113,7 +113,7 @@ function ToolRow({
 }: ToolRowProps): ReactNode {
 	ensureToolRowStyles();
 	const [expanded, setExpanded] = useState(false);
-	const readLabels = useMemo(() => readBlockLabels(t), [t]);
+	const readLabels = useMemo(() => readCardLabels(t), [t]);
 	const diffLabels = useMemo(() => diffBlockLabels(t), [t]);
 	const readBody = read ?? null;
 	const grepBody = grep ?? null;
@@ -282,16 +282,9 @@ function ToolRow({
 										maxLines: 16,
 									})
 									: readBody !== null
-									? jsx_(ReadBlock, {
-										label: readBody.label,
-										// ReadBlock draws its gutter cell verbatim, so the precomposed
-										// `<line>:<anchor>` string rides the number field (the shipped
-										// number type stays `number`, hence the structural cast).
-										lines: readBody.lines as unknown as ReadBlockProps["lines"],
-										totalLines: readBody.totalLines,
-										lang: readBody.lang,
+									? jsx_(ReadCard, {
+										model: readBody,
 										labels: readLabels,
-										maxLines: 8,
 										className: css.readBody,
 									})
 								: jsx_("div", {

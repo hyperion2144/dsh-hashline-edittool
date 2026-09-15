@@ -29,7 +29,7 @@ import type {
 	GrepSegment,
 	LspCardModel,
 	LspRowMeta,
-	ReadCardProps,
+	ReadCardModel,
 	ReadMetaHashline,
 	ReadMetaLine,
 	ReadPresentation,
@@ -330,7 +330,7 @@ export function readCardModel(
 	block: ToolCallBlock,
 	cwd: string | undefined,
 	home: string | undefined,
-): ReadCardProps | null {
+): ReadCardModel | null {
 	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
 	if (!validReadCall(block)) return null;
 	const meta = readPresentationMeta(block.meta);
@@ -338,10 +338,13 @@ export function readCardModel(
 	const hashByNumber = new Map<number, string>();
 	for (const line of meta.hashlines ?? []) hashByNumber.set(line.number, line.hash);
 	return {
+		path: meta.path,
 		label: abbreviateHomePath(relativizeToCwd(meta.path, cwd), home),
-		lines: meta.lines.map(({ number, text: lineText }) => {
-			const hash = hashByNumber.get(number);
-			return hash !== undefined && hash !== "" ? { number: `${number}:${hash}`, text: lineText } : { number, text: lineText };
+		// The anchor stays a field of its own, with `gutter` as the marker the card
+		// draws: nothing is pre-composed into a numeric field any more (issue #98).
+		rows: meta.lines.map(({ number, text: lineText }) => {
+			const hash = hashByNumber.get(number) ?? "";
+			return { number, hash, gutter: hash === "" ? `${number}` : `${number}:${hash}`, text: lineText };
 		}),
 		totalLines: meta.totalLines,
 		...(meta.lang !== undefined ? { lang: meta.lang } : {}),

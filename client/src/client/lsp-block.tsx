@@ -24,6 +24,7 @@ import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { TabStripLabels } from "./tab-strip.js";
+import { markerColumnCh } from "./read-meta.js";
 import type { LspCardModel, LspRowMeta } from "./types.js";
 
 const CSS_TEXT = [
@@ -31,7 +32,17 @@ const CSS_TEXT = [
 	".dshl-lsp-block{--dsl-lsp-radius:12px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-lsp-radius)}",
 	".dshl-lsp-body{padding:8px 14px 12px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-lsp-line{display:flex;min-height:22px;white-space:pre}",
-	".dshl-lsp-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// The body is TWO columns, as the other three cards are: the whole window's
+	// markers in one element, the source in another.
+	".dshl-lsp-body{display:flex;align-items:flex-start;padding:8px 14px 12px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	// The marker column: width from the data, FONT declared here (the width is in
+	// `ch`, which measures this element's own font), and a right inset so the source
+	// is not glued to the marker.
+	// `content-box`: the width below is the TEXT width, and the 14px inset is added on
+	// top of it rather than eaten out of it.
+	".dshl-lsp-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);user-select:none}",
+	".dshl-lsp-gutter-line{display:block;height:22px;line-height:22px;white-space:pre;overflow:hidden}",
+	".dshl-lsp-code{flex:0 0 auto}",
 	".dshl-lsp-src{white-space:pre}",
 	// The diagnostics: indented under their line, behind a red rule, one per row.
 	".dshl-lsp-diags{margin:0 0 6px 26px;padding:2px 0 2px 10px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)}",
@@ -59,6 +70,8 @@ const css = {
 	body: "dshl-lsp-body",
 	line: "dshl-lsp-line",
 	gutter: "dshl-lsp-gutter",
+	gutterLine: "dshl-lsp-gutter-line",
+	code: "dshl-lsp-code",
 	src: "dshl-lsp-src",
 	diags: "dshl-lsp-diags",
 	diag: "dshl-lsp-diag",
@@ -108,10 +121,14 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 		return [...rows.slice(0, headLines), null, ...rows.slice(rows.length - tailLines)];
 	}, [capped, headLines, rows, tailLines]);
 
-	const gutterWidth = useMemo(
-		() => Math.max(8, ...rows.map((row) => markerOf(row).length)),
-		[rows],
+	// The marker column is ONE element for the whole window, exactly as the read,
+	// diff and grep cards build theirs; each marker is a block span, so a diagnostic
+	// block under a line never shifts the markers beneath it.
+	const markerLines = useMemo(
+		() => shown.map((row) => (row === null ? " " : markerOf(row))),
+		[shown],
 	);
+	const gutterWidth = markerColumnCh(rows.map((row) => markerOf(row)));
 	const messageCount = rows.reduce((total, row) => total + row.messages.length, 0);
 
 	const onCopy = useCallback(() => {
@@ -148,30 +165,45 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 				id: panelId,
 				className: css.body,
 				children: [
-					...shown.map((row, index) => {
-						if (row === null) {
-							return jsx_("button", {
-								type: "button",
-								className: css.expand,
-								key: `gap-${index}`,
-								"aria-expanded": false,
-								"aria-label": labels.expandAria(hidden),
-								onClick: () => setExpanded(true),
-								children: `${labels.expand(hidden)}`,
-							});
-						}
-						return jsx_("div", { key: `row-${row.number}-${index}`, children: rowNodes(row, gutterWidth) });
+					// ONE marker element for the whole window — the construction every other
+					// card here uses.
+					jsx_("div", {
+						className: css.gutter,
+						style: { width: `${gutterWidth}ch` },
+						"aria-hidden": true,
+						children: markerLines.map((marker, index) =>
+							jsx_("span", { className: css.gutterLine, key: index, children: marker }),
+						),
 					}),
-					expanded && hidden > 0
-						? jsx_("button", {
-								type: "button",
-								className: css.expand,
-								"aria-expanded": true,
-								"aria-label": labels.collapseAria,
-								onClick: () => setExpanded(false),
-								children: labels.collapse,
-							})
-						: null,
+					jsx_("div", {
+						className: css.code,
+						children: [
+							...shown.map((row, index) => {
+								if (row === null) {
+									return jsx_("button", {
+										type: "button",
+										className: css.expand,
+										key: `gap-${index}`,
+										"aria-expanded": false,
+										"aria-label": labels.expandAria(hidden),
+										onClick: () => setExpanded(true),
+										children: `${labels.expand(hidden)}`,
+									});
+								}
+								return jsx_("div", { key: `row-${row.number}-${index}`, children: rowNodes(row) });
+							}),
+							expanded && hidden > 0
+								? jsx_("button", {
+										type: "button",
+										className: css.expand,
+										"aria-expanded": true,
+										"aria-label": labels.collapseAria,
+										onClick: () => setExpanded(false),
+										children: labels.collapse,
+									})
+								: null,
+						],
+					}),
 					jsx_("div", { className: css.footer, children: labels.summary(rows.length, messageCount) }),
 				],
 			}),
@@ -184,16 +216,13 @@ function markerOf(row: LspRowMeta): string {
 	return row.hash !== "" ? `${row.number}:${row.hash}` : `${row.number}`;
 }
 
-/** One line, then its diagnostics indented under it. */
-function rowNodes(row: LspRowMeta, gutterWidth: number): ReactNode[] {
-	const gutter = markerOf(row).padStart(gutterWidth);
+/** One source line, then its diagnostics indented under it — the markers live in
+ * the gutter column, not here. */
+function rowNodes(row: LspRowMeta): ReactNode[] {
 	const out: ReactNode[] = [
 		jsx_("div", {
 			className: css.line,
-			children: [
-				jsx_("span", { className: css.gutter, children: gutter }),
-				jsx_("span", { className: css.src, children: row.text === "" ? " " : row.text }),
-			],
+			children: jsx_("span", { className: css.src, children: row.text === "" ? " " : row.text }),
 		}),
 	];
 	if (row.messages.length > 0) {

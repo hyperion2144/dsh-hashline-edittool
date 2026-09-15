@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { diffCardGroups } from "./models.js";
+import { markerColumnCh } from "./read-meta.js";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { DiffBlockLabels } from "./labels.js";
 import type { DiffRowGroup, DiffRowMeta } from "./types.js";
@@ -51,9 +52,20 @@ function FoldToggle({ className, expanded, hidden, labels, onToggle }: {
 
 const CSS_TEXT = [
 	".dshl-diff-block{--dsl-diff-radius:12px;--dsl-diff-line-height:22px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-diff-radius)}",
-	".dshl-diff-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	// The body is TWO columns: the whole window's markers in one element, the code
+	// in another — the shape the read card uses. A drag therefore lands on this
+	// column or on the code, never on a per-row cell the code sits beside.
+	".dshl-diff-body{display:flex;align-items:flex-start;padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-diff-line{min-height:var(--dsl-diff-line-height);white-space:pre;display:flex}",
-	".dshl-diff-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// The font is declared HERE: the column's width is set in `ch` from the data, and
+	// `ch` measures THIS element's font — left to inherit the UI font, the box would
+	// be sized in one font and filled in another, clipping the anchor off the tail.
+	// `content-box`: the width below is the TEXT width, and the two 14px insets are
+	// added on top of it. Under `border-box` the insets would eat the head-room the
+	// width calculation adds, and the anchor would be the first thing clipped.
+	".dshl-diff-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);user-select:none}",
+	".dshl-diff-gutter-line{display:block;height:var(--dsl-diff-line-height);line-height:var(--dsl-diff-line-height);white-space:pre;overflow:hidden}",
+	".dshl-diff-code{flex:0 0 auto}",
 	".dshl-diff-content{white-space:pre}",
 	".dshl-diff-gap{color:var(--dsw-alias-label-tertiary)}",
 	".dshl-diff-del{color:var(--dsw-alias-state-error-primary)}",
@@ -84,6 +96,8 @@ const css = {
 	body: "dshl-diff-body",
 	line: "dshl-diff-line",
 	gutter: "dshl-diff-gutter",
+	gutterLine: "dshl-diff-gutter-line",
+	code: "dshl-diff-code",
 	content: "dshl-diff-content",
 	gap: "dshl-diff-gap",
 	del: "dshl-diff-del",
@@ -217,9 +231,9 @@ export function DiffRowsBlock({
 	const panelId = `${baseId}-panel`;
 
 	const display = useMemo(() => buildDisplayRows(activeRows), [activeRows]);
-	// One shared gutter column: the widest label sets the width for every row
-	// (monospace font → `ch` is exact), so all content cells share one edge.
-	const gutterWidth = Math.max(8, ...display.map((row) => row.gutter.length));
+	// One shared marker column, sized from the data by the same helper the read card
+	// uses — the four cards must not invent four widths for the same content.
+	const gutterWidth = markerColumnCh(display.map((row) => row.gutter));
 	const [expanded, setExpanded] = useState(false);
 	const [copied, setCopied] = useState(false);
 
@@ -251,22 +265,16 @@ export function DiffRowsBlock({
 	const head = capped ? display.slice(0, headLines) : display;
 	const tail = capped ? display.slice(display.length - tailLines) : [];
 
+	// One code line, with the row's diff colour. The marker for this row is NOT
+	// here: it lives in the gutter column, which is one element for the whole
+	// window (so the pointer lands on the column or on the code, never beside it).
 	const rowEl = (row: DisplayRow, index: number) =>
 		jsx_("div", {
 			key: index,
 			className: css.line,
-			children: [
-				// The gutter cell carries marker + number + anchor as one string;
-				// del/add rows take the diff color on the label too.
-				jsx_("span", {
-					className: row.kind === "del" || row.kind === "add" ? `${css.gutter} ${row.rowClass}` : css.gutter,
-					style: { minWidth: `${gutterWidth}ch` },
-					"aria-hidden": true,
-					children: row.gutter,
-				}),
-				jsx_("span", { className: `${css.content} ${row.rowClass}`.trim(), children: row.text }),
-			],
+			children: jsx_("span", { className: `${css.content} ${row.rowClass}`.trim(), children: row.text }),
 		});
+
 
 	return jsx_("div", {
 		className: `${css.block} ${className ?? ""}`.trim(),
@@ -292,11 +300,27 @@ export function DiffRowsBlock({
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
 				children: [
-					...head.map(rowEl),
-					...(hidden > 0
-						? [jsx_(FoldToggle, { className: css.expand, expanded, hidden, labels, onToggle })]
-						: []),
-					...tail.map(rowEl),
+					// ONE marker element for the whole window — one BLOCK span per drawn row,
+					// plus a blank row where the fold sits, so the labels stay on the code's
+					// lines without relying on how whitespace between blocks is collapsed.
+					jsx_("div", {
+						className: css.gutter,
+						style: { width: `${gutterWidth}ch` },
+						"aria-hidden": true,
+						children: [...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((row, index) =>
+							jsx_("span", { className: css.gutterLine, key: index, children: row?.gutter ?? " " }),
+						),
+					}),
+					jsx_("div", {
+						className: css.code,
+						children: [
+							...head.map(rowEl),
+							...(hidden > 0
+								? [jsx_(FoldToggle, { key: "fold", className: css.expand, expanded, hidden, labels, onToggle })]
+								: []),
+							...tail.map(rowEl),
+						],
+					}),
 				],
 			}),
 			jsx_("div", {
