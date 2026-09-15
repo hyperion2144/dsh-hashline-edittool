@@ -192,6 +192,16 @@ export interface LspCardModel {
 	readonly rows: readonly LspRowMeta[];
 }
 
+/**
+ * One INLINE diagnostics capsule (#131): one written file's reported rows,
+ * persisted beside the diff card's meta. The same row shape the `lsp` card
+ * draws, so the expanded capsule renders with that block unchanged.
+ */
+export interface DiagCapsuleMeta {
+	readonly path: string;
+	readonly rows: readonly LspRowMeta[];
+}
+
 /** One rendered slice of a card row: plain text, or a highlighted occurrence. */
 export interface GrepSegment {
 	text: string;

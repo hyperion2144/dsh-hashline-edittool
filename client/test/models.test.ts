@@ -493,3 +493,47 @@ describe("diffCardGroups (issue #96: one tab per file, always)", () => {
 		expect(diffCardGroups("a.txt", [], null)).toEqual([]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// #131: the inline diagnostics capsules derive from meta.diagnostics.
+// ---------------------------------------------------------------------------
+
+import { diagCapsulesFromMeta } from "../src/client/models.js";
+
+describe("diagCapsulesFromMeta (#131)", () => {
+	it("derives one capsule per written file from valid meta", () => {
+		const block = settled({
+			meta: {
+				diagnostics: [
+					{
+						path: "/repo/a.ts",
+						rows: [
+							{ number: 2, hash: "k3", text: "const b = 1;", messages: ["error: nope"], severities: [1] },
+						],
+					},
+				],
+			},
+		} as never);
+		const capsules = diagCapsulesFromMeta(block.meta);
+		expect(capsules).toHaveLength(1);
+		expect(capsules[0]!.path).toBe("/repo/a.ts");
+		expect(capsules[0]!.rows[0]!.messages).toEqual(["error: nope"]);
+	});
+
+	it("returns [] for clean writes (no diagnostics field)", () => {
+		const block = settled({ meta: { diffs: [] } } as never);
+		expect(diagCapsulesFromMeta(block.meta)).toEqual([]);
+	});
+
+	it("returns [] on ANY malformed capsule — degradation, never a crash", () => {
+		expect(diagCapsulesFromMeta({ diagnostics: "nope" })).toEqual([]);
+		expect(diagCapsulesFromMeta({ diagnostics: [{ rows: [] }] })).toEqual([]);
+		expect(
+			diagCapsulesFromMeta({
+				diagnostics: [{ path: "a.ts", rows: [{ number: 0, hash: "", text: "", messages: [], severities: [] }] }],
+			}),
+		).toEqual([]);
+		expect(diagCapsulesFromMeta(null)).toEqual([]);
+		expect(diagCapsulesFromMeta(undefined)).toEqual([]);
+	});
+});

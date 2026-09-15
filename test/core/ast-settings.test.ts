@@ -80,7 +80,7 @@ describe("the read description no longer moves with the switch", () => {
 	 * left to infer it from a rejection.
 	 */
 	const describe_ = (astEnabled: boolean, outputFormat: "text" | "json") =>
-		readDescription({ separator: ":", outputFormat, contextLines: 3, requireLineContent: false, astEnabled, astLanguages: new Set(), lspServers: new Map() });
+		readDescription({ separator: ":", outputFormat, contextLines: 3, requireLineContent: false, astEnabled, astLanguages: new Set(), lspServers: new Map(), autoDiagnostics: true });
 
 	it("is the SAME text whether the capability is on or off", () => {
 		applyEffective(undefined);

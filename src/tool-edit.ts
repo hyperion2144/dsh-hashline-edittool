@@ -72,6 +72,17 @@ import { genDiff } from "./edit-diff.js";
 import { EDIT_DIFF_LEGEND } from "./edit-response.js";
 import { diffDictFrom, diffRowsFromGenDiff, type EditDiffRow } from "./presentation-helpers.js";
 
+import {
+	deliverDiagnosticsAfterWrite,
+	diagnosticsMeta,
+	formatDiagnosticsSection,
+	prepareWriteDiagnostics,
+	type DiagMetaEntry,
+	type FileDiagnostics,
+} from "./lsp/auto-diag.js";
+
+/** The edit value with an optional inline diagnostics attachment (#131). */
+type EditValue = EditCanonicalValue & { diagnostics?: DiagMetaEntry[] };
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
 	path: string;
@@ -245,6 +256,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					// issue #82: 多文件聚合 diffs + diffRowGroups (per-file tab)
 					multiDiffs: { type: "array" },
 					multiDiffRowGroups: { type: "array" },
+					// #131: inline LSP diagnostics, when a push arrived in the window.
+					diagnostics: { type: "array" },
 					// 两种形态都有
 					modelText: { type: "string", required: true },
 				},
@@ -255,6 +268,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 			presentationMeta: (_args, value) => {
 				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[]; multiDiffRowGroups?: unknown };
 				// issue #82: multi-file form carries aggregated per-file diffs + diffRowGroups
+				// #131: inline diagnostics ride the SAME meta object in every form, so
+				// the capsule renders no matter which shape the call settled into.
+				const diagMeta = (v as EditValue).diagnostics;
 				if (Array.isArray(v.success) || Array.isArray(v.fail)) {
 					const md = v.multiDiffs;
 					const mdrGroups = v.multiDiffRowGroups;
@@ -262,9 +278,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						return {
 							diffs: md as FileDiff[],
 							...(Array.isArray(mdrGroups) && mdrGroups.length > 0 ? { diffRowGroups: mdrGroups } : {}),
+							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 						} as never;
 					}
-					return { diffs: [] } as never;
+					return { diffs: [], ...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}) } as never;
 				}
 				if (v.noop) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
@@ -276,6 +293,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				return {
 					diffs,
 					...(diffRows !== undefined ? { diffRows } : {}),
+					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 				} as never;
 		},
 		},
@@ -368,6 +386,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						Array<{ index: number; edit: (typeof canonical.edits)[number] }>,
 					];
 					const absolutePath = await io.resolve(displayPath, cwd, signal);
+					// #131: captured BEFORE anything is written, so the diagnostics wait
+					// measures pushes against a pre-write baseline. undefined = skip.
+					const diagCtx = prepareWriteDiagnostics(absolutePath);
 					const items = group.map(({ index, edit }) =>
 						buildPreparedItem(index, displayPath, edit, absolutePath),
 					);
@@ -388,15 +409,41 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						absolutePath,
 						sessionKey,
 					});
+					// #131: inline delivery — waits at most the 300ms window, serves the
+					// reported anchors, starts the bounded async wait on timeout. Only a
+					// REAL write reports: a noop left the file untouched.
+					const diagnostics =
+						diagCtx !== undefined && file.appliedCount > 0
+							? await deliverDiagnosticsAfterWrite({
+									...diagCtx,
+									toolName: "edit",
+									text: file.result,
+									absolutePath,
+									displayPath,
+									io,
+									exec,
+								})
+							: undefined;
+					const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
+					const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
 					const canonicalValue = buildCanonicalFromFileResult(file, displayPath, lineNumbers);
 					return isJsonOutput()
 						? {
 							...canonicalValue,
 							// Schema-valid structured value; modelText carries the pure-JSON
-							// envelope the model parses.
-							modelText: JSON.stringify(buildEditJson(file, displayPath)),
+							// envelope the model parses. #131: diagnostics join the envelope
+							// as a FIELD — appending prose would break JSON.parse callers.
+							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+							modelText: JSON.stringify({
+								...buildEditJson(file, displayPath),
+								...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+							}),
 						}
-						: canonicalValue;
+						: {
+							...canonicalValue,
+							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+							modelText: diagSection === "" ? canonicalValue.modelText : `${canonicalValue.modelText}\n\n${diagSection}`,
+						};
 				}
 
 				// ---- 多文件: 每组并发 + per-file atomic (ADR-0003) ----
@@ -405,6 +452,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					[...groups.entries()].map(async ([displayPath, group]) => {
 						try {
 							const absolutePath = await io.resolve(displayPath, cwd, signal);
+							// #131: pre-write baseline for this file's diagnostics.
+							const diagCtx = prepareWriteDiagnostics(absolutePath);
 							const items = group.map(({ index, edit }) =>
 								buildPreparedItem(index, displayPath, edit, absolutePath),
 							);
@@ -422,7 +471,21 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 								absolutePath,
 								sessionKey,
 							});
-							return { ok: true as const, displayPath, file };
+							// #131: the waits of parallel groups OVERLAP inside Promise.all, so
+							// the multi-file path still pays ~one inline window, not one per file.
+							const diagnostics =
+								diagCtx !== undefined && file.appliedCount > 0
+									? await deliverDiagnosticsAfterWrite({
+											...diagCtx,
+											toolName: "edit",
+											text: file.result,
+											absolutePath,
+											displayPath,
+											io,
+											exec,
+										})
+									: undefined;
+							return { ok: true as const, displayPath, file, diagnostics };
 						} catch (err) {
 							const message = err instanceof Error ? err.message : String(err);
 							const detected = extractFailure(message);
@@ -460,6 +523,15 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						),
 					});
 				}
+				// #131: aggregate every file's inline report (files without one are
+				// simply absent — clean files are omitted, not zero-filled).
+				const multiDiag = successes.flatMap((o) =>
+					(o as { ok: true; displayPath: string; file: FileEditResult; diagnostics?: FileDiagnostics }).diagnostics !== undefined
+						? [(o as { ok: true; diagnostics: FileDiagnostics }).diagnostics]
+						: [],
+				);
+				const multiDiagMeta = diagnosticsMeta(multiDiag);
+				const multiDiagSection = formatDiagnosticsSection(multiDiag);
 
 				if (!isJsonOutput()) {
 					// text 模式: 聚合 prose (ADR-0004 D1) — 成功块在前, 失败块在后
@@ -474,7 +546,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							? `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath, lineNumbers)}`
 							: `Edit for ${o.displayPath} failed: ${o.code} ${o.message}`,
 					);
-					return { success, fail, multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: `${summary}\n\n${blocks.join("\n\n")}` };
+					return { success, fail, ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}` };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)
@@ -482,8 +554,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					ok: success.length > 0,
 					success,
 					fail,
+					...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}),
 				});
-				return { ok: success.length > 0, success, fail, multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
+				return { ok: success.length > 0, success, fail, ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
 			});
 		},
 	});

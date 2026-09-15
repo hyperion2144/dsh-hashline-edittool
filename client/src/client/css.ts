@@ -43,6 +43,15 @@ const CSS_TEXT = [
 	".dshl-ioText[data-error]{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diffBody,.dshl-readBody{margin:4px 0 4px 4px}",
 	".dshl-visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}",
+	// The #131 inline diagnostics capsule: a small severity-tinted toggle under
+	// the card body. Red when any error was reported, yellow when warnings
+	// only; expanding shows the same diagnostics block the `lsp` card uses.
+	".dshl-diagWrap{flex-direction:column;margin:0 0 4px 4px;display:flex}",
+	".dshl-diagCapsule{align-items:center;gap:6px;align-self:flex-start;border:.5px solid var(--dshl-diag-tint);color:var(--dshl-diag-tint);background:color-mix(in srgb,var(--dshl-diag-tint) 8%,transparent);cursor:pointer;border-radius:999px;padding:2px 10px;font:inherit;font-size:11px;line-height:16px}",
+	".dshl-diagCapsule:hover{background:color-mix(in srgb,var(--dshl-diag-tint) 14%,transparent)}",
+	".dshl-diagCapsule[data-severity=error]{--dshl-diag-tint:var(--dsw-alias-state-error-primary)}",
+	".dshl-diagCapsule[data-severity=warning]{--dshl-diag-tint:var(--dsw-alias-state-warning-primary)}",
+	".dshl-diagDot{border-radius:50%;background:var(--dshl-diag-tint);width:7px;height:7px}",
 ].join("");
 
 /** Style-tag id guard (one sheet per page regardless of factory executions). */
@@ -82,4 +91,7 @@ export const css = {
 	readBody: "dshl-readBody",
 	diffBody: "dshl-diffBody",
 	visuallyHidden: "dshl-visuallyHidden",
+	diagWrap: "dshl-diagWrap",
+	diagCapsule: "dshl-diagCapsule",
+	diagDot: "dshl-diagDot",
 } as const;

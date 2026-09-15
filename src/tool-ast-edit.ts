@@ -27,7 +27,23 @@ import { canon, contentChecksum } from "./hashline/hash-assign.js";
 import type { FileIO } from "./fs-bridge.js";
 import type { FsSandboxController } from "./sandbox.js";
 import { splitLines } from "./utils.js";
+import {
+	deliverDiagnosticsAfterWrite,
+	diagnosticsMeta,
+	formatDiagnosticsSection,
+	prepareWriteDiagnostics,
+	type DiagMetaEntry,
+} from "./lsp/auto-diag.js";
 
+
+type AstEditValue = {
+	readonly path: string;
+	readonly before?: string;
+	readonly after?: string;
+	readonly diffRows?: readonly unknown[];
+	readonly diagnostics?: DiagMetaEntry[];
+	readonly [key: string]: unknown;
+};
 /** One match, as the worker reports it. */
 interface GrepMatchLike {
 	readonly startLine: number;
@@ -113,6 +129,8 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 					diffRows: { type: "array" },
 					driftNotice: { type: "string" },
 					noop: { type: "boolean" },
+					// #131: inline LSP diagnostics, when a push arrived in the window.
+					diagnostics: { type: "array" },
 					// Structural-search extras: this tool's own three fields.
 					pat: { type: "string", required: true },
 					count: { type: "integer", required: true },
@@ -140,6 +158,9 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 							: [],
 					...(Array.isArray(value.diffRows) && value.diffRows.length > 0
 						? { diffRows: value.diffRows }
+						: {}),
+					...(Array.isArray((value as AstEditValue).diagnostics)
+						? { diagnostics: (value as AstEditValue).diagnostics }
 						: {}),
 				}) as never,
 		},
@@ -338,6 +359,9 @@ async function runAstEdit(
 			);
 		}
 	}
+	// #131: captured BEFORE the write, so the wait measures pushes against a
+	// pre-write baseline. undefined = disabled / no manager / no ready server.
+	const diagCtx = prepareWriteDiagnostics(absolutePath);
 	await commitFileResult(result, {
 		io,
 		exec: exec as never,
@@ -345,6 +369,23 @@ async function runAstEdit(
 		sandboxPolicy,
 		signal: (exec as { signal?: AbortSignal }).signal,
 	});
+	// #131: same delivery `edit` runs — inline inside the 300ms window, else
+	// the bounded async wait. The syntax gate above already ran, so a report
+	// here is the SERVER's opinion, complementing the parse we just did.
+	const diagnostics =
+		diagCtx !== undefined && result.appliedCount > 0
+			? await deliverDiagnosticsAfterWrite({
+					...diagCtx,
+					toolName: "ast_edit",
+					text: result.result,
+					absolutePath,
+					displayPath: args.path,
+					io,
+					exec: exec as never,
+				})
+			: undefined;
+	const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
+	const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
 	// The model channel IS `edit`'s, from `edit`'s own two builders: the text
 	// mode is the diff block (legend, `-`/`+` rows with fresh anchors, the
 	// success line) and the JSON mode is the pure edit envelope. Returning
@@ -356,13 +397,17 @@ async function runAstEdit(
 				...buildEditJson(result, args.path),
 				pattern: args.pat,
 				count: matches.length,
+				...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 			})
-		: canonical.modelText;
+		: diagSection === ""
+			? canonical.modelText
+			: `${canonical.modelText}\n\n${diagSection}`;
 	return {
 		...canonical,
 		pat: args.pat,
 		count: matches.length,
 		ok: true,
+		...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 		modelText,
 	};
 }

@@ -33,6 +33,8 @@ import { LspDiagBlock } from "./lsp-block.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import { grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
+import { diagCapsulesFromMeta } from "./models.js";
+import type { DiagCapsuleMeta } from "./types.js";
 
 /** Join class names (tiny clsx stand-in; `clsx` is not a module-table word). */
 function cx(...parts: Array<string | false | null | undefined>): string {
@@ -69,6 +71,8 @@ interface ToolRowProps {
 	grep: ReturnType<typeof grepCardModel>;
 	/** The `lsp` diagnostics card, drawn by our own block (see `LspDiagBlock`). */
 	lsp: ReturnType<typeof lspCardModel>;
+	/** #131: inline diagnostics capsules, one per written file ([] = none). */
+	diag: readonly DiagCapsuleMeta[];
 	state: "running" | "ok" | "error" | "stopped";
 	filePath: string | undefined;
 	onOpenFile: ((path: string) => void) | undefined;
@@ -85,6 +89,58 @@ function formatToolBody(argsRaw: string): string | null {
 	}
 }
 
+
+/**
+ * One inline diagnostics capsule (#131): a small severity-tinted pill under
+ * the card body — red when any error was reported, yellow when warnings
+ * only (story 13). Clicking it expands the SAME diagnostics block the `lsp`
+ * card draws (story 14), fed by the persisted rows rather than parsed prose.
+ * A clean write has no capsule at all, because the meta carries none.
+ */
+function DiagCapsule({ capsule, t }: { capsule: DiagCapsuleMeta; t: ToolViewProps["t"] }): ReactNode {
+	const [open, setOpen] = useState(false);
+	const labels = useMemo(() => lspBlockLabels(t), [t]);
+	// Counts come from the severity CODES beside each message — the same rule
+	// the `lsp` stat uses — never from parsing an "error: …" label apart.
+	let errors = 0;
+	let warnings = 0;
+	let other = 0;
+	for (const row of capsule.rows) {
+		const codes = row.severities.length > 0 ? row.severities : row.messages.map(() => 0);
+		for (const code of codes) {
+			if (code === 1) errors += 1;
+			else if (code === 2) warnings += 1;
+			else other += 1;
+		}
+	}
+	const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+	const text = [
+		errors > 0 ? plural(errors, "error", "errors") : "",
+		warnings > 0 ? plural(warnings, "warning", "warnings") : "",
+		other > 0 ? plural(other, "diagnostic", "diagnostics") : "",
+	]
+		.filter((part) => part !== "")
+		.join(" · ");
+	return jsx_("div", {
+		className: css.diagWrap,
+		children: [
+			jsx_("button", {
+				type: "button",
+				className: css.diagCapsule,
+				"data-severity": errors > 0 ? "error" : "warning",
+				"aria-expanded": open,
+				onClick: () => setOpen((value) => !value),
+				children: [jsx_("span", { className: css.diagDot, "aria-hidden": true }), text],
+			}),
+			open &&
+				jsx_(LspDiagBlock, {
+					model: { path: capsule.path, rows: capsule.rows },
+					labels,
+					maxLines: 16,
+				}),
+		],
+	});
+}
 /**
  * The shared row: collapsed DisclosureRow with the file link (or summary),
  * optional caption suffix (diff stat / anchor hints), and the expanded card
@@ -106,6 +162,7 @@ function ToolRow({
 	diff,
 	grep,
 	lsp,
+	diag,
 	state,
 	filePath,
 	onOpenFile,
@@ -315,6 +372,15 @@ function ToolRow({
 										],
 									}),
 						inspect !== undefined &&
+						// #131: the inline diagnostics capsules sit UNDER the card body —
+						// one per written file, absent for clean edits.
+						diag.length > 0 &&
+							jsx_("div", {
+								className: css.diagWrap,
+								children: diag.map((capsule, index) =>
+									jsx_(DiagCapsule, { key: `${capsule.path}:${index}`, capsule, t }),
+								),
+							}),
 							jsx_("button", {
 								type: "button",
 								className: css.inspectButton,
@@ -351,6 +417,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		output: model.output,
 		errorSummary: model.errorSummary,
 		read,
+		diag: [],
 		grep: null,
 		diff: null,
 		state: model.state,
@@ -370,6 +437,9 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride }: ToolViewProps & { readonly titleOverride?: string }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const diff = diffCardModel(block);
+	// #131: inline diagnostics, present only when a push arrived in the window.
+	// Running calls carry no meta, so the capsule appears only once settled.
+	const diag = diagCapsulesFromMeta("kind" in block ? block.meta : undefined);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
@@ -391,6 +461,7 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		read: null,
 		grep: null,
 		diff,
+		diag,
 		state: model.state,
 		filePath: model.filePath,
 		onOpenFile: openFile,
@@ -408,6 +479,8 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const diff = writeCardModel(block);
+	// #131: a write reports diagnostics exactly like an edit does.
+	const diag = diagCapsulesFromMeta("kind" in block ? block.meta : undefined);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
@@ -421,6 +494,7 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		read: null,
 		grep: null,
 		diff,
+		diag,
 		state: model.state,
 		filePath: model.filePath,
 		onOpenFile: openFile,
@@ -457,6 +531,7 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		errorSummary: model.errorSummary,
 		read: null,
 		diff: null,
+		diag: [],
 		grep,
 		state: model.state,
 		filePath: model.filePath,
@@ -528,6 +603,8 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		grep: null,
 		diff: null,
 		lsp,
+		// The lsp row IS the diagnostics card; a second capsule would duplicate it.
+		diag: [],
 		state: model.state,
 		filePath: undefined,
 		onOpenFile: openFile,

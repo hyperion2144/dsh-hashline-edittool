@@ -22,6 +22,7 @@ import type {
 	DiffCardProps,
 	DiffRowGroup,
 	DiffRowMeta,
+	DiagCapsuleMeta,
 	FileDiff,
 	GrepCardModel,
 	GrepFileRowGroup,
@@ -36,7 +37,6 @@ import type {
 	ToolCallBlock,
 	ToolRowModel,
 } from "./types.js";
-
 //#region shared call helpers (mirror of dsh-client-ui-tool models)
 
 /** Parsed `{name, args}` of the paired call head, or null when unavailable. */
@@ -695,6 +695,43 @@ export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
 	}
 	if (rows.length === 0) return null;
 	return { path: value.path, rows };
+}
+
+/**
+ * Derive the inline diagnostics capsules (#131): one per written file, from
+ * the edit/write/undo meta's `diagnostics` field. Soft-validated like every
+ * other meta reader — ANY deviation yields `[]`, which renders no capsule.
+ * Empty by design for clean edits: a write the server found nothing to say
+ * about adds no visual noise (story 6).
+ */
+export function diagCapsulesFromMeta(meta: unknown): DiagCapsuleMeta[] {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return [];
+	const value = meta as Record<string, unknown>;
+	if (!Array.isArray(value.diagnostics)) return [];
+	const capsules: DiagCapsuleMeta[] = [];
+	for (const candidate of value.diagnostics) {
+		if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return [];
+		const capsule = candidate as Record<string, unknown>;
+		if (typeof capsule.path !== "string") return [];
+		if (!Array.isArray(capsule.rows)) return [];
+		const rows: LspRowMeta[] = [];
+		for (const row of capsule.rows) {
+			if (typeof row !== "object" || row === null || Array.isArray(row)) return [];
+			const r = row as Record<string, unknown>;
+			if (typeof r.number !== "number" || !Number.isInteger(r.number) || r.number < 1) return [];
+			if (typeof r.hash !== "string" || typeof r.text !== "string") return [];
+			const messages = Array.isArray(r.messages)
+				? r.messages.filter((m): m is string => typeof m === "string")
+				: [];
+			const severities = Array.isArray(r.severities)
+				? r.severities.filter((c): c is number => typeof c === "number")
+				: [];
+			rows.push({ number: r.number, hash: r.hash, text: r.text, messages, severities });
+		}
+		if (rows.length === 0) return [];
+		capsules.push({ path: capsule.path, rows });
+	}
+	return capsules;
 }
 
 /**
