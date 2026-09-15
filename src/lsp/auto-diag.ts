@@ -49,8 +49,14 @@ import type { FileIO } from "../fs-bridge.js";
 import { getLspManager } from "./manager.js";
 import type { LspSession } from "./session.js";
 
-/** How long a tool holds its result for an inline push. Hot servers push in <50ms; 300ms is 6× headroom under the human-perception threshold (#130). */
-export const INLINE_WINDOW_MS = 300;
+/**
+ * How long a tool holds its result for an inline push. Measured on a real
+ * typescript-language-server: a HOT server still pushes consistently past
+ * 300ms (#131 field report), so the window is 800ms — inside the tail of the
+ * human-perception band, and a server with nothing to say costs no more than
+ * the window once per write.
+ */
+export const INLINE_WINDOW_MS = 800;
 
 /** How long the background wait listens before giving up. A cold start is 2.6–3.1s; 10s is ~3× headroom. Past it, the model can still call `lsp diagnostics`. */
 export const ASYNC_TIMEOUT_MS = 10_000;
@@ -90,39 +96,73 @@ export interface FileDiagnostics {
 }
 
 /**
- * What a tool captures BEFORE it writes: the session that is up for this
- * file's language and the revision baseline a later push is measured against.
- * `undefined` means the whole feature is off for this write — disabled by
- * settings, no manager, no language, or no READY server — and every later
- * step must skip without waiting.
+ * What a tool captures BEFORE it writes: how to reach this file's language
+ * server, and — when one is already UP — the session plus the revision
+ * baseline a later push is measured against.
+ *
+ * Two shapes:
+ *
+ * - `session` set: a server is READY. The write synced it (`didChange` via
+ *   `notifyDocumentWritten`) and the delivery waits for the push inline.
+ * - `session` undefined: the server is cold or still starting. The write
+ *   synced nobody — `notifyDocumentWritten` skips a non-ready server — so
+ *   the delivery takes the ASYNC path: wait for the session, tell it about
+ *   the file (`didOpen`), then wait for the push. A cold start used to skip
+ *   the whole feature because only a READY session qualified (#131 field
+ *   report, BUG-1).
  */
 export interface WriteDiagContext {
-	readonly session: LspSession;
+	/** Present when a server was READY at write time; undefined = cold start pending. */
+	readonly session?: LspSession;
+	readonly languageId: string;
+	/** The workspace root advertised to the server when warming. */
+	readonly workspaceRoot: string;
 	readonly uri: string;
+	/**
+	 * The revision baseline for `waitForPush`. For a ready session it is the
+	 * pre-write snapshot; for a pending cold start it is 0 and the REAL
+	 * baseline is taken once the session arrives.
+	 */
 	readonly revisionBefore: number;
 }
 
 /**
  * Snapshot the delivery context for a file about to be written.
  *
- * `readySessionFor` deliberately NEVER warms: a write starts no server. The
- * revision baseline is global per session, so a push for an unrelated document
- * can spend the baseline — the worst case is one report read a moment early,
+ * Two outcomes. A READY session gives the inline path its baseline. Anything
+ * less (cold, still starting) fires `manager.warm` — fire-and-forget; this is
+ * the ONE place a write may bring a server up, and it exists because the
+ * field report showed a cold start otherwise skipped diagnostics entirely —
+ * and returns a PENDING context the background wait resolves later.
+ *
+ * The revision baseline is global per session, so a push for an unrelated
+ * document can spend it — the worst case is one report read a moment early,
  * never a wrong file's diagnostics (they are keyed by URI).
+ *
+ * @param absolutePath - the file about to be written.
+ * @param workspaceRoot - advertised to the server when warming (the session cwd).
  */
-export function prepareWriteDiagnostics(absolutePath: string): WriteDiagContext | undefined {
+export function prepareWriteDiagnostics(absolutePath: string, workspaceRoot: string): WriteDiagContext | undefined {
 	if (!isAutoDiagnosticsEnabled()) return undefined;
 	const manager = getLspManager();
 	if (manager === undefined) return undefined;
 	const language = languageForPath(absolutePath);
 	if (language === undefined) return undefined;
+	const uri = pathToFileURL(absolutePath).href;
 	const session = manager.readySessionFor(language.id);
-	if (session === undefined) return undefined;
-	return {
-		session,
-		uri: pathToFileURL(absolutePath).href,
-		revisionBefore: session.diagnosticsRevision,
-	};
+	if (session !== undefined) {
+		return {
+			session,
+			languageId: language.id,
+			workspaceRoot,
+			uri,
+			revisionBefore: session.diagnosticsRevision,
+		};
+	}
+	// Cold or starting: kick the warm and let the async path wait it out. A
+	// slot that already exists (starting or failed) makes `warm` a no-op.
+	manager.warm(language.id, workspaceRoot);
+	return { languageId: language.id, workspaceRoot, uri, revisionBefore: 0 };
 }
 
 /** Everything {@link deliverDiagnosticsAfterWrite} needs once the write is on disk. */
@@ -150,6 +190,12 @@ export async function deliverDiagnosticsAfterWrite(
 	input: AfterWriteInput,
 ): Promise<FileDiagnostics | undefined> {
 	try {
+		// A cold start has nobody to wait on inline — the push cannot arrive
+		// before a session exists — so the background path takes over at once.
+		if (input.session === undefined) {
+			startAsyncWait(input);
+			return undefined;
+		}
 		const arrived = await waitForPush(input.session, input.revisionBefore, INLINE_WINDOW_MS);
 		if (!arrived) {
 			startAsyncWait(input);
@@ -198,7 +244,9 @@ async function waitForPush(
  * or only severities this feature does not report.
  */
 function collectReport(input: AfterWriteInput): FileDiagnostics | undefined {
-	const pushed = input.session.getDiagnostics(input.uri);
+	const session = input.session;
+	if (session === undefined) return undefined;
+	const pushed = session.getDiagnostics(input.uri);
 	if (pushed === undefined || pushed.length === 0) return undefined;
 	const lines = splitLines(input.text);
 	const anchors = lineHashesPure(input.text);
@@ -277,16 +325,33 @@ function startAsyncWait(input: AfterWriteInput): void {
 	const agent = input.exec.agent;
 	if (agent === undefined) return;
 	const signal = input.exec.signal;
+	const startedAt = Date.now();
 	void (async () => {
 		try {
+			let session = input.session;
+			if (session === undefined) {
+				// COLD START. Wait for the warm to finish — inside the SAME
+				// budget, so a slow boot spends the wait and leaves nothing for
+				// the push, which is the honest outcome of a 3s cold start.
+				const manager = getLspManager();
+				const remaining = Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt));
+				session = (await manager?.waitForSession(input.languageId, input.workspaceRoot, remaining)) ?? undefined;
+				if (session === undefined || signal.aborted) return;
+				// The write synced NOBODY (the server was not up), and an LSP
+				// server has no disk watcher — left alone it would never learn
+				// the file changed. Tell it now: the fresh session has surely
+				// never seen this document, so this is a `didOpen`.
+				const openDocument = manager?.openDocumentFor(input.languageId, input.uri);
+				openDocument?.(input.text);
+			}
 			const arrived = await waitForPush(
-				input.session,
-				input.revisionBefore,
-				ASYNC_TIMEOUT_MS,
+				session,
+				session.diagnosticsRevision,
+				ASYNC_TIMEOUT_MS - (Date.now() - startedAt),
 				signal,
 			);
 			if (!arrived || signal.aborted) return;
-			const report = collectReport(input);
+			const report = collectReport({ ...input, session });
 			if (report === undefined) return;
 			await serveReport(input, report.rows);
 			agent.inject(buildInjectedMessage(input, report));

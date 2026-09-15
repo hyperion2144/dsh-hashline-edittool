@@ -243,7 +243,13 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 			}),
 			jsx_("div", {
 				className: css.footer,
-				children: `└ ${labels.summary(counts.shown, counts.total, counts.files, model.truncated)}`,
+				children: `└ ${
+					model.outline === true
+						? // An outline is not matches; counting them would read "0 of N".
+							// Hardcoded like the row's stat above — no locale key is added.
+							`outline · ${model.total} lines`
+						: labels.summary(counts.shown, counts.total, counts.files, model.truncated)
+				}`,
 			}),
 		],
 	});

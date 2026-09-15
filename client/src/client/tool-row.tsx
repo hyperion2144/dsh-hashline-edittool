@@ -221,6 +221,34 @@ function ToolRow({
 			.filter((part) => part !== "")
 			.join(" · ");
 	}, [lspBody]);
+	// The SAME stat for INLINE diagnostics (#131): the edit/write rows carry
+	// capsules, not an lsp body, and a folded row should say `+1 -1 · 1 error`
+	// the same way. Counts come from the severity codes beside each message.
+	const diagStat = useMemo(() => {
+		if (diag.length === 0) return null;
+		let errors = 0;
+		let warnings = 0;
+		let other = 0;
+		for (const capsule of diag) {
+			for (const row of capsule.rows) {
+				const codes = row.severities.length > 0 ? row.severities : row.messages.map(() => 0);
+				for (const code of codes) {
+					if (code === 1) errors += 1;
+					else if (code === 2) warnings += 1;
+					else other += 1;
+				}
+			}
+		}
+		if (errors + warnings + other === 0) return null;
+		const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+		return [
+			errors > 0 ? plural(errors, "error", "errors") : "",
+			warnings > 0 ? plural(warnings, "warning", "warnings") : "",
+			other > 0 ? plural(other, "diagnostic", "diagnostics") : "",
+		]
+			.filter((part) => part !== "")
+			.join(" · ");
+	}, [diag]);
 	const diffStat = useMemo(() => {
 		if (diffBody === null) return null;
 		if (diffBody.rows !== undefined) {
@@ -231,12 +259,14 @@ function ToolRow({
 		const { added, removed } = diffTotals(diffBody.diffs as never);
 		return `+${added} -${removed}`;
 	}, [diffBody]);
-	// The suffix is the diff stat, and only that. `summarySuffix` used to sit to the
-	// left of the `??`, fed by the anchors a call was addressed with — which is how
-	// `require_line_content` decided whether a reader saw `@oN @6I @4E` or `+3 -1`.
-	// The prop is gone rather than defaulted to null: a prop with no producer is a
-	// switch the next change can flip back on (issue #127).
-	const suffix = failureLine === null ? (lspStat ?? diffStat) : null;
+	// The suffix is the diff stat BESIDE the diagnostics stat (`+1 -1 · 1 error`):
+	// a folded row that hides a fresh error made the reader expand to learn it.
+	// `summarySuffix` (anchor hints) used to sit to the left of the `??` — a prop
+	// with no producer is a switch the next change can flip back on (issue #127).
+	const suffix =
+		failureLine === null
+			? [diffStat, lspStat ?? diagStat].filter((part) => part !== null).join(" · ") || null
+			: null;
 	const fileLink = filePath !== undefined && onOpenFile !== undefined && failureLine === null;
 	const toggleExpand = () => {
 		setExpanded((value) => !value);

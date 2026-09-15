@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	diffCardModel,
+	grepPresentationMeta,
 	writeCardModel,
 	metaDiffRows,
 	diffCardGroups,
@@ -535,5 +536,28 @@ describe("diagCapsulesFromMeta (#131)", () => {
 		).toEqual([]);
 		expect(diagCapsulesFromMeta(null)).toEqual([]);
 		expect(diagCapsulesFromMeta(undefined)).toEqual([]);
+	});
+});
+
+describe("grep card outline flag (#131 BUG-3)", () => {
+	it("carries the outline flag through the persisted meta", () => {
+		const meta = {
+			files: [{ path: "/repo/a.ts", rows: [{ number: 1, hash: "ab", text: "export function f() {}" }] }],
+			truncated: false,
+			total: 12,
+			outline: true,
+		};
+		const model = grepPresentationMeta(meta);
+		expect(model?.outline).toBe(true);
+		expect(model?.total).toBe(12);
+	});
+
+	it("omits the flag for a plain match list", () => {
+		const model = grepPresentationMeta({
+			files: [{ path: "/repo/a.ts", rows: [{ number: 1, hash: "ab", text: "x", match: true }] }],
+			truncated: false,
+			total: 1,
+		});
+		expect(model?.outline).toBeUndefined();
 	});
 });

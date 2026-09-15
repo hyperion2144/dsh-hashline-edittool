@@ -611,7 +611,14 @@ export function grepPresentationMeta(meta: unknown): GrepCardModel | null {
 	}
 	if (typeof value.truncated !== "boolean") return null;
 	if (typeof value.total !== "number" || !Number.isInteger(value.total) || value.total < 0) return null;
-	return { files, truncated: value.truncated, total: value.total };
+	return {
+		files,
+		truncated: value.truncated,
+		total: value.total,
+		// An `ast_grep` outline (#131 field report): its rows are a folded line
+		// view, and the footer must say so rather than count 0 of N matches.
+		...(value.outline === true ? { outline: true as const } : {}),
+	};
 }
 
 /** One validated card row, or null when the payload is not usable. */

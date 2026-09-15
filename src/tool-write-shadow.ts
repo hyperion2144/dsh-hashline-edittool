@@ -220,7 +220,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// #131: baseline BEFORE the sync; then tell the language server — the
 				// one `write` path never did, so its diagnostics (and the manual
 				// `lsp diagnostics`) answered from the pre-write text.
-				const diagCtx = prepareWriteDiagnostics(absolute);
+				const diagCtx = prepareWriteDiagnostics(absolute, execCwd(exec));
 				await io.writeText(absolute, content, signal, exec, sandboxPolicy);
 				notifyDocumentWritten(absolute, content);
 				const after = content;

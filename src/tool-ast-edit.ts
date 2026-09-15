@@ -361,7 +361,7 @@ async function runAstEdit(
 	}
 	// #131: captured BEFORE the write, so the wait measures pushes against a
 	// pre-write baseline. undefined = disabled / no manager / no ready server.
-	const diagCtx = prepareWriteDiagnostics(absolutePath);
+	const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
 	await commitFileResult(result, {
 		io,
 		exec: exec as never,

@@ -388,7 +388,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					const absolutePath = await io.resolve(displayPath, cwd, signal);
 					// #131: captured BEFORE anything is written, so the diagnostics wait
 					// measures pushes against a pre-write baseline. undefined = skip.
-					const diagCtx = prepareWriteDiagnostics(absolutePath);
+					const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
 					const items = group.map(({ index, edit }) =>
 						buildPreparedItem(index, displayPath, edit, absolutePath),
 					);
@@ -453,7 +453,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						try {
 							const absolutePath = await io.resolve(displayPath, cwd, signal);
 							// #131: pre-write baseline for this file's diagnostics.
-							const diagCtx = prepareWriteDiagnostics(absolutePath);
+							const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
 							const items = group.map(({ index, edit }) =>
 								buildPreparedItem(index, displayPath, edit, absolutePath),
 							);

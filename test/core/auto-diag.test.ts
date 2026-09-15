@@ -110,6 +110,8 @@ function makeInput(overrides: Partial<AfterWriteInput> & { cwd: string }): After
 	hot.push();
 	return {
 		session: hot.session,
+		languageId: "typescript",
+		workspaceRoot: cwd,
 		uri: pathToFileURL(join(cwd, "a.ts")).href,
 		revisionBefore: 0,
 		toolName: "edit",
@@ -126,30 +128,37 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 	it("skips entirely when the switch is off", () => {
 		applyEffective({ lsp: { auto_diagnostics: false } });
 		expect(isAutoDiagnosticsEnabled()).toBe(false);
-		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.ts", "/repo")).toBeUndefined();
 	});
 
 	it("skips when no manager is installed", () => {
 		setLspManager(undefined);
-		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.ts", "/repo")).toBeUndefined();
 	});
 
-	it("skips a language no server is ready for — and never warms one", () => {
+	it("returns a PENDING context for a cold language and fires the warm", () => {
+		// Field report #131 (BUG-1): a cold start used to skip the whole
+		// feature because only a READY session qualified. Now the warm is
+		// fired (fire-and-forget) and the async path waits the boot out.
 		const warm = vi.fn();
 		setLspManager({ readySessionFor: () => undefined, warm } as never);
-		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
-		// A write must not start a server: the same preserved constraint as sync.
-		expect(warm).not.toHaveBeenCalled();
+		const context = prepareWriteDiagnostics("/repo/a.ts", "/repo");
+		expect(context).toBeDefined();
+		expect(context!.session).toBeUndefined();
+		expect(context!.languageId).toBe("typescript");
+		expect(context!.workspaceRoot).toBe("/repo");
+		expect(context!.revisionBefore).toBe(0);
+		expect(warm).toHaveBeenCalledWith("typescript", "/repo");
 	});
 
 	it("skips files with no language at all", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
-		expect(prepareWriteDiagnostics("/repo/a.definitely-not-a-language")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.definitely-not-a-language", "/repo")).toBeUndefined();
 	});
 
 	it("snapshots a revision baseline when a session is ready", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
-		const context = prepareWriteDiagnostics("/repo/a.ts");
+		const context = prepareWriteDiagnostics("/repo/a.ts", "/repo");
 		expect(context).toBeDefined();
 		expect(context!.revisionBefore).toBe(0);
 		expect(context!.uri).toBe(pathToFileURL("/repo/a.ts").href);
@@ -477,7 +486,9 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 
 describe("timing sanity", () => {
 	it("uses the documented budgets", () => {
-		expect(INLINE_WINDOW_MS).toBe(300);
+		// 800ms: a hot typescript-language-server pushes consistently past
+		// 300ms (#131 field report); 800 stays inside the perception band.
+		expect(INLINE_WINDOW_MS).toBe(800);
 		expect(ASYNC_TIMEOUT_MS).toBe(10_000);
 	});
 });
@@ -517,6 +528,75 @@ describe("seam 1b — write delivers inline diagnostics too (story 20)", () => {
 			expect(value.diagnostics).toHaveLength(1);
 			expect(value.modelText).toContain("LSP diagnostics");
 			expect(value.modelText).toMatch(/error: Cannot find name 'gamma'\./);
+		});
+	});
+});
+
+describe("BUG-1 regression — a cold start delivers through the async path", () => {
+	it("waits for the warm, syncs the fresh session, then injects", async () => {
+		await withTempDir("auto-diag-cold-", async (cwd) => {
+			const injected: unknown[] = [];
+			const late = fakeSession(DIAGNOSTICS);
+			const opened: string[] = [];
+			// A cold manager: no ready session until `waitForSession` resolves.
+			const manager = {
+				readySessionFor: () => undefined,
+				warm: vi.fn(),
+				waitForSession: async () => {
+					// Simulate the boot: by the time the wait resolves, the
+					// server is up but has NEVER seen this document.
+					return late.session;
+				},
+				openDocumentFor: (_languageId: string, uri: string) => (text: string) => {
+					opened.push(`${uri} ${text.split("\n")[0]}`);
+				},
+			};
+			setLspManager(manager as never);
+			const input = makeInput({
+				cwd,
+				session: undefined,
+				exec: makeExec(cwd, (m) => injected.push(m)),
+			});
+			const started = Date.now();
+			// No inline wait at all: with nobody to wait on, the delivery
+			// hands straight to the background path.
+			expect(await deliverDiagnosticsAfterWrite(input)).toBeUndefined();
+			expect(Date.now() - started).toBeLessThan(200);
+			// The background wait boots the session and TELLS it about the
+			// file — an LSP server has no disk watcher, so without this
+			// `didOpen` it would never learn the write happened.
+			await vi.waitFor(() => expect(opened).toHaveLength(1));
+			expect(opened[0]).toContain(input.uri);
+			expect(opened[0]).toContain("export const alpha = 1;");
+			// Then the push lands and the report is injected.
+			late.push();
+			await vi.waitFor(() => expect(injected).toHaveLength(1));
+			const message = injected[0] as { content: Array<{ text: string }> };
+			expect(message.content[0]!.text).toContain("a.ts");
+		});
+	});
+
+	it("gives up when the boot never finishes", async () => {
+		await withTempDir("auto-diag-cold-boot-timeout-", async (cwd) => {
+			const injected: unknown[] = [];
+			// Date is faked with the timers so the boot wait crosses its
+			// budget without really sleeping for it.
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+			const manager = {
+				readySessionFor: () => undefined,
+				warm: vi.fn(),
+				waitForSession: async () => undefined,
+				openDocumentFor: () => () => undefined,
+			};
+			setLspManager(manager as never);
+			const input = makeInput({
+				cwd,
+				session: undefined,
+				exec: makeExec(cwd, (m) => injected.push(m)),
+			});
+			expect(await deliverDiagnosticsAfterWrite(input)).toBeUndefined();
+			await vi.advanceTimersByTimeAsync(ASYNC_TIMEOUT_MS + 1_000);
+			expect(injected).toHaveLength(0);
 		});
 	});
 });

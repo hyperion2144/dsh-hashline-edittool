@@ -168,6 +168,11 @@ export interface GrepCardModel {
 	files: readonly GrepFileRowGroup[];
 	truncated: boolean;
 	total: number;
+	/**
+	 * True when the rows are an `ast_grep` OUTLINE — a folded line view, not
+	 * matches — so the footer says what it is instead of counting 0 matches.
+	 */
+	outline?: boolean | undefined;
 }
 
 /**
