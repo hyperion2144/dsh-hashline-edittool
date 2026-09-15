@@ -452,3 +452,44 @@ export type DiagMetaEntry = { path: string; rows: DiagRow[] };
 export function diagnosticsMeta(reports: readonly FileDiagnostics[]): DiagMetaEntry[] {
 	return reports.map(({ path, rows }) => ({ path, rows }));
 }
+
+/**
+ * One JSON-mode row: severity as WORDS (a number means nothing to a reader),
+ * the source text beside the messages.
+ */
+export type DiagJsonRow = {
+	text: string;
+	messages: string[];
+	severities: string[];
+};
+
+/**
+ * The JSON-mode projection (#131 field feedback): marker-KEYED, aligned with
+ * the diff dict — `\"<anchor>:<line>\"` is the key (the same first token a
+ * row is addressed by everywhere else), and the value is a dictionary of
+ * `text` / `messages` / `severities`. No `hash` field, no bare `number`: the
+ * anchor IS the identity and the line trails it inside the key, exactly as
+ * the diff and read envelopes spell it.
+ */
+export type DiagJsonEntry = {
+	path: string;
+	rows: Record<string, DiagJsonRow>;
+};
+
+export function diagnosticsJson(reports: readonly FileDiagnostics[]): DiagJsonEntry[] {
+	return reports.map(({ path, rows }) => ({
+		path,
+		rows: Object.fromEntries(
+			rows.map((row) => [
+				// A row without an anchor falls back to its bare line number — the
+				// same marker rule every other channel uses.
+				row.hash === "" ? `${row.number}` : `${row.hash}:${row.number}`,
+				{
+					text: row.text,
+					messages: row.messages,
+					severities: row.severities.map((code) => (code === 1 ? "error" : code === 2 ? "warning" : "diagnostic")),
+				},
+			]),
+		),
+	}));
+}

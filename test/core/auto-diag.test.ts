@@ -20,12 +20,14 @@ import {
 	ASYNC_TIMEOUT_MS,
 	INLINE_WINDOW_MS,
 	deliverDiagnosticsAfterWrite,
+	diagnosticsJson,
 	diagnosticsMeta,
 	formatDiagnosticsSection,
 	prepareWriteDiagnostics,
 	type AfterWriteInput,
+	type FileDiagnostics,
 } from "../../src/lsp/auto-diag.js";
-import { applyEffective, isAutoDiagnosticsEnabled, parseSettingsYaml } from "../../src/config.js";
+import { applyEffective, getEffectiveConfig, isAutoDiagnosticsEnabled, parseSettingsYaml } from "../../src/config.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildEditTool } from "../../src/tool-edit.js";
 import { buildReadTool } from "../../src/tool-read.js";
@@ -335,6 +337,47 @@ describe("the model-facing section", () => {
 	});
 });
 
+describe("the JSON projection — marker-keyed, diff-aligned (#131 field feedback)", () => {
+	it("keys rows by `<anchor>:<line>` and spells severities as words", async () => {
+		await withTempDir("auto-diag-json-", async (cwd) => {
+			const report = await deliverDiagnosticsAfterWrite(makeInput({ cwd }));
+			const json = diagnosticsJson([report!]);
+			expect(json).toHaveLength(1);
+			const rows = json[0]!.rows;
+			// NO `hash` field and NO bare `number`: the anchor IS the identity,
+			// and the line trails it inside the key — the exact vocabulary of the
+			// diff and read envelopes. The value is a dictionary.
+			for (const key of Object.keys(rows)) expect(key).toMatch(/^[A-Za-z0-9]{1,8}:\d+$/);
+			expect(Object.keys(rows).sort()).toEqual(
+				[
+					[report!.rows[0]!.hash, report!.rows[0]!.number].join(":"),
+					[report!.rows[1]!.hash, report!.rows[1]!.number].join(":"),
+				].sort(),
+			);
+			const first = Object.values(rows)[0]!;
+			expect(first).toEqual({
+				text: report!.rows[0]!.text,
+				messages: report!.rows[0]!.messages,
+				// Severity as WORDS: `1` means nothing to a reader.
+				severities: ["error"],
+			});
+		});
+	});
+
+	it("falls back to the bare line number when a row has no anchor", () => {
+		const synthetic = {
+			path: "a.ts",
+			absolutePath: "/repo/a.ts",
+			toolName: "edit",
+			totalSeen: 1,
+			truncated: false,
+			rows: [{ number: 7, hash: "", text: "x", messages: ["error: boom"], severities: [1] }],
+		} as FileDiagnostics;
+		const json = diagnosticsJson([synthetic]);
+		expect(Object.keys(json[0]!.rows)).toEqual(["7"]);
+	});
+});
+
 describe("the config toggle (seam 3)", () => {
 	it("parses `lsp.auto_diagnostics` from settings.yaml", () => {
 		const settings = parseSettingsYaml(
@@ -441,6 +484,71 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 			expect(value.modelText).toContain("LSP diagnostics");
 			expect(value.modelText).toMatch(/error: Cannot find name 'gamma'\./);
 		});
+	});
+
+	it("carries the marker-keyed dictionary in the JSON envelope", async () => {
+			// The field report: the JSON diagnostics must align with the diff dict —
+			// `<anchor>:<line>` as the KEY, a dictionary as the value, severities as
+			// words. No `hash` field, no bare `number`.
+			await withTempDir("auto-diag-edit-json-", async (cwd) => {
+				const file = join(cwd, "a.ts");
+				await writeFile(file, SOURCE, "utf-8");
+				const uri = pathToFileURL(file).href;
+				let revision = 0;
+				const pushed = new Map<string, unknown[]>();
+				const session = {
+					get diagnosticsRevision() {
+						return revision;
+					},
+					getDiagnostics: (u: string) => pushed.get(u),
+				} as never;
+				setLspManager({
+					readySessionFor: () => session,
+					readyLanguages: ["typescript"],
+					openDocumentFor: () => () => {
+						pushed.set(uri, DIAGNOSTICS);
+						revision += 1;
+					},
+				} as never);
+				const io = localIO();
+				const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+				const tool = buildEditTool(io, sandbox);
+				const exec = makeExec(cwd, () => undefined);
+				await buildReadTool(io).execute({ path: file }, exec);
+				const { lineHashes } = await import("../../src/hashline/index.js");
+				const anchors = await lineHashes(SOURCE, file);
+				const previousMode = getEffectiveConfig().outputFormat;
+				applyEffective({ output_format: "json" });
+				try {
+					const value = (await tool.execute(
+						{
+							path: file,
+							edits: [
+								{
+									op: "replace",
+									anchor_start: `${anchors[0]}:1`,
+									anchor_end: `${anchors[0]}:1`,
+									lines: ["export const alpha = 9;"],
+								},
+							],
+						},
+						exec,
+					)) as { modelText: string };
+					const envelope = JSON.parse(value.modelText) as {
+						diagnostics?: Array<{ path: string; rows: Record<string, { text: string; messages: string[]; severities: string[] }> }>;
+					};
+					expect(envelope.diagnostics).toHaveLength(1);
+					const rows = envelope.diagnostics![0]!.rows;
+					const keys = Object.keys(rows);
+					expect(keys.length).toBe(2);
+					for (const key of keys) expect(key).toMatch(/^[A-Za-z0-9]{1,8}:\d+$/);
+					const anyRow = Object.values(rows)[0]!;
+					expect(anyRow.severities.every((s) => s === "error" || s === "warning")).toBe(true);
+					expect(anyRow.messages[0]).toContain("Cannot find name 'gamma'");
+				} finally {
+					applyEffective({ output_format: previousMode });
+				}
+			});
 	});
 
 	it("returns the result un-delayed when the server never pushes", async () => {

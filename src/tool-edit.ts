@@ -74,6 +74,7 @@ import { diffDictFrom, diffRowsFromGenDiff, type EditDiffRow } from "./presentat
 
 import {
 	deliverDiagnosticsAfterWrite,
+	diagnosticsJson,
 	diagnosticsMeta,
 	formatDiagnosticsSection,
 	prepareWriteDiagnostics,
@@ -426,6 +427,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							: undefined;
 					const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
 					const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
+					// The MODEL channel (JSON envelope) uses the marker-keyed projection,
+					// aligned with the diff dict; the VALUE field keeps the meta shape
+					// (the web card's rendering channel). Two channels, two shapes.
+					const diagJson = diagnostics === undefined ? undefined : diagnosticsJson([diagnostics]);
 					const canonicalValue = buildCanonicalFromFileResult(file, displayPath, lineNumbers);
 					return isJsonOutput()
 						? {
@@ -436,7 +441,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 							modelText: JSON.stringify({
 								...buildEditJson(file, displayPath),
-								...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+								...(diagJson !== undefined ? { diagnostics: diagJson } : {}),
 							}),
 						}
 						: {
@@ -531,6 +536,9 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						: [],
 				);
 				const multiDiagMeta = diagnosticsMeta(multiDiag);
+				// The JSON envelope carries the marker-keyed projection (diff-aligned);
+				// the value field keeps the meta shape for the web card.
+				const multiDiagJson = diagnosticsJson(multiDiag);
 				const multiDiagSection = formatDiagnosticsSection(multiDiag);
 
 				if (!isJsonOutput()) {
@@ -554,7 +562,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					ok: success.length > 0,
 					success,
 					fail,
-					...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}),
+					...(multiDiagJson.length > 0 ? { diagnostics: multiDiagJson } : {}),
 				});
 				return { ok: success.length > 0, success, fail, ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
 			});

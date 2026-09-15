@@ -30,6 +30,7 @@ import { splitLines } from "./utils.js";
 import {
 	deliverDiagnosticsAfterWrite,
 	diagnosticsMeta,
+	diagnosticsJson,
 	formatDiagnosticsSection,
 	prepareWriteDiagnostics,
 	type DiagMetaEntry,
@@ -386,6 +387,9 @@ async function runAstEdit(
 			: undefined;
 	const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
 	const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
+	// The JSON envelope carries the marker-keyed projection (diff-aligned);
+	// the value field keeps the meta shape for the web card.
+	const diagJson = diagnostics === undefined ? undefined : diagnosticsJson([diagnostics]);
 	// The model channel IS `edit`'s, from `edit`'s own two builders: the text
 	// mode is the diff block (legend, `-`/`+` rows with fresh anchors, the
 	// success line) and the JSON mode is the pure edit envelope. Returning
@@ -397,7 +401,7 @@ async function runAstEdit(
 				...buildEditJson(result, args.path),
 				pattern: args.pat,
 				count: matches.length,
-				...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+				...(diagJson !== undefined ? { diagnostics: diagJson } : {}),
 			})
 		: diagSection === ""
 			? canonical.modelText
