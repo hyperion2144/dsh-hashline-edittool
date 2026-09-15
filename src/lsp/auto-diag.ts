@@ -42,11 +42,11 @@ import {
 	anchorWidth,
 	fmtHashlineRow,
 	fmtMarker,
-	lineHashesPure,
 } from "../hashline/hash-assign.js";
 import { execSessionKey, recordServed } from "../session-view.js";
 import type { FileIO } from "../fs-bridge.js";
 import { getLspManager } from "./manager.js";
+import { anchorsFor } from "../hashline/session-anchors.js";
 import type { LspSession } from "./session.js";
 
 /**
@@ -303,7 +303,7 @@ function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): 
 	const pushed = pushedArg ?? input.session?.getDiagnostics(input.uri);
 	if (pushed === undefined || pushed.length === 0) return undefined;
 	const lines = splitLines(input.text);
-	const anchors = lineHashesPure(input.text);
+	const anchors = anchorsFor(input.absolutePath, input.text);
 	const byLine = new Map<number, { messages: string[]; severities: number[] }>();
 	let totalSeen = 0;
 	let truncated = false;

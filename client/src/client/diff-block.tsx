@@ -9,6 +9,14 @@
  * verbatim under a static `dshl-diff-` namespace, plus the ReadBlock gutter
  * cell so both cards share one gutter look. Rendering data comes ONLY from
  * the structured meta — the model-facing text is never parsed.
+ *
+ * PER-ROW STRUCTURE (#131 field feedback). The body used to be TWO column
+ * blocks — every window's markers in one element, every code line in
+ * another — and a mouse drag that started in the anchor column swallowed the
+ * WHOLE column. Each drawn row is now ONE flex container (anchor cell +
+ * content cell), so the DOM order matches the visual order and a drag is an
+ * ordinary continuous text selection: the rows you drag across are exactly
+ * the rows you get, anchors and their lines together.
  */
 
 import { useCallback, useId, useMemo, useState } from "react";
@@ -52,24 +60,19 @@ function FoldToggle({ className, expanded, hidden, labels, onToggle }: {
 
 const CSS_TEXT = [
 	".dshl-diff-block{--dsl-diff-radius:12px;--dsl-diff-line-height:22px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-diff-radius)}",
-	// The body is TWO columns: the whole window's markers in one element, the code
-	// in another — the shape the read card uses. A drag therefore lands on this
-	// column or on the code, never on a per-row cell the code sits beside.
-	".dshl-diff-body{display:flex;align-items:flex-start;padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	// PER-ROW (#131 field report): one flex row per drawn line — anchor cell +
+	// content cell in DOM order, so a drag is an ordinary continuous text
+	// selection. The old two-block layout (whole window's anchors in one block,
+	// code in another) let a drag from the anchor column swallow the whole
+	// column.
+	".dshl-diff-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	".dshl-diff-row{display:flex}",
 	".dshl-diff-line{min-height:var(--dsl-diff-line-height);white-space:pre;display:flex}",
-	// The font is declared HERE: the column's width is set in `ch` from the data, and
-	// `ch` measures THIS element's font — left to inherit the UI font, the box would
-	// be sized in one font and filled in another, clipping the anchor off the tail.
-	// `content-box`: the width below is the TEXT width, and the two 14px insets are
-	// added on top of it. Under `border-box` the insets would eat the head-room the
-	// width calculation adds, and the anchor would be the first thing clipped.
-	// Selectable on purpose (see the read card): `user-select: none` was a hit-testing
-	// hint, not a filter, and it took the anchors away from copies that began in the
-	// code.
-	".dshl-diff-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
-	".dshl-diff-gutter-line{display:block;height:var(--dsl-diff-line-height);line-height:var(--dsl-diff-line-height);white-space:pre;overflow:hidden}",
-	".dshl-diff-code{flex:0 0 auto}",
-	".dshl-diff-content{white-space:pre}",
+	// The anchor cell: width via `--dshl-gutter-w` (set inline on the body, in
+	// `ch` of the font declared HERE — `ch` measures this element's own font).
+	// Selectable on purpose: a reader who drags into it wants the anchors.
+	".dshl-diff-gutter-line{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-gutter-w);padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);white-space:pre;overflow:hidden}",
+	".dshl-diff-content{flex:1 1 auto;white-space:pre}",
 	".dshl-diff-gap{color:var(--dsw-alias-label-tertiary)}",
 	".dshl-diff-del{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diff-add{color:var(--dsw-alias-state-success-primary)}",
@@ -77,8 +80,6 @@ const CSS_TEXT = [
 	".dshl-diff-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-diff-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
-	// The tab bar is the shared `TabStrip` (issue #96); the card keeps only its
-	// own row classes below.
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -97,10 +98,9 @@ export function ensureDiffStyles(): void {
 const css = {
 	block: "dshl-diff-block",
 	body: "dshl-diff-body",
+	row: "dshl-diff-row",
 	line: "dshl-diff-line",
-	gutter: "dshl-diff-gutter",
 	gutterLine: "dshl-diff-gutter-line",
-	code: "dshl-diff-code",
 	content: "dshl-diff-content",
 	gap: "dshl-diff-gap",
 	del: "dshl-diff-del",
@@ -124,7 +124,7 @@ export interface DiffRowsLabels {
 }
 
 /**
- * The gutter label of one row — ONE column carrying marker + number + anchor:
+ * The gutter label of one row — ONE cell carrying marker + number + anchor:
  * `-21:C7` for removed lines (the pre-edit anchor, stale but informative),
  * `+21:h2` for added lines (the served chained-edit anchor), `20:Cg` for
  * context. The marker never separates from the number:anchor pair.
@@ -143,7 +143,7 @@ interface DisplayRow {
 	kind: "del" | "add" | "ctx" | "gap";
 	gutter: string;
 	text: string;
-	/** The diff class for the gutter and content cells (del/add/ctx); gap draws bare. */
+	/** The diff class for the anchor and content cells (del/add/ctx); gap draws bare. */
 	rowClass: string;
 }
 
@@ -174,7 +174,7 @@ function buildDisplayRows(rows: readonly DiffRowMeta[]): DisplayRow[] {
 	return out;
 }
 
-/** The diff text a reader copies: the shown rows minus the gutter column. */
+/** The diff text a reader copies: the shown rows minus the anchor column. */
 function copyText(rows: readonly DisplayRow[]): string {
 	return rows
 		.map((row) => {
@@ -203,9 +203,9 @@ export interface DiffRowsBlockProps {
 }
 
 /**
- * Render the applied edit as a diff surface with ONE gutter column carrying
- * marker + number + anchor (`-21:C7` / `+21:h2` / `20:Cg`): removed lines
- * keep their pre-edit anchor, added and context lines carry the served
+ * Render the applied edit as a diff surface with ONE anchor cell per row
+ * carrying marker + number + anchor (`-21:C7` / `+21:h2` / `20:Cg`): removed
+ * lines keep their pre-edit anchor, added and context lines carry the served
  * post-edit anchor (the chained-edit currency).
  */
 export function DiffRowsBlock({
@@ -234,8 +234,9 @@ export function DiffRowsBlock({
 	const panelId = `${baseId}-panel`;
 
 	const display = useMemo(() => buildDisplayRows(activeRows), [activeRows]);
-	// One shared marker column, sized from the data by the same helper the read card
-	// uses — the four cards must not invent four widths for the same content.
+	// One shared anchor-cell width, sized from the data by the same helper the
+	// read card uses — the four cards must not invent four widths for the same
+	// content.
 	const gutterWidth = markerColumnCh(display.map((row) => row.gutter));
 	const [expanded, setExpanded] = useState(false);
 	const [copied, setCopied] = useState(false);
@@ -268,17 +269,6 @@ export function DiffRowsBlock({
 	const head = capped ? display.slice(0, headLines) : display;
 	const tail = capped ? display.slice(display.length - tailLines) : [];
 
-	// One code line, with the row's diff colour. The marker for this row is NOT
-	// here: it lives in the gutter column, which is one element for the whole
-	// window (so the pointer lands on the column or on the code, never beside it).
-	const rowEl = (row: DisplayRow, index: number) =>
-		jsx_("div", {
-			key: index,
-			className: css.line,
-			children: jsx_("span", { className: `${css.content} ${row.rowClass}`.trim(), children: row.text }),
-		});
-
-
 	return jsx_("div", {
 		className: `${css.block} ${className ?? ""}`.trim(),
 		"data-diff": "",
@@ -302,36 +292,32 @@ export function DiffRowsBlock({
 				id: panelId,
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
+				style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
 				children: [
-					// ONE marker element for the whole window — one BLOCK span per drawn row,
-					// plus a blank row where the fold sits, so the labels stay on the code's
-					// lines without relying on how whitespace between blocks is collapsed.
-					//
-					// Each label takes its ROW's class too: the gutter is part of the row, so a
-					// removed line's `-21:C7` is red and an added line's `+21:h2` is green, the
-					// way the shipped diff card drew them.
-					jsx_("div", {
-						className: css.gutter,
-						style: { width: `${gutterWidth}ch` },
-						"aria-hidden": true,
-						children: [...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((row, index) =>
-							jsx_("span", {
-								className: row === null ? css.gutterLine : `${css.gutterLine} ${row.rowClass}`.trim(),
-								key: index,
-								children: row?.gutter ?? " ",
-							}),
-						),
-					}),
-					jsx_("div", {
-						className: css.code,
-						children: [
-							...head.map(rowEl),
-							...(hidden > 0
-								? [jsx_(FoldToggle, { key: "fold", className: css.expand, expanded, hidden, labels, onToggle })]
-								: []),
-							...tail.map(rowEl),
-						],
-					}),
+					// PER-ROW: one flex container per drawn line — anchor cell + content
+					// cell in DOM order, so a drag is an ordinary continuous text
+					// selection (the rows you drag across, anchors and lines together).
+					// Each cell takes its ROW's class too: a removed line's `-21:C7` is
+					// red and an added line's `+21:h2` is green, the way the shipped
+					// diff card drew them. The fold toggle spans the full row.
+					...[...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((row, index) =>
+						row === null
+							? jsx_(FoldToggle, { key: `fold-${index}`, className: css.expand, expanded, hidden, labels, onToggle })
+							: jsx_("div", {
+									key: index,
+									className: css.row,
+									children: [
+										jsx_("span", {
+											className: `${css.gutterLine} ${row.rowClass}`.trim(),
+											children: row.gutter,
+										}),
+										jsx_("span", {
+											className: `${css.content} ${row.rowClass}`.trim(),
+											children: row.text,
+										}),
+									],
+								}),
+					),
 				],
 			}),
 			jsx_("div", {

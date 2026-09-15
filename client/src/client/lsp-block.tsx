@@ -30,19 +30,17 @@ import type { LspCardModel, LspRowMeta } from "./types.js";
 const CSS_TEXT = [
 	// Same frame as the diff card: one card look across the plugin.
 	".dshl-lsp-block{--dsl-lsp-radius:12px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-lsp-radius)}",
+	// PER-ROW (#131 field report): one flex row per drawn line — anchor cell +
+	// content cell (source line + its diagnostics block) in DOM order, so a drag
+	// is an ordinary continuous text selection.
 	".dshl-lsp-body{padding:8px 14px 12px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	".dshl-lsp-row{display:flex;align-items:flex-start}",
 	".dshl-lsp-line{display:flex;min-height:22px;white-space:pre}",
-	// The body is TWO columns, as the other three cards are: the whole window's
-	// markers in one element, the source in another.
-	".dshl-lsp-body{display:flex;align-items:flex-start;padding:8px 14px 12px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
-	// The marker column: width from the data, FONT declared here (the width is in
-	// `ch`, which measures this element's own font), and a right inset so the source
-	// is not glued to the marker.
-	// `content-box`: the width below is the TEXT width, and the 14px inset is added on
-	// top of it rather than eaten out of it.
+	// The anchor cell: width via `--dshl-gutter-w` (set inline on the body, in `ch`
+	// of the font declared HERE — `ch` measures this element's own font),
+	// right-aligned with a right inset so the source is not glued to the marker.
 	// Selectable on purpose (see the read card).
-	".dshl-lsp-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
-	".dshl-lsp-gutter-line{display:block;height:22px;line-height:22px;white-space:pre;overflow:hidden}",
+	".dshl-lsp-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-gutter-w);padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-lsp-code{flex:0 0 auto}",
 	".dshl-lsp-src{white-space:pre}",
 	// The diagnostics: indented under their line, behind a red rule, ONE ROW EACH —
@@ -72,6 +70,7 @@ function ensureStyles(): void {
 const css = {
 	block: "dshl-lsp-block",
 	body: "dshl-lsp-body",
+	row: "dshl-lsp-row",
 	line: "dshl-lsp-line",
 	gutter: "dshl-lsp-gutter",
 	gutterLine: "dshl-lsp-gutter-line",
@@ -125,22 +124,9 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 		return [...rows.slice(0, headLines), null, ...rows.slice(rows.length - tailLines)];
 	}, [capped, headLines, rows, tailLines]);
 
-	// The marker column is ONE element for the whole window, exactly as the read,
-	// diff and grep cards build theirs.
-	//
-	// ONE MARKER PER DRAWN ROW, which for this card is not the same as one marker per
-	// LINE: a source line with N diagnostics draws those N blocks under it, so it
-	// occupies N+1 rows of the code column. Blank markers stand in for them, which is
-	// what keeps the next real marker on its own line's row.
-	const markerLines = useMemo(
-		() =>
-			shown.flatMap((row) =>
-				row === null
-					? [" "]
-					: [markerOf(row), ...row.messages.map(() => " ")],
-			),
-		[shown],
-	);
+	// PER-ROW: the anchor cell travels WITH its row — no cross-row alignment to
+	// maintain, so the old markerLines placeholder scheme is gone. The width is
+	// still shared across the card via `--dshl-gutter-w`.
 	const gutterWidth = markerColumnCh(rows.map((row) => markerOf(row)));
 	const messageCount = rows.reduce((total, row) => total + row.messages.length, 0);
 
@@ -177,46 +163,43 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 			jsx_("div", {
 				id: panelId,
 				className: css.body,
+				style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
 				children: [
-					// ONE marker element for the whole window — the construction every other
-					// card here uses.
-					jsx_("div", {
-						className: css.gutter,
-						style: { width: `${gutterWidth}ch` },
-						"aria-hidden": true,
-						children: markerLines.map((marker, index) =>
-							jsx_("span", { className: css.gutterLine, key: index, children: marker }),
-						),
-					}),
-					jsx_("div", {
-						className: css.code,
-						children: [
-							...shown.map((row, index) => {
-								if (row === null) {
-									return jsx_("button", {
-										type: "button",
-										className: css.expand,
-										key: `gap-${index}`,
-										"aria-expanded": false,
-										"aria-label": labels.expandAria(hidden),
-										onClick: () => setExpanded(true),
-										children: `${labels.expand(hidden)}`,
-									});
-								}
-								return jsx_("div", { key: `row-${row.number}-${index}`, children: rowNodes(row) });
-							}),
-							expanded && hidden > 0
-								? jsx_("button", {
-										type: "button",
-										className: css.expand,
-										"aria-expanded": true,
-										"aria-label": labels.collapseAria,
-										onClick: () => setExpanded(false),
-										children: labels.collapse,
-									})
-								: null,
-						],
-					}),
+					// PER-ROW (#131 field feedback): one flex row per drawn line — anchor
+					// cell + content cell (source line and its diagnostics block) in DOM
+					// order, so a drag is an ordinary continuous text selection. The
+					// expand/collapse buttons span their full row.
+						...shown.map((row, index) => {
+							if (row === null) {
+								return jsx_("button", {
+									type: "button",
+									className: css.expand,
+									key: `gap-${index}`,
+									"aria-expanded": false,
+									"aria-label": labels.expandAria(hidden),
+									onClick: () => setExpanded(true),
+									children: `${labels.expand(hidden)}`,
+								});
+							}
+							return jsx_("div", {
+								key: `row-${row.number}-${index}`,
+								className: css.row,
+								children: [
+									jsx_("div", { className: css.gutter, "aria-hidden": true, children: markerOf(row) }),
+									jsx_("div", { className: css.code, children: rowNodes(row) }),
+								],
+							});
+						}),
+						expanded && hidden > 0
+							? jsx_("button", {
+									type: "button",
+									className: css.expand,
+									"aria-expanded": true,
+									"aria-label": labels.collapseAria,
+									onClick: () => setExpanded(false),
+									children: labels.collapse,
+								})
+							: null,
 					jsx_("div", { className: css.footer, children: labels.summary(rows.length, messageCount) }),
 				],
 			}),

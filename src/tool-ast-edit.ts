@@ -19,6 +19,7 @@ import { E_AST_DISABLED } from "./ast/codes.js";
 import { AstError, getAstClient } from "./ast/client.js";
 import { runFileEdits, type PreparedItem } from "./edit-engine.js";
 import { execCwd, execSessionKey, withWorkspace } from "./session-view.js";
+import { anchorsFor } from "./hashline/session-anchors.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "./presentation-helpers.js";
 import { lineHashesPure } from "./hashline/hash-assign.js";
@@ -253,7 +254,7 @@ async function runAstEdit(
 	}
 	// The anchors come from the hashline allocator — the SAME primitive
 	// `read` uses — so what is edited is what a read would have shown.
-	const anchors = lineHashesPure(text);
+	const anchors = anchorsFor(absolutePath, text);
 	const sourceLines = splitLines(text);
 	const sessionKey = execSessionKey(exec);
 	// SERVE what this tool is about to edit, exactly as `read` serves what it

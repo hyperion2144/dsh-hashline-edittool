@@ -31,24 +31,17 @@ const CSS_TEXT = [
 	".dshl-grep-block{--dsl-grep-line-height:22px;position:relative;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:12px}",
 	// The tab bar itself is the shared `TabStrip` (issue #96); only the body
 	// chrome below belongs to this card.
-	// TWO columns, exactly as the read and diff cards are: the markers in one element,
-	// the code in another. A block body here stacked them instead (markers above,
-	// code below), because a `width` in `ch` is a real width and the column wrapped.
-	".dshl-grep-body{display:flex;align-items:flex-start;padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	// PER-ROW (#131 field report): one flex row per drawn line — anchor cell +
+	// content cell in DOM order, so a drag is an ordinary continuous text
+	// selection. The old two-block layout let a drag from the anchor column
+	// swallow the whole column.
+	".dshl-grep-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	".dshl-grep-row{display:flex}",
 	".dshl-grep-line{min-height:var(--dsl-grep-line-height);white-space:pre;display:flex}",
-	// The marker column: ONE element for the whole window, each label a block span,
-	// sized from the data by the widest label. The font is declared HERE because the
-	// width is expressed in `ch` and `ch` measures THIS element's own font — left to
-	// inherit the UI font, the box would be sized in one font and filled in another,
-	// and the tail of each `行号:锚点` would be clipped away.
-	// (The body already carries the card's 14px inset, so this column pads only on the
-	// right — the gap to the code.)
-	// `content-box`: the width below is the TEXT width, and the 14px inset is added
-	// on top of it rather than eaten out of it.
+	// The anchor cell: width via `--dshl-gutter-w` (set inline on the body, in `ch`
+	// of the font declared HERE — `ch` measures this element's own font).
 	// Selectable on purpose (see the read card).
-	".dshl-grep-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
-	".dshl-grep-gutter-line{display:block;height:var(--dsl-grep-line-height);line-height:var(--dsl-grep-line-height);white-space:pre;overflow:hidden}",
-	".dshl-grep-code{flex:0 0 auto}",
+	".dshl-grep-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-gutter-w);padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);white-space:pre;overflow:hidden}",
 	".dshl-grep-content{white-space:pre}",
 	// The highlighter yellow is hard-coded because the theme has no yellow token
 	// (its only warm family is amber, whose lightest tier reads as cream, not
@@ -78,10 +71,9 @@ export function ensureGrepStyles(): void {
 const css = {
 	block: "dshl-grep-block",
 	body: "dshl-grep-body",
+	row: "dshl-grep-row",
 	line: "dshl-grep-line",
 	gutter: "dshl-grep-gutter",
-	gutterLine: "dshl-grep-gutter-line",
-	code: "dshl-grep-code",
 	content: "dshl-grep-content",
 	mark: "dshl-grep-mark",
 	expand: "dshl-grep-expand",
@@ -209,37 +201,32 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 				id: panelId,
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
+				style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
 				children: [
-					// ONE marker element for the whole window, each label a block span — the
-					// same construction as the read and diff cards.
-					jsx_("div", {
-						className: css.gutter,
-						style: { width: `${gutterWidth}ch` },
-						"aria-hidden": true,
-						children: [...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((entry, index) =>
-							jsx_("span", { className: css.gutterLine, key: index, children: entry?.gutter ?? " " }),
+					// PER-ROW (#131 field feedback): one flex row per drawn line — anchor
+					// cell + content cell in DOM order, so a drag is an ordinary continuous
+					// text selection. The fold button spans its full row.
+						...[...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((entry, index) =>
+							entry === null
+								? jsx_("button", {
+										key: `expand-${index}`,
+										type: "button",
+										className: css.expand,
+										"aria-expanded": expanded,
+										"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
+										onClick: onToggle,
+										children: expanded ? labels.collapse : labels.expand(hidden),
+									})
+								: jsx_("div", {
+										key: index,
+										className: css.row,
+										children: [
+											jsx_("span", { className: css.gutter, "aria-hidden": true, children: entry.gutter }),
+											jsx_("span", { className: css.content, children: rowContent(entry.row) }),
+										],
+									}),
 						),
-					}),
-					jsx_("div", {
-						className: css.code,
-						children: [
-							...head.map(rowEl),
-					...(hidden > 0
-						? [
-								jsx_("button", {
-									type: "button",
-									className: css.expand,
-									"aria-expanded": expanded,
-									"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
-									onClick: onToggle,
-									children: expanded ? labels.collapse : labels.expand(hidden),
-								}),
-							]
-						: []),
-							...tail.map(rowEl),
-						],
-					}),
-				],
+					],
 			}),
 			jsx_("div", {
 				className: css.footer,

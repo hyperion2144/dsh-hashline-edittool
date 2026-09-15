@@ -27,6 +27,7 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "./hashli
 import { recordServed, execSessionKey } from "./session-view.js";
 import { readMetaFromMeta } from "./presentation-helpers.js";
 import { isJsonOutput } from "./config.js";
+import { anchorsFor } from "./hashline/session-anchors.js";
 import { diagRowsToJson } from "./lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
@@ -323,7 +324,7 @@ export function buildLspTool(io: FileIO) {
 					};
 				}
 				const diagLines = splitLines(text);
-				const diagAnchors = lineHashesPure(text);
+				const diagAnchors = anchorsFor(absolutePath, text);
 				// ONE ROW PER LINE: the row IS the source line, its diagnostics are a
 				// SEPARATE field.
 				//
@@ -450,7 +451,7 @@ export function buildLspTool(io: FileIO) {
 				// no usable position, and such a symbol is left out of the CARD rather
 				// than drawn at line 0 — the model text still lists it.
 				const sourceLines = splitLines(text);
-				const anchors = lineHashesPure(text);
+				const anchors = anchorsFor(absolutePath, text);
 				const seenLines = new Set<number>();
 				const hashlines: { number: number; hash: string; text: string }[] = [];
 				for (const symbol of flat) {
