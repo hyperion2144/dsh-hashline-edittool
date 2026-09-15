@@ -21,6 +21,7 @@ import { isAstEnabled, isAstLanguageEnabled } from "./config.js";
 import { E_AST_DISABLED } from "./ast/codes.js";
 import { AstError, getAstClient } from "./ast/client.js";
 import type { FileIO } from "./fs-bridge.js";
+import { anchorsFor } from "./hashline/session-anchors.js";
 import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure } from "./hashline/hash-assign.js";
 // tools emit the SAME `files` shape precisely so one cap governs both.
 import { capGrepMeta, grepPresentationFromMeta } from "./presentation-helpers.js";
@@ -261,7 +262,7 @@ export function buildAstGrepTool(io: FileIO) {
 			// here rather than in the line reader.
 			if (args.pat === undefined || args.pat === "") {
 				const lines = splitLines(text);
-				const hashes = lineHashesPure(text);
+				const hashes = anchorsFor(absolutePath, text);
 				const tooBig = summaryGate({ totalLines: lines.length, byteLength: text.length });
 				if (tooBig !== undefined) {
 					// A file the outline gate refuses is not an error: say which rule it hit
@@ -392,7 +393,7 @@ export function buildAstGrepTool(io: FileIO) {
 			// the separator (issue #69). The rows are exactly what `read` produces, so
 			// a match can be handed straight to `edit`.
 			const lines = splitLines(text);
-			const anchors = lineHashesPure(text);
+			const anchors = anchorsFor(absolutePath, text);
 			const width = anchors.reduce((w, a) => Math.max(w, a.length), 0);
 			// THE CARD'S ROWS, built from the SAME `lines` / `anchors` the model text
 			// uses. A card is a projection of facts, never a re-parse of the rendered

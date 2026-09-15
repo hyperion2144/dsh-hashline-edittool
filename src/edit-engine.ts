@@ -562,15 +562,60 @@ export async function applyOne(
 
 	const result = anchorResult.content;
 	const noop = result === input.content;
-	const resultHashes = noop
-		? input.hashes
-		: await lineHashes(result, input.absolutePath, input.store, input.persist);
-	const { totalAddedLines, totalRemovedLines } = countLineChanges(
-		edit,
-		input.countHashes ?? input.hashes,
-		noop,
-		0, // removedAutoFixes: always 0 since #66/B7 (no built-in content mutation)
-	);
+	if (noop) {
+		const { totalAddedLines, totalRemovedLines } = countLineChanges(
+			edit,
+			input.countHashes ?? input.hashes,
+			true,
+			0,
+		);
+		return {
+			result,
+			hashes: input.hashes,
+			range: anchorResult.range,
+			noop,
+			edit,
+			noopEdit: anchorResult.noopEdit,
+			firstChangedLine: anchorResult.firstChangedLine,
+			lastChangedLine: anchorResult.lastChangedLine,
+			totalAddedLines,
+			totalRemovedLines,
+			anchorWarnings: anchorResult.warnings,
+		};
+	}
+
+	// issue #131 锚点漂移修复：
+	//
+	// 这里曾经调 lineHashes(result, path) —— 即 anchorsFor —— 而中间态内容的
+	// checksum 永远不会命中会话快照，于是每个 op 之后都触发一次
+	// assignAnchors 全量重算。同内容行组（`});` 这类闭合行）按出现顺序重新
+	// 排队，后续 op 的锚点（如 `486:TX`）在污染过的数组里 indexOf 命中到
+	// 完全无关的行 —— 编辑落在了用户从未引用过的行上。
+//
+	// 锚点分配的唯二合法时机：某行内容首次被会话看到；某行内容发生变化。
+	// batch 中间态两者都不是 —— 这里只做单 hunk 增量迁移：内容不变的行
+	// verbatim 保留锚点，删除行释放，插入行新分配。
+	// HUNK 行数用实际行数差推导，而非 countLineChanges：sed 在 applyOne 内
+	// 重新 resEdit，其 content_lines 是空壳，countLineChanges 的 added 对
+	// sed 不实（曾因此让增量迁移丢行）。整份文件的行数差全部来自这一个
+	// hunk，所以 added_hunk = 新总行数 - 旧总行数 + hunk 内被替换的行数。
+	const removedCount = anchorResult.range.endLine - anchorResult.range.startLine + 1;
+	const addedCount =
+		splitLines(result).length - splitLines(input.content).length + removedCount;
+	const resultHashes = updateAnchorsAfterEdit({
+		path: input.absolutePath,
+		oldContent: input.content,
+		newContent: result,
+		oldAnchors: input.hashes,
+		hunks: [
+			{
+				oldStart1: anchorResult.range.startLine,
+				oldEnd1: anchorResult.range.endLine,
+				finalStart1: anchorResult.range.startLine,
+				finalEnd1: anchorResult.range.startLine + addedCount - 1,
+			},
+		],
+	});
 
 	return {
 		result,
@@ -581,11 +626,12 @@ export async function applyOne(
 		noopEdit: anchorResult.noopEdit,
 		firstChangedLine: anchorResult.firstChangedLine,
 		lastChangedLine: anchorResult.lastChangedLine,
-		totalAddedLines,
-		totalRemovedLines,
+		totalAddedLines: addedCount,
+		totalRemovedLines: removedCount,
 		anchorWarnings: anchorResult.warnings,
 	};
 }
+
 
 // ---------------------------------------------------------------------------
 // noop-loop guard

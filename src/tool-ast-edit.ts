@@ -19,6 +19,7 @@ import { E_AST_DISABLED } from "./ast/codes.js";
 import { AstError, getAstClient } from "./ast/client.js";
 import { runFileEdits, type PreparedItem } from "./edit-engine.js";
 import { execCwd, execSessionKey, withWorkspace } from "./session-view.js";
+import { anchorsFor } from "./hashline/session-anchors.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "./presentation-helpers.js";
 import { lineHashesPure } from "./hashline/hash-assign.js";
@@ -30,6 +31,7 @@ import { splitLines } from "./utils.js";
 import {
 	deliverDiagnosticsAfterWrite,
 	diagnosticsMeta,
+	diagnosticsJson,
 	formatDiagnosticsSection,
 	prepareWriteDiagnostics,
 	type DiagMetaEntry,
@@ -252,7 +254,7 @@ async function runAstEdit(
 	}
 	// The anchors come from the hashline allocator — the SAME primitive
 	// `read` uses — so what is edited is what a read would have shown.
-	const anchors = lineHashesPure(text);
+	const anchors = anchorsFor(absolutePath, text);
 	const sourceLines = splitLines(text);
 	const sessionKey = execSessionKey(exec);
 	// SERVE what this tool is about to edit, exactly as `read` serves what it
@@ -386,6 +388,9 @@ async function runAstEdit(
 			: undefined;
 	const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
 	const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
+	// The JSON envelope carries the marker-keyed projection (diff-aligned);
+	// the value field keeps the meta shape for the web card.
+	const diagJson = diagnostics === undefined ? undefined : diagnosticsJson([diagnostics]);
 	// The model channel IS `edit`'s, from `edit`'s own two builders: the text
 	// mode is the diff block (legend, `-`/`+` rows with fresh anchors, the
 	// success line) and the JSON mode is the pure edit envelope. Returning
@@ -397,7 +402,7 @@ async function runAstEdit(
 				...buildEditJson(result, args.path),
 				pattern: args.pat,
 				count: matches.length,
-				...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+				...(diagJson !== undefined ? { diagnostics: diagJson } : {}),
 			})
 		: diagSection === ""
 			? canonical.modelText

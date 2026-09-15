@@ -29,36 +29,34 @@ import { foldWindow, markerColumnCh, readCardMeta } from "./read-meta.js";
 import type { ReadCardLabels } from "./labels.js";
 import type { ReadCardModel } from "./types.js";
 
+import { installAnchorColumnSelection } from "./anchor-select.js";
 const CSS_TEXT = [
 	// The frame: the diff and diagnostics cards' own declarations, so the cards
 	// cannot drift apart.
 	".dshl-read{--dsl-read-radius:12px;--dsl-read-line-height:22px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-read-radius)}",
-	// The body is ONE row of two columns; the whole body scrolls sideways together,
-	// so a long line never pushes the marker column off the card.
-	".dshl-read-body{display:flex;align-items:flex-start;box-sizing:border-box;padding:12px 0;overflow-x:auto;overflow-y:hidden;font:var(--dsw-font-markdown-code-block)}",
-	// The column is as wide as its widest marker (`markerColumnCh`, set inline).
-	// The LEFT padding is the card's own inset; the RIGHT padding is the gap to the
-	// code — without it the marker sits flush against the first character, because
-	// an adaptive column is exactly as wide as its text.
-	//
-	// The font is declared HERE and not inherited: the width is expressed in `ch`,
-	// which is a measurement of THIS element's own font. Left to inherit the
-	// surrounding UI font, the box is sized in one font's character and filled in
-	// another's, and the marker's tail — the anchor — is what gets clipped.
-	// The width is the TEXT width, so the box is `content-box`: with `border-box` the
-	// 2ch of head-room the width helper adds would be eaten by the two 14px paddings,
-	// and the anchor — the tail of the marker — is what `overflow:hidden` would cut.
-	// The marker column is SELECTABLE, deliberately: a reader who drags into it wants
-	// the `行号:锚点`, and the copy button's own text excludes it either way. (It was
-	// `user-select: none` — that is a hit-testing hint, not a filter, so it silently
-	// took the anchors away from every copy that started in the code.)
-	".dshl-read-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	// PER-ROW (issue 131 field report): one flex row per drawn line — anchor cell +
+	// code cell in DOM order, so a drag is an ordinary continuous text selection.
+	// The old two-block layout let a drag from the anchor column swallow the
+	// whole column.
+	".dshl-read-body{padding:12px 0;overflow-x:auto;overflow-y:hidden;font:var(--dsw-font-markdown-code-block)}",
+	".dshl-read-row{display:flex}",
+	// The anchor cell width comes from `--dshl-read-gutter-w` (set inline on the
+	// body, in `ch` of the font declared HERE — `ch` measures this element's own
+	// font). The LEFT padding is the card's own inset; the RIGHT padding is the
+	// gap to the code. The marker cell is SELECTABLE, deliberately: a reader who
+	// drags into it wants the `行号:锚点`. (It was `user-select: none` — that is a
+	// hit-testing hint, not a filter, so it silently took the anchors away from
+	// every copy that started in the code.)
+	".dshl-read-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-read-gutter-w);padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	// Drag-origin semantics (issue 131): a drag that starts in the CODE excludes the
+	// anchor cells for that drag; a drag that starts IN the anchor column keeps
+	// them in (see anchor-select.ts).
+	".dshl-suppress-anchor-select .dshl-read-gutter{user-select:none}",
 	".dshl-read-marker,.dshl-read-gap{display:block;height:var(--dsl-read-line-height);line-height:var(--dsl-read-line-height);white-space:nowrap;overflow:hidden}",
-	".dshl-read-code{flex:none;padding-right:14px}",
 	".dshl-read-line{min-height:var(--dsl-read-line-height);line-height:var(--dsl-read-line-height);white-space:pre}",
 	// The fold is ours: one row of the code column, drawn only when the window is
 	// capped, in the same place the shipped card put its own.
-	".dshl-read-fold{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:var(--dsw-font-markdown-code-block);text-align:left}",
+	".dshl-read-fold{flex:1 1 auto;display:block;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:var(--dsw-font-markdown-code-block);text-align:left}",
 	".dshl-read-fold:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-read-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-read-meta{display:flex;gap:12px}",
@@ -178,39 +176,54 @@ export function ReadCard({ model, labels, className }: ReadCardProps): ReactNode
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-0`,
 				className: "dshl-read-body",
+				style: { "--dshl-read-gutter-w": `${gutterCh}ch` } as never,
+				// PER-ROW (issue 131 field report): one flex row per drawn line — anchor cell
+				// + code cell in DOM order, so a drag is an ordinary continuous text
+				// selection: the rows you drag across, anchors and lines together.
 				children: [
-					jsx_("div", {
-						className: "dshl-read-gutter",
-						style: { width: `${gutterCh}ch` },
-						"aria-hidden": true,
-						children: [
-							...head.map(({ row }) =>
-								jsx_("span", { className: "dshl-read-marker", key: `h${row.number}`, children: row.gutter }),
-							),
-							hidden > 0 && !expanded ? jsx_("span", { className: "dshl-read-gap", key: "gap" }) : null,
-							...tail.map(({ row }) =>
-								jsx_("span", { className: "dshl-read-marker", key: `t${row.number}`, children: row.gutter }),
-							),
-						],
-					}),
-					jsx_("div", {
-						className: "dshl-read-code",
-						children: [
-							...head.map(({ row, tokens }) => lineNodes(tokens, `h${row.number}`)),
-							hidden > 0
-								? jsx_("button", {
-										type: "button",
-										className: "dshl-read-fold",
-										key: "fold",
-										"aria-expanded": expanded,
-										"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
-										onClick: onToggle,
-										children: expanded ? labels.collapse : labels.expand(hidden),
-									})
-								: null,
-							...tail.map(({ row, tokens }) => lineNodes(tokens, `t${row.number}`)),
-						],
-					}),
+					...head.map(({ row, tokens }) =>
+						jsx_("div", {
+							className: "dshl-read-row",
+							key: `h${row.number}`,
+							children: [
+								jsx_("span", { className: "dshl-read-gutter", "aria-hidden": true, children: row.gutter }),
+								lineNodes(tokens, `h${row.number}`),
+							],
+						}),
+					),
+					hidden > 0
+						? jsx_("div", {
+							className: "dshl-read-row",
+							key: "fold-row",
+							children: [
+								// The empty anchor cell keeps the button indented to the code
+								// column, out of the anchor column's lane.
+								jsx_("span", { className: "dshl-read-gutter", "aria-hidden": true }),
+								jsx_("button", {
+									type: "button",
+									className: "dshl-read-fold",
+									"aria-expanded": expanded,
+									"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
+									onClick: onToggle,
+									// The label flips with the state: this ONE button is both
+									// the expander and the collapser, and it stays rendered
+									// while rows remain hidden so the fold can always be
+									// closed again.
+									children: expanded ? labels.collapse : labels.expand(hidden),
+								}),
+							],
+						})
+						: null,
+					...tail.map(({ row, tokens }) =>
+						jsx_("div", {
+							className: "dshl-read-row",
+							key: `t${row.number}`,
+							children: [
+								jsx_("span", { className: "dshl-read-gutter", "aria-hidden": true, children: row.gutter }),
+								lineNodes(tokens, `t${row.number}`),
+							],
+						}),
+					),
 				],
 			}),
 			meta.length > 0

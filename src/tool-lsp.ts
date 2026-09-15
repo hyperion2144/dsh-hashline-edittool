@@ -27,6 +27,8 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "./hashli
 import { recordServed, execSessionKey } from "./session-view.js";
 import { readMetaFromMeta } from "./presentation-helpers.js";
 import { isJsonOutput } from "./config.js";
+import { anchorsFor } from "./hashline/session-anchors.js";
+import { diagRowsToJson } from "./lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
 interface FlatSymbol {
@@ -322,7 +324,7 @@ export function buildLspTool(io: FileIO) {
 					};
 				}
 				const diagLines = splitLines(text);
-				const diagAnchors = lineHashesPure(text);
+				const diagAnchors = anchorsFor(absolutePath, text);
 				// ONE ROW PER LINE: the row IS the source line, its diagnostics are a
 				// SEPARATE field.
 				//
@@ -390,11 +392,23 @@ export function buildLspTool(io: FileIO) {
 					symbols: [],
 					hashlines: diagRows,
 					totalLines: diagLines.length,
-					raw:
-						diagMessages.length === 0
-							? `${language.displayName} reported NO diagnostics for this file.`
-							: diagMessages.join("\n"),
-				};
+					// JSON 模式：诊断与 `edit` 内联的投影同形 ——
+					// `[{ path, rows: { "<anchor>:<line>": { text, messages, severities } } }]`，
+					// severities 为文字。raw 的纯文本句子只留在 text 模式。
+					...(isJsonOutput()
+						? {
+								diagnostics: [
+									{ path: absolutePath, rows: diagRowsToJson(diagRows) },
+								],
+							}
+						: {
+								raw:
+									diagMessages.length === 0
+										? `${language.displayName} reported NO diagnostics for this file.`
+										: diagMessages.join("\n"),
+							}
+				),
+			};
 			}
 
 			// Position-based operations need a range, and a range needs a column —
@@ -437,7 +451,7 @@ export function buildLspTool(io: FileIO) {
 				// no usable position, and such a symbol is left out of the CARD rather
 				// than drawn at line 0 — the model text still lists it.
 				const sourceLines = splitLines(text);
-				const anchors = lineHashesPure(text);
+				const anchors = anchorsFor(absolutePath, text);
 				const seenLines = new Set<number>();
 				const hashlines: { number: number; hash: string; text: string }[] = [];
 				for (const symbol of flat) {

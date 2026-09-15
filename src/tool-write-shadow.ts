@@ -46,6 +46,7 @@ import { notifyDocumentWritten } from "./lsp/sync.js";
 import {
 	deliverDiagnosticsAfterWrite,
 	diagnosticsMeta,
+	diagnosticsJson,
 	formatDiagnosticsSection,
 	prepareWriteDiagnostics,
 	type DiagMetaEntry,
@@ -266,11 +267,14 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 							: `${AUTO_READ_HEADING}\n${served.text}`;
 				// #131: diagnostics ride BOTH channels — a field in the JSON envelope,
 				// an appended section in text mode. The envelope stays parseable.
+				// The JSON envelope carries the marker-keyed projection (diff-aligned);
+				// the value field keeps the meta shape for the web card.
+				const diagJson = diagnostics === undefined ? undefined : diagnosticsJson([diagnostics]);
 				const modelText =
 					diagSection === ""
 						? baseText
 						: isJsonOutput() && baseText.startsWith("{")
-							? JSON.stringify({ ...JSON.parse(baseText) as object, diagnostics: diagMeta })
+							? JSON.stringify({ ...JSON.parse(baseText) as object, diagnostics: diagJson })
 							: `${baseText}\n\n${diagSection}`;
 
 				// ---- web card channel: structured rows with `行号:锚点` ----
