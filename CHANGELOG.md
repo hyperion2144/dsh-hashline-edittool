@@ -6,6 +6,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [0.6.1] - 2026-09-15
 
+## [0.6.1] - 2026-09-15
+
 ### Added — 写入后自动回送 LSP 诊断（#131）
 
 - **`edit` / `ast_edit` / `write` / `undo_last_edit` 落盘后自动交付语言服务器诊断**：热服务器（推送 ≤ 800ms）内联进工具结果 —— 文本模式 `↳` 分节，JSON 模式 `diagnostics` 字段；冷/慢服务器走 10s 预算的后台等待，经 `agent.inject` 在下一自然 step 注入，**不唤醒** idle 会话；无就绪服务器则静默跳过并 fire-and-forget warm（冷启动首编不再跳过诊断管线）。
