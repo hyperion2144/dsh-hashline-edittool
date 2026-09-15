@@ -40,13 +40,17 @@ const CSS_TEXT = [
 	// is not glued to the marker.
 	// `content-box`: the width below is the TEXT width, and the 14px inset is added on
 	// top of it rather than eaten out of it.
-	".dshl-lsp-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// Selectable on purpose (see the read card).
+	".dshl-lsp-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-lsp-gutter-line{display:block;height:22px;line-height:22px;white-space:pre;overflow:hidden}",
 	".dshl-lsp-code{flex:0 0 auto}",
 	".dshl-lsp-src{white-space:pre}",
-	// The diagnostics: indented under their line, behind a red rule, one per row.
-	".dshl-lsp-diags{margin:0 0 6px 26px;padding:2px 0 2px 10px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)}",
-	".dshl-lsp-diag{color:var(--dsw-alias-state-error-primary);white-space:pre-wrap;min-height:20px}",
+	// The diagnostics: indented under their line, behind a red rule, ONE ROW EACH —
+	// 22px per diagnostic, with no vertical margin or padding of its own, because the
+	// marker column counts these rows: any extra height here is a drift between the
+	// markers and the lines they belong to.
+	".dshl-lsp-diags{margin:0 0 0 26px;padding:0 0 0 10px;border-left:2px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent)}",
+	".dshl-lsp-diag{color:var(--dsw-alias-state-error-primary);white-space:pre-wrap;min-height:22px;line-height:22px}",
 	".dshl-lsp-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-lsp-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-lsp-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
@@ -122,10 +126,19 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 	}, [capped, headLines, rows, tailLines]);
 
 	// The marker column is ONE element for the whole window, exactly as the read,
-	// diff and grep cards build theirs; each marker is a block span, so a diagnostic
-	// block under a line never shifts the markers beneath it.
+	// diff and grep cards build theirs.
+	//
+	// ONE MARKER PER DRAWN ROW, which for this card is not the same as one marker per
+	// LINE: a source line with N diagnostics draws those N blocks under it, so it
+	// occupies N+1 rows of the code column. Blank markers stand in for them, which is
+	// what keeps the next real marker on its own line's row.
 	const markerLines = useMemo(
-		() => shown.map((row) => (row === null ? " " : markerOf(row))),
+		() =>
+			shown.flatMap((row) =>
+				row === null
+					? [" "]
+					: [markerOf(row), ...row.messages.map(() => " ")],
+			),
 		[shown],
 	);
 	const gutterWidth = markerColumnCh(rows.map((row) => markerOf(row)));

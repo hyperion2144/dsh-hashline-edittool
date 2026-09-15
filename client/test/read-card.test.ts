@@ -108,6 +108,17 @@ describe("the card mounts nothing shipped", () => {
 		expect(/rgb\(/.test(cardSource)).toBe(false);
 		expect(cardSource).toContain("var(--dsw-alias-state-business-primary)");
 	});
+
+	it("leaves the marker column selectable", () => {
+		// `user-select: none` is a hit-testing hint, not a filter: it does not keep the
+		// markers out of a copy that starts in the code, it only takes the anchors away
+		// from a reader who DOES want them. Every card's marker column is plain text,
+		// and the copy button's own text excludes the gutter regardless.
+		const sources = ["read-card.tsx", "diff-block.tsx", "grep-card.tsx", "lsp-block.tsx"].map((name) =>
+			readFileSync(join(clientRoot, "src", "client", name), "utf8"),
+		);
+		for (const source of sources) expect(source).not.toContain("user-select:none");
+	});
 });
 
 describe("the built bundle", () => {

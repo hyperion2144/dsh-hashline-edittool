@@ -48,7 +48,11 @@ const CSS_TEXT = [
 	// The width is the TEXT width, so the box is `content-box`: with `border-box` the
 	// 2ch of head-room the width helper adds would be eaten by the two 14px paddings,
 	// and the anchor — the tail of the marker — is what `overflow:hidden` would cut.
-	".dshl-read-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// The marker column is SELECTABLE, deliberately: a reader who drags into it wants
+	// the `行号:锚点`, and the copy button's own text excludes it either way. (It was
+	// `user-select: none` — that is a hit-testing hint, not a filter, so it silently
+	// took the anchors away from every copy that started in the code.)
+	".dshl-read-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-read-marker,.dshl-read-gap{display:block;height:var(--dsl-read-line-height);line-height:var(--dsl-read-line-height);white-space:nowrap;overflow:hidden}",
 	".dshl-read-code{flex:none;padding-right:14px}",
 	".dshl-read-line{min-height:var(--dsl-read-line-height);line-height:var(--dsl-read-line-height);white-space:pre}",

@@ -45,7 +45,8 @@ const CSS_TEXT = [
 	// right — the gap to the code.)
 	// `content-box`: the width below is the TEXT width, and the 14px inset is added
 	// on top of it rather than eaten out of it.
-	".dshl-grep-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// Selectable on purpose (see the read card).
+	".dshl-grep-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-grep-gutter-line{display:block;height:var(--dsl-grep-line-height);line-height:var(--dsl-grep-line-height);white-space:pre;overflow:hidden}",
 	".dshl-grep-code{flex:0 0 auto}",
 	".dshl-grep-content{white-space:pre}",

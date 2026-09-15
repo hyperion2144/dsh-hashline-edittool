@@ -63,7 +63,10 @@ const CSS_TEXT = [
 	// `content-box`: the width below is the TEXT width, and the two 14px insets are
 	// added on top of it. Under `border-box` the insets would eat the head-room the
 	// width calculation adds, and the anchor would be the first thing clipped.
-	".dshl-diff-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// Selectable on purpose (see the read card): `user-select: none` was a hit-testing
+	// hint, not a filter, and it took the anchors away from copies that began in the
+	// code.
+	".dshl-diff-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-diff-gutter-line{display:block;height:var(--dsl-diff-line-height);line-height:var(--dsl-diff-line-height);white-space:pre;overflow:hidden}",
 	".dshl-diff-code{flex:0 0 auto}",
 	".dshl-diff-content{white-space:pre}",
@@ -303,12 +306,20 @@ export function DiffRowsBlock({
 					// ONE marker element for the whole window — one BLOCK span per drawn row,
 					// plus a blank row where the fold sits, so the labels stay on the code's
 					// lines without relying on how whitespace between blocks is collapsed.
+					//
+					// Each label takes its ROW's class too: the gutter is part of the row, so a
+					// removed line's `-21:C7` is red and an added line's `+21:h2` is green, the
+					// way the shipped diff card drew them.
 					jsx_("div", {
 						className: css.gutter,
 						style: { width: `${gutterWidth}ch` },
 						"aria-hidden": true,
 						children: [...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((row, index) =>
-							jsx_("span", { className: css.gutterLine, key: index, children: row?.gutter ?? " " }),
+							jsx_("span", {
+								className: row === null ? css.gutterLine : `${css.gutterLine} ${row.rowClass}`.trim(),
+								key: index,
+								children: row?.gutter ?? " ",
+							}),
 						),
 					}),
 					jsx_("div", {
