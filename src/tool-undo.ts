@@ -33,6 +33,14 @@ import type { FileIO } from "./fs-bridge.js";
 import { execCwd, execSessionKey } from "./session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "./sandbox.js";
 import { withWorkspace } from "./session-view.js";
+import { notifyDocumentWritten } from "./lsp/sync.js";
+import {
+	deliverDiagnosticsAfterWrite,
+	diagnosticsMeta,
+	formatDiagnosticsSection,
+	prepareWriteDiagnostics,
+	type DiagMetaEntry,
+} from "./lsp/auto-diag.js";
 
 /** The hashline undo tool's canonical value (returned from `execute`). */
 type UndoCanonicalValue = {
@@ -43,6 +51,8 @@ type UndoCanonicalValue = {
 	removed: number;
 	modelText: string;
 	empty: boolean;
+	/** #131: inline diagnostics meta, present only when a push arrived in the window. */
+	diagnostics?: DiagMetaEntry[];
 } & { [key: string]: unknown };
 
 /**
@@ -81,6 +91,8 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 					empty: { type: "boolean", required: true },
 					// The card's structured rows (declared because the DSL validates the
 					// returned value): the revert's diff, with the anchors the reader sees.
+					// #131: inline LSP diagnostics, when a push arrived in the window.
+					diagnostics: { type: "array" },
 					diffRows: { type: "array" },
 				},
 			},
@@ -95,7 +107,12 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				if (v.empty) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				const diffRows = Array.isArray(v.diffRows) && v.diffRows.length > 0 ? v.diffRows : undefined;
-				return { diffs, ...(diffRows !== undefined ? { diffRows } : {}) } as never;
+				const diagMeta = (v as { diagnostics?: unknown }).diagnostics;
+				return {
+					diffs,
+					...(diffRows !== undefined ? { diffRows } : {}),
+					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+				} as never;
 			},
 		},
 		presentCall: (args) => {
@@ -201,7 +218,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			);
 			const undoDiff = undoDiffResult.diff;
 			const restoredRange = changedRange(currentNormalized, undo.content);
-
+			// #131: baseline BEFORE the revert, so the wait measures pushes
+			// against a pre-write baseline.
+			const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
 			try {
 				await io.writeText(
 					absolutePath,
@@ -213,6 +232,25 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			} catch (error) {
 				throw sandbox.mapError(error, sandboxPolicy);
 			}
+			notifyDocumentWritten(absolutePath, undo.bom + restoreEndings(undo.content, undo.originalEnding));
+			// #131: the revert is a real write, so it reports like one — inline
+			// inside the window, else the bounded async wait. OUTSIDE the write
+			// try on purpose: delivery never throws, and a diagnostics problem
+			// must not be mistaken for a sandbox write failure.
+			const diagnostics =
+				diagCtx === undefined
+					? undefined
+					: await deliverDiagnosticsAfterWrite({
+							...diagCtx,
+							toolName: "undo_last_edit",
+							text: undo.content,
+							absolutePath,
+							displayPath: path,
+							io,
+							exec,
+						});
+			const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
+			const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
 
 			try {
 				await upsertSnapshotFor(
@@ -264,7 +302,11 @@ await recordServedTruncated(
 				// the meta and the model text, so the gutter anchors the same lines
 				// the reader sees (ADR-0005 — never a re-parse of `modelText`).
 				diffRows: diffRowsFromGenDiff(undoDiffResult.rows),
-				modelText: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join("\n"),
+				...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+				modelText:
+					diagSection === ""
+						? [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join("\n")
+						: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff, "", diagSection].join("\n"),
 				empty: false,
 			} satisfies UndoCanonicalValue;
 			})

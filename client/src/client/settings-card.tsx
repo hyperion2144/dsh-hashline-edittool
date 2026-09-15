@@ -307,6 +307,18 @@ function readLspServers(snapshot: SettingsScopeSnapshot): Record<string, string>
 	return out;
 }
 
+
+/**
+ * The auto-diagnostics switch (#131). ABSENT means on: the feature is
+ * opt-out, so only an explicit `false` in the settings turns it off — the
+ * same absence-means-default rule the AST master switch follows.
+ */
+function readAutoDiagnostics(snapshot: SettingsScopeSnapshot): boolean {
+	const lsp = snapshot.value?.lsp;
+	if (typeof lsp !== "object" || lsp === null) return true;
+	return (lsp as { auto_diagnostics?: unknown }).auto_diagnostics !== false;
+}
+
 /** Whether the user layer has an explicit `ast.enabled` (presence, not value). */
 function hasExplicitMaster(snapshot: SettingsScopeSnapshot): boolean {
 	const ast = snapshot.user?.ast;
@@ -512,6 +524,7 @@ export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement
 	const { state: catalog, reload } = useCatalog();
 	const lsp = useLspStatus();
 	const namedServers = readLspServers(snapshot);
+	const autoDiag = readAutoDiagnostics(snapshot);
 	const updates = useUpdates();
 	const [serverLang, setServerLang] = useState("");
 	const [serverCommand, setServerCommand] = useState("");
@@ -1017,6 +1030,24 @@ export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement
 							))}
 						</ul>
 					)}
+					{/* #131: the delivery switch, beside the servers it governs. The card
+					 * shows the effective state; only an explicit `false` turns it off, and
+					 * switching it back on writes that value explicitly so the file says
+					 * what the card shows. */}
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">自动诊断回送</span>
+						<span className="dshl-mgr-hint">edit / write / undo 落盘后自动把语言服务器诊断回送模型（默认开）</span>
+						<span className="dshl-mgr-grow" />
+						{renderSwitch(
+							autoDiag,
+							!writable,
+							"autoDiag",
+							(checked) =>
+								void write("autoDiag", () =>
+									scope.set("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
+								),
+						)}
+					</div>
 					{/*
 					 * Naming a server is INTENT and lives here; whether that command exists
 					 * is a fact the status list above reports. Keeping them apart is what
@@ -1043,7 +1074,7 @@ export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement
 										onClick={() => {
 											const servers = { ...namedServers };
 											delete servers[id];
-											void write(`lsp:${id}`, () => scope.set("lsp", { servers }));
+											void write(`lsp:${id}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
 										}}
 									>
 										移除
@@ -1073,7 +1104,7 @@ export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement
 								const servers = { ...namedServers, [serverLang.trim()]: serverCommand.trim() };
 								setServerLang("");
 								setServerCommand("");
-								void write(`lsp:${serverLang.trim()}`, () => scope.set("lsp", { servers }));
+								void write(`lsp:${serverLang.trim()}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
 							}}
 						>
 							指定

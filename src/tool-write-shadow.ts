@@ -42,9 +42,14 @@ import { lineHashes } from "./hashline/index.js";
 import { contextLinesCfg } from "./hashline/hash-assign.js";
 import { abortIf } from "./utils.js";
 import { isJsonOutput } from "./config.js";
-
-/** Model-facing heading that precedes the auto-read preview (hook parity). */
-const AUTO_READ_HEADING = "--- Auto-read (hashline anchors) ---";
+import { notifyDocumentWritten } from "./lsp/sync.js";
+import {
+	deliverDiagnosticsAfterWrite,
+	diagnosticsMeta,
+	formatDiagnosticsSection,
+	prepareWriteDiagnostics,
+	type DiagMetaEntry,
+} from "./lsp/auto-diag.js";
 
 /** Canonical write value: built-in contract plus the card/model extensions. */
 export interface WriteValue {
@@ -54,8 +59,13 @@ export interface WriteValue {
 	after: string;
 	/** Structured rows for the web card's `行号:锚点` gutter. */
 	diffRows?: EditDiffRow[];
+	/** #131: inline diagnostics meta, present only when a push arrived in the window. */
+	diagnostics?: DiagMetaEntry[];
 	modelText: string;
 }
+/** Model-facing heading that precedes the auto-read preview (hook parity). */
+const AUTO_READ_HEADING = "--- Auto-read (hashline anchors) ---";
+
 
 /**
  * Build the `write` shadow definition.
@@ -99,6 +109,8 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					// Rendering channel: structured rows carrying the per-line
 					// `行号:锚点` gutter facts — never parsed from model text.
 					diffRows: { type: "array" },
+					// #131: inline LSP diagnostics, when a push arrived in the window.
+					diagnostics: { type: "array" },
 					modelText: { type: "string", required: true },
 				},
 			},
@@ -119,6 +131,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					...(v.diffRows !== undefined && v.diffRows.length > 0
 						? { diffRows: v.diffRows }
 						: {}),
+					...(v.diagnostics !== undefined ? { diagnostics: v.diagnostics } : {}),
 				} as never;
 			},
 		},
@@ -204,9 +217,30 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				}
 
 				abortIf(signal);
+				// #131: baseline BEFORE the sync; then tell the language server — the
+				// one `write` path never did, so its diagnostics (and the manual
+				// `lsp diagnostics`) answered from the pre-write text.
+				const diagCtx = prepareWriteDiagnostics(absolute, execCwd(exec));
 				await io.writeText(absolute, content, signal, exec, sandboxPolicy);
+				notifyDocumentWritten(absolute, content);
 				const after = content;
 
+				// #131: inline delivery — at most one 300ms window, then the bounded
+				// async wait injects at the model's next natural step.
+				const diagnostics =
+					diagCtx === undefined
+						? undefined
+						: await deliverDiagnosticsAfterWrite({
+								...diagCtx,
+								toolName: "write",
+								text: content,
+								absolutePath: absolute,
+								displayPath: rawPath,
+								io,
+								exec,
+							});
+				const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
+				const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
 				// ---- model channel: serve the written lines (fresh anchors) ----
 				const served = await readAndServe(io, rawPath, cwd, {
 					sessionKey,
@@ -214,7 +248,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					exec,
 				}).catch(() => undefined);
 
-				const modelText =
+				const baseText =
 					served === undefined
 						? `Wrote ${rawPath} (${operation}).`
 						: isJsonOutput() &&
@@ -230,6 +264,14 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 									),
 								)
 							: `${AUTO_READ_HEADING}\n${served.text}`;
+				// #131: diagnostics ride BOTH channels — a field in the JSON envelope,
+				// an appended section in text mode. The envelope stays parseable.
+				const modelText =
+					diagSection === ""
+						? baseText
+						: isJsonOutput() && baseText.startsWith("{")
+							? JSON.stringify({ ...JSON.parse(baseText) as object, diagnostics: diagMeta })
+							: `${baseText}\n\n${diagSection}`;
 
 				// ---- web card channel: structured rows with `行号:锚点` ----
 				const diffRows = await buildDiffRows(absolute, before, after).catch(
@@ -242,6 +284,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					before,
 					after,
 					...(diffRows !== undefined ? { diffRows } : {}),
+					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 					modelText,
 				} as WriteValue;
 			});

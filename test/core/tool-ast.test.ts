@@ -17,8 +17,8 @@ import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "..
 import { buildAstGrepTool } from "../../src/tool-ast-grep.js";
 import { buildAstEditTool } from "../../src/tool-ast-edit.js";
 import { localIO } from "../../src/fs-bridge.js";
-import { applyEffective } from "../../src/config.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
+import { applyEffective } from "../../src/config.js";
 
 function inProcessWorker(): WorkerLike {
 	let respond: ((response: AstWorkerResponse) => void) | undefined;
@@ -342,6 +342,9 @@ describe("ast_grep — no pattern means the OUTLINE", () => {
 		return (await tool.execute({ path: file }, exec(dir)({}))) as {
 			matches: unknown[];
 			outline?: string;
+			cardFiles?: Array<{ path: string; rows: Array<{ number: number; hash: string; text: string }> }>;
+			total?: number;
+			isOutline?: boolean;
 		};
 	};
 
@@ -358,6 +361,27 @@ describe("ast_grep — no pattern means the OUTLINE", () => {
 		// handed straight to `edit` — which is only true because they were served.
 		// Markers are right-aligned into a column, so leading padding is expected.
 		expect(value.outline).toMatch(/^\s*[A-Za-z0-9]{2,8}:\d+: /m);
+		// BUG-3 regression (#131 field report): the CARD data must carry the
+		// outline rows — an empty `files` rendered the search card's 无结果
+		// while the model was reading a full outline. Rows are the grep shape
+		// (integer line, anchor, text, no match highlight), and the outline
+		// flag rides the value so the meta — and the card's footer — can tell
+		// an outline from a match list.
+		expect(value.cardFiles).toHaveLength(1);
+		expect(value.cardFiles![0]!.path).toBe(file);
+		expect(value.cardFiles![0]!.rows.length).toBeGreaterThan(0);
+		for (const row of value.cardFiles![0]!.rows) {
+			expect(Number.isInteger(row.number)).toBe(true);
+			expect(row.hash).not.toBe("");
+			expect(row.text).not.toContain("undefined");
+		}
+		expect(value.total).toBe(value.cardFiles![0]!.rows.length);
+		expect(value.isOutline).toBe(true);
+		// THE SCHEMA HOLDS: direct `tool.execute` bypasses the registry's
+		// validation, which is exactly how an undeclared `isOutline` slipped
+		// past these tests and failed in a real session (field-reported).
+		const outlineTool = buildAstGrepTool(localIO());
+		expect(schemaViolations(outputSchemaOf(outlineTool), value)).toEqual([]);
 	});
 
 	it("names the gate it failed, rather than reporting 'no symbols'", async () => {

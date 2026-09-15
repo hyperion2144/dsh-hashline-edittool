@@ -127,6 +127,9 @@ describe("installHashlineSettings × real dsh-settings (issue #69)", () => {
 			// No named servers: naming one is a separate setting from the AST
 			// switch, and an invalid stored section must resolve to no servers too.
 			lspServers: new Map<string, string>(),
+			// #131: automatic diagnostics default ON, so an invalid stored
+			// section resolves to exactly the pre-#131 behaviour.
+			autoDiagnostics: true,
 		});
 	});
 

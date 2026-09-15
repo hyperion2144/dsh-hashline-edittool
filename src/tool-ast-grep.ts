@@ -164,6 +164,10 @@ export function buildAstGrepTool(io: FileIO) {
 					},
 					truncated: { type: "boolean", required: true },
 					total: { type: "integer", required: true },
+					// Outline mode only: marks the meta so the card's footer says
+					// OUTLINE instead of counting matches. Declared because the DSL
+					// rejects an undeclared property outright (field-reported).
+					isOutline: { type: "boolean" },
 					// THE MODEL CHANNEL. Declared because the DSL validates the returned
 					// value against this schema: a field the tool returns but the schema
 					// does not name is rejected outright (`value.modelText is not
@@ -186,11 +190,14 @@ export function buildAstGrepTool(io: FileIO) {
 		// sentence, delivered as the model text already carries it. Emitting an
 		// empty `files` there is honest: there is nothing to draw, and the grep
 		// card renders the empty state rather than falling back to raw IO.
-		presentationMeta: (_args: unknown, value: { readonly cardFiles: unknown; readonly truncated: boolean; readonly total: number }) =>
+		presentationMeta: (_args: unknown, value: { readonly cardFiles: unknown; readonly truncated: boolean; readonly total: number; readonly isOutline?: boolean }) =>
 			capGrepMeta({
 				files: value.cardFiles as never,
 				truncated: value.truncated,
 				total: value.total,
+				// An outline renders its rows but the footer must not read them as
+				// matches; the flag rides the meta to the card.
+				...(value.isOutline === true ? { outline: true } : {}),
 			}) as never,
 	},
 	// THE CARD ITSELF. The meta above is data; this is what turns it into the
@@ -321,6 +328,20 @@ export function buildAstGrepTool(io: FileIO) {
 					const line = row.merged ? `${row.number}-${row.endNumber}` : `${row.number}`;
 					return { marker: `${row.anchor}:${line}`, text: row.text, line };
 				});
+				// The CARD's rows: the outline IS a folded line view, so it wears the
+				// grep card's row shape — gutter and text, no match highlight (an
+				// outline is not a match). A merged row reports its START line; the
+				// range lives in the model text's marker. Field-reported bug #131:
+				// an empty `files` here rendered the search card's 无结果, telling
+				// the reader the outline the model was actively reading was nothing.
+				const outlineCardRows = outlineLines.map((r) => {
+					const at = r.marker.lastIndexOf(":");
+					return {
+						number: Number.parseInt(r.line, 10),
+						hash: at > 0 ? r.marker.slice(0, at) : "",
+						text: r.text,
+					};
+				});
 				const width = anchorWidth(outlineLines.map((r) => r.marker));
 				const body = outlineLines
 					.map((r) => fmtHashlineRow(r.marker, r.text, width))
@@ -335,9 +356,12 @@ export function buildAstGrepTool(io: FileIO) {
 				return {
 					path: args.path,
 					matches: [],
-					cardFiles: [],
+					cardFiles: [{ path: args.path, rows: outlineCardRows }],
 					truncated: false,
-					total: 0,
+					total: outlineCardRows.length,
+					// Marks the meta so the card's footer says OUTLINE instead of
+					// "0 of N matches" — the grep counts vocabulary is wrong here.
+					isOutline: true,
 					// `outline` is the CARD's sentence and stays the rendered text;
 					// `modelText` is what the model reads, in the active mode. Both are
 					// projections of `outlineLines`, so the markers cannot drift.

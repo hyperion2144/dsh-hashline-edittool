@@ -168,6 +168,11 @@ export interface GrepCardModel {
 	files: readonly GrepFileRowGroup[];
 	truncated: boolean;
 	total: number;
+	/**
+	 * True when the rows are an `ast_grep` OUTLINE — a folded line view, not
+	 * matches — so the footer says what it is instead of counting 0 matches.
+	 */
+	outline?: boolean | undefined;
 }
 
 /**
@@ -188,6 +193,16 @@ export interface LspRowMeta {
 
 /** The `lsp` diagnostics card: one row per line, its messages attached. */
 export interface LspCardModel {
+	readonly path: string;
+	readonly rows: readonly LspRowMeta[];
+}
+
+/**
+ * One INLINE diagnostics capsule (#131): one written file's reported rows,
+ * persisted beside the diff card's meta. The same row shape the `lsp` card
+ * draws, so the expanded capsule renders with that block unchanged.
+ */
+export interface DiagCapsuleMeta {
 	readonly path: string;
 	readonly rows: readonly LspRowMeta[];
 }

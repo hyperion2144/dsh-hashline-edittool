@@ -58,10 +58,19 @@ export interface HashlineSettings {
 	 */
 	lsp?: {
 		servers?: Record<string, string | undefined>;
+		/**
+		 * Automatic diagnostics after a write (issue #131). When true (default),
+		 * edit / ast_edit / write / undo_last_edit deliver the language server's
+		 * diagnostics for the written file back to the model: inline on the tool
+		 * result when a push arrives within the 300ms window, otherwise injected
+		 * at the next natural model step. A write never starts a server and never
+		 * fails because of diagnostics — this switch only governs the delivery.
+		 */
+		auto_diagnostics?: boolean;
 	};
 }
-
 /** Permissive schema — unknown keys tolerated so newer versions don't break older builds. */
+
 export const HashlineSettingsSchema: z<HashlineSettings> = z
 	.object({
 		separator: z.string().min(1).max(4),
@@ -75,6 +84,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		// has, and "which server does typescript use" is the question being asked.
 		lsp: z.object({
 			servers: z.dict(z.string()),
+			auto_diagnostics: z.boolean(),
 		}),
 			enabled: z.boolean(),
 			languages: z.dict(z.object({ enabled: z.boolean() })),
@@ -105,6 +115,11 @@ export interface EffectiveHashlineConfig {
 	 * fact the card reports rather than an error the setting rejects.
 	 */
 	lspServers: ReadonlyMap<string, string>;
+	/**
+	 * Whether a write delivers the language server's diagnostics back to the
+	 * model (issue #131). Default ON — the feature is opt-out.
+	 */
+	autoDiagnostics: boolean;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
@@ -115,6 +130,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	astEnabled: false,
 	astLanguages: new Set<string>(),
 	lspServers: new Map<string, string>(),
+	autoDiagnostics: true,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -160,6 +176,14 @@ export function lspConfiguredServers(): ReadonlyMap<string, string> {
 	return new Map(effective.lspServers);
 }
 
+
+/**
+ * Whether a successful write delivers the language server's diagnostics back
+ * to the model (issue #131). Default ON; `lsp.auto_diagnostics: false` opts out.
+ */
+export function isAutoDiagnosticsEnabled(): boolean {
+	return effective.autoDiagnostics;
+}
 export function isJsonOutput(): boolean {
 	return effective.outputFormat === "json";
 }
@@ -202,6 +226,12 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 	for (const [id, command] of Object.entries(settings?.lsp?.servers ?? {})) {
 		if (typeof command === "string" && command.trim() !== "") lspServers.set(id, command.trim());
 	}
+	// Default ON: an absent entry means the automatic delivery runs. Only an
+	// explicit `false` turns it off, mirroring how `ast.enabled` treats absence.
+	const autoDiag =
+		typeof settings?.lsp?.auto_diagnostics === "boolean"
+			? settings.lsp.auto_diagnostics
+			: DEFAULT_CONFIG.autoDiagnostics;
 	const flagChanged = effective.requireLineContent !== requireLine;
 	const astChanged = effective.astEnabled !== astOn;
 	effective = {
@@ -212,6 +242,7 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		astEnabled: astOn,
 		astLanguages: astLangs,
 		lspServers: lspServers,
+		autoDiagnostics: autoDiag,
 	};
 	applyHashlineShape({ separator: sep, contextLines: nctx });
 	if (flagChanged) rebuildEditSurfaces();
@@ -329,6 +360,17 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 				continue;
 			}
 			if (/^ {4}servers:\s*(#.*)?$/.test(line)) continue; // container only
+			// The delivery switch sits beside `servers` at FOUR-space indent; the
+			// six-space matcher above only names SERVER ENTRIES, so the switch is
+			// read here — a value inside the 6-char regex would parse a language
+			// literally named `auto_diagnostics` as a server command.
+			const autoDiag = /^ {4}auto_diagnostics:\s*(.*)$/.exec(line);
+			if (autoDiag !== null) {
+				const v = autoDiag[1]!.replace(/\s+#.*$/, "").trim();
+				if (v === "true") out.lsp = { ...out.lsp, auto_diagnostics: true };
+				else if (v === "false") out.lsp = { ...out.lsp, auto_diagnostics: false };
+				continue;
+			}
 			if (/^ {2}\S/.test(line)) inLsp = false; // dedented: leave the sub-tree
 			else continue;
 		}
