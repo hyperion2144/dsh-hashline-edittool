@@ -52,22 +52,44 @@ afterEach(() => {
  * pushed yet, which is the honest "unknown", not "clean". After it, the
  * revision is 1 and `diagnostics` are on the table, exactly as a real
  * `publishDiagnostics` notification would leave the session.
+ *
+ * Document version is 1 (matching the `didOpen` a real session would have
+ * done); `push()` carries the push's version — undefined = unversioned push.
+ * `pullDiagnostics` defaults to unsupported (undefined), so tests exercise
+ * the push fallback unless a pull result is installed.
  */
 function fakeSession(diagnostics: unknown[] | undefined): {
 	session: LspSession;
-	push: () => void;
+	push: (opts?: { version?: number | undefined }) => void;
+	installPull: (items: readonly unknown[]) => void;
 } {
-	const state = { revision: 0 };
+	const state = {
+		revision: 0,
+		docVersion: 1,
+		pushVersion: undefined as number | undefined,
+		pullItems: undefined as readonly unknown[] | undefined,
+	};
 	return {
 		session: {
 				get diagnosticsRevision() {
 					return state.revision;
 				},
 				getDiagnostics: (uri: string) => (state.revision > 0 ? diagnostics : undefined),
+				documentVersion: () => state.docVersion,
+				diagnosticsVersion: () => state.pushVersion,
+				supportsPullDiagnostics: () => state.pullItems !== undefined,
+				pullDiagnostics: async () =>
+					state.pullItems === undefined
+						? undefined
+						: { items: state.pullItems, version: state.docVersion },
 			} as never,
-		push: () => {
+		push: (opts?: { version?: number | undefined }) => {
 				state.revision += 1;
+				state.pushVersion = opts?.version;
 			},
+		installPull: (items: readonly unknown[]) => {
+			state.pullItems = items;
+		},
 	};
 }
 
@@ -446,6 +468,10 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 					return revision;
 				},
 				getDiagnostics: (u: string) => pushed.get(u),
+				documentVersion: () => revision,
+				diagnosticsVersion: () => revision,
+				supportsPullDiagnostics: () => false,
+				pullDiagnostics: async () => undefined,
 			} as never;
 			setLspManager({
 				readySessionFor: () => session,
@@ -501,6 +527,10 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 						return revision;
 					},
 					getDiagnostics: (u: string) => pushed.get(u),
+					documentVersion: () => revision,
+					diagnosticsVersion: () => revision,
+					supportsPullDiagnostics: () => false,
+					pullDiagnostics: async () => undefined,
 				} as never;
 				setLspManager({
 					readySessionFor: () => session,
@@ -614,6 +644,10 @@ describe("seam 1b — write delivers inline diagnostics too (story 20)", () => {
 					return revision;
 				},
 				getDiagnostics: (u: string) => pushed.get(u),
+				documentVersion: () => revision,
+				diagnosticsVersion: () => revision,
+				supportsPullDiagnostics: () => false,
+				pullDiagnostics: async () => undefined,
 			} as never;
 			setLspManager({
 				readySessionFor: () => session,
@@ -705,6 +739,37 @@ describe("BUG-1 regression — a cold start delivers through the async path", ()
 			expect(await deliverDiagnosticsAfterWrite(input)).toBeUndefined();
 			await vi.advanceTimersByTimeAsync(ASYNC_TIMEOUT_MS + 1_000);
 			expect(injected).toHaveLength(0);
+		});
+	});
+});
+
+describe("触发式诊断与版本门控（#131 实测反馈）", () => {
+	it("edit 落盘后主动 pull 一次，结果即最终内容的诊断", async () => {
+		await withTempDir("auto-diag-pull-", async (cwd) => {
+			const hot = fakeSession(DIAGNOSTICS);
+			hot.push();
+			hot.installPull(DIAGNOSTICS);
+			const report = await deliverDiagnosticsAfterWrite(makeInput({ cwd, session: hot.session }));
+			// pull 的响应就是针对当前内容的那一次计算，直接返回。
+			expect(report).toBeDefined();
+			expect(report!.rows).toHaveLength(2);
+		});
+	});
+
+	it("stale push 被忽略：版本不匹配的推送不算到达", async () => {
+		await withTempDir("auto-diag-stale-", async (cwd) => {
+			const inject = vi.fn();
+			const late = fakeSession(DIAGNOSTICS);
+			const input = makeInput({
+				cwd,
+				session: late.session,
+				exec: makeExec(cwd, (m) => inject(m)),
+			});
+			// 过期推送（版本号小于当前文档版本）：落在 inline 窗口内，但必须被忽略。
+			late.push({ version: 0 });
+			const report = await deliverDiagnosticsAfterWrite(input);
+			expect(report).toBeUndefined();
+			// 未推版本号的服务器无法证明新鲜度，推了就收（现状语义不变）。
 		});
 	});
 });

@@ -147,6 +147,12 @@ export class LspSession {
 	#exitCode: number | null | undefined;
 	/** The last push per document URI; absent means none has arrived. */
 	#diagnostics = new Map<string, readonly unknown[]>();
+	/**
+	 * The document version each push corresponds to, from the push's optional
+	 * `version` field. `undefined` = the server did not send one, and freshness
+	 * cannot be proven from the push alone.
+	 */
+	#diagnosticVersions = new Map<string, number | undefined>();
 	/** Counts pushes, so a waiter can tell a new one from silence. */
 	#diagnosticsRevision = 0;
 
@@ -161,12 +167,22 @@ export class LspSession {
 		// anything. Until this handler existed they were parsed and dropped, which
 		// is why the capability comment above says nothing consumes them yet.
 		this.on("textDocument/publishDiagnostics", (params) => {
-			const payload = params as { uri?: unknown; diagnostics?: unknown } | null;
+			const payload = params as { uri?: unknown; diagnostics?: unknown; version?: unknown } | null;
 			if (typeof payload?.uri !== "string") return undefined;
+			const uri = normalizeFileUri(payload.uri);
 			// Keyed by the CANONICAL form: the server echoes a URI it normalized its
 			// own way (`file:///d%3A/…` for a path the client spelled `file:///D:/…`),
 			// and a lookup by either spelling must land on the same entry.
-			this.#diagnostics.set(normalizeFileUri(payload.uri), Array.isArray(payload.diagnostics) ? payload.diagnostics : []);
+			this.#diagnostics.set(uri, Array.isArray(payload.diagnostics) ? payload.diagnostics : []);
+			// Record which document version this push describes. The server analyzes
+			// asynchronously — right after a `didChange` it may still push results for
+			// the PREVIOUS content — so a consumer acting on the current text must
+			// compare `diagnosticsVersion(uri)` against `documentVersion(uri)` and
+			// ignore stale pushes.
+			this.#diagnosticVersions.set(
+				uri,
+				typeof payload.version === "number" ? payload.version : undefined,
+			);
 			// Bumped on every push, so a caller can tell "nothing arrived yet" from
 			// "a server said there is nothing" — an empty list and silence are
 			// different answers and a reader has to be able to tell them apart.
@@ -192,6 +208,63 @@ export class LspSession {
 	/** How many pushes have arrived; waiters compare it against a snapshot. */
 	get diagnosticsRevision(): number {
 		return this.#diagnosticsRevision;
+	}
+
+	/**
+	 * The CURRENT document version we announced to the server for `uri`
+	 * (`didOpen` = 1, each `didChange` increments). A push is trustworthy for
+	 * the current text only when its version matches this.
+	 */
+	documentVersion(uri: string): number | undefined {
+		return this.#open.get(normalizeFileUri(uri))?.version;
+	}
+
+	/** The document version the LAST push describes, when the server sent one. */
+	diagnosticsVersion(uri: string): number | undefined {
+		return this.#diagnosticVersions.get(normalizeFileUri(uri));
+	}
+
+	/**
+	 * Whether the server advertised PULL diagnostics (`textDocument/diagnostic`).
+	 * Pull is the trigger-style path (#131 field feedback): one request after
+	 * the edit settles, the response IS the current content's result — no push
+	 * timing races, no stale intermediate snapshots.
+	 */
+	supportsPullDiagnostics(): boolean {
+		return (this.#serverCapabilities as { textDocument?: { diagnostic?: unknown } } | undefined)?.textDocument?.diagnostic !== undefined;
+	}
+
+	/**
+	 * Trigger ONE diagnostic computation for `uri` and wait for its result.
+	 *
+	 * The request rides the same ordered connection after our `didChange`, so
+	 * the answer describes exactly the post-edit content — this is the
+	 * "diagnose once, after the final edit" semantic the field asked for.
+	 *
+	 * @param uri - the document's `file://` URI.
+	 * @param timeoutMs - per-request deadline; bounded, never a hang.
+	 * @returns `{ items, version }` when the server answered (items may be
+	 * empty — a clean file), `undefined` when pull is unsupported or failed
+	 * (callers fall back to the push stream).
+	 */
+	async pullDiagnostics(
+		uri: string,
+		timeoutMs = 10_000,
+	): Promise<{ items: readonly unknown[]; version?: number } | undefined> {
+		if (!this.supportsPullDiagnostics()) return undefined;
+		try {
+			const report = (await this.request(
+				"textDocument/diagnostic",
+				{ textDocument: { uri } },
+				timeoutMs,
+			)) as { kind?: unknown; items?: unknown; version?: number } | null;
+			if (report === null || !Array.isArray(report.items)) return undefined;
+			return { items: report.items, ...(typeof report.version === "number" ? { version: report.version } : {}) };
+		} catch {
+			// A server that advertised pull but fails the request is not a fatal:
+			// the caller falls back to the push stream.
+			return undefined;
+		}
 	}
 
 	/** The server's advertised capabilities, after a successful handshake. */

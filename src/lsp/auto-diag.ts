@@ -61,6 +61,14 @@ export const INLINE_WINDOW_MS = 800;
 /** How long the background wait listens before giving up. A cold start is 2.6–3.1s; 10s is ~3× headroom. Past it, the model can still call `lsp diagnostics`. */
 export const ASYNC_TIMEOUT_MS = 10_000;
 
+/**
+ * How long the trigger-style pull (`textDocument/diagnostic`) waits for its
+ * one computation. The request rides the ordered connection after our
+ * `didChange`, so the answer is always the current content's — exceeding
+ * this means the server is slow, and the push fallback takes over.
+ */
+export const PULL_TIMEOUT_MS = 3_000;
+
 /** Error + warning entries reported per write before the report is cut off. */
 export const MAX_REPORTED_DIAGNOSTICS = 50;
 
@@ -196,7 +204,26 @@ export async function deliverDiagnosticsAfterWrite(
 			startAsyncWait(input);
 			return undefined;
 		}
-		const arrived = await waitForPush(input.session, input.revisionBefore, INLINE_WINDOW_MS);
+		// TRIGGER-STYLE FIRST (#131 field feedback): the edit is final, so we
+		// ASK for diagnostics once and wait for that exact computation. The
+		// request rides the same ordered connection after our `didChange`, so
+		// the answer describes the post-edit content — no push timing races,
+		// no stale intermediate snapshots, no repeated pushes to sift.
+		const pulled = await input.session.pullDiagnostics(input.uri, PULL_TIMEOUT_MS);
+		if (pulled !== undefined) {
+			const report = collectReport(input, pulled.items);
+			if (report === undefined) return undefined;
+			await serveReport(input, report.rows);
+			return report;
+		}
+		// FALLBACK (server has no pull): wait for the push stream, ignoring
+		// pushes computed against older content.
+		const arrived = await waitForFreshPush(
+			input.session,
+			input.uri,
+			input.revisionBefore,
+			INLINE_WINDOW_MS,
+		);
 		if (!arrived) {
 			startAsyncWait(input);
 			return undefined;
@@ -235,6 +262,35 @@ async function waitForPush(
 }
 
 /**
+ * Wait for a push that is FRESH for `uri`: one computed against the document
+ * version we last announced. Servers analyze asynchronously, so right after
+ * a `didChange` they may still push the PREVIOUS content's results — those
+ * are stale and are skipped (a new baseline is taken and the wait continues
+ * within the same budget). A push without a version is accepted: freshness
+ * cannot be proven, and refusing every unversioned push would drop servers
+ * that never send versions.
+ */
+async function waitForFreshPush(
+	session: LspSession,
+	uri: string,
+	revisionBefore: number,
+	budgetMs: number,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const deadline = Date.now() + budgetMs;
+	let baseline = revisionBefore;
+	for (;;) {
+		if (!(await waitForPush(session, baseline, Math.max(0, deadline - Date.now()), signal))) return false;
+		const pushVersion = session.diagnosticsVersion(uri);
+		const documentVersion = session.documentVersion(uri);
+		if (pushVersion === undefined || documentVersion === undefined || pushVersion === documentVersion) return true;
+		// Stale push: it spent the baseline, so re-baseline and keep waiting.
+		baseline = session.diagnosticsRevision;
+		if (Date.now() >= deadline || signal?.aborted) return false;
+	}
+}
+
+/**
  * Read the session's latest push for the URI and shape the report.
  *
  * Severity filter first (error + warning only, per #130 Q5): an `information`
@@ -243,10 +299,8 @@ async function waitForPush(
  * an empty push (the server looked and found nothing — clean, not silent),
  * or only severities this feature does not report.
  */
-function collectReport(input: AfterWriteInput): FileDiagnostics | undefined {
-	const session = input.session;
-	if (session === undefined) return undefined;
-	const pushed = session.getDiagnostics(input.uri);
+function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): FileDiagnostics | undefined {
+	const pushed = pushedArg ?? input.session?.getDiagnostics(input.uri);
 	if (pushed === undefined || pushed.length === 0) return undefined;
 	const lines = splitLines(input.text);
 	const anchors = lineHashesPure(input.text);
@@ -476,20 +530,21 @@ export type DiagJsonEntry = {
 	rows: Record<string, DiagJsonRow>;
 };
 
+export function diagRowsToJson(rows: readonly DiagRow[]): Record<string, DiagJsonRow> {
+	return Object.fromEntries(
+		rows.map((row) => [
+			// A row without an anchor falls back to its bare line number — the
+			// same marker rule every other channel uses.
+			row.hash === "" ? `${row.number}` : `${row.hash}:${row.number}`,
+			{
+				text: row.text,
+				messages: row.messages,
+				severities: row.severities.map((code) => (code === 1 ? "error" : code === 2 ? "warning" : "diagnostic")),
+			},
+		]),
+	);
+}
+
 export function diagnosticsJson(reports: readonly FileDiagnostics[]): DiagJsonEntry[] {
-	return reports.map(({ path, rows }) => ({
-		path,
-		rows: Object.fromEntries(
-			rows.map((row) => [
-				// A row without an anchor falls back to its bare line number — the
-				// same marker rule every other channel uses.
-				row.hash === "" ? `${row.number}` : `${row.hash}:${row.number}`,
-				{
-					text: row.text,
-					messages: row.messages,
-					severities: row.severities.map((code) => (code === 1 ? "error" : code === 2 ? "warning" : "diagnostic")),
-				},
-			]),
-		),
-	}));
+	return reports.map(({ path, rows }) => ({ path, rows: diagRowsToJson(rows) }));
 }
