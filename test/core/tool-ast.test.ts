@@ -17,8 +17,8 @@ import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "..
 import { buildAstGrepTool } from "../../src/tool-ast-grep.js";
 import { buildAstEditTool } from "../../src/tool-ast-edit.js";
 import { localIO } from "../../src/fs-bridge.js";
-import { applyEffective } from "../../src/config.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
+import { applyEffective } from "../../src/config.js";
 
 function inProcessWorker(): WorkerLike {
 	let respond: ((response: AstWorkerResponse) => void) | undefined;
@@ -377,6 +377,11 @@ describe("ast_grep — no pattern means the OUTLINE", () => {
 		}
 		expect(value.total).toBe(value.cardFiles![0]!.rows.length);
 		expect(value.isOutline).toBe(true);
+		// THE SCHEMA HOLDS: direct `tool.execute` bypasses the registry's
+		// validation, which is exactly how an undeclared `isOutline` slipped
+		// past these tests and failed in a real session (field-reported).
+		const outlineTool = buildAstGrepTool(localIO());
+		expect(schemaViolations(outputSchemaOf(outlineTool), value)).toEqual([]);
 	});
 
 	it("names the gate it failed, rather than reporting 'no symbols'", async () => {

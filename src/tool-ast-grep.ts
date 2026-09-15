@@ -164,6 +164,10 @@ export function buildAstGrepTool(io: FileIO) {
 					},
 					truncated: { type: "boolean", required: true },
 					total: { type: "integer", required: true },
+					// Outline mode only: marks the meta so the card's footer says
+					// OUTLINE instead of counting matches. Declared because the DSL
+					// rejects an undeclared property outright (field-reported).
+					isOutline: { type: "boolean" },
 					// THE MODEL CHANNEL. Declared because the DSL validates the returned
 					// value against this schema: a field the tool returns but the schema
 					// does not name is rejected outright (`value.modelText is not
