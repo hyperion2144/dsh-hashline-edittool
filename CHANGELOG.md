@@ -4,6 +4,22 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-15
+
+### Added — 写入后自动回送 LSP 诊断（#131）
+
+- **`edit` / `ast_edit` / `write` / `undo_last_edit` 落盘后自动交付语言服务器诊断**：热服务器（推送 ≤ 800ms）内联进工具结果 —— 文本模式 `↳` 分节，JSON 模式 `diagnostics` 字段；冷/慢服务器走 10s 预算的后台等待，经 `agent.inject` 在下一自然 step 注入，**不唤醒** idle 会话；无就绪服务器则静默跳过并 fire-and-forget warm（冷启动首编不再跳过诊断管线）。
+- **位置可直接编辑**：`<anchor>:<line>` 由与 `read` 同一分配器产出，且 served + observed —— 免重读即可 follow-up edit。
+- **报告规约**：仅 error + warning，50 条截断并注明；诊断永不阻塞或使写入失败（post-hoc）。
+- **设置**：`hashline.lsp.auto_diagnostics`（默认开），设置卡「语言服务器」页有开关；卡上写 servers 时保留该字段。
+- **Web 卡片**：edit / write / undo 行新增严重度着色胶囊（红=有 error，黄=仅 warning），折叠标题并列 diff stat 与诊断 stat（`+1 -1 · 1 error`），点击展开 #128 诊断卡；clean 写入无胶囊。
+- **`ast_grep` outline 卡片**：大纲行现在投进 grep 卡（此前渲染「无结果」），footer 显示 `outline · N lines`。
+- **`write` / `undo_last_edit` 补发 `notifyDocumentWritten`**：此前不同步 LSP 文档，服务端回答停留在写前文本。
+
+### Fixed
+
+- **Windows 无关、两处回归**：`ast_grep` outline 返回值新增 `isOutline` 后曾未在 output schema 声明（DSL 在真实会话拒绝未声明字段）；冷启动经 `waitForSession` 拿到会话后主动 `didOpen`（LSP 服务器无磁盘 watcher，不补发则永远学不到写入）。
+
 ## [0.6.0] - 2026-09-14
 
 ### Added — AST / LSP 拆为独立工具（wayfinder #124）
