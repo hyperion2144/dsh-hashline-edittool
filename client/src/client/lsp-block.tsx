@@ -41,6 +41,7 @@ const CSS_TEXT = [
 	// right-aligned with a right inset so the source is not glued to the marker.
 	// Selectable on purpose (see the read card).
 	".dshl-lsp-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-gutter-w);padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	".dshl-suppress-anchor-select .dshl-lsp-gutter{user-select:none}",
 	".dshl-lsp-code{flex:0 0 auto}",
 	".dshl-lsp-src{white-space:pre}",
 	// The diagnostics: indented under their line, behind a red rule, ONE ROW EACH —
@@ -171,14 +172,22 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 					// expand/collapse buttons span their full row.
 						...shown.map((row, index) => {
 							if (row === null) {
-								return jsx_("button", {
-									type: "button",
-									className: css.expand,
+								// PER-ROW: the gap toggle lives in its own row — an empty anchor
+								// cell keeps it indented to the code column.
+								return jsx_("div", {
 									key: `gap-${index}`,
-									"aria-expanded": false,
-									"aria-label": labels.expandAria(hidden),
-									onClick: () => setExpanded(true),
-									children: `${labels.expand(hidden)}`,
+									className: css.row,
+									children: [
+										jsx_("div", { className: css.gutter, "aria-hidden": true }),
+										jsx_("button", {
+											type: "button",
+											className: css.expand,
+											"aria-expanded": false,
+											"aria-label": labels.expandAria(hidden),
+											onClick: () => setExpanded(true),
+											children: `${labels.expand(hidden)}`,
+										}),
+									],
 								});
 							}
 							return jsx_("div", {
@@ -191,14 +200,21 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 							});
 						}),
 						expanded && hidden > 0
-							? jsx_("button", {
-									type: "button",
-									className: css.expand,
-									"aria-expanded": true,
-									"aria-label": labels.collapseAria,
-									onClick: () => setExpanded(false),
-									children: labels.collapse,
-								})
+							? jsx_("div", {
+								key: "collapse-row",
+								className: css.row,
+								children: [
+									jsx_("div", { className: css.gutter, "aria-hidden": true }),
+									jsx_("button", {
+										type: "button",
+										className: css.expand,
+										"aria-expanded": true,
+										"aria-label": labels.collapseAria,
+										onClick: () => setExpanded(false),
+										children: labels.collapse,
+									}),
+								],
+							})
 							: null,
 					jsx_("div", { className: css.footer, children: labels.summary(rows.length, messageCount) }),
 				],

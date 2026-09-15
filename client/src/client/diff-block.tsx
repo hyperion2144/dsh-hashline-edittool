@@ -72,12 +72,13 @@ const CSS_TEXT = [
 	// `ch` of the font declared HERE — `ch` measures this element's own font).
 	// Selectable on purpose: a reader who drags into it wants the anchors.
 	".dshl-diff-gutter-line{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-gutter-w);padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);white-space:pre;overflow:hidden}",
+	".dshl-suppress-anchor-select .dshl-diff-gutter-line{user-select:none}",
 	".dshl-diff-content{flex:1 1 auto;white-space:pre}",
 	".dshl-diff-gap{color:var(--dsw-alias-label-tertiary)}",
 	".dshl-diff-del{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diff-add{color:var(--dsw-alias-state-success-primary)}",
 	".dshl-diff-ctx{color:var(--dsw-alias-label-secondary)}",
-	".dshl-diff-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
+	".dshl-diff-expand{flex:1 1 auto;display:block;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-diff-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 ].join("");
@@ -300,24 +301,30 @@ export function DiffRowsBlock({
 					// Each cell takes its ROW's class too: a removed line's `-21:C7` is
 					// red and an added line's `+21:h2` is green, the way the shipped
 					// diff card drew them. The fold toggle spans the full row.
-					...[...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((row, index) =>
-						row === null
-							? jsx_(FoldToggle, { key: `fold-${index}`, className: css.expand, expanded, hidden, labels, onToggle })
-							: jsx_("div", {
-									key: index,
+					...head.map((row, index) => foldRow(row, index)),
+					// The fold toggle stays rendered whenever rows are hidden OR the fold
+					// is open — otherwise an opened fold could never be closed again.
+					...(hidden > 0
+						? [
+								jsx_("div", {
+									key: "fold-row",
 									className: css.row,
 									children: [
-										jsx_("span", {
-											className: `${css.gutterLine} ${row.rowClass}`.trim(),
-											children: row.gutter,
-										}),
-										jsx_("span", {
-											className: `${css.content} ${row.rowClass}`.trim(),
-											children: row.text,
+										// Empty anchor cell: keeps the toggle indented to the code
+										// column instead of drifting into the anchor lane.
+										jsx_("span", { className: css.gutterLine, "aria-hidden": true }),
+										jsx_(FoldToggle, {
+											className: css.expand,
+											expanded,
+											hidden,
+											labels,
+											onToggle,
 										}),
 									],
 								}),
-					),
+						]
+					: []),
+					...tail.map((row, index) => foldRow(row, index)),
 				],
 			}),
 			jsx_("div", {
@@ -326,4 +333,25 @@ export function DiffRowsBlock({
 			}),
 		],
 	});
+
+/**
+ * One drawn diff row: a flex container with the anchor cell + the content
+ * cell, in DOM order (per-row drag semantics, #131 field feedback).
+ */
+function foldRow(row: DisplayRow, index: number): ReactNode {
+	return jsx_("div", {
+		key: index,
+		className: css.row,
+		children: [
+			jsx_("span", {
+				className: `${css.gutterLine} ${row.rowClass}`.trim(),
+				children: row.gutter,
+			}),
+			jsx_("span", {
+				className: `${css.content} ${row.rowClass}`.trim(),
+				children: row.text,
+			}),
+		],
+	});
+}
 }

@@ -29,6 +29,7 @@ import { foldWindow, markerColumnCh, readCardMeta } from "./read-meta.js";
 import type { ReadCardLabels } from "./labels.js";
 import type { ReadCardModel } from "./types.js";
 
+import { installAnchorColumnSelection } from "./anchor-select.js";
 const CSS_TEXT = [
 	// The frame: the diff and diagnostics cards' own declarations, so the cards
 	// cannot drift apart.
@@ -47,6 +48,10 @@ const CSS_TEXT = [
 	// hit-testing hint, not a filter, so it silently took the anchors away from
 	// every copy that started in the code.)
 	".dshl-read-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-read-gutter-w);padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	// Drag-origin semantics (issue 131): a drag that starts in the CODE excludes the
+	// anchor cells for that drag; a drag that starts IN the anchor column keeps
+	// them in (see anchor-select.ts).
+	".dshl-suppress-anchor-select .dshl-read-gutter{user-select:none}",
 	".dshl-read-marker,.dshl-read-gap{display:block;height:var(--dsl-read-line-height);line-height:var(--dsl-read-line-height);white-space:nowrap;overflow:hidden}",
 	".dshl-read-line{min-height:var(--dsl-read-line-height);line-height:var(--dsl-read-line-height);white-space:pre}",
 	// The fold is ours: one row of the code column, drawn only when the window is
@@ -186,18 +191,27 @@ export function ReadCard({ model, labels, className }: ReadCardProps): ReactNode
 							],
 						}),
 					),
-					hidden > 0 && !expanded
+					hidden > 0
 						? jsx_("div", {
-								className: "dshl-read-row",
-								key: "fold-row",
-								children: jsx_("button", {
+							className: "dshl-read-row",
+							key: "fold-row",
+							children: [
+								// The empty anchor cell keeps the button indented to the code
+								// column, out of the anchor column's lane.
+								jsx_("span", { className: "dshl-read-gutter", "aria-hidden": true }),
+								jsx_("button", {
 									type: "button",
 									className: "dshl-read-fold",
 									"aria-expanded": expanded,
 									"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
 									onClick: onToggle,
+									// The label flips with the state: this ONE button is both
+									// the expander and the collapser, and it stays rendered
+									// while rows remain hidden so the fold can always be
+									// closed again.
 									children: expanded ? labels.collapse : labels.expand(hidden),
 								}),
+							],
 						})
 						: null,
 					...tail.map(({ row, tokens }) =>

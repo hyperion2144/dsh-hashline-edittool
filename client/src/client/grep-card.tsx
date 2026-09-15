@@ -42,6 +42,7 @@ const CSS_TEXT = [
 	// of the font declared HERE — `ch` measures this element's own font).
 	// Selectable on purpose (see the read card).
 	".dshl-grep-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-gutter-w);padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary);white-space:pre;overflow:hidden}",
+	".dshl-suppress-anchor-select .dshl-grep-gutter{user-select:none}",
 	".dshl-grep-content{white-space:pre}",
 	// The highlighter yellow is hard-coded because the theme has no yellow token
 	// (its only warm family is amber, whose lightest tier reads as cream, not
@@ -49,7 +50,7 @@ const CSS_TEXT = [
 	// `mark` pairing is overridden: dark-on-yellow stays readable in BOTH themes,
 	// whereas an inherited (light, under the dark theme) text colour would not.
 	".dshl-grep-mark{background-color:#ffe066;color:#1f1f1f;border-radius:2px}",
-	".dshl-grep-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
+	".dshl-grep-expand{flex:1 1 auto;display:block;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-grep-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-grep-empty{padding:12px 14px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
 	".dshl-grep-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
@@ -77,6 +78,7 @@ const css = {
 	content: "dshl-grep-content",
 	mark: "dshl-grep-mark",
 	expand: "dshl-grep-expand",
+
 	empty: "dshl-grep-empty",
 	footer: "dshl-grep-footer",
 } as const;
@@ -167,15 +169,17 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 	const head = capped ? display.slice(0, headLines) : display;
 	const tail = capped ? display.slice(display.length - tailLines) : [];
 
-	const rowEl = (entry: (typeof display)[number], index: number) =>
+	// PER-ROW: one flex row per drawn line — anchor cell + content cell in DOM
+	// order, so a drag is an ordinary continuous text selection.
+	const foldRow = (entry: (typeof display)[number], index: number) =>
 		jsx_("div", {
 			key: `${entry.key}-${index}`,
-			className: css.line,
+			className: css.row,
 			children: [
+				jsx_("span", { className: css.gutter, "aria-hidden": true, children: entry.gutter }),
 				jsx_("span", { className: css.content, children: rowContent(entry.row) }),
 			],
 		});
-
 	const panelId = `${baseId}-panel`;
 
 	return jsx_("div", {
@@ -206,28 +210,33 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 					// PER-ROW (#131 field feedback): one flex row per drawn line — anchor
 					// cell + content cell in DOM order, so a drag is an ordinary continuous
 					// text selection. The fold button spans its full row.
-						...[...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((entry, index) =>
-							entry === null
-								? jsx_("button", {
-										key: `expand-${index}`,
-										type: "button",
-										className: css.expand,
-										"aria-expanded": expanded,
-										"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
-										onClick: onToggle,
-										children: expanded ? labels.collapse : labels.expand(hidden),
-									})
-								: jsx_("div", {
-										key: index,
+						...head.map((entry, index) => foldRow(entry, index)),
+						// The fold toggle stays rendered while rows are hidden OR the fold
+						// is open — an opened fold must stay closeable.
+						...(hidden > 0 || expanded
+							? [
+									jsx_("div", {
+										key: "fold-row",
 										className: css.row,
 										children: [
-											jsx_("span", { className: css.gutter, "aria-hidden": true, children: entry.gutter }),
-											jsx_("span", { className: css.content, children: rowContent(entry.row) }),
+											// Empty anchor cell: keeps the toggle indented to the code
+											// column instead of drifting into the anchor lane.
+											jsx_("span", { className: css.gutter, "aria-hidden": true }),
+											jsx_("button", {
+												type: "button",
+												className: css.expand,
+												"aria-expanded": expanded,
+												"aria-label": expanded ? labels.collapseAria : labels.expandAria(hidden),
+												onClick: onToggle,
+												children: expanded ? labels.collapse : labels.expand(hidden),
+											}),
 										],
 									}),
-						),
-					],
-			}),
+						]
+					: []),
+					...tail.map((entry, index) => foldRow(entry, index)),
+			],
+		}),
 			jsx_("div", {
 				className: css.footer,
 				children: `└ ${

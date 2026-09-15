@@ -109,15 +109,23 @@ describe("the card mounts nothing shipped", () => {
 		expect(cardSource).toContain("var(--dsw-alias-state-business-primary)");
 	});
 
-	it("leaves the marker column selectable", () => {
-		// `user-select: none` is a hit-testing hint, not a filter: it does not keep the
-		// markers out of a copy that starts in the code, it only takes the anchors away
-		// from a reader who DOES want them. Every card's marker column is plain text,
-		// and the copy button's own text excludes the gutter regardless.
-		const sources = ["read-card.tsx", "diff-block.tsx", "grep-card.tsx", "lsp-block.tsx"].map((name) =>
-			readFileSync(join(clientRoot, "src", "client", name), "utf8"),
+	it("marker cells are selectable except during a code-origin drag", () => {
+		// The marker column is plain text by default. The ONE allowed
+		// `user-select:none` is the drag-origin rule (#131): when a drag starts
+		// in the code, the anchor cells are passed over for that drag — when it
+		// starts in the anchor column, anchors and text select together.
+		const sources = ["read-card.tsx", "diff-block.tsx", "grep-card.tsx", "lsp-block.tsx"].map(
+			(name) => readFileSync(join(clientRoot, "src", "client", name), "utf8"),
 		);
-		for (const source of sources) expect(source).not.toContain("user-select:none");
+		for (const source of sources) {
+			const lines = source.split("\n").filter((line) => line.includes("user-select:none"));
+			expect(lines.length).toBe(1);
+			expect(lines[0]).toContain("dshl-suppress-anchor-select");
+		}
+		// The shared classifier must exist and reference every card's anchor cells.
+		const classifier = readFileSync(join(clientRoot, "src", "client", "anchor-select.ts"), "utf8");
+		expect(classifier).toContain("mousedown");
+		expect(classifier).toContain("dshl-suppress-anchor-select");
 	});
 });
 
