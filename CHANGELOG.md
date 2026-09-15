@@ -4,8 +4,16 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-09-15
+## [0.6.2] - 2026-09-15
 
+### Fixed — 锚点与诊断实测修复（#131 字段反馈）
+
+- **JSON 诊断格式与 diff 字典对齐**：`diagnostics` 改为 marker-keyed 字典 —— `"<锚点>:<行号>"` 作 key，`{ text, messages, severities }` 作 value，severities 文字化（`"error"`/`"warning"`），不再出现 `hash` 字段与裸行号字段。`edit` / `ast_edit` / `write` 三个 JSON envelope 统一。
+- **锚点漂移修复（核心）**：`applyOne` 曾在每个 op 后经 `anchorsFor` 全量重算锚点 —— 同内容行组按出现顺序重排，导致 batch 后续 op 的锚点命中无关行（实测 `486:TX` 改到 708 行）。现改为单 hunk 增量迁移：内容不变的行锚点 verbatim 保留；hunk 行数由实际行数差推导（`countLineChanges` 对 sed 少算曾致丢行）。含「文件自带重复行 + 一次 edit 两 op」的回归验证。
+- **诊断改触发式**：编辑落盘后主动向语言服务器 pull 一次诊断 —— 请求与 `didChange` 同连接按序处理，结果必然针对编辑后的最终内容；不再等推送碰运气（服务器异步分析的中间态推送曾导致满屏幻影错误）。不支持 pull 的服务器退回推送流 + 版本门控（过期版本推送被跳过）。
+- **展示锚点入会话**：`lsp` / `ast_grep` / `ast_edit` / 诊断行的输出锚点从无状态重算改为会话增量状态 —— 同一行不再出现两套锚点，卡片/诊断上的锚点可直接用于 edit。
+- **折叠按钮修复**：per-row 卡片的折叠按钮在展开后消失导致无法收起 —— 现在只要有隐藏行就保持渲染，文案随状态切换，并用空锚点 cell 缩进到代码列；grep 卡补上一直缺失的收起按钮。
+- **卡片锚点列拖选**：四卡改为 per-row 结构，锚点 cell 与内容 cell 同行渲染；拖选起点在代码区时本次拖选跳过锚点列（起点在锚点列则连锚点一起选）。已知遗留：部分浏览器拖选路径仍会带出锚点文本，后续用 copy 事件劫持实现纯锚点复制。
 ## [0.6.1] - 2026-09-15
 
 ### Added — 写入后自动回送 LSP 诊断（#131）
