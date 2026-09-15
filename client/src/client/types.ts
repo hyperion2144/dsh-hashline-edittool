@@ -85,12 +85,37 @@ export interface FileDiff {
 	newText: string;
 }
 
-/** Props accepted by the primitives' ReadBlock. */
-export interface ReadCardProps {
-	label: string;
-	lines: readonly { number: number | string; text: string }[];
-	totalLines: number;
-	lang?: string | undefined;
+/** One line of the served read window, as the card draws it. */
+export interface ReadCardRow {
+	/** 1-based file line number. */
+	readonly number: number;
+	/** The line's hashline anchor; `""` when the row carries none. */
+	readonly hash: string;
+	/**
+	 * The marker the card draws in its gutter cell: `<line>:<anchor>`, or the bare
+	 * line number when this row has no anchor. Composed in the model so neither the
+	 * card nor any shipped component has to build it.
+	 */
+	readonly gutter: string;
+	/** The line's verbatim text. */
+	readonly text: string;
+}
+
+/**
+ * The `read` card's model — the card's OWN shape, not a primitive's props.
+ *
+ * `rows` is structured (`number` / `hash` / `gutter` / `text`): the anchor is a
+ * field again instead of a `<line>:<anchor>` string smuggled through a numeric
+ * field, which is the debt issue #98 was filed for.
+ */
+export interface ReadCardModel {
+	/** Absolute path from the persisted meta. */
+	readonly path: string;
+	/** Display title for the tab: the path relativized to the workspace and `~`-abbreviated. */
+	readonly label: string;
+	readonly rows: readonly ReadCardRow[];
+	readonly totalLines: number;
+	readonly lang?: string | undefined;
 }
 
 /** Props accepted by the primitives' DiffBlock. */

@@ -24,15 +24,31 @@ import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { GrepCardModel, GrepRowMeta } from "./types.js";
 import { grepGutterLabel, highlightSegments } from "./models.js";
+import { markerColumnCh } from "./read-meta.js";
 import type { GrepCardLabels } from "./labels.js";
 
 const CSS_TEXT = [
 	".dshl-grep-block{--dsl-grep-line-height:22px;position:relative;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:12px}",
 	// The tab bar itself is the shared `TabStrip` (issue #96); only the body
 	// chrome below belongs to this card.
-	".dshl-grep-body{padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
+	// TWO columns, exactly as the read and diff cards are: the markers in one element,
+	// the code in another. A block body here stacked them instead (markers above,
+	// code below), because a `width` in `ch` is a real width and the column wrapped.
+	".dshl-grep-body{display:flex;align-items:flex-start;padding:12px 14px;font:var(--dsw-font-markdown-code-block);overflow-x:auto;overflow-y:hidden}",
 	".dshl-grep-line{min-height:var(--dsl-grep-line-height);white-space:pre;display:flex}",
-	".dshl-grep-gutter{flex:none;padding-right:14px;text-align:right;color:var(--dsw-alias-label-tertiary);user-select:none}",
+	// The marker column: ONE element for the whole window, each label a block span,
+	// sized from the data by the widest label. The font is declared HERE because the
+	// width is expressed in `ch` and `ch` measures THIS element's own font — left to
+	// inherit the UI font, the box would be sized in one font and filled in another,
+	// and the tail of each `行号:锚点` would be clipped away.
+	// (The body already carries the card's 14px inset, so this column pads only on the
+	// right — the gap to the code.)
+	// `content-box`: the width below is the TEXT width, and the 14px inset is added
+	// on top of it rather than eaten out of it.
+	// Selectable on purpose (see the read card).
+	".dshl-grep-gutter{flex:0 0 auto;box-sizing:content-box;padding:0 14px 0 0;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	".dshl-grep-gutter-line{display:block;height:var(--dsl-grep-line-height);line-height:var(--dsl-grep-line-height);white-space:pre;overflow:hidden}",
+	".dshl-grep-code{flex:0 0 auto}",
 	".dshl-grep-content{white-space:pre}",
 	// The highlighter yellow is hard-coded because the theme has no yellow token
 	// (its only warm family is amber, whose lightest tier reads as cream, not
@@ -64,6 +80,8 @@ const css = {
 	body: "dshl-grep-body",
 	line: "dshl-grep-line",
 	gutter: "dshl-grep-gutter",
+	gutterLine: "dshl-grep-gutter-line",
+	code: "dshl-grep-code",
 	content: "dshl-grep-content",
 	mark: "dshl-grep-mark",
 	expand: "dshl-grep-expand",
@@ -119,9 +137,9 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 		() => rows.map((row) => ({ key: row.number, gutter: grepGutterLabel(row), row })),
 		[rows],
 	);
-	// One shared gutter column: the widest label sets the width for every row
-	// (monospace font → `ch` is exact), so all content cells share one edge.
-	const gutterWidth = Math.max(8, ...display.map((entry) => entry.gutter.length));
+	// One shared marker column, sized by the SAME helper the read and diff cards use,
+	// so the four cannot invent four widths for the same content.
+	const gutterWidth = markerColumnCh(display.map((entry) => entry.gutter));
 
 	const onSelect = useCallback((index: number) => {
 		setActive(index);
@@ -162,12 +180,6 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 			key: `${entry.key}-${index}`,
 			className: css.line,
 			children: [
-				jsx_("span", {
-					className: css.gutter,
-					style: { minWidth: `${gutterWidth}ch` },
-					"aria-hidden": true,
-					children: entry.gutter,
-				}),
 				jsx_("span", { className: css.content, children: rowContent(entry.row) }),
 			],
 		});
@@ -198,7 +210,20 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
 				children: [
-					...head.map(rowEl),
+					// ONE marker element for the whole window, each label a block span — the
+					// same construction as the read and diff cards.
+					jsx_("div", {
+						className: css.gutter,
+						style: { width: `${gutterWidth}ch` },
+						"aria-hidden": true,
+						children: [...head, ...(hidden > 0 && !expanded ? [null] : []), ...tail].map((entry, index) =>
+							jsx_("span", { className: css.gutterLine, key: index, children: entry?.gutter ?? " " }),
+						),
+					}),
+					jsx_("div", {
+						className: css.code,
+						children: [
+							...head.map(rowEl),
 					...(hidden > 0
 						? [
 								jsx_("button", {
@@ -211,7 +236,9 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 								}),
 							]
 						: []),
-					...tail.map(rowEl),
+							...tail.map(rowEl),
+						],
+					}),
 				],
 			}),
 			jsx_("div", {

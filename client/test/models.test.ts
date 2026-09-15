@@ -81,8 +81,12 @@ describe("readCardModel", () => {
 			undefined,
 		);
 		expect(card).not.toBeNull();
-		expect(card?.lines.map((line) => line.number)).toEqual(["1:a1", "2:b2"]);
-		expect(card?.lines.map((line) => line.text)).toEqual(["const a = 1;", "const b = 2;"]);
+		// The anchor is a FIELD again, and `gutter` is the marker the card draws
+		// (issue #98): the model no longer pre-composes it into a string field.
+		expect(card?.path).toBe("/w/src/a.ts");
+		expect(card?.rows.map((row) => row.hash)).toEqual(["a1", "b2"]);
+		expect(card?.rows.map((row) => row.gutter)).toEqual(["1:a1", "2:b2"]);
+		expect(card?.rows.map((row) => row.text)).toEqual(["const a = 1;", "const b = 2;"]);
 		expect(card?.label).toBe("src/a.ts");
 		expect(card?.lang).toBe("ts");
 	});
@@ -98,12 +102,13 @@ describe("readCardModel", () => {
 			undefined,
 			undefined,
 		);
-		expect(card?.lines.map((line) => line.number)).toEqual([1, "2:b2"]);
+		expect(card?.rows.map((row) => row.hash)).toEqual(["", "b2"]);
+		expect(card?.rows.map((row) => row.gutter)).toEqual(["1", "2:b2"]);
 	});
 
 	it("keeps official parity (bare numbers) when meta carries no hashlines", () => {
 		const card = readCardModel(settledRead({}), undefined, undefined);
-		expect(card?.lines.map((line) => line.number)).toEqual([1, 2]);
+		expect(card?.rows.map((row) => row.gutter)).toEqual(["1", "2"]);
 	});
 
 	it("renders the card WITHOUT the dsh envelope text (issue #71: meta alone)", () => {
@@ -119,7 +124,7 @@ describe("readCardModel", () => {
 			undefined,
 		);
 		expect(card).not.toBeNull();
-		expect(card?.lines.map((line) => line.number)).toEqual(["1:a1", "2:b2"]);
+		expect(card?.rows.map((row) => row.gutter)).toEqual(["1:a1", "2:b2"]);
 	});
 
 	it("still renders enveloped pre-0.4.2 history (legacy tolerance)", () => {

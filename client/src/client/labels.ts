@@ -44,6 +44,30 @@ export function readBlockLabels(t: TBench): ReadBlockLabels {
 	};
 }
 
+/**
+ * Chrome labels for the hashline read card: the shipped read card's own words
+ * plus the tab row's. `copy` / `copied` serve the tab's copy button; the fold
+ * reuses the same `read.*` expansion wording the shipped card used.
+ */
+export interface ReadCardLabels extends ReadBlockLabels, TabStripLabels {
+	/** Accessible name of the tab list (the read tool's title). */
+	tablist: string;
+	/** Accessible name of the overflow trigger (`common.more`). */
+	more: string;
+}
+
+/** Build localized read-card chrome labels. */
+export function readCardLabels(t: TBench): ReadCardLabels {
+	return {
+		...readBlockLabels(t),
+		// The shipped locale carries no `read.card`; the tool title is the one
+		// localized word that names this tab list (the same key the grep card uses).
+		tablist: t("tool.title.read"),
+		// `more` is a `common` namespace key — no new locale key is added.
+		more: t("more"),
+	};
+}
+
 /** Build localized diff-card chrome labels. */
 export function diffBlockLabels(t: TBench): DiffBlockLabels {
 	return {
@@ -60,6 +84,7 @@ export function diffBlockLabels(t: TBench): DiffBlockLabels {
 }
 
 import type { LspBlockLabels } from "./lsp-block.js";
+import type { TabStripLabels } from "./tab-strip.js";
 
 /**
  * Diagnostics-card chrome labels (`lsp`).
