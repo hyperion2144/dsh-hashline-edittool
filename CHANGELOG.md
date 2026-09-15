@@ -6,6 +6,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [0.6.2] - 2026-09-15
 
+## [0.6.2] - 2026-09-15
+
 ### Fixed — 锚点与诊断实测修复（#131 字段反馈）
 
 - **JSON 诊断格式与 diff 字典对齐**：`diagnostics` 改为 marker-keyed 字典 —— `"<锚点>:<行号>"` 作 key，`{ text, messages, severities }` 作 value，severities 文字化（`"error"`/`"warning"`），不再出现 `hash` 字段与裸行号字段。`edit` / `ast_edit` / `write` 三个 JSON envelope 统一。
