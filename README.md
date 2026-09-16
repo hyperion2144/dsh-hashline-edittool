@@ -82,6 +82,8 @@ server per language — started on demand, shared with dsh's own `lsp` service �
 back to a heuristic backend when none can be had. Both serve their rows, so structural and
 semantic results are directly editable.
 
+**Diagnostics on write.** After an edit/write lands, the plugin baselines the language server with the pre-write text, pulls diagnostics, and delivers them per written file — an inline, severity-tinted capsule under the card within a short window, with bounded async delivery at the model's next natural step, riding both the JSON envelope and the text channel. One switch (`lsp.auto_diagnostics`) turns it off.
+
 **A settings panel rendered by the plugin itself.** The bundled `HashlineSettingsCard` is
 a full settings UI in the web: separator, output format, context lines,
 require_line_content, the AST master switch plus per-language toggles, named LSP servers,

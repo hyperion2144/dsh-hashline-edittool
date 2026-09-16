@@ -55,6 +55,20 @@
 以单个 npm 包（`dsh-hashline-edittool`）交付：宿主插件 + web 卡片插件 + prompt sections，
 由一个 bundle patch 挂载。
 
+## 亮点
+
+**自渲染卡片。** 随包 client 插件自带 React 组件——`HashlineReadRow`、`HashlineEditRow`、`HashlineGrepRow`（文件 tab + 命中高亮）、`HashlineUndoRow`、`HashlineWriteRow`、`HashlineAstGrepRow`、`HashlineAstEditRow`、`HashlineLspRow`——直接注册进 dsh web UI 的插槽。每张卡片从工具的结构化 `presentationMeta` 渲染，锚点 gutter、diff 行、高亮 span 全部原生绘制：没有通用工具输出卡，没有字符串互解，不改上游 web。
+
+**动态长度锚点。** 锚点不是定宽哈希。分配最短优先：2 个字符覆盖前 3,844 行，只有文件真需要时才长出新层（上限 62⁸ 行，实际不可达）。全数字编码被跳过，标记永远不会与行号混淆；冲突在分配时探测消解；会话内编辑后幸存的行保持原锚点——分配/释放走统一生命周期门，重写与外部变更按行对齐继承。
+
+**AST + LSP 双语义后端。** `ast_grep` / `ast_edit` 通过沙箱化的 tree-sitter worker 回答「语法在哪里匹配」，配精选语法目录（SHA-256 校验下载、安装/卸载路由）与长文件的可编辑折叠大纲。`lsp` 工具通过每语言一个的真实语言服务器回答「这个符号是什么」——按需启动，与 dsh 自带 `lsp` 服务共享——起不了服务器时降级启发式后端。两者都会 serve 自己的行，结构与语义结果可直接编辑。
+
+**写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
+
+**插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断。改完提交即生效——不用碰 YAML。
+
+**处处热切换。** 提交的设置改动**下一次工具调用**即生效——输出格式、分隔符、上下文行数、AST/LSP 开关（已实测：会话中途切换 `output_format`，模型收到的内容立即改变）。影响面最大的开关也有处理：切换 `require_line_content` 会销毁并重挂 `edit` 工具的 schema，模型下一步就看到新的 `{ anchor, line }` 参数集——全程无需重启。
+
 ## 快速开始
 
 ```sh
