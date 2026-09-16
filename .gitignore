@@ -15,3 +15,7 @@ coverage/
 #  - the language-manager prototype is a throwaway that no doc references.
 docs/manual-smoke-ast.md
 docs/prototype/
+
+# local-only, deliberately untracked
+.dsh-vision-toolkit/
+scripts/fix-issue-body.mjs
