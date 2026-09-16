@@ -321,13 +321,13 @@ against the harness this repository is actually run on:
 
 | dsh version | plugin versions | notes |
 | --- | --- | --- |
-| **0.1.6-alpha.1+** (`agent/created`) | **0.7.1+** | dual event registration (`agent/created` + legacy `agent/session-start`); `systemPrompt` resolved as a scoped service |
-| **0.1.5-rc.2** (live-verified) | 0.7.0 – 0.7.1 | unified anchor lifecycle, AST/LSP split, settings card, card gallery |
+| **0.1.6-alpha.1** (current env) | **0.7.1+** | dual event registration (`agent/created` + legacy `agent/session-start`); `systemPrompt` resolved as a scoped service |
+| 0.1.5-rc.2 (prior env, live-verified) | 0.7.0 | unified anchor lifecycle, AST/LSP split, settings card, card gallery |
 | ≥ 0.1.2-rc.0 | 0.6.x – 0.7.1 | self-rendered cards, per-workspace store, settings panel |
 | 0.1.2 | 0.4.x – 0.5.x | v2 dynamic anchors; dsh 0.1.2 web-card adaptation completed (#69) |
 | 0.1.2 (early) | 0.1.x – 0.3.x | legacy `line#hash` anchors, batch_edit |
 
-- Build/test SDK line: `0.1.6-alpha.1`; live-verified on dsh `0.1.5-rc.2` and targeting `0.1.6-alpha.1` (#134).
+- Build/test SDK line: `0.1.6-alpha.1` (#134); the 0.7.0 line was verified on dsh `0.1.5-rc.2`.
 - Newer dsh 0.1.x/rc lines are expected to work; report regressions as issues.
 
 ## Development
