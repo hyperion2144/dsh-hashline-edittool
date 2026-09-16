@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeDrift } from "../../src/drift.js";
+import { computeDrift } from "../../src/domain/session/session-view.js";
 
 describe("computeDrift", () => {
 	it("never anchors drift echoes to an ambiguous (duplicated) hash", () => {

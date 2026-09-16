@@ -12,13 +12,13 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeAll, afterAll, vi } from "vitest";
 import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
-import { shutdownHashStore } from "../../src/hash-store.js";
-import { localIO, type FileIO } from "../../src/fs-bridge.js";
-import { buildEditTool } from "../../src/tool-edit.js";
-import { buildReadTool } from "../../src/tool-read.js";
-import { buildUndoTool } from "../../src/tool-undo.js";
-import { buildGrepTool } from "../../src/tool-grep.js";
-import { FsSandboxController } from "../../src/sandbox.js";
+import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
+import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { buildEditTool } from "../../src/tools/tool-edit.js";
+import { buildReadTool } from "../../src/tools/tool-read.js";
+import { buildUndoTool } from "../../src/tools/tool-undo.js";
+import { buildGrepTool } from "../../src/tools/tool-grep.js";
+import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 export async function getWritableTempRoot(): Promise<string> {
 	const fallback = join(process.cwd(), ".tmp");
@@ -304,10 +304,14 @@ export function expectedEditContent(
 export async function makeTag(
 	content: string,
 	line: number,
-	path: string,
+	_path?: string,
 ): Promise<{ anchor: string; line?: number }> {
-	const { lineHashes } = await import("../../src/hashline/index.js");
-	const hashes = await lineHashes(content, path);
+	// PURE anchors: engine-level tests pin applyEdit's semantics against the
+	// SAME array its no-path fallback uses (lineHashesPure), so the helper is
+	// hermetic — no cross-test session pollution, no inheritance drift.
+	// (Callers `await` the result; a resolved plain value is transparent.)
+	const { anchorsPure } = await import("../../src/hashline/session-anchors.js");
+	const hashes = anchorsPure(content);
 	// v2.0: anchors are {anchor, line?} — the line is an optional positional
 	// hint, never the identity. Return the bare anchor form.
 	return { anchor: hashes[line - 1]! };

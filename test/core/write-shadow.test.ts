@@ -14,10 +14,10 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { mkdtemp, writeFile, rm } from "fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildWriteShadowTool } from "../../src/tool-write-shadow.js";
-import type { FileIO } from "../../src/fs-bridge.js";
-import { localIO } from "../../src/fs-bridge.js";
-import { FsSandboxController } from "../../src/sandbox.js";
+import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";
+import type { FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
+import { FsSandboxController } from "../../src/infra/sandbox.js";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 
 function makeExec(cwd: string): (args: unknown) => ToolRunContext {

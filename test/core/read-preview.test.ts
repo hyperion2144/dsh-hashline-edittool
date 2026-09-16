@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MAX_BYTES } from "../../src/truncate.js";
-import { fmtReadPreview } from "../../src/read-render.js";
+import { DEFAULT_MAX_BYTES } from "../../src/domain/session/file-view.js";
+import { fmtReadPreview } from "../../src/domain/session/file-view.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();

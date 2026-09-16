@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { genDiff } from "../../src/edit-diff.js";
+import { genDiff } from "../../src/render/edit-diff.js";
 
 beforeAll(async () => {
 });

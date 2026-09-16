@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	detectRangeConflicts,
 	type RangeEdge,
-} from "../../src/range-conflicts.js";
+} from "../../src/domain/edit/range-conflicts.js";
 
 describe("detectRangeConflicts", () => {
 	it("flags overlapping replace/del ranges (inclusive endpoints)", () => {

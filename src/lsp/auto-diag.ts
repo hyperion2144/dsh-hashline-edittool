@@ -36,15 +36,15 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import { languageForPath } from "../ast/language.js";
-import { isAutoDiagnosticsEnabled } from "../config.js";
-import { splitLines } from "../utils.js";
+import { isAutoDiagnosticsEnabled } from "../infra/settings.js";
+import { splitLines } from "../infra/utils.js";
 import {
 	anchorWidth,
 	fmtHashlineRow,
 	fmtMarker,
 } from "../hashline/hash-assign.js";
-import { execSessionKey, recordServed } from "../session-view.js";
-import type { FileIO } from "../fs-bridge.js";
+import { execSessionKey, recordServed } from "../domain/session/session-view.js";
+import type { FileIO } from "../infra/fs-bridge.js";
 import { getLspManager } from "./manager.js";
 import { anchorsFor } from "../hashline/session-anchors.js";
 import type { LspSession } from "./session.js";

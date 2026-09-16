@@ -24,7 +24,7 @@
 import { mkdir, access, constants } from "node:fs/promises";
 import { join } from "node:path";
 import { KNOWN_SERVERS, type KnownServer } from "./discovery.js";
-import { lspServersDir } from "../paths.js";
+import { lspServersDir } from "../infra/paths.js";
 import type { SubprocessLike } from "./transport.js";
 import { platformSpawnArgv } from "./spawn-argv.js";
 

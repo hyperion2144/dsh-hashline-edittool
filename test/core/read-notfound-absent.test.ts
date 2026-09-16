@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReadTool } from "../../src/tool-read.js";
+import { buildReadTool } from "../../src/tools/tool-read.js";
 import { makeExec } from "../support/fixtures.js";
 
 /**
@@ -11,7 +11,7 @@ import { makeExec } from "../support/fixtures.js";
  */
 describe("Windows atomic-replace failure mapping", () => {
 	it("maps a replacefilew/1175 error to E_WIN_REPLACE with a diagnosis", async () => {
-		const { mapFsError } = await import("../../src/fs-bridge.js");
+		const { mapFsError } = await import("../../src/infra/fs-bridge.js");
 		const err = Object.assign(new Error("replacefilew eio win32 1175 C:\\x.txt"), {
 			code: "FS_WRITE_FAILED",
 		});
@@ -20,7 +20,7 @@ describe("Windows atomic-replace failure mapping", () => {
 	});
 
 	it("passes unrelated fs errors through unchanged", async () => {
-		const { mapFsError } = await import("../../src/fs-bridge.js");
+		const { mapFsError } = await import("../../src/infra/fs-bridge.js");
 		const err = Object.assign(new Error("boom"), { code: "E_WHATEVER" });
 		expect(() => mapFsError(err, "x.txt")).toThrow("boom");
 	});

@@ -27,7 +27,7 @@ import {
 	editGuidance,
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
-} from "../src/prompts.js";
+} from "../src/domain/edit/prompts.js";
 import { getEffectiveConfig } from "../src/config.js";
 
 async function withHome(run: (home: string) => Promise<void>): Promise<void> {

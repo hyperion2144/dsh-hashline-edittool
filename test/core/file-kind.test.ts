@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "node:path";
-import { loadFileKindAndText } from "../../src/file-kind.js";
+import { loadFileKindAndText } from "../../src/domain/session/file-view.js";
 import { withTempFile } from "../support/fixtures.js";
 
 describe("loadFileKindAndText", () => {

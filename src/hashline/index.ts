@@ -33,8 +33,8 @@ export { anchorsFor, anchorsPure, updateAnchorsAfterEdit } from "./session-ancho
 
 export { lineHashes } from "./hash.js";
 
-export { parseHashRef, parseText } from "./parse.js";
-export type { Anchor } from "./parse.js";
+export { parseHashRef, parseText } from "./anchor-pipeline.js";
+export type { Anchor } from "./anchor-pipeline.js";
 
 export { resEdit } from "./anchor-pipeline.js";
 export type { HEdit, HTEdit, NEdit, BDup, AutoFix } from "./anchor-pipeline.js";
@@ -58,5 +58,17 @@ export type {
  ServedCode,
 } from "./anchor-pipeline.js";
 
-export { grepFileContent } from "../tool-grep.js";
-export type { GrepFileSection, GrepToolOptions, GrepSectionRow } from "../tool-grep.js";
+//
+// NOTHING above this line may leave the hashline layer.
+//
+// This barrel used to re-export `grepFileContent` (and three grep types) from
+// `../tool-grep.js`, so that ONE line made every hashline consumer — including
+// `edit-diff`, a pure diff renderer — instantiate the whole tool layer. The
+// grep tool imports this barrel back, so the re-export was also half of a
+// 14-module import cycle: `edit-diff → hashline/index → tool-grep →
+// presentation-helpers → edit-diff`.
+//
+// `grepFileContent` was a tool-layer implementation detail wearing a hashline
+// address: its only production caller is `tool-grep` itself. It is exported
+// from there, and the one test that reached it through this barrel imports it
+// from its own module now.

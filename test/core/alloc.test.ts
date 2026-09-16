@@ -14,7 +14,7 @@ import {
   anchorsFor,
   anchorsPure,
 } from "../../src/hashline/session-anchors.js";
-import { splitLines } from "../../src/utils.js";
+import { splitLines } from "../../src/infra/utils.js";
 
 /**
  * Usable 2-character anchors: `62 ** 2` slots, MINUS every digits-only one.
@@ -403,10 +403,10 @@ describe("an insert above a blank does not steal the blank's anchor (#125)", () 
     const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { buildEditTool } = await import("../../src/tool-edit.js");
-    const { buildReadTool } = await import("../../src/tool-read.js");
-    const { FsSandboxController } = await import("../../src/sandbox.js");
-    const { localIO } = await import("../../src/fs-bridge.js");
+    const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+    const { buildReadTool } = await import("../../src/tools/tool-read.js");
+    const { FsSandboxController } = await import("../../src/infra/sandbox.js");
+    const { localIO } = await import("../../src/infra/fs-bridge.js");
 
     const dir = await mkdtemp(join(tmpdir(), "anchor-ins-"));
     await writeFile(join(dir, "a.txt"), ["L1", "L2", "L3", "L4", "", "L6", "L7"].join("\n"), "utf-8");

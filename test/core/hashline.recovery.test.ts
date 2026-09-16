@@ -90,18 +90,19 @@ describe("applyEdit — recovery scenarios", () => {
     expect(caught!.message).toMatch(/ANCHOR:FILELINE|fresh anchors/);
   });
 
-  it("validates at the exact line#hash (no hash-only ambiguity)", () => {
-    // With line#hash, identical content at multiple positions is no longer
-    // ambiguous: each (line, hash) pair is unique. Send the same hash at
-    // line 1 and the file's first line resolves cleanly.
+  it("refuses a forged duplicate-anchor array with [E_ANCHOR_AMBIGUOUS] (no silent first-occurrence resolution)", () => {
+    // v1.0 line#hash resolved duplicates to the FIRST occurrence. v2.0
+    // exclusivity: one live anchor names ONE line — a duplicated array is
+    // inconsistent anchor state, and first-occurrence resolution is exactly
+    // the silent wrong-line mechanism that destroyed lines 55..209 in the
+    // `2t` incident. The engine refuses; the caller re-reads.
     const content = "a\nb\nc\nd\ne";
     const hashes = lineHashesPure(content);
     const forgedHashes = [hashes[0]!, hashes[0]!, hashes[0]!, hashes[0]!, hashes[0]!];
-    const result = applyEdit(content, resEdit(
+    expect(() => applyEdit(content, resEdit(
       { remove_from: `${hashes[0]!}`,
       remove_to: `${hashes[0]!}`, replacement_text: "X" },
-    ), undefined, forgedHashes);
-    expect(result.content).toBe("X\nb\nc\nd\ne");
+    ), undefined, forgedHashes)).toThrow(/\[E_ANCHOR_AMBIGUOUS\]/);
   });
 
   it("rejects unknown fields in edit items", () => {

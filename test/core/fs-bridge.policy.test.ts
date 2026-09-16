@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@deepseek-ai/cordis";
-import { ctxFsIO, type FileIO } from "../../src/fs-bridge.js";
+import { ctxFsIO, type FileIO } from "../../src/infra/fs-bridge.js";
 
 /** A mock `ctx.fs` recording every call and returning scripted results. */
 function makeFs(overrides: Partial<Record<string, unknown>> = {}) {

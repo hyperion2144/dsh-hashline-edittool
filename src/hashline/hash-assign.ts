@@ -25,7 +25,7 @@
  *
  * @module dsh-hashline-edittool/hashline/hash-assign
  */
-import { splitLines } from "../utils.js";
+import { splitLines } from "../infra/utils.js";
 import { assignAnchors } from "./alloc.js";
 
 // --- alphabet ---

@@ -12,8 +12,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyEffective } from "../../src/config.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { setLspManager } from "../../src/lsp/manager.js";
-import { buildLspTool } from "../../src/tool-lsp.js";
-import { E_LSP_NO_SERVER } from "../../src/tool-lsp.js";
+import { buildLspTool } from "../../src/tools/tool-lsp.js";
+import { E_LSP_NO_SERVER } from "../../src/tools/tool-lsp.js";
 
 const FILE = "/tmp/lsp-tool-probe/a.ts";
 

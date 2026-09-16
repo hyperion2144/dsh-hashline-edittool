@@ -4,6 +4,18 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+- **Unified anchor lifecycle**: anchors are allocated only on first serve or actual content change; rewrites and external changes inherit by line alignment — unchanged lines keep their anchors, and there is no whole-file recompute for files that already carry anchors.
+- **Anchor exclusivity**: one live anchor names one line — served-mirror single-ownership purge, dead ambiguity guard removed, and `[E_ANCHOR_AMBIGUOUS]` hard error on ambiguous resolution (kills the silent first-occurrence relocation).
+- **Content-base normalization inside the lifecycle gate**: BOM/CRLF raw paths (grep/lsp/ast) now allocate identical anchors to read/edit.
+- Served-mirror v2 persistence format with parallel content keys (backward compatible), `loadServedKeys`, and `applyEdit` `servedContentKeys` plumbing.
+- README: card gallery image, DSH version-support matrix.
+
+### Fixed
+- `write` no longer poisons the session anchor store with pre-write anchors (`beforeHashes` captured chronologically).
+- `undo` re-seeds the engine with `undo.hashes` — the revert diff's advertised fresh anchors are real.
+- grep `recordServed` passed the anchor-pool bound as a line count; LRU now refreshes recency on hit (was FIFO).
+
 ## [0.6.2] - 2026-09-15
 
 ## [0.6.2] - 2026-09-15

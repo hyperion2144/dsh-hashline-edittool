@@ -7,7 +7,7 @@ import {
   firstNonEmptyIndex,
   lastNonEmpty,
   firstNonEmpty,
-} from "../../src/utils.js";
+} from "../../src/infra/utils.js";
 
 describe("isRec", () => {
   it("returns true for plain objects", () => {

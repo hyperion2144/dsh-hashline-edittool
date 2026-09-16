@@ -24,7 +24,7 @@
  */
 import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
-import { AST_WORKER_IDLE_MS, AST_WORKER_RECYCLE_HEAP_BYTES, AST_WORKER_RECYCLE_RETAINED_NODES } from "../constants.js";
+import { AST_WORKER_IDLE_MS, AST_WORKER_RECYCLE_HEAP_BYTES, AST_WORKER_RECYCLE_RETAINED_NODES } from "../infra/constants.js";
 import { E_AST_TOO_LARGE, E_AST_WORKER_FAILED } from "./codes.js";
 import type { LanguageId } from "./language.js";
 import type { SymbolRecord } from "./symbols.js";

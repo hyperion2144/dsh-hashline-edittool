@@ -12,8 +12,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import { applyEffective } from "../../src/config.js";
-import { assertEditRequest, buildEditItemSchema, buildEditsSchema } from "../../src/contract.js";
-import { declaredLineMatches } from "../../src/declaration.js";
+import { assertEditRequest, buildEditItemSchema, buildEditsSchema } from "../../src/contract/contract.js";
+import { declaredLineMatches } from "../../src/hashline/declaration.js";
 import {
 	withTempFile,
 	setupIntegrationTest,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as os from "node:os";
 import { resolve } from "node:path";
-import { toCwd } from "../../src/paths.js";
+import { toCwd } from "../../src/infra/paths.js";
 
 describe("toCwd", () => {
   const cwd = "/home/user/project";

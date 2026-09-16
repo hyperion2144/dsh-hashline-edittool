@@ -7,8 +7,8 @@ import {
 	loadHashStore,
 	shutdownHashStore,
 	type HashStore,
-} from "../../src/hash-store.js";
-import { splitLines } from "../../src/utils.js";
+} from "../../src/domain/session/hash-store.js";
+import { splitLines } from "../../src/infra/utils.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
 

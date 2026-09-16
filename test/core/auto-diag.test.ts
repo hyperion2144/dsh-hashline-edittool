@@ -29,10 +29,10 @@ import {
 } from "../../src/lsp/auto-diag.js";
 import { applyEffective, getEffectiveConfig, isAutoDiagnosticsEnabled, parseSettingsYaml } from "../../src/config.js";
 import { setLspManager } from "../../src/lsp/manager.js";
-import { buildEditTool } from "../../src/tool-edit.js";
-import { buildReadTool } from "../../src/tool-read.js";
-import { localIO } from "../../src/fs-bridge.js";
-import { FsSandboxController } from "../../src/sandbox.js";
+import { buildEditTool } from "../../src/tools/tool-edit.js";
+import { buildReadTool } from "../../src/tools/tool-read.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
+import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { withTempDir } from "../support/fixtures.js";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { LspSession } from "../../src/lsp/session.js";
@@ -633,7 +633,7 @@ describe("timing sanity", () => {
 
 describe("seam 1b — write delivers inline diagnostics too (story 20)", () => {
 	it("attaches the section to the write result", async () => {
-		const { buildWriteShadowTool } = await import("../../src/tool-write-shadow.js");
+		const { buildWriteShadowTool } = await import("../../src/tools/tool-write-shadow.js");
 		await withTempDir("auto-diag-write-", async (cwd) => {
 			const file = join(cwd, "a.ts");
 			const uri = pathToFileURL(file).href;

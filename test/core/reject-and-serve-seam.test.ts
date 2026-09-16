@@ -1,14 +1,11 @@
 import { describe, expect, it, vi, beforeAll } from "vitest";
 import { mkdtemp, rm } from "fs/promises";
 import { join } from "node:path";
-import {
-	recordEchoServes,
-	ServedRejectionError,
-} from "../../src/hashline/served.js";
-import { finalizeToolResult } from "../../src/edit-response.js";
+import { ServedRejectionError } from "../../src/hashline/anchor-pipeline.js";
+import { finalizeToolResult } from "../../src/domain/edit/edit-response.js";
 import { applyEdit, lineHashesPure, type HEdit } from "../../src/hashline/index.js";
-import { loadServed } from "../../src/served-store.js";
-import { shutdownHashStore } from "../../src/hash-store.js";
+import { loadServed, recordEchoServes } from "../../src/domain/session/session-view.js";
+import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
 
 beforeAll(async () => {

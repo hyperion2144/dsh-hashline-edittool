@@ -14,9 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setAstClient, type WorkerLike } from "../../src/ast/client.js";
 import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "../../src/ast/worker.js";
-import { buildAstGrepTool } from "../../src/tool-ast-grep.js";
-import { buildAstEditTool } from "../../src/tool-ast-edit.js";
-import { localIO } from "../../src/fs-bridge.js";
+import { buildAstGrepTool } from "../../src/tools/tool-ast-grep.js";
+import { buildAstEditTool } from "../../src/tools/tool-ast-edit.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { applyEffective } from "../../src/config.js";
 
@@ -154,7 +154,7 @@ describe("ast_grep", () => {
 
 describe("ast_edit", () => {
 	const run = async (args: Record<string, unknown>) => {
-		const { FsSandboxController } = await import("../../src/sandbox.js");
+		const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 		const tool = buildAstEditTool(localIO(), sandbox);
 		return (await tool.execute({ path: file, ...args }, exec(dir)(args))) as {
@@ -208,7 +208,7 @@ describe("ast_edit", () => {
 		// The card falls back to raw input/output when the meta carries no hunks, so
 		// the derived-from-before/after part is load-bearing, not decorative: the
 		// first version passed an empty array and the card silently disappeared.
-		const { FsSandboxController } = await import("../../src/sandbox.js");
+		const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 		const tool = buildAstEditTool(localIO(), sandbox);
 		const value = await tool.execute(
@@ -233,8 +233,8 @@ describe("ast_edit", () => {
 		// so the entry is written by the same transaction an `edit` writes. This
 		// pins that: a structural change is revertible like any other edit.
 		const before = await readFile(file, "utf-8");
-		const { buildUndoTool } = await import("../../src/tool-undo.js");
-		const { FsSandboxController } = await import("../../src/sandbox.js");
+		const { buildUndoTool } = await import("../../src/tools/tool-undo.js");
+		const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 		const applied = await run({ pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" });
 		expect(applied.count).toBe(1);
@@ -434,7 +434,7 @@ describe("the AST switch gates the AST tools", () => {
 
 	it("lets `ast_edit` through only when the switch is on", async () => {
 		applyEffective({ ast: { enabled: false } });
-		const { FsSandboxController } = await import("../../src/sandbox.js");
+		const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 		const tool = buildAstEditTool(localIO(), sandbox);
 		await expect(tool.execute({ path: file, pat: "const $N = $V;", out: "x" }, exec(dir)({}))).rejects.toThrow(/E_AST_DISABLED/);

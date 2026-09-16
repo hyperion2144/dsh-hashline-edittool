@@ -10,10 +10,10 @@ import { describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { withWorkspace, workspaceCwd } from "../../src/workspace.js";
-import { hashStorePath, configDir } from "../../src/paths.js";
-import { loadHashStore, shutdownHashStore } from "../../src/hash-store.js";
-import { recordServed, loadServed } from "../../src/served-store.js";
+import { withWorkspace, workspaceCwd } from "../../src/domain/session/session-view.js";
+import { hashStorePath, configDir } from "../../src/infra/paths.js";
+import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
+import { recordServed, loadServed } from "../../src/domain/session/session-view.js";
 import { lineHashes } from "../../src/hashline/index.js";
 
 function tempWorkspace(prefix: string): string {

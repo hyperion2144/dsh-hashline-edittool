@@ -14,7 +14,7 @@ function errWithCode(code: string, message: string): NodeJS.ErrnoException {
 
 describe("valAccess — error mapping", () => {
   it("maps ELOOP to an [E_ACCESS] symlink-loop error", async () => {
-    const { valAccess } = await import("../../src/validation.js");
+    const { valAccess } = await import("../../src/domain/session/file-view.js");
     accessMock.mockRejectedValueOnce(errWithCode("ELOOP", "too many links"));
     await expect(valAccess("/loop/path", "loop.txt")).rejects.toThrow(
       "[E_ACCESS] Too many symbolic links while resolving: loop.txt",
@@ -22,7 +22,7 @@ describe("valAccess — error mapping", () => {
   });
 
   it("maps ENOENT to [E_NOT_FOUND]", async () => {
-    const { valAccess } = await import("../../src/validation.js");
+    const { valAccess } = await import("../../src/domain/session/file-view.js");
     accessMock.mockRejectedValueOnce(errWithCode("ENOENT", "missing"));
     await expect(valAccess("/missing/path", "gone.txt")).rejects.toThrow(
       "[E_NOT_FOUND] File not found: gone.txt",
@@ -30,7 +30,7 @@ describe("valAccess — error mapping", () => {
   });
 
   it("maps EACCES to a readability error", async () => {
-    const { valAccess } = await import("../../src/validation.js");
+    const { valAccess } = await import("../../src/domain/session/file-view.js");
     accessMock.mockRejectedValueOnce(errWithCode("EACCES", "denied"));
     await expect(valAccess("/secret/path", "secret.txt")).rejects.toThrow(
       "[E_ACCESS] File is not readable: secret.txt",
@@ -38,7 +38,7 @@ describe("valAccess — error mapping", () => {
   });
 
   it("maps unknown codes to the generic access error", async () => {
-    const { valAccess } = await import("../../src/validation.js");
+    const { valAccess } = await import("../../src/domain/session/file-view.js");
     accessMock.mockRejectedValueOnce(errWithCode("EBUSY", "busy"));
     await expect(valAccess("/busy/path", "busy.txt")).rejects.toThrow(
       "[E_ACCESS] Cannot access file: busy.txt",
@@ -46,7 +46,7 @@ describe("valAccess — error mapping", () => {
   });
 
   it("resolves when access succeeds", async () => {
-    const { valAccess } = await import("../../src/validation.js");
+    const { valAccess } = await import("../../src/domain/session/file-view.js");
     await expect(valAccess("/ok/path", "ok.txt")).resolves.toBeUndefined();
   });
 });

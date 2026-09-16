@@ -17,7 +17,7 @@ import {
 	resolveSymbol,
 	type SymbolRecord,
 } from "../../src/ast/symbols.js";
-import { kindsForLanguage, queryNodeTypes } from "../../src/ast/kind.js";
+import { kindsForLanguage, queryNodeTypes } from "../../src/ast/language.js";
 
 const languages = new Map<string, Language>();
 

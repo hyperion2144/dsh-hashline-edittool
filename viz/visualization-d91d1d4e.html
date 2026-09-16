@@ -1,0 +1,157 @@
+<div id="lsp-row-viz">
+<style>
+  #lsp-row-viz { font-family: var(--ds-font-family, system-ui); color: var(--foreground); }
+  #lsp-row-viz .panel { border: .5px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 18px; }
+  #lsp-row-viz .cap { font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+                      color: var(--muted-foreground); margin: 0 0 6px 2px; }
+  #lsp-row-viz .r { display: flex; align-items: center; gap: 8px;
+                    padding: 9px 12px; font-size: 13px; min-width: 0;
+                    border-bottom: .5px solid var(--border); }
+  #lsp-row-viz .r:last-child { border-bottom: none; }
+  #lsp-row-viz .r > * { flex: none; }
+  #lsp-row-viz .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  #lsp-row-viz .dot.ok   { background: light-dark(#16a34a, #4ade80); }
+  #lsp-row-viz .dot.warn { background: light-dark(#d97706, #fbbf24); }
+  #lsp-row-viz .dot.err  { background: light-dark(#dc2626, #f87171); }
+  #lsp-row-viz .name { font-family: ui-monospace, monospace; }
+  #lsp-row-viz .ext  { font-family: ui-monospace, monospace; font-size: 11px;
+                       color: var(--muted-foreground); }
+  /* THE RULE UNDER TEST — one line; the text wraps inside its share; the button never moves. */
+  #lsp-row-viz .status { flex: 1 1 auto; min-width: 8ch; max-width: 60%;
+                         white-space: normal; overflow-wrap: break-word;
+                         text-align: right; color: var(--muted-foreground); }
+  #lsp-row-viz .status.bad { color: light-dark(#dc2626, #f87171); }
+  #lsp-row-viz .grow { flex: 1 1 0; min-width: 0; }
+  #lsp-row-viz .act { padding: 3px 10px; border: .5px solid var(--border); border-radius: 8px;
+                      background: transparent; color: var(--foreground);
+                      font: inherit; font-size: 12.5px; cursor: pointer; }
+  #lsp-row-viz .act:disabled { opacity: .5; cursor: default; }
+  #lsp-row-viz .note { font-size: 12px; color: var(--muted-foreground); margin: 8px 2px 0; }
+  #lsp-row-viz .toggle { display: flex; gap: 6px; margin: 0 0 14px; flex-wrap: wrap; }
+  #lsp-row-viz .toggle button { padding: 4px 11px; border-radius: 999px;
+      border: .5px solid var(--border); background: transparent; color: var(--muted-foreground);
+      font: inherit; font-size: 12px; cursor: pointer; }
+  #lsp-row-viz .toggle button[aria-pressed="true"] { background: var(--primary);
+      color: var(--primary-foreground); border-color: transparent; }
+  #lsp-row-viz .narrow { max-width: 380px; }
+</style>
+
+<p class="cap">三种行状态（当前实现）</p>
+<div class="panel">
+  <div class="r">
+    <span class="dot ok"></span><span class="name">typescript</span>
+    <span class="ext">TypeScript Language Server · 卡片安装</span>
+    <span class="grow"></span>
+  </div>
+  <div class="r">
+    <span class="dot warn"></span><span class="name">python</span>
+    <span class="ext">Pyright · 卡片安装</span>
+    <span class="status">No server has been started for this language yet.</span>
+    <span class="grow"></span>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="status">可一键安装</span>
+    <span class="grow"></span>
+    <button class="act">安装</button>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">java</span>
+    <span class="ext">未找到</span>
+    <span class="status">需自行安装到 PATH</span>
+    <span class="grow"></span>
+  </div>
+</div>
+
+<p class="cap">安装的三种瞬间</p>
+<div class="panel">
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="status">安装中，请稍候</span>
+    <span class="grow"></span>
+    <button class="act" disabled>安装</button>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="status bad">失败：安装命令以 1 退出：cannot find package golang.org/x/tools/gopls@latest</span>
+    <span class="grow"></span>
+    <button class="act">重试</button>
+  </div>
+  <div class="r">
+    <span class="dot ok"></span><span class="name">go</span>
+    <span class="ext">gopls · 卡片安装</span>
+    <span class="grow"></span>
+  </div>
+</div>
+<p class="note">失败时 <b>错误占据状态位、按钮变成「重试」</b>——两者同时存在，不会再出现「报错后按钮消失、无法重试」。</p>
+
+<p class="cap">窄屏（380px）时的折行行为</p>
+<div class="panel narrow">
+  <div class="r">
+    <span class="dot warn"></span><span class="name">python</span>
+    <span class="ext">Pyright · 卡片安装</span>
+    <span class="status">No server has been started for this language yet.</span>
+    <span class="grow"></span>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">c-sharp</span>
+    <span class="ext">未找到</span>
+    <span class="status">可一键安装</span>
+    <span class="grow"></span>
+    <button class="act">安装</button>
+  </div>
+</div>
+<p class="note">文字在右侧份额内折行（<code>min-width:8ch</code> 防中文被压成竖排，<code>max-width:60%</code> 防挤没名字）；<b>按钮始终留在第一行</b>。</p>
+
+<p class="cap">对照：之前两版错在哪</p>
+<div class="toggle" role="group" aria-label="切换错误样式">
+  <button id="b1" aria-pressed="false">第一版 · 完全不出框</button>
+  <button id="b2" aria-pressed="false">第二版 · 每个都独占一行</button>
+</div>
+<div class="panel" id="wrong">
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="status" id="w-status">可一键安装</span>
+    <span class="grow" id="w-grow"></span>
+    <button class="act" id="w-act">安装</button>
+  </div>
+</div>
+<p class="note" id="w-note">选一个看当时的实际后果。</p>
+
+<script>
+(() => {
+  const status = document.getElementById("w-status");
+  const grow = document.getElementById("w-grow");
+  const act = document.getElementById("w-act");
+  const note = document.getElementById("w-note");
+  const b1 = document.getElementById("b1");
+  const b2 = document.getElementById("b2");
+  const row = document.getElementById("wrong").querySelector(".r");
+
+  const reset = () => {
+    row.style.flexWrap = ""; row.style.width = "";
+    status.style.cssText = ""; grow.style.cssText = ""; act.style.display = "";
+    b1.setAttribute("aria-pressed", "false"); b2.setAttribute("aria-pressed", "false");
+  };
+
+  b1.addEventListener("click", () => {
+    reset(); b1.setAttribute("aria-pressed", "true");
+    status.style.flex = "none"; status.style.whiteSpace = "nowrap";
+    grow.style.flex = "none";
+    row.style.width = "260px";
+    note.innerHTML = "子项全部 <code>flex:none</code> ⇒ 谁都压不下去，文案<b>横向溢出卡片</b>，按钮被顶到看不见的地方。";
+  });
+
+  b2.addEventListener("click", () => {
+    reset(); b2.setAttribute("aria-pressed", "true");
+    status.style.flex = "1 0 100%"; status.style.textAlign = "left"; status.style.order = "9";
+    row.style.flexWrap = "wrap";
+    note.innerHTML = "文案拿到 <code>1 0 100%</code> ⇒ 它<b>独占一整行</b>，按钮被挤到它下面 —— 这就是你截图里看到的样子。";
+  });
+})();
+</script>
+</div>

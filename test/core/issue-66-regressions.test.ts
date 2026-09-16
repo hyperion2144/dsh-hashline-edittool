@@ -14,7 +14,7 @@ import {
 } from "../../src/hashline/anchor-pipeline.js";
 import { applyHashlineShape, hashlineHeader, hashSep } from "../../src/hashline/hash-assign.js";
 import { anchorsPure, anchorsFor } from "../../src/hashline/session-anchors.js";
-import { buildReadJson } from "../../src/presentation-helpers.js";
+import { buildReadJson } from "../../src/render/read-card.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();

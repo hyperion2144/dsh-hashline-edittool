@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readNormFile } from "../../src/file-reader.js";
+import { readNormFile } from "../../src/domain/session/file-view.js";
 import { withTempFile } from "../support/fixtures.js";
 
 describe("readNormFile", () => {

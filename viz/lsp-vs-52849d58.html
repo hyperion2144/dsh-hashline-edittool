@@ -1,0 +1,129 @@
+<div id="lsp-diag-demo">
+	<style>
+		#lsp-diag-demo { display: flex; flex-direction: column; gap: 12px; }
+		#lsp-diag-demo .seg { display: flex; gap: 6px; }
+		#lsp-diag-demo .seg button[aria-pressed="true"] {
+			background: var(--primary); color: var(--primary-foreground); border-color: transparent;
+		}
+		#lsp-diag-demo .panel[hidden] { display: none; }
+		#lsp-diag-demo .head {
+			display: flex; align-items: center; gap: 8px;
+			font-size: 13px; color: var(--muted-foreground);
+			padding: 0 2px 8px;
+		}
+		#lsp-diag-demo .head b { color: var(--foreground); font-weight: 600; }
+		#lsp-diag-demo .dot { width: 2px; height: 2px; border-radius: 1px; background: var(--muted-foreground); }
+		#lsp-diag-demo .rows {
+			font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+			font-size: 12.5px; line-height: 1.7;
+		}
+		#lsp-diag-demo .rowline { display: flex; gap: 10px; align-items: flex-start; }
+		#lsp-diag-demo .gutter {
+			flex: none; min-width: 44px; text-align: right; color: var(--muted-foreground);
+			border-right: 1px solid var(--border); padding-right: 10px; font-variant-numeric: tabular-nums;
+		}
+		#lsp-diag-demo .src { color: var(--foreground); white-space: pre-wrap; word-break: break-word; }
+		#lsp-diag-demo .diags {
+			margin: 2px 0 8px 54px; padding: 2px 0 2px 10px;
+			border-left: 2px solid light-dark(rgba(192,57,43,.35), rgba(255,123,114,.45));
+			display: flex; flex-direction: column; gap: 2px;
+		}
+		#lsp-diag-demo .diag {
+			color: light-dark(#b3261e, #ff9a92); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+		}
+		#lsp-diag-demo .sev { font-weight: 600; }
+		#lsp-diag-demo .mono {
+			font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+			font-size: 12.5px; line-height: 1.65; white-space: pre; overflow-x: auto;
+			background: light-dark(rgba(0,0,0,.035), rgba(255,255,255,.045));
+			border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+		}
+		#lsp-diag-demo .mono .mark { color: var(--muted-foreground); }
+		#lsp-diag-demo .mono .diag { color: light-dark(#b3261e, #ff9a92); }
+		#lsp-diag-demo .note { font-size: 12px; color: var(--muted-foreground); }
+	</style>
+
+	<div class="seg">
+		<button class="btn" id="lsp-tab-card" type="button" aria-pressed="true">卡片渲染</button>
+		<button class="btn" id="lsp-tab-model" type="button" aria-pressed="false">模型侧文本</button>
+	</div>
+
+	<div class="panel" id="lsp-panel-card">
+		<div class="card">
+			<div class="head">
+				<b>LSP_SYMBOLS</b>
+				<span class="dot"></span>
+				<span>broken.ts</span>
+				<span class="dot"></span>
+				<span>TypeScript — diagnostics</span>
+				<span class="dot"></span>
+				<span>4 条诊断 / 2 行</span>
+			</div>
+			<div class="rows">
+				<div class="rowline">
+					<span class="gutter">He:2</span>
+					<span class="src">const value: number = "this is a string";</span>
+				</div>
+				<div class="diags">
+					<div class="diag"><span class="sev">error:</span> Type 'string' is not assignable to type 'number'.</div>
+				</div>
+
+				<div class="rowline">
+					<span class="gutter">jT:3</span>
+					<span class="src">const arr: string[] = [1, 2, 3];</span>
+				</div>
+				<div class="diags">
+					<div class="diag"><span class="sev">error:</span> Type 'number' is not assignable to type 'string'.</div>
+					<div class="diag"><span class="sev">error:</span> Type 'number' is not assignable to type 'string'.</div>
+					<div class="diag"><span class="sev">error:</span> Type 'number' is not assignable to type 'string'.</div>
+				</div>
+			</div>
+		</div>
+		<p class="note">左栏是 <b>锚点:行号</b>（可直接编辑），行体是 <b>原样的源码行</b>；诊断缩进在下方，红色引用块，<b>一条一行</b>。源码行只出现一次，同一行三个错误也不会重复。</p>
+	</div>
+
+	<div class="panel" id="lsp-panel-model" hidden>
+		<div class="mono" id="lsp-model-text"></div>
+		<p class="note">模型侧用缩进 + <b>↳</b> 区分：带 gutter 的行是文件内容，缩进行是诊断（含 severity 词）。分隔符跟随配置（示例为 <code>|</code>）。</p>
+	</div>
+
+	<script>
+		(() => {
+			const card = document.getElementById("lsp-tab-card");
+			const model = document.getElementById("lsp-tab-model");
+			const panelCard = document.getElementById("lsp-panel-card");
+			const panelModel = document.getElementById("lsp-panel-model");
+			const modelText = document.getElementById("lsp-model-text");
+
+			const SEP = "|";
+			const rows = [
+				{ marker: "He:2", src: 'const value: number = "this is a string";', messages: ["error: Type 'string' is not assignable to type 'number'."] },
+				{ marker: "jT:3", src: "const arr: string[] = [1, 2, 3];", messages: [
+					"error: Type 'number' is not assignable to type 'string'.",
+					"error: Type 'number' is not assignable to type 'string'.",
+					"error: Type 'number' is not assignable to type 'string'.",
+				] },
+			];
+			const width = Math.max(...rows.map((r) => r.marker.length));
+			const indent = " ".repeat(2 + width + 2);
+			modelText.textContent = [
+				"TypeScript — diagnostics for broken.ts",
+				"",
+				...rows.flatMap((r) => [
+					"  " + r.marker.padStart(width) + SEP + " " + r.src,
+					...r.messages.map((m) => indent + "↳ " + m),
+				]),
+			].join("\n");
+
+			const show = (which) => {
+				const isCard = which === "card";
+				panelCard.hidden = !isCard;
+				panelModel.hidden = isCard;
+				card.setAttribute("aria-pressed", String(isCard));
+				model.setAttribute("aria-pressed", String(!isCard));
+			};
+			card.addEventListener("click", () => show("card"));
+			model.addEventListener("click", () => show("model"));
+		})();
+	</script>
+</div>

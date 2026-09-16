@@ -23,7 +23,7 @@
 import { access, constants, stat } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
-import { lspServersDir } from "../paths.js";
+import { lspServersDir } from "../infra/paths.js";
 import { platformSpawnArgv } from "./spawn-argv.js";
 
 /** A server this plugin knows how to talk to. */

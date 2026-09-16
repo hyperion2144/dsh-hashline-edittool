@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { valAccess, valKind } from "../../src/validation.js";
-import { errCode } from "../../src/utils.js";
+import { valAccess, valKind } from "../../src/domain/session/file-view.js";
+import { errCode } from "../../src/infra/utils.js";
 
 describe("errCode", () => {
 	it("returns code from NodeJS.ErrnoException", () => {

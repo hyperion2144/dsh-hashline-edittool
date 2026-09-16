@@ -1,12 +1,12 @@
 import { describe, expect, it, beforeAll } from "vitest";
 import { readAndServe } from "../../src/read-and-serve.js";
-import { localIO } from "../../src/fs-bridge.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
 import {
 	loadServed,
 	markDriftReported,
 	driftReported,
 	sessionKeyFor,
-} from "../../src/served-store.js";
+} from "../../src/domain/session/session-view.js";
 import { withTempFile } from "../support/fixtures.js";
 
 beforeAll(async () => {

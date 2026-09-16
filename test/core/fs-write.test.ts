@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveTarget } from "../../src/paths.js";
-import { writeAtomic } from "../../src/fs-write.js";
+import { resolveTarget } from "../../src/infra/paths.js";
+import { writeAtomic } from "../../src/infra/fs-write.js";
 import {
 	mkdtemp,
 	writeFile,

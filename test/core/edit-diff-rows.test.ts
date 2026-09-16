@@ -6,10 +6,10 @@
  * @module dsh-hashline-edittool/test/edit-diff-rows
  */
 import { describe, expect, it } from "vitest";
-import { genDiff } from "../../src/edit-diff.js";
+import { genDiff } from "../../src/render/edit-diff.js";
 import { lineHashesPure } from "../../src/hashline/index.js";
 import { withTempFile, makeExec } from "../support/fixtures.js";
-import { localIO } from "../../src/fs-bridge.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
 
 const BEFORE = [
 	"# Hashline web card demo (round 2)",
@@ -92,9 +92,9 @@ describe("genDiff multi-hunk row numbering (issue #71 regression)", () => {
 describe("edit presentationMeta passes diffRows through (integration point)", () => {
 	it("presentationMeta output carries the structured rows", async () => {
 		await withTempFile("m.txt", "one\ntwo\nthree\n", async ({ cwd }) => {
-			const { buildEditTool } = await import("../../src/tool-edit.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
-			const { FsSandboxController } = await import("../../src/sandbox.js");
+			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
+			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);
@@ -128,9 +128,9 @@ describe("edit presentationMeta multi-file diffs (issue #82)", () => {
 			const { join } = await import("node:path");
 			await wf(join(cwd, "b.txt"), "gamma\ndelta\n", "utf-8");
 
-			const { buildEditTool } = await import("../../src/tool-edit.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
-			const { FsSandboxController } = await import("../../src/sandbox.js");
+			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
+			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);

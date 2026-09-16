@@ -4,13 +4,13 @@ import {
 	getEffectiveConfig,
 	type EffectiveHashlineConfig,
 } from "../../src/config.js";
-import { buildReadJson } from "../../src/presentation-helpers.js";
+import { buildReadJson } from "../../src/render/read-card.js";
 import { lineHashesPure, resEdit, applyEdit } from "../../src/hashline/index.js";
 import {
 	applyHashlineShape,
 	getHashlineShape,
 } from "../../src/hashline/hash-assign.js";
-import type { FileEditResult } from "../../src/edit-engine.js";
+import type { FileEditResult } from "../../src/domain/edit/edit-engine.js";
 
 afterEach(() => {
 	applyEffective({});

@@ -11,8 +11,8 @@ import {
 	wipeServedState,
 	servedPositionsOf,
 	currentPositionOfDrifted,
-} from "../../src/served-store.js";
-import { shutdownHashStore } from "../../src/hash-store.js";
+} from "../../src/domain/session/session-view.js";
+import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
 
 let tmpHome: string;

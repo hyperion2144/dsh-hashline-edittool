@@ -12,13 +12,13 @@ import {
 	summaryFooter,
 	summaryGate,
 	summaryIsWorthIt,
-} from "../../src/read-summary.js";
+} from "../../src/render/read-summary.js";
 import {
 	AST_SUMMARY_MAX_BYTES,
 	AST_SUMMARY_MIN_TOTAL_LINES,
 	AST_SUMMARY_MIN_BODY_LINES,
 	AST_SUMMARY_MIN_COMMENT_LINES,
-} from "../../src/constants.js";
+} from "../../src/infra/constants.js";
 import { handleRequest } from "../../src/ast/worker.js";
 import type { ElisionSpan } from "../../src/ast/elide.js";
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { join, dirname } from "node:path";
 import { defaultDshHome } from "@deepseek-ai/dsh-home-paths";
-import { configDir, hashStorePath, hashStoreDir } from "../../src/paths.js";
+import { configDir, hashStorePath, hashStoreDir } from "../../src/infra/paths.js";
 
 describe("configDir", () => {
 	it("returns the store dir under the default DSH home when DSH_HOME is unset", () => {

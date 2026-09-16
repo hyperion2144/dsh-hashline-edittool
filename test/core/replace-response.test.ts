@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNoop, buildChanged, finalizeResult } from "../../src/edit-response.js";
+import { buildNoop, buildChanged, finalizeResult } from "../../src/domain/edit/edit-response.js";
 import { lineHashes } from "../../src/hashline/index.js";
 import { useTestHome } from "../support/fixtures.js";
 

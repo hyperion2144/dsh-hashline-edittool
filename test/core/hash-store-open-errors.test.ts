@@ -90,7 +90,7 @@ beforeEach(() => {
 describe("hash store open error handling", () => {
   it("does not quarantine the store on a busy open error", async () => {
     state.openError = busyError("database is locked");
-    const { loadHashStore, shutdownHashStore } = await import("../../src/hash-store.js");
+    const { loadHashStore, shutdownHashStore } = await import("../../src/domain/session/hash-store.js");
     shutdownHashStore();
     await expect(loadHashStore()).rejects.toThrow(/locked/);
     expect(state.rename).not.toHaveBeenCalled();
@@ -100,7 +100,7 @@ describe("hash store open error handling", () => {
     state.openError = Object.assign(new Error("permission denied"), {
       code: "EACCES",
     }) as Error;
-    const { loadHashStore, shutdownHashStore } = await import("../../src/hash-store.js");
+    const { loadHashStore, shutdownHashStore } = await import("../../src/domain/session/hash-store.js");
     shutdownHashStore();
     await expect(loadHashStore()).rejects.toThrow(/permission denied/);
     expect(state.rename).not.toHaveBeenCalled();
@@ -111,7 +111,7 @@ describe("hash store open error handling", () => {
       code: "ERR_SQLITE_ERROR",
       errcode: 26,
     }) as Error;
-    const { loadHashStore, shutdownHashStore } = await import("../../src/hash-store.js");
+    const { loadHashStore, shutdownHashStore } = await import("../../src/domain/session/hash-store.js");
     shutdownHashStore();
     await expect(loadHashStore()).rejects.toThrow(/not a database/);
     expect(state.rename).toHaveBeenCalledWith(
@@ -121,7 +121,7 @@ describe("hash store open error handling", () => {
   });
 
   it("retries a transient busy error on statement execution", async () => {
-    const { loadHashStore, shutdownHashStore } = await import("../../src/hash-store.js");
+    const { loadHashStore, shutdownHashStore } = await import("../../src/domain/session/hash-store.js");
     shutdownHashStore();
     const store = await loadHashStore();
     state.busyOnce = busyError("database is locked");
@@ -132,7 +132,7 @@ describe("hash store open error handling", () => {
   });
 
   it("propagates a persistent busy error after exhausting retries", async () => {
-    const { loadHashStore, shutdownHashStore } = await import("../../src/hash-store.js");
+    const { loadHashStore, shutdownHashStore } = await import("../../src/domain/session/hash-store.js");
     shutdownHashStore();
     const store = await loadHashStore();
     state.busyOnce = busyError("database is locked");
@@ -147,14 +147,14 @@ describe("hash store open error handling", () => {
 
 describe("isCorruptionError", () => {
   it("classifies NOTADB, CORRUPT, and FORMAT errcodes as corruption", async () => {
-    const { isCorruptionError } = await import("../../src/hash-store.js");
+    const { isCorruptionError } = await import("../../src/domain/session/hash-store.js");
     expect(isCorruptionError(Object.assign(new Error("x"), { errcode: 26 }))).toBe(true);
     expect(isCorruptionError(Object.assign(new Error("x"), { errcode: 11 }))).toBe(true);
     expect(isCorruptionError(Object.assign(new Error("x"), { errcode: 24 }))).toBe(true);
   });
 
   it("classifies busy, locked, and permission errors as non-corruption", async () => {
-    const { isCorruptionError } = await import("../../src/hash-store.js");
+    const { isCorruptionError } = await import("../../src/domain/session/hash-store.js");
     expect(isCorruptionError(Object.assign(new Error("x"), { errcode: 5 }))).toBe(false);
     expect(isCorruptionError(Object.assign(new Error("x"), { errcode: 6 }))).toBe(false);
     expect(isCorruptionError(Object.assign(new Error("x"), { errcode: 14 }))).toBe(false);
@@ -162,7 +162,7 @@ describe("isCorruptionError", () => {
   });
 
   it("matches corruption by message text", async () => {
-    const { isCorruptionError } = await import("../../src/hash-store.js");
+    const { isCorruptionError } = await import("../../src/domain/session/hash-store.js");
     expect(isCorruptionError(new Error("database disk image is malformed"))).toBe(true);
     expect(isCorruptionError(new Error("file is not a database"))).toBe(true);
     expect(isCorruptionError(new Error("database is locked"))).toBe(false);

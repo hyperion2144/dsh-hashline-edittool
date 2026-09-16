@@ -11,10 +11,10 @@
 import { beforeAll, describe, expect, it, afterEach } from "vitest";
 import { applyEffective } from "../../src/config.js";
 import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
-import { genDiff } from "../../src/edit-diff.js";
+import { genDiff } from "../../src/render/edit-diff.js";
+import { grepFileContent } from "../../src/tools/tool-grep.js";
 import {
 	parseHashRef,
-	grepFileContent,
 	fmtRegion,
 	lineHashesPure,
 	lineHashes,
@@ -146,8 +146,8 @@ describe("grep — line#hash output", () => {
 	it("renders matches as line#hash:content under the header", async () => {
 		await withTempFile("g.txt", "alpha\nbeta\nalpha-again\ngamma\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
-			const { buildGrepTool } = await import("../../src/tool-grep.js");
-			const { localIO } = await import("../../src/fs-bridge.js");
+			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -174,8 +174,8 @@ describe("grep — line#hash output", () => {
 	it("includes context rows when -C N is provided", async () => {
 		await withTempFile("ctx.txt", "a\nb\nc\nd\ne\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
-			const { buildGrepTool } = await import("../../src/tool-grep.js");
-			const { localIO } = await import("../../src/fs-bridge.js");
+			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({

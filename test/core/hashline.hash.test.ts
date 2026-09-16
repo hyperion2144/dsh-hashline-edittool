@@ -5,7 +5,7 @@ import {
 	lineHashesPure,
 	parseText,
 } from "../../src/hashline/index.js";
-import { splitLines } from "../../src/utils.js";
+import { splitLines } from "../../src/infra/utils.js";
 import { useTestHome } from "../support/fixtures.js";
 const home = useTestHome();
 

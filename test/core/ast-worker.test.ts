@@ -9,7 +9,7 @@
  *   — and those must be provable without waiting on real timers or real wasm.
  */
 import { describe, expect, it } from "vitest";
-import { AST_ADMIT_LIMIT_SOURCE_BYTES, AST_WORKER_RECYCLE_HEAP_BYTES } from "../../src/constants.js";
+import { AST_ADMIT_LIMIT_SOURCE_BYTES, AST_WORKER_RECYCLE_HEAP_BYTES } from "../../src/infra/constants.js";
 import { E_AST_TOO_LARGE } from "../../src/ast/codes.js";
 import { AstClient, AstError, type WorkerLike } from "../../src/ast/client.js";
 import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "../../src/ast/worker.js";

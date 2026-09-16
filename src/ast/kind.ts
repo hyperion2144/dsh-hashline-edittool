@@ -118,17 +118,13 @@ export const DEFAULT_WRAPPER_STOP_TYPES: readonly string[] = [
 	"class_body",
 ];
 
-/**
- * The table lookups, re-exported from the module that now owns the tables.
- *
- * They moved to `./language.ts` together with `kindRules`, but
- * `test/core/ast-symbols.test.ts` imports them from here — the module they
- * were born in — and that test is part of the contract this refactor has to
- * leave alone.
- *
- * The two modules therefore import each other. That stays safe because
- * neither reads the other while its own body evaluates: this statement only
- * creates bindings, and `language.ts` reads `SYMBOL_KINDS` inside function
- * bodies, long after both modules have finished.
- */
-export { hasNameField, kindsForLanguage, queryNodeTypes } from "./language.js";
+// `hasNameField`, `kindsForLanguage` and `queryNodeTypes` are `language.ts`'s and
+// are imported from there — including by `test/core/ast-symbols.test.ts`.
+//
+// They used to be re-exported HERE. That re-export was the second half of a
+// real import cycle: `language.ts` reads `SYMBOL_KINDS` from this module, so
+// re-exporting `language` back closed `kind ⇄ language`. It happened to
+// evaluate safely — this statement only created bindings, and `language` reads
+// `SYMBOL_KINDS` inside function bodies — but "happens to be safe" is not a
+// property a cycle keeps. Deleting the re-export removes the cycle and costs
+// one import line in one test.

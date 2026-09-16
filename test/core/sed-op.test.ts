@@ -14,12 +14,12 @@
 import { describe, expect, it } from "vitest";
 import { applyEdit } from "../../src/hashline/anchor-pipeline.js";
 import { lineHashesPure } from "../../src/hashline/hash-assign.js";
-import { sedReplacement, sedTransform } from "../../src/edit-engine.js";
-import { assertEditItem } from "../../src/contract.js";
-import { buildEditTool } from "../../src/tool-edit.js";
-import { buildReadTool } from "../../src/tool-read.js";
-import { localIO } from "../../src/fs-bridge.js";
-import { FsSandboxController } from "../../src/sandbox.js";
+import { sedReplacement, sedTransform } from "../../src/domain/edit/edit-engine.js";
+import { assertEditItem } from "../../src/contract/contract.js";
+import { buildEditTool } from "../../src/tools/tool-edit.js";
+import { buildReadTool } from "../../src/tools/tool-read.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
+import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { withTempFile, makeExec } from "../support/fixtures.js";
 import { join } from "node:path";
 

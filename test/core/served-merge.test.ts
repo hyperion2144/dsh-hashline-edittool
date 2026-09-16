@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { loadHashStore, shutdownHashStore, withStore } from "../../src/hash-store.js";
+import { loadHashStore, shutdownHashStore, withStore } from "../../src/domain/session/hash-store.js";
 import {
   withWorkspace,
   recordServed,
@@ -18,10 +18,10 @@ import {
   recordServedAfterEdit,
   _mergeServedRows,
   sessionKeyFor,
-} from "../../src/session-view.js";
+} from "../../src/domain/session/session-view.js";
 import { lineHashesPure, contentChecksum } from "../../src/hashline/hash-assign.js";
 import { assignAnchors } from "../../src/hashline/alloc.js";
-import { splitLines } from "../../src/utils.js";
+import { splitLines } from "../../src/infra/utils.js";
 
 const ws = mkdtempSync(join(tmpdir(), "diag-serve-"));
 const path = join(ws, "a.txt");

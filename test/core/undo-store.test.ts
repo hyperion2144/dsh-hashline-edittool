@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { saveUndo, getUndo, clearUndo } from "../../src/undo-edit.js";
-import { loadHashStore, shutdownHashStore } from "../../src/hash-store.js";
-import * as hashStoreModule from "../../src/hash-store.js";
-import { hashStorePath } from "../../src/paths.js";
+import { saveUndo, getUndo, clearUndo } from "../../src/domain/edit/undo-edit.js";
+import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
+import * as hashStoreModule from "../../src/domain/session/hash-store.js";
+import { hashStorePath } from "../../src/infra/paths.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();

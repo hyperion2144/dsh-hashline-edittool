@@ -18,7 +18,7 @@ import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyEffective } from "../../src/config.js";
-import { MAX_READ_LINE_BYTES } from "../../src/constants.js";
+import { MAX_READ_LINE_BYTES } from "../../src/infra/constants.js";
 import { setupIntegrationTest, getText } from "../support/fixtures.js";
 import { applyHashlineShape } from "../../src/hashline/hash-assign.js";
 

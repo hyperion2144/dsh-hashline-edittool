@@ -13,11 +13,11 @@
  * @module dsh-hashline-edittool/test/observation-on-serve
  */
 import { describe, expect, it } from "vitest";
-import { localIO, type FileIO } from "../../src/fs-bridge.js";
-import { buildEditTool } from "../../src/tool-edit.js";
-import { buildReadTool } from "../../src/tool-read.js";
+import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { buildEditTool } from "../../src/tools/tool-edit.js";
+import { buildReadTool } from "../../src/tools/tool-read.js";
 import { withTempFile, makeExec } from "../support/fixtures.js";
-import { FsSandboxController } from "../../src/sandbox.js";
+import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 /** The edit tool needs a sandbox controller; an unconfined one is the test default. */
 function testSandbox(): FsSandboxController {

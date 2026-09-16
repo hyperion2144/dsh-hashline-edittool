@@ -7,7 +7,7 @@
  * @module test/support/v2
  */
 import { assignAnchors, allocateAnchor } from "../../src/hashline/alloc.js";
-import { splitLines } from "../../src/utils.js";
+import { splitLines } from "../../src/infra/utils.js";
 import { canon, contentChecksum } from "../../src/hashline/hash-assign.js";
 import { applyHashlineShape, hashlineHeader } from "../../src/hashline/hash-assign.js";
 

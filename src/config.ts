@@ -26,7 +26,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
-import { rebuildEditSurfaces } from "./edit-rebuild.js";
+import { rebuildEditSurfaces } from "./domain/edit/edit-rebuild.js";
 import { getAstClient } from "./ast/client.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
@@ -95,123 +95,54 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 	// deliberately IGNORED — v2.0 anchors are variable-length by construction
 	// (spec §7); existing settings survive without error.
 
-export type OutputFormat = "text" | "json";
-
-export interface EffectiveHashlineConfig {
-	separator: string;
-	outputFormat: OutputFormat;
-	contextLines: number;
-	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
-	requireLineContent: boolean;
-	/** AST capability master switch (see `HashlineSettings.ast`). */
-	astEnabled: boolean;
-	/** Per-language narrowing, from `ast.languages.<id>.enabled`. */
-	astLanguages: ReadonlySet<string>;
-	/**
-	 * Language -> command for servers the user NAMED, from `lsp.servers.<id>`.
-	 *
-	 * Intent, kept separate from what discovery FINDS: a named server is not a
-	 * running one, and an entry can point at a command that does not exist — a
-	 * fact the card reports rather than an error the setting rejects.
-	 */
-	lspServers: ReadonlyMap<string, string>;
-	/**
-	 * Whether a write delivers the language server's diagnostics back to the
-	 * model (issue #131). Default ON — the feature is opt-out.
-	 */
-	autoDiagnostics: boolean;
-}
-
-const DEFAULT_CONFIG: EffectiveHashlineConfig = {
-	separator: ":",
-	outputFormat: "text",
-	contextLines: 3,
-	requireLineContent: false,
-	astEnabled: false,
-	astLanguages: new Set<string>(),
-	lspServers: new Map<string, string>(),
-	autoDiagnostics: true,
-};
-
-let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
-
-/** Effective runtime config (module singleton; defaults = current contract). */
-export function getEffectiveConfig(): EffectiveHashlineConfig {
-	return { ...effective };
-}
-
-/** Whether the AST capability is on (structural summaries, symbol reads). */
-export function isAstEnabled(): boolean {
-	return effective.astEnabled;
-}
-
-/**
- * Whether AST work may touch a language.
- *
- * The master switch is the gate; a per-language entry only narrows it. An
- * absent entry therefore means enabled — "turn AST on" should not also
- * require visiting every language row.
- */
-export function isAstLanguageEnabled(id: string): boolean {
-	if (!effective.astEnabled) return false;
-	const entry = effective.astLanguages;
-	return !entry.has(`!${id}`);
-}
-
-/** The languages explicitly turned off, for the card and for diagnostics. */
-export function astDisabledLanguages(): string[] {
-	return [...effective.astLanguages].filter((key) => key.startsWith("!")).map((key) => key.slice(1));
-}
-
-/**
- * The language servers the user NAMED, by language.
- *
- * Intent only. Whether the command exists, and whether a server is running,
- * are facts that belong to the status report — this answers "which server did
- * the user ask for", which is what discovery needs to honour `configured`.
- *
- * @returns a copy; mutating it does not change the effective config.
- */
-export function lspConfiguredServers(): ReadonlyMap<string, string> {
-	return new Map(effective.lspServers);
-}
-
-
-/**
- * Whether a successful write delivers the language server's diagnostics back
- * to the model (issue #131). Default ON; `lsp.auto_diagnostics: false` opts out.
- */
-export function isAutoDiagnosticsEnabled(): boolean {
-	return effective.autoDiagnostics;
-}
-export function isJsonOutput(): boolean {
-	return effective.outputFormat === "json";
-}
+// The read side of the settings surface lives in `infra/settings`: this module
+// validates, wires the dsh subscription, and PUSHES each applied snapshot down.
+// Keeping the snapshot here would pin `config` above every capability, and any
+// module that only wanted to READ the config had to look up to the entry plane.
+export {
+	getEffectiveConfig,
+	isAstEnabled,
+	isAstLanguageEnabled,
+	astDisabledLanguages,
+	lspConfiguredServers,
+	isAutoDiagnosticsEnabled,
+	isJsonOutput,
+} from "./infra/settings.js";
+export type { EffectiveHashlineConfig, OutputFormat } from "./infra/settings.js";
+import {
+	defaultEffectiveConfig,
+	getEffectiveConfig,
+	setEffectiveSnapshot,
+	type EffectiveHashlineConfig,
+} from "./infra/settings.js";
 
 /** Validate + apply a settings object onto the effective config and hash shape. */
 export function applyEffective(settings: HashlineSettings | undefined): void {
+	// Defaults come from the snapshot module, so an apply with absent fields
+	// resets to the built-in contract rather than to the previous apply.
+	const defaults = defaultEffectiveConfig();
 	const sep =
 		typeof settings?.separator === "string" && settings.separator.length > 0
 			? settings.separator
-			: DEFAULT_CONFIG.separator;
+			: defaults.separator;
 	const fmt =
-		settings?.output_format === "json" ? "json" : DEFAULT_CONFIG.outputFormat;
+		settings?.output_format === "json" ? "json" : defaults.outputFormat;
 	const nctx =
 		typeof settings?.context_lines === "number" &&
 		Number.isInteger(settings.context_lines) &&
 		settings.context_lines >= 0 &&
 		settings.context_lines <= 20
 			? settings.context_lines
-			: DEFAULT_CONFIG.contextLines;
+			: defaults.contextLines;
 	const requireLine =
 		typeof settings?.require_line_content === "boolean"
 			? settings.require_line_content
-			: DEFAULT_CONFIG.requireLineContent;
+			: defaults.requireLineContent;
 	// The edit tool's model-facing schema depends on this flag: when it
 	// FLIPS, live agents' edit surfaces must be disposed and re-registered
 	// so the next model step sees the new parameter set (issue #75/#76).
 	const astOn =
-		typeof settings?.ast?.enabled === "boolean" ? settings.ast.enabled : DEFAULT_CONFIG.astEnabled;
+		typeof settings?.ast?.enabled === "boolean" ? settings.ast.enabled : defaults.astEnabled;
 	// Disabled languages are keyed with a `!` prefix so one Set carries both
 	// "explicitly off" and (by absence) "inherit the master switch".
 	const astLangs = new Set<string>();
@@ -231,10 +162,11 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 	const autoDiag =
 		typeof settings?.lsp?.auto_diagnostics === "boolean"
 			? settings.lsp.auto_diagnostics
-			: DEFAULT_CONFIG.autoDiagnostics;
-	const flagChanged = effective.requireLineContent !== requireLine;
-	const astChanged = effective.astEnabled !== astOn;
-	effective = {
+			: defaults.autoDiagnostics;
+	const prev = getEffectiveConfig();
+	const flagChanged = prev.requireLineContent !== requireLine;
+	const astChanged = prev.astEnabled !== astOn;
+	const next: EffectiveHashlineConfig = {
 		separator: sep,
 		outputFormat: fmt,
 		contextLines: nctx,
@@ -244,6 +176,7 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		lspServers: lspServers,
 		autoDiagnostics: autoDiag,
 	};
+	setEffectiveSnapshot(next);
 	applyHashlineShape({ separator: sep, contextLines: nctx });
 	if (flagChanged) rebuildEditSurfaces();
 	if (astChanged && !astOn) {

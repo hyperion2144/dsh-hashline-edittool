@@ -17,7 +17,7 @@ import {
 	grepPresentationFromMeta,
 	matchSpans,
 	type GrepPresentation,
-} from "../../src/presentation-helpers.js";
+} from "../../src/render/grep-card.js";
 
 /** Build a one-file meta with `count` rows of `text`, padded to reach a size. */
 function metaWithRows(count: number, text: string): GrepPresentation {
@@ -209,8 +209,8 @@ describe("grep tool card projection (end to end)", () => {
 		let captured: Awaited<ReturnType<typeof runGrep>> | undefined;
 		await withTempFile(fileName, content, async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
-			const { buildGrepTool } = await import("../../src/tool-grep.js");
-			const { localIO } = await import("../../src/fs-bridge.js");
+			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (inner: unknown) =>
 				({
@@ -279,8 +279,8 @@ describe("grep tool card projection (end to end)", () => {
 	});
 
 	it("presentResult lists only the match rows in the built-in search view", async () => {
-		const { buildGrepTool } = await import("../../src/tool-grep.js");
-		const { localIO } = await import("../../src/fs-bridge.js");
+		const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+		const { localIO } = await import("../../src/infra/fs-bridge.js");
 		const tool = buildGrepTool(localIO());
 		const meta = {
 			files: [
@@ -311,8 +311,8 @@ describe("grep tool card projection (end to end)", () => {
 	});
 
 	it("presentResult declines errors and the pre-0.4.4 meta shape", async () => {
-		const { buildGrepTool } = await import("../../src/tool-grep.js");
-		const { localIO } = await import("../../src/fs-bridge.js");
+		const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+		const { localIO } = await import("../../src/infra/fs-bridge.js");
 		const tool = buildGrepTool(localIO());
 		const args = { path: "a.txt", pattern: "alpha" };
 		expect(tool.presentResult!(args, { isError: true } as never)).toBeUndefined();

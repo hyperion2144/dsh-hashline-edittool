@@ -6,7 +6,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { errCode } from "../utils.js";
+import { errCode } from "../infra/utils.js";
 import { isBlankOverride } from "./parse.js";
 import { GUIDANCE_SECTIONS, type GuidanceSection } from "./resolve.js";
 

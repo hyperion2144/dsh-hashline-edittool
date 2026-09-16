@@ -24,7 +24,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { configDir } from "../paths.js";
+import { configDir } from "../infra/paths.js";
 import { LANGUAGES, languageById, grammarWasmPath, type LanguageId } from "./language.js";
 import { HARVESTED_CATALOG } from "./catalog-data.js";
 

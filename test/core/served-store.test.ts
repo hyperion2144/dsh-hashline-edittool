@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { loadHashStore, shutdownHashStore } from "../../src/hash-store.js";
+import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import {
 	_mergeServedRows,
 	loadServed,
@@ -14,8 +14,8 @@ import {
 	clearDriftReported,
 	wipeServedState,
 	servedPositionsOf,
-} from "../../src/served-store.js";
-import { HASH_STORE_VERSION, SERVED_TTL_MS } from "../../src/constants.js";
+} from "../../src/domain/session/session-view.js";
+import { HASH_STORE_VERSION, SERVED_TTL_MS } from "../../src/infra/constants.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
 

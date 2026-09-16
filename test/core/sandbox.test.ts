@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import { FsError } from "@deepseek-ai/dsh-fs";
-import { FsSandboxController } from "../../src/sandbox.js";
+import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 function makePolicy() {
 	const resolve = vi.fn((request?: { session?: unknown }) => ({

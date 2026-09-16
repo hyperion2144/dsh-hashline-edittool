@@ -14,9 +14,9 @@ import {
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
 	type ToolGuidance,
-} from "../prompts.js";
-import { getEffectiveConfig } from "../config.js";
-import { errCode } from "../utils.js";
+} from "../domain/edit/prompts.js";
+import { getEffectiveConfig } from "../infra/settings.js";
+import { errCode } from "../infra/utils.js";
 import { isBlankOverride, parseSectionFile } from "./parse.js";
 
 /**

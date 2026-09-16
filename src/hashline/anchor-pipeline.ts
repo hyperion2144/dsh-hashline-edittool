@@ -32,7 +32,7 @@ import {
 	firstNonEmptyIndex,
 	lastNonEmptyIndex,
 	clipLine,
-} from "../utils.js";
+} from "../infra/utils.js";
 import {
 	canon,
 	contentChecksum,
@@ -48,10 +48,12 @@ import {
 	contextLinesCfg,
 	lineHashesPure,
 } from "./hash-assign.js";
-import { recordServed } from "../served-store.js";
-import { verifyExpectedLines, type ExpectedLines } from "../declaration.js";
-import { SERVED_ECHO_CAP } from "../constants.js";
-import { NEW_CONTENT_NOT_STRING_MSG } from "../constants.js";
+import { verifyExpectedLines, type ExpectedLines } from "./declaration.js";
+// The lifecycle gate (anchorsFor) lives here in the same package — the
+// engine's fallback with a known path flows through it (no recompute).
+import { anchorsFor } from "./session-anchors.js";
+import { SERVED_ECHO_CAP } from "../infra/constants.js";
+import { NEW_CONTENT_NOT_STRING_MSG } from "../infra/constants.js";
 
 /**
  * Anchor — the parsed form of a single remove_from / remove_to token.
@@ -1098,18 +1100,11 @@ export interface ResolvedRange {
 	delta: number;
 }
 
-export type ServeRecordPolicy = "live" | "preview";
-
-export async function recordEchoServes(
-	sessionKey: string,
-	path: string,
-	rows: ServedRow[],
-	policy: ServeRecordPolicy,
-	lineCount?: number,
-): Promise<void> {
-	if (policy !== "live") return;
-await recordServed(sessionKey, path, rows.map((r) => ({ position: r.position, anchor: r.anchor })), lineCount);
-}
+//
+// The serve-policy wrapper LIVES in `session-view`, which owns served state.
+// This engine only resolves and applies; recording a served row is a write to
+// session state, and importing that state from here made the two a cycle.
+// Callers in the write path take it from `session-view.js` directly.
 
 type LIdx = {
 	fileLines: string[];
@@ -1255,6 +1250,7 @@ export function applyEdit(
 		 * verification, immediately before the range is replaced — so a rejected
 		 * edit never rewrites anything.
 		 */
+		servedContentKeys?: (string | null)[];
 		transform?: (lines: readonly string[]) => string[];
 	},
 ): {
@@ -1269,7 +1265,10 @@ export function applyEdit(
 	abortIf(signal);
 
 	const lineIndex = buildIdx(content);
-	const fileAnchors = precomputedAnchors ?? lineHashesPure(content);
+	// THE unified lifecycle door: with a known path, anchors ALWAYS flow
+	// through anchorsFor (cache hit → same array; content changed → diff-
+	// inherit). lineHashesPure is the NO-PATH fallback for pure callers only.
+	const fileAnchors = precomputedAnchors ?? (filePath !== undefined ? anchorsFor(filePath, content) : lineHashesPure(content));
 	const warnings: string[] = [];
 
 	const rangeFixed = swapReversedRanges(edit, warnings);
@@ -1280,6 +1279,23 @@ export function applyEdit(
 	// elsewhere in the file (short-anchor collision with code tokens).
 	const startIdx = fileAnchors.indexOf(rangeFixed.hash_bounds[0].anchor);
 	const endIdx = fileAnchors.indexOf(rangeFixed.hash_bounds[1].anchor);
+	// EXCLUSIVITY (deepest gate): first-indexOf silently collapses the case
+	// where one anchor string is live on several lines (a freed anchor
+	// re-allocated while the model still held the old binding — the `2t`
+	// incident). edit-engine's pinBound refuses it earlier; this guard covers
+	// every applyEdit caller.
+	for (const [anchor, idx] of [
+		[rangeFixed.hash_bounds[0].anchor, startIdx],
+		[rangeFixed.hash_bounds[1].anchor, endIdx],
+	] as const) {
+		if (idx >= 0 && fileAnchors.indexOf(anchor, idx + 1) >= 0) {
+			const first = fileAnchors.indexOf(anchor);
+			const second = fileAnchors.indexOf(anchor, first + 1);
+			throw new Error(
+				`[E_ANCHOR_AMBIGUOUS] anchor "${anchor}" is currently live on lines ${first + 1} and ${second + 1} — the file's anchor state is inconsistent. Re-read the file and retry with fresh anchors; nothing was written.`,
+			);
+		}
+	}
 	const rangeAnchors = startIdx >= 0 && endIdx >= 0
 		? fileAnchors.slice(Math.min(startIdx, endIdx), Math.max(startIdx, endIdx) + 1)
 		: fileAnchors; // fall back if anchors unresolvable (edit will fail later)
@@ -1344,6 +1360,7 @@ export function applyEdit(
 		const endAnchor = resolved.hash_bounds[1];
 		verifyServedRange({
 			served,
+			servedContent: opts?.servedContentKeys,
 			startAnchor: startAnchor.anchor,
 			endAnchor: endAnchor.anchor,
 			startLine: startAnchor.line,

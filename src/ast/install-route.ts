@@ -32,7 +32,7 @@ import {
 } from "./registry.js";
 import { fetchGrammarBytes, type FetchLike } from "./fetch-grammar.js";
 import { checkGrammarUpdates } from "./check-updates.js";
-import { isAstLanguageEnabled } from "../config.js";
+import { isAstLanguageEnabled } from "../infra/settings.js";
 
 /** The `ctx.webServer` surface, structurally (the service is optional). */
 export interface WebServerLike {

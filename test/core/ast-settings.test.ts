@@ -15,7 +15,7 @@ import {
 	isAstLanguageEnabled,
 	parseSettingsYaml,
 } from "../../src/config.js";
-import { readDescription } from "../../src/prompts.js";
+import { readDescription } from "../../src/domain/edit/prompts.js";
 import { HashlineSettingsSchema } from "../../src/config.js";
 
 afterEach(() => {

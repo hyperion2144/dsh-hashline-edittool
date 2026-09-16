@@ -19,18 +19,18 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { FileSystem } from "@deepseek-ai/dsh-fs";
-import { ctxFsIO } from "./fs-bridge.js";
-import { FsSandboxController } from "./sandbox.js";
-import { registerReadTool } from "./tool-read.js";
-import { registerEditTool } from "./tool-edit.js";
+import { ctxFsIO } from "./infra/fs-bridge.js";
+import { FsSandboxController } from "./infra/sandbox.js";
+import { registerReadTool } from "./tools/tool-read.js";
+import { registerEditTool } from "./tools/tool-edit.js";
 import { installHashlineSettings, lspConfiguredServers } from "./config.js";
-import { registerUndoTool } from "./tool-undo.js";
-import { registerGrepTool } from "./tool-grep.js";
-import { registerAstGrepTool } from "./tool-ast-grep.js";
-import { registerLspTool } from "./tool-lsp.js";
-import { registerAstEditTool } from "./tool-ast-edit.js";
-import { registerWriteShadow } from "./tool-write-shadow.js";
-import { onEditSurfaceRebuild } from "./edit-rebuild.js";
+import { registerUndoTool } from "./tools/tool-undo.js";
+import { registerGrepTool } from "./tools/tool-grep.js";
+import { registerAstGrepTool } from "./tools/tool-ast-grep.js";
+import { registerLspTool } from "./tools/tool-lsp.js";
+import { registerAstEditTool } from "./tools/tool-ast-edit.js";
+import { registerWriteShadow } from "./tools/tool-write-shadow.js";
+import { onEditSurfaceRebuild } from "./domain/edit/edit-rebuild.js";
 import { LspManager, setLspManager } from "./lsp/manager.js";
 import { subprocessTransport } from "./lsp/transport.js";
 import { registerLspProvider } from "./lsp/provider.js";
@@ -47,7 +47,7 @@ import {
 	GUIDANCE_SECTIONS,
 	type SectionOverride,
 } from "./guidance.js";
-import { configDir } from "./paths.js";
+import { configDir } from "./infra/paths.js";
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = "dsh-hashline-edittool";

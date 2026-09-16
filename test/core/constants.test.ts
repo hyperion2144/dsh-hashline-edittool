@@ -3,7 +3,7 @@ import {
 	AUTO_READ_MAX,
 	SNIFF_BYTES,
 	SERVED_TTL_MS,
-} from "../../src/constants.js";
+} from "../../src/infra/constants.js";
 
 describe("constants", () => {
 	it("AUTO_READ_MAX is a positive number", () => {

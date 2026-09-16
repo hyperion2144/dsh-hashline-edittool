@@ -25,8 +25,8 @@ beforeAll(async () => {
 describe("tool-read structured presentation", () => {
 	it("returns a structured canonical value with lines + hashlines", async () => {
 		await withTempFile("p.txt", "alpha\nbeta\ngamma\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/fs-bridge.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const tool = buildReadTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -58,8 +58,8 @@ describe("tool-read structured presentation", () => {
 
 	it("the model text starts with the hashline header and ends with the pagination footer", async () => {
 		await withTempFile("p2.txt", "x\n".repeat(2500), async ({ cwd }) => {
-			const { localIO } = await import("../../src/fs-bridge.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const tool = buildReadTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -80,8 +80,8 @@ describe("tool-grep structured presentation", () => {
 	it("returns files + truncated + total in the canonical value", async () => {
 		await withTempFile("g.txt", "alpha\nbeta\nalpha-again\ngamma\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
-			const { buildGrepTool } = await import("../../src/tool-grep.js");
-			const { localIO } = await import("../../src/fs-bridge.js");
+			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -123,8 +123,8 @@ describe("tool-grep structured presentation", () => {
 		const content = "hit\n".repeat(150);
 		await withTempFile("big.txt", content, async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
-			const { buildGrepTool } = await import("../../src/tool-grep.js");
-			const { localIO } = await import("../../src/fs-bridge.js");
+			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -145,10 +145,10 @@ describe("tool-grep structured presentation", () => {
 describe("edit / undo structured value shape", () => {
 	it("edit returns a value with path/before/after + modelText", async () => {
 		await withTempFile("e.txt", "a\nb\nc\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/fs-bridge.js");
-			const { FsSandboxController } = await import("../../src/sandbox.js");
-			const { buildEditTool } = await import("../../src/tool-edit.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
+			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);
@@ -191,10 +191,10 @@ describe("edit / undo structured value shape", () => {
 			// Create the second file in the same cwd so a single edit call
 			// can target both via per-item `path` overrides.
 			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
-			const { localIO } = await import("../../src/fs-bridge.js");
-			const { FsSandboxController } = await import("../../src/sandbox.js");
-			const { buildEditTool } = await import("../../src/tool-edit.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
+			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);
@@ -228,7 +228,7 @@ describe("edit / undo structured value shape", () => {
 
 describe("presentation-helpers — computeHunkDiffs", () => {
 	it("produces a 3-line-context hunk (mirroring dsh-tool-fs)", async () => {
-		const { computeHunkDiffs } = await import("../../src/presentation-helpers.js");
+		const { computeHunkDiffs } = await import("../../src/render/edit-card.js");
 		const before = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
 		const after = "a\nb\nc\nd\nE\nF\ng\nh\ni\nj\n";
 		const diffs = computeHunkDiffs("/foo.ts", before, after);
@@ -254,7 +254,7 @@ describe("presentation-helpers — computeHunkDiffs", () => {
 	});
 
 	it("returns oldText: null for a noop or create", async () => {
-		const { computeHunkDiffs } = await import("../../src/presentation-helpers.js");
+		const { computeHunkDiffs } = await import("../../src/render/edit-card.js");
 		const diffs = computeHunkDiffs("/foo.ts", "a\nb\n", "a\nb\n");
 		expect(diffs).toEqual([]);
 	});
@@ -262,14 +262,14 @@ describe("presentation-helpers — computeHunkDiffs", () => {
 
 describe("presentation-helpers — langFromPath", () => {
 	it("derives a syntax-highlighting language from a file extension", async () => {
-		const { langFromPath } = await import("../../src/presentation-helpers.js");
+		const { langFromPath } = await import("../../src/render/read-card.js");
 		expect(langFromPath("src/foo.ts")).toBe("ts");
 		expect(langFromPath("/abs/path/foo.py")).toBe("py");
 		expect(langFromPath("README.md")).toBe("md");
 	});
 
 	it("returns undefined for unknown extensions", async () => {
-		const { langFromPath } = await import("../../src/presentation-helpers.js");
+		const { langFromPath } = await import("../../src/render/read-card.js");
 		expect(langFromPath("data.xyz")).toBeUndefined();
 		expect(langFromPath("Makefile")).toBeUndefined();
 	});
@@ -278,10 +278,10 @@ describe("presentation-helpers — langFromPath", () => {
 describe("edit presentationMeta diffRows (issue #71 rendering channel)", () => {
 	it("persists structured diff rows with line numbers and anchors", async () => {
 		await withTempFile("dr.txt", "a\nb\nc\nd\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/fs-bridge.js");
-			const { FsSandboxController } = await import("../../src/sandbox.js");
-			const { buildEditTool } = await import("../../src/tool-edit.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
+			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);
@@ -306,10 +306,10 @@ describe("edit presentationMeta diffRows (issue #71 rendering channel)", () => {
 
 	it("presentationMeta carries diffRows alongside diffs for the web gutter", async () => {
 		await withTempFile("dr2.txt", "one\ntwo\nthree\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/fs-bridge.js");
-			const { FsSandboxController } = await import("../../src/sandbox.js");
-			const { buildEditTool } = await import("../../src/tool-edit.js");
-			const { buildReadTool } = await import("../../src/tool-read.js");
+			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
+			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
+			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 			const io = localIO();
 			const read = buildReadTool(io);
@@ -343,7 +343,7 @@ describe("edit presentationMeta diffRows (issue #71 rendering channel)", () => {
 			expect(rows.length).toBeGreaterThan(0);
 			expect(rows.some((row) => row.kind === "+" && row.hash !== "" && /\d/.test(String(row.lineNumber)))).toBe(true);
 			// …and the projection validator accepts them (client-side contract).
-			const { diffRowsFromMeta } = await import("../../src/presentation-helpers.js");
+			const { diffRowsFromMeta } = await import("../../src/render/edit-card.js");
 			expect(diffRowsFromMeta({ diffRows: rows })).toEqual(rows);
 			expect(diffRowsFromMeta({ diffRows: [{ kind: "x", lineNumber: 1, hash: "", text: "" }] })).toBeUndefined();
 			expect(diffRowsFromMeta({})).toBeUndefined();

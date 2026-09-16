@@ -31,7 +31,7 @@ import {
 	AST_MAX_DENSITY,
 	AST_RETAIN_LIMIT_NODES,
 	AST_RETAIN_NODE_BUDGET,
-} from "../constants.js";
+} from "../infra/constants.js";
 import {
 	E_AST_PATTERN,
 	E_AST_TOO_LARGE,

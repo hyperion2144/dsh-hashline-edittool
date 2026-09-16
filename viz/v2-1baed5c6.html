@@ -1,0 +1,115 @@
+<div id="lsp-row-viz2">
+<style>
+  #lsp-row-viz2 { font-family: var(--ds-font-family, system-ui); color: var(--foreground); }
+  #lsp-row-viz2 .panel { border: .5px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 18px; }
+  #lsp-row-viz2 .cap { font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+                       color: var(--muted-foreground); margin: 0 0 6px 2px; }
+  /* THE RULE: the row may wrap, the ERROR is the only thing that asks for a full line. */
+  #lsp-row-viz2 .r { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+                     padding: 9px 12px; font-size: 13px; min-width: 0;
+                     border-bottom: .5px solid var(--border); }
+  #lsp-row-viz2 .r:last-child { border-bottom: none; }
+  #lsp-row-viz2 .r > * { flex: none; }
+  #lsp-row-viz2 .dot { width: 8px; height: 8px; border-radius: 50%; }
+  #lsp-row-viz2 .dot.ok   { background: light-dark(#16a34a, #4ade80); }
+  #lsp-row-viz2 .dot.warn { background: light-dark(#d97706, #fbbf24); }
+  #lsp-row-viz2 .dot.err  { background: light-dark(#dc2626, #f87171); }
+  #lsp-row-viz2 .name { font-family: ui-monospace, monospace; }
+  #lsp-row-viz2 .ext  { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted-foreground); }
+  /* Short status: inline, wraps inside its share, never pushes the button. */
+  #lsp-row-viz2 .status { flex: 1 1 auto; min-width: 8ch; max-width: 60%;
+                          white-space: normal; overflow-wrap: break-word;
+                          text-align: right; color: var(--muted-foreground); }
+  #lsp-row-viz2 .grow { flex: 1 1 0; min-width: 0; }
+  /* Error: its own full line, BELOW — it comes after the button in DOM order. */
+  #lsp-row-viz2 .err-line { flex: 1 0 100%; white-space: normal; overflow-wrap: break-word;
+                            text-align: left; font-size: 12px; line-height: 1.5;
+                            color: light-dark(#dc2626, #f87171); }
+  #lsp-row-viz2 .act { padding: 3px 10px; border: .5px solid var(--border); border-radius: 8px;
+                       background: transparent; color: var(--foreground);
+                       font: inherit; font-size: 12.5px; cursor: pointer; }
+  #lsp-row-viz2 .act:disabled { opacity: .5; cursor: default; }
+  #lsp-row-viz2 .note { font-size: 12px; color: var(--muted-foreground); margin: 8px 2px 0; }
+  #lsp-row-viz2 .narrow { max-width: 380px; }
+</style>
+
+<p class="cap">正常行 —— 一行，短状态行内右对齐</p>
+<div class="panel">
+  <div class="r">
+    <span class="dot ok"></span><span class="name">typescript</span>
+    <span class="ext">TypeScript Language Server · 卡片安装</span>
+    <span class="grow"></span>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="status">可一键安装</span>
+    <span class="grow"></span>
+    <button class="act">安装</button>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">java</span>
+    <span class="ext">未找到</span>
+    <span class="status">需自行安装到 PATH</span>
+    <span class="grow"></span>
+  </div>
+</div>
+
+<p class="cap">失败行 —— 错误单独一行，按钮留在原位变「重试」</p>
+<div class="panel">
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="grow"></span>
+    <button class="act">重试</button>
+    <span class="err-line">失败：安装命令以 1 退出：cannot find package golang.org/x/tools/gopls@latest in any of: /usr/local/go/src/…</span>
+  </div>
+</div>
+<p class="note">按钮在第一行（<code>flex:none</code>，永远不会被挤走）；错误在第二行占满宽度（<code>flex:1 0 100%</code>）。</p>
+
+<p class="cap">窄屏 380px —— 长状态在右份额内折行，按钮仍不移动</p>
+<div class="panel narrow">
+  <div class="r">
+    <span class="dot warn"></span><span class="name">python</span>
+    <span class="ext">Pyright · 卡片安装</span>
+    <span class="status">No server has been started for this language yet.</span>
+    <span class="grow"></span>
+  </div>
+  <div class="r">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="grow"></span>
+    <button class="act">重试</button>
+    <span class="err-line">失败：需要 go 工具链，但 PATH 里找不到 go</span>
+  </div>
+</div>
+
+<p class="cap">对照：上一版为什么被否</p>
+<div class="panel" id="bad-panel">
+  <div class="r" id="bad-row">
+    <span class="dot err"></span><span class="name">go</span>
+    <span class="ext">未找到</span>
+    <span class="status" id="bad-status">可一键安装</span>
+    <span class="grow" id="bad-grow"></span>
+    <button class="act" id="bad-act">安装</button>
+  </div>
+</div>
+<p class="note">上一版把「状态」也做成 <code>flex:1 0 100%</code> ⇒ <b>连「可一键安装」都独占一行</b>，按钮被推到下一行。这一版只有【错误】独占一行。</p>
+
+<script>
+(() => {
+  const row = document.getElementById("bad-row");
+  const status = document.getElementById("bad-status");
+  const grow = document.getElementById("bad-grow");
+  const act = document.getElementById("bad-act");
+  // Reproduce the rejected layout on demand so the difference is visible, not described.
+  setTimeout(() => {
+    status.style.flex = "1 0 100%";
+    status.style.textAlign = "left";
+    status.style.order = "9";
+    grow.style.display = "none";
+    act.style.order = "8";
+  }, 400);
+})();
+</script>
+</div>

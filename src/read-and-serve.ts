@@ -8,12 +8,12 @@
  * @module dsh-hashline-edittool/read-and-serve
  */
 
-import { abortIf } from "./utils.js";
-import { readView } from "./file-view.js";
-import { recordServed, clearDriftReported } from "./session-view.js";
-import type { FileIO } from "./fs-bridge.js";
+import { abortIf } from "./infra/utils.js";
+import { readView } from "./domain/session/file-view.js";
+import { recordServed, clearDriftReported } from "./domain/session/session-view.js";
+import type { FileIO } from "./infra/fs-bridge.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
-import type { ServedRow } from "./hashline/served.js";
+import type { ServedRow } from "./hashline/anchor-pipeline.js";
 
 /** Appended when the file had non-UTF-8 bytes; editing rewrites it as UTF-8. */
 export const UTF8_REWRITE_NOTE =
@@ -84,7 +84,7 @@ export async function readAndServe(
 		await recordServed(
 			sessionKey,
 			view.absolutePath,
-			view.served.map((r) => ({ position: r.position, anchor: r.anchor })),
+			view.served.map((r) => ({ position: r.position, anchor: r.anchor, key: r.contentKey ?? null })),
 			view.hashes.length,
 		);
 		// The rows are served, so the session has SEEN this file: tell the dsh

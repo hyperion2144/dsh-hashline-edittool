@@ -9,14 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { runFileEdits, persistUndoAndWrite, type PreparedItem } from "../../src/edit-engine.js";
+import { runFileEdits, persistUndoAndWrite, type PreparedItem } from "../../src/domain/edit/edit-engine.js";
 import { notifyDocumentWritten, setDocumentSyncHook } from "../../src/lsp/sync.js";
 import { getLspManager, LspManager, setLspManager } from "../../src/lsp/manager.js";
 import { encodeMessage, MessageReader } from "../../src/lsp/framing.js";
 import type { LspTransport } from "../../src/lsp/session.js";
 import { lineHashes } from "../../src/hashline/index.js";
-import { recordServed } from "../../src/session-view.js";
-import { splitLines } from "../../src/utils.js";
+import { recordServed } from "../../src/domain/session/session-view.js";
+import { splitLines } from "../../src/infra/utils.js";
 import { canon, contentChecksum } from "../../src/hashline/hash-assign.js";
 
 const SOURCE = "export const alpha = 1;\nexport const beta = 2;\n";

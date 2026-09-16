@@ -12,10 +12,10 @@
  */
 import { describe, expect, it, afterEach } from "vitest";
 import { applyEffective } from "../../src/config.js";
-import { DSH_READ_ENVELOPE_RE, extractReadBody } from "../../src/presentation-helpers.js";
+import { DSH_READ_ENVELOPE_RE, extractReadBody } from "../../src/render/read-card.js";
 import { hashlineHeader } from "../../src/hashline/hash-assign.js";
 import { withTempFile, makeExec } from "../support/fixtures.js";
-import { localIO } from "../../src/fs-bridge.js";
+import { localIO } from "../../src/infra/fs-bridge.js";
 
 afterEach(() => {
 	applyEffective({});
@@ -23,7 +23,7 @@ afterEach(() => {
 
 /** Drive the registered read tool exactly like the web does (raw args in). */
 async function executeRead(args: unknown, cwd: string) {
-	const { buildReadTool } = await import("../../src/tool-read.js");
+	const { buildReadTool } = await import("../../src/tools/tool-read.js");
 	const tool = buildReadTool(localIO());
 	return tool.execute(args, makeExec(cwd)({}));
 }
@@ -85,7 +85,7 @@ describe("read file_path spelling (raw args the web validates)", () => {
 	});
 
 	it("declares file_path in the tool schema (raw-args contract)", async () => {
-		const { buildReadTool } = await import("../../src/tool-read.js");
+	const { buildReadTool } = await import("../../src/tools/tool-read.js");
 		const tool = buildReadTool(localIO()) as unknown as {
 			// `properties` has to be named: with `Record<string, unknown>` the reads
 			// below are on `unknown` and do not compile, so the assertions that
