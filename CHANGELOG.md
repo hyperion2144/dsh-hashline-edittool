@@ -4,6 +4,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+- **dsh 0.1.6 compatibility (#134)**: dsh 0.1.6 renamed the agent-start event `agent/session-start` → `agent/created`; the plugin registered a listener nobody emitted, so hashline tools never mounted and sessions silently fell back to the built-in tools. The plugin now registers BOTH event names (new harness emits `agent/created`, older ones emit `agent/session-start`; the other is a silent no-op, and a WeakSet keeps double arrival idempotent).
+- dsh 0.1.6 moved `systemPrompt` from a Context property to a scoped service — the plugin now resolves `systemPrompt` per agent scope and degrades to a warn-and-no-op stub when absent, so prompt-section loss can never fail the tool install.
+- dsh devDependencies bumped to `0.1.6-alpha.1` with the new peer packages (`dsh-scope`, `dsh-system-prompt`, `dsh-ptc-runtime`, `dsh-invariants`, `dsh-user-approval`, `dsh-sandbox-policy`, `dsh-session-projection`, `dsh-typert-protocol`, `dsh-brand`); `.npmrc` pins `legacy-peer-deps` for the 0.1.2-transitive peer conflict.
+- CI: the client workspace suite resolved the ROOT vitest config and failed on a missing `client/test/setup.ts`; the client now ships its own setup file and the root suite excludes `client/**` (it has its own workspace job).
+
 ## [0.7.0] - 2026-09-16
 
 ### Added

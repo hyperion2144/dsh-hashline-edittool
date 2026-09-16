@@ -3,7 +3,9 @@
  * DeepSeek Harness — a dsh port of the hashline editor.
  *
  * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). On
- * `agent/session-start` it registers the hashline tools and prompt sections on
+ * `agent/created` (dsh ≥ 0.1.6; the pre-rename name `agent/session-start` is
+ * still registered for older harnesses) it registers the hashline tools and
+ * prompt sections on
  * the AGENT's own scope layer, so they shadow the preset's built-in `read` /
  * `edit` for that agent (nearest layer wins in dsh's tool registry) and unwind
  * automatically when the agent is disposed. The built-in `write` stays in
@@ -88,6 +90,28 @@ function compiledDefaultSections(): SectionOverride[] {
 }
 
 /**
+ * Resolve the agent scope's `systemPrompt` service (dsh ≥ 0.1.6 moved it from
+ * a Context property to a scoped service — #134's follow-on). A missing
+ * service degrades to a warn-and-no-op stub so losing prompt sections can
+ * never fail the tool install: the tools are the contract, the sections are
+ * guidance.
+ */
+function resolveAgentSystemPrompt(rootCtx: Context, agent: Agent): {
+	section(section: SectionOverride): () => void;
+} {
+	const service = agent.ctx.get("systemPrompt") as
+		| { section(section: SectionOverride): () => void }
+		| undefined;
+	if (service) return service;
+	rootCtx.logger.warn(
+		`dsh-hashline-edittool: systemPrompt service unavailable on agent ${agent.id}; prompt sections skipped`,
+	);
+	return {
+		section: () => () => undefined,
+	};
+}
+
+/**
  * Resolve the four guidance sections for one agent. Without the `agentPresets`
  * service the fast path returns the compiled defaults untouched. With it, the
  * agent's preset id drives `composeSections` against the shared home; any
@@ -139,6 +163,7 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		let editDispose: (() => void) | undefined;
 		let editSectionDispose: (() => void) | undefined;
 		let reinstall: Promise<void> = Promise.resolve();
+		const systemPrompt = resolveAgentSystemPrompt(rootCtx, agent);
 		const installEditSurface = async (): Promise<void> => {
 			editDispose = registerEditTool(rootCtx, agent.ctx, io, sandbox);
 			// Re-resolve per install so a rebuilt surface picks up fresh
@@ -146,7 +171,7 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 			const sections = await resolveAgentSections(rootCtx, agent);
 			for (const section of sections) {
 				if (section.name !== "tool:edit") continue;
-				editSectionDispose = agent.ctx.systemPrompt.section(section);
+				editSectionDispose = systemPrompt.section(section);
 			}
 		};
 		await installEditSurface();
@@ -203,7 +228,7 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		const sections = await resolveAgentSections(rootCtx, agent);
 		for (const section of sections) {
 			if (section.name === "tool:edit") continue;
-			disposers.push(agent.ctx.systemPrompt.section(section));
+			disposers.push(systemPrompt.section(section));
 		}
 
 		return () => {
@@ -246,8 +271,12 @@ export function apply(rootCtx: Context): void {
 		);
 	});
 
+	// dsh 0.1.6 renamed the agent-start event `agent/session-start` →
+	// `agent/created` (#134). Register BOTH names: whichever the running
+	// harness emits wins, the other is a silent no-op (unknown events are
+	// accepted and never fired). The WeakSet makes double arrival idempotent.
 	const registered = new WeakSet<Agent>();
-	rootCtx.on("agent/session-start", ({ agent }) => {
+	const onAgentStart = ({ agent }: { agent: Agent }): void => {
 		if (registered.has(agent)) return;
 		registered.add(agent);
 		try {
@@ -257,7 +286,13 @@ export function apply(rootCtx: Context): void {
 				`dsh-hashline-edittool: failed to install tools for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-	});
+	};
+	const onAgentLifecycle = rootCtx.on.bind(rootCtx) as (
+		event: string,
+		handler: (payload: { agent: Agent }) => void,
+	) => unknown;
+	onAgentLifecycle("agent/created", onAgentStart);
+	onAgentLifecycle("agent/session-start", onAgentStart);
 }
 
 /**
