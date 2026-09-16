@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-16
+
 ### Added
 - **Unified anchor lifecycle**: anchors are allocated only on first serve or actual content change; rewrites and external changes inherit by line alignment — unchanged lines keep their anchors, and there is no whole-file recompute for files that already carry anchors.
 - **Anchor exclusivity**: one live anchor names one line — served-mirror single-ownership purge, dead ambiguity guard removed, and `[E_ANCHOR_AMBIGUOUS]` hard error on ambiguous resolution (kills the silent first-occurrence relocation).
