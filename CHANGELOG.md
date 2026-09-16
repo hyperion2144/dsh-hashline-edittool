@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-16
+
 ### Fixed
 - **dsh 0.1.6 compatibility (#134)**: dsh 0.1.6 renamed the agent-start event `agent/session-start` → `agent/created`; the plugin registered a listener nobody emitted, so hashline tools never mounted and sessions silently fell back to the built-in tools. The plugin now registers BOTH event names (new harness emits `agent/created`, older ones emit `agent/session-start`; the other is a silent no-op, and a WeakSet keeps double arrival idempotent).
 - dsh 0.1.6 moved `systemPrompt` from a Context property to a scoped service — the plugin now resolves `systemPrompt` per agent scope and degrades to a warn-and-no-op stub when absent, so prompt-section loss can never fail the tool install.
