@@ -93,7 +93,11 @@ function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
 			);
 		}
 	}
-	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : undefined };
+	// When the anchor does NOT resolve (stale: its line changed or the anchor
+	// was released), the caller's line hint is the ONLY evidence of which line
+	// they meant — preserve it for the error echo instead of wiping it (issue
+	// #136: wiping it made the echo fall back to line 1 with a fake marker).
+	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : bound.line };
 }
 
 /** Returns the pinned edit plus a warning list for hints that

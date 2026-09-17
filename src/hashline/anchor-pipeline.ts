@@ -262,19 +262,42 @@ function fmtMismatchWithServes(
 			`[E_BAD_REF] Bare-digit anchors are forbidden (received ${refList}). A bare number is a LINE HINT, not an anchor — copy the proper anchor from a read/grep/diff row's <line>:<anchor> marker. The echo below is centered on the line each number names.`,
 		);
 	}
-	const centers = notFound.map((m) => {
-		// Echo center: for a bare digit, THE DIGIT ITSELF is the line the caller
-		// meant — center there. Otherwise prefer the other anchor's resolved
-		// position, then a sensible hint line, else line 1.
+	// Echo center — only where there is real EVIDENCE of the line the caller
+	// meant: a bare digit IS the line they named, a resolved neighbor bound
+	// (context) anchors one end, and a `<anchor>:<line>` hint names the row.
+	// issue #136: with NONE of those (a stale bare anchor, no hint) there is
+	// no basis to locate anything — the old fallback centered the echo on
+	// line 1 and offered its marker as "the line you meant", which is a
+	// misleading fake. No evidence → no echo.
+	const centers: { m: HMismatch; center: number }[] = [];
+	let unlocatable = 0;
+	for (const m of notFound) {
 		const digit = isBareDigits(m.ref.anchor)
 			? Number.parseInt(m.ref.anchor, 10)
 			: undefined;
-		const ctx =
+		const hintLine =
 			digit !== undefined && digit >= 1 && digit <= fileLines.length
-				? { anchor: fileAnchors[digit - 1] ?? "?", line: digit, hashMatched: false }
-				: (m.context ?? pickFallbackCenter(m.ref, fileAnchors));
-		return { m, center: Math.max(1, Math.min(fileLines.length, ctx.line)) };
-	});
+				? digit
+				: m.context?.line !== undefined &&
+					  m.context.line >= 1 &&
+					  m.context.line <= fileLines.length
+					? m.context.line
+					: m.ref.line !== undefined &&
+						  m.ref.line >= 1 &&
+						  m.ref.line <= fileLines.length
+						? m.ref.line
+						: undefined;
+		if (hintLine === undefined) {
+			unlocatable++;
+			continue;
+		}
+		centers.push({ m, center: hintLine });
+	}
+	if (unlocatable > 0) {
+		out.push(
+			`  ${unlocatable} stale anchor${unlocatable > 1 ? "s" : ""} cannot be located (no line hint was given and the anchor no longer exists) — no echo is shown; call read() to re-sync.`,
+		);
+	}
 	centers.sort((a, b) => a.center - b.center);
 	const groups: typeof centers[] = [];
 	for (const c of centers) {
@@ -319,24 +342,6 @@ function fmtMismatchWithServes(
 	return { message: out.join("\n"), servedRows };
 }
 
-function pickFallbackCenter(ref: Anchor, fileAnchors: string[]): RAnchor {
-	if (
-		ref.line !== undefined &&
-		ref.line >= 1 &&
-		ref.line <= fileAnchors.length
-	) {
-		return {
-			anchor: fileAnchors[ref.line - 1]!,
-			line: ref.line,
-			hashMatched: false,
-		};
-	}
-	return {
-		anchor: fileAnchors[0] ?? "?",
-		line: 1,
-		hashMatched: false,
-	};
-}
 
 const ITEM_KS = new Set(["replacement_text", "remove_from", "remove_to"]);
 

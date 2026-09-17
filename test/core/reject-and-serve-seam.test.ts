@@ -120,6 +120,59 @@ describe("applyEdit — resolved range geometry", () => {
 	});
 });
 
+describe("applyEdit — stale echo locates only with evidence (issue #136)", () => {
+	const mkFile = (): { content: string; hashes: string[]; edited: string; editedHashes: string[] } => {
+		const content = ["import { x } from \"./x\";", "", "export function alpha() {", "    if (x) {", "        return 1;", "    }", "}", "", "export function beta() {", "    return 2;", "}", "", "export function gamma() {", "    return 3;", "}"].join("\n");
+		const hashes = lineHashesPure(content);
+		// Round 1: replace line 10 (a stale round-2 anchor then names a line that
+		// now carries a DIFFERENT anchor).
+		const edited = applyEdit(
+			content,
+			{ hash_bounds: [{ anchor: hashes[9]! }, { anchor: hashes[9]! }], content_lines: ["    return 42;"] },
+		).content;
+		const editedHashes = lineHashesPure(edited);
+		return { content, hashes, edited, editedHashes };
+	};
+
+	it("a stale anchor WITH a line hint echoes the hinted line's fresh marker", () => {
+		const { edited, hashes } = mkFile();
+		const staleAnchor = hashes[9]!; // released by round 1
+		let message = "";
+		try {
+			applyEdit(
+				edited,
+				{ hash_bounds: [{ anchor: staleAnchor, line: 10 }, { anchor: staleAnchor, line: 10 }], content_lines: ["    return 43;"] },
+			);
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		expect(message).toMatch(/\[E_STALE\]/);
+		// The echo is centered on the HINTED line (10 ±3), with its fresh marker:
+		expect(message).toContain("export function beta()");
+		expect(message).toMatch(/reuse a fresh marker from: [A-Za-z0-9]+/);
+		expect(message).not.toContain("cannot be located");
+	});
+
+	it("a stale anchor WITHOUT any hint does not fake an echo at line 1", () => {
+		const { edited, hashes } = mkFile();
+		const staleAnchor = hashes[9]!;
+		let message = "";
+		try {
+			applyEdit(
+				edited,
+				{ hash_bounds: [{ anchor: staleAnchor }, { anchor: staleAnchor }], content_lines: ["    return 43;"] },
+			);
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		expect(message).toMatch(/\[E_STALE\]/);
+		// No basis to locate the intended line: no echo, no fake marker.
+		expect(message).toMatch(/cannot be located/);
+		expect(message).not.toContain("Echo of the line you tried");
+		expect(message).not.toMatch(/reuse a fresh marker/);
+	});
+});
+
 let tmpHome: string;
 async function withTempHome(run: () => Promise<void>): Promise<void> {
 	tmpHome = await mkdtemp(
