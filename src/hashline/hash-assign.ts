@@ -106,12 +106,13 @@ function compileShape(s: HashlineShape): CompiledShape {
 			`^[\\t ]*([+*-]?)(?:(?:(${anchorClass}):(\\d+(?:-\\d+)?)|(\\d+(?:-\\d+)?):(${anchorClass}))\\s*${seps}|(${anchorClass})\\s*${seps})`,
 		),
 		hashSpace: 62 ** 8,
+		// One-line, model-facing contract (~100 chars): row shape, what an edit
+		// passes back, and what the separator separates. Allocator internals
+		// (Base62, shortest-first, per-line uniqueness) are behavior-invisible
+		// to the caller — they cost tokens in every read/grep/diff echo and
+		// belonged in the spec, not in every tool result (issue #136 session).
 		header:
-				// The line-number half is FIXED positional syntax — now `<anchor>:<line>` —
-				// and ONLY the anchor↔content separator is configurable. The ANCHOR comes
-				// FIRST so the token a caller copies first is the one that identifies the
-				// line; the number trails it as a positional hint, in the same marker.
-				`ANCHOR${s.separator}FILELINE — each row is <anchor>${s.separator}<content>; edit uses the FIRST "<anchor>" marker as its anchor (variable-length Base62, shortest-first; identical content lines get DISTINCT anchors); everything after "${s.separator}" is the verbatim file content; to modify the file, pass the content after "${s.separator}" — never the anchor part. With the line-numbers option on, rows read <anchor>:<line>${s.separator}<content> and a marker may be passed back with or without its line part — the anchor is authoritative.`,
+			`ANCHOR${s.separator}FILELINE — <anchor>${s.separator}<content>; edit passes the anchor back as-is; text after ${s.separator} is content.`,
 	};
 }
 
