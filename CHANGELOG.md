@@ -4,8 +4,14 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
-## [0.7.1] - 2026-09-16
+### Fixed
 
+- **Anchor state persisted per project (#136)**: the per-path anchor state no longer lives only in a 256-entry in-memory LRU. It is persisted per cwd + path in the sqlite hash-store (new `anchor_state` row family), the memory Map is a plain front-end with cross-process checksum invalidation, and every `assignAnchors` fallback path (LRU eviction, poisoned snapshot, legacy state) is gone: eviction and restarts recover the persisted state, external changes diff-inherit against it, and a damaged state heals positionally (keep surviving anchors, allocate only the gaps) with a loud `[E_ANCHOR_STATE_POISONED]` notice. This is the fix for large-file edits rejecting with `line was never served` / `served mirror is stale` after the model had touched many files.
+- **`updateAnchorsAfterEdit` lineKeys bug (#136 follow-up)**: the incremental updater persisted contentKeys OF THE ANCHOR STRINGS instead of the new lines, so the diff-inheritance basis was garbage — the first external change after a tool edit could not align and reshuffled every line's anchor. It now persists the new content's real per-line contentKeys.
+- **Served-mirror duplicates are evidence, not noise (#136)**: `_mergeServedRows` no longer purges a duplicate anchor binding (last-write-wins) — that silent nulling destroyed served records and manufactured `never served` rejections. Duplicates are kept, named by a `[E_SERVED_DUP]` warning, and verification stays positional.
+- **Served-record failures are loud (#136)**: `recordServed` / `recordServedTruncated` / `recordServedAfterEdit` no longer swallow storage failures. Completed writes surface `[E_SERVED_RECORD]` as a response warning (edit/undo) or drift-notice line; rejection flows keep their primary error while logging the record failure.
+- Anchor-state rows join `pruneMissing` (deleted files) and get a 30-day TTL sweep on store open; a hash-store version bump wipes them with the other row families.
+## [0.7.1] - 2026-09-16
 ### Fixed
 - **dsh 0.1.6 compatibility (#134)**: dsh 0.1.6 renamed the agent-start event `agent/session-start` → `agent/created`; the plugin registered a listener nobody emitted, so hashline tools never mounted and sessions silently fell back to the built-in tools. The plugin now registers BOTH event names (new harness emits `agent/created`, older ones emit `agent/session-start`; the other is a silent no-op, and a WeakSet keeps double arrival idempotent).
 - dsh 0.1.6 moved `systemPrompt` from a Context property to a scoped service — the plugin now resolves `systemPrompt` per agent scope and degrades to a warn-and-no-op stub when absent, so prompt-section loss can never fail the tool install.

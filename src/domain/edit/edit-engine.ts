@@ -709,13 +709,19 @@ const echoRows = buildRangeEcho(
 				echoRows,
 				splitLines(opts.originalNormalized),
 			);
-			await recordEchoServes(
-				sessionKey,
-				absolutePath,
-				echoRows,
-				"live",
-				originalHashes.length,
-			);
+			try {
+				await recordEchoServes(
+					sessionKey,
+					absolutePath,
+					echoRows,
+					"live",
+					originalHashes.length,
+				);
+			} catch (recordError) {
+				// issue #136: loud, but the noop-loop guard's own outcome must keep
+				// standing — the echo text is already in the model's response.
+				console.error("[E_SERVED_RECORD] failed to record echo rows:", recordError);
+			}
 			await opts.io.emitObserved(absolutePath, opts.exec);
 			throw new Error(
 				`[E_NOOP_LOOP] identical edit (${removeFrom} → ${removeTo} in ${displayPath}) submitted ${count}×, no changes each time. Range already contains this text; resend will reject. Current range:\n${echo}`,
@@ -731,13 +737,18 @@ const echoRows = buildRangeEcho(
 		const originalLines = splitLines(opts.originalNormalized);
 		const echoRows = opts.echoRows;
 		if (echoRows) {
-			await recordEchoServes(
-				sessionKey,
-				absolutePath,
-				echoRows,
-				"live",
-				originalHashes.length,
-			);
+			try {
+				await recordEchoServes(
+					sessionKey,
+					absolutePath,
+					echoRows,
+					"live",
+					originalHashes.length,
+				);
+			} catch (recordError) {
+				// issue #136: loud, never silent; the noop-loop error keeps throwing.
+				console.error("[E_SERVED_RECORD] failed to record echo rows:", recordError);
+			}
 			await opts.io.emitObserved(absolutePath, opts.exec);
 		}
 		throw new Error(
@@ -1009,13 +1020,22 @@ const ordered = [...resolvedEdits].sort(
 					// duplicating it produced two file echoes plus an "on-disk" block
 					// that was not the disk state.
 					if (error.servedRows.length > 0) {
-						await recordEchoServes(
-							opts.sessionKey,
-							absolutePath,
-							error.servedRows,
-							"live",
-							originalHashes.length,
-						);
+						try {
+							await recordEchoServes(
+								opts.sessionKey,
+								absolutePath,
+								error.servedRows,
+								"live",
+								originalHashes.length,
+							);
+						} catch (recordError) {
+							// issue #136: loud, but the primary rejection must keep
+							// propagating — the echo is already in the rejection text.
+							console.error(
+								"[E_SERVED_RECORD] failed to record echo rows:",
+								recordError,
+							);
+						}
 						// The echo IS a read: the session has now seen these lines, so the
 						// dsh observation policy must know it too. Without this the echoed
 						// rows are servable but not WRITABLE — a retry with a fresh marker

@@ -29,3 +29,18 @@ for every path, not only tool edits.
 cross-process determinism remains only for never-edited files; the served
 mirror's v2 format persists parallel content keys so future drift checking can
 activate once key provenance is unified.
+
+**Amendment (2026-09-17, issue #136)**: the served-mirror purge clause above
+("the served mirror purges stale single-owner bindings") is superseded — a
+duplicate anchor in the served mirror is now KEPT and reported loudly
+(`[E_SERVED_DUP]`). The purge was itself a silent record destroyer: it
+masked upstream allocator bugs and manufactured "never served" rows.
+`verifyServedRange`'s strict positional check remains the arbiter of what
+may be written. Anchor state is additionally PERSISTED per cwd + path in
+the sqlite hash-store (`anchor_state` row family): a cache miss recovers
+from the store instead of re-allocating, external changes diff-inherit
+against the persisted record, and no recompute path remains anywhere for a
+path that already carries anchors. `updateAnchorsAfterEdit` now persists
+the new content's per-line contentKeys (it previously keyed the ANCHOR
+strings, so the first external change after a tool edit could not align
+and reshuffled every line).

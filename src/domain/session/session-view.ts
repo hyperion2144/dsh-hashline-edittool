@@ -137,6 +137,10 @@ export function migrateServedAfterEdit(
  * unchanged lines and overlaying the diff region's new served rows on top.
  * Replaces `recordServedTruncated` for the post-edit path; the old helper
  * stays for any caller that genuinely wants the aggressive truncate.
+ *
+ * issue #136: persistence failures PROPAGATE (a served mirror that silently
+ * failed to record is how "never served" rows are born). Callers that must
+ * not fail a completed write catch and surface it as a warning.
  */
 export async function recordServedAfterEdit(
   sessionKey: string,
@@ -169,9 +173,12 @@ export async function recordServedAfterEdit(
  *
  * Position-keyed, NOT hash-uniqueness-keyed: each (position, hash) pair is
  * independent. The same hash at two different positions is allowed (e.g.
- * several blank lines). Orphan-heal (previously nulling older duplicates) is
- * removed — line#hash is unique per row, and stale duplicates are caught at
- * validation time by the strict line-by-line check in verifyServedRange.
+ * several blank lines). Duplicates (issue #136) are EVIDENCE, not noise: one
+ * anchor live at two positions means an upstream allocator bug, so every
+ * record is KEPT and a loud warning names the collision — the old purge that
+ * nulled the earlier position to hide the duplicate is exactly what turned an
+ * allocator bug into unreachable "never served" lines. verifyServedRange's
+ * strict positional check stays the arbiter of what may be written.
  */
 export function _mergeServedRows(
   current: (string | null)[],
@@ -195,19 +202,25 @@ export function _mergeServedRows(
     while (updated.length <= entry.position) updated.push(null);
     updated[entry.position] = entry.anchor;
   }
-  // EXCLUSIVITY: one anchor names at most ONE live line. A re-allocation can
-  // hand a released anchor to a new position while the old position still
-  // carries it (7-day TTL); leaving both in place is what let the `2t`
-  // double-booking silently relocate an edit. Last write wins — earlier
-  // positions holding the same anchor are nulled.
-  const owner = new Map<string, number>();
+  // issue #136: duplicates are surfaced, never silently purged. The old
+  // last-write-wins pass nulled served records to enforce single ownership —
+  // which masked upstream allocator bugs AND destroyed the records the
+  // verification layer needs ("line was never served"). Anchors are unique
+  // per line by construction; if two positions ever hold one, keeping BOTH
+  // and warning is the honest move: the positional check in
+  // verifyServedRange rejects what it cannot vouch for, row by row.
+  const seenAt = new Map<string, number>();
   for (let i = 0; i < updated.length; i++) {
     const anchor = updated[i];
-    if (anchor !== null) owner.set(anchor, i);
-  }
-  for (let i = 0; i < updated.length; i++) {
-    const anchor = updated[i];
-    if (anchor !== null && owner.get(anchor) !== i) updated[i] = null;
+    if (anchor === null) continue;
+    const first = seenAt.get(anchor);
+    if (first === undefined) seenAt.set(anchor, i);
+    else {
+      console.warn(
+        `[E_SERVED_DUP] anchor "${anchor}" is served at positions ${first} and ${i} — " +
+          "the allocator produced a duplicate; keeping both records (verification is positional).`,
+      );
+    }
   }
   while (updated.length > 0 && updated[updated.length - 1] === null) updated.pop();
   return updated;
@@ -254,21 +267,19 @@ export async function loadServed(sessionKey: string, path: string): Promise<(str
 
 export async function recordServed(sessionKey: string, path: string, rows: ServedEntry[], lineCount?: number): Promise<void> {
   if (rows.length === 0) return;
-  try {
-    const store = await loadHashStore();
-    withStore(() => {
-      const current = store.getServed(sessionKey, path);
-      const currentKeys = store.getServedKeys(sessionKey, path);
-      const opts = lineCount === undefined ? undefined : { truncateTo: lineCount };
-      const updated = _mergeServedRows(current, rows, opts);
-      const keys = _mergeServedKeys(current, currentKeys, rows, opts, updated);
-      // Skip no-op writes (O(1) check; no extra I/O beyond current read).
-      if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
-      store.upsertServed(sessionKey, path, serializeServed(updated, keys));
-    });
-  } catch (error) {
-    console.error("Failed to record served rows:", error);
-  }
+  const store = await loadHashStore();
+  // issue #136: no silent catch. A failed serve record must reach the caller
+  // — an echo the model saw but the mirror lost is the never-served bug.
+  withStore(() => {
+    const current = store.getServed(sessionKey, path);
+    const currentKeys = store.getServedKeys(sessionKey, path);
+    const opts = lineCount === undefined ? undefined : { truncateTo: lineCount };
+    const updated = _mergeServedRows(current, rows, opts);
+    const keys = _mergeServedKeys(current, currentKeys, rows, opts, updated);
+    // Skip no-op writes (O(1) check; no extra I/O beyond current read).
+    if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
+    store.upsertServed(sessionKey, path, serializeServed(updated, keys));
+  });
 }
 
 /**
@@ -354,21 +365,18 @@ export async function serveRowsInWorkspace(opts: {
 
 export async function recordServedTruncated(sessionKey: string, path: string, rows: ServedEntry[], lineCount: number, clearFrom = 0): Promise<void> {
   if (rows.length === 0) return;
-  try {
-    const store = await loadHashStore();
-    withStore(() => {
-      const current = store.getServed(sessionKey, path);
-      const currentKeys = store.getServedKeys(sessionKey, path);
-      const opts = { truncateTo: lineCount, clearFrom };
-      const updated = _mergeServedRows(current, rows, opts);
-      const keys = _mergeServedKeys(current, currentKeys, rows, opts, updated);
-      // Skip no-op writes (O(1) check; no extra I/O beyond current read).
-      if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
-      store.upsertServed(sessionKey, path, serializeServed(updated, keys));
-    });
-  } catch (error) {
-    console.error("Failed to record truncated served rows:", error);
-  }
+  const store = await loadHashStore();
+  // issue #136: no silent catch (same contract as recordServed).
+  withStore(() => {
+    const current = store.getServed(sessionKey, path);
+    const currentKeys = store.getServedKeys(sessionKey, path);
+    const opts = { truncateTo: lineCount, clearFrom };
+    const updated = _mergeServedRows(current, rows, opts);
+    const keys = _mergeServedKeys(current, currentKeys, rows, opts, updated);
+    // Skip no-op writes (O(1) check; no extra I/O beyond current read).
+    if (current.length === updated.length && current.every((v, i) => v === updated[i])) return;
+    store.upsertServed(sessionKey, path, serializeServed(updated, keys));
+  });
 }
 
 export async function driftReported(sessionKey: string, path: string): Promise<Set<string>> {
@@ -565,10 +573,25 @@ export async function scanDrift(input: { sessionKey: string; served: (string | n
   const reported = await driftReported(input.sessionKey, input.path);
 const result = computeDrift({ ...input, reported });
   if (!result || result.allAlreadyReported) return result?.text;
-  await recordServed(input.sessionKey, input.path, result.rows.map((row) => ({ position: row.position, anchor: row.anchor })), input.resultLines.length);
+  let servedNote = "";
+  try {
+    await recordServed(
+      input.sessionKey,
+      input.path,
+      result.rows.map((row) => ({ position: row.position, anchor: row.anchor })),
+      input.resultLines.length,
+    );
+  } catch (error) {
+    // issue #136: never silent — but the edit itself already succeeded, so
+    // the failure rides back to the model as part of the notice instead.
+    console.error("[E_SERVED_RECORD] failed to record drift rows:", error);
+    servedNote = `\n[E_SERVED_RECORD] drift rows could not be recorded (${
+      error instanceof Error ? error.message : String(error)
+    }); re-read before editing them.`;
+  }
   // The drift rows are served, so the file is OBSERVED: the anchors printed
   // here are exactly the ones a corrective edit will use.
   if (input.io !== undefined) await input.io.emitObserved(input.path, input.exec);
   await markDriftReported(input.sessionKey, input.path, result.rows.filter((row) => row.drifted).map((row) => row.anchor));
-  return result.text;
+  return result.text + servedNote;
 }

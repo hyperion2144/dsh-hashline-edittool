@@ -22,8 +22,16 @@ import { hashStorePath } from "../../infra/paths.js";
 import { workspaceCwd } from "../../infra/workspace.js";
 import { errCode, splitLines } from "../../infra/utils.js";
 import { contentChecksum, hashRe } from "../../hashline/hash-assign.js";
-import { HASH_STORE_VERSION, HASH_STORE_BUSY_TIMEOUT, SERVED_TTL_MS } from "../../infra/constants.js";
-
+import {
+	HASH_STORE_VERSION,
+	HASH_STORE_BUSY_TIMEOUT,
+	SERVED_TTL_MS,
+	ANCHOR_STATE_TTL_MS,
+} from "../../infra/constants.js";
+import {
+	registerAnchorPersistence,
+	type PersistedAnchorState,
+} from "../../hashline/session-anchors.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
 /** The legacy JSON snapshot shape (pre-sqlite stores). */
@@ -53,6 +61,15 @@ export function isValidServedList(value: unknown): value is (string | null)[] {
 	for (const entry of value) {
 		if (entry === null) continue;
 		if (typeof entry !== "string" || !hashRe().test(entry)) return false;
+	}
+	return true;
+}
+/** The persisted per-line contentKey list (cyrb53 integers ≤ 2^53−1 —
+ *  exactly JSON-safe, so a plain number[] round-trips). */
+export function isValidLineKeyList(value: unknown): value is number[] {
+	if (!Array.isArray(value)) return false;
+	for (const key of value) {
+		if (typeof key !== "number" || !Number.isInteger(key) || key < 0) return false;
 	}
 	return true;
 }
@@ -87,6 +104,11 @@ interface Prepared {
 	servedDeletePath: (...params: SqlParams) => void;
 	servedWipe: (...params: SqlParams) => void;
 	servedPruneOlderThan: (...params: SqlParams) => void;
+	anchorGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	anchorProbe: (...params: SqlParams) => Record<string, unknown> | undefined;
+	anchorUpsert: (...params: SqlParams) => void;
+	anchorDelete: (...params: SqlParams) => void;
+	anchorPruneOlderThan: (...params: SqlParams) => void;
 }
 
 /**
@@ -252,6 +274,16 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"updated_at INTEGER NOT NULL" +
 			")",
 	);
+	db.exec(
+		"CREATE TABLE IF NOT EXISTS anchor_state (" +
+			"path TEXT PRIMARY KEY, " +
+			"checksum TEXT NOT NULL, " +
+			"line_count INTEGER NOT NULL, " +
+			"anchors TEXT NOT NULL, " +
+			"line_keys TEXT NOT NULL, " +
+			"updated_at INTEGER NOT NULL" +
+			")",
+	);
 	const versionRow = db
 		.prepare("SELECT value FROM meta WHERE key = 'version'")
 		.get() as { value?: string } | undefined;
@@ -261,6 +293,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	if (versionChanged) {
 		db.exec("DELETE FROM snapshots");
 		db.exec("DELETE FROM undo");
+		db.exec("DELETE FROM anchor_state");
 	}
 	const servedColumns = db.prepare("PRAGMA table_info(served)").all() as {
 		name: string;
@@ -289,7 +322,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?",
 	);
 	const allStmt = db.prepare(
-		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served",
+		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_state",
 	);
 	const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
 	const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
@@ -327,6 +360,16 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	const servedPruneOlderThanStmt = db.prepare(
 		"DELETE FROM served WHERE updated_at < ?",
 	);
+	const anchorGetStmt = db.prepare(
+		"SELECT checksum, anchors, line_keys FROM anchor_state WHERE path = ?",
+	);
+	const anchorProbeStmt = db.prepare("SELECT checksum FROM anchor_state WHERE path = ?");
+	const anchorUpsertStmt = db.prepare(
+		"INSERT INTO anchor_state (path, checksum, line_count, anchors, line_keys, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, anchors = excluded.anchors, line_keys = excluded.line_keys, updated_at = excluded.updated_at",
+	);
+	const anchorDeleteStmt = db.prepare("DELETE FROM anchor_state WHERE path = ?");
+	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_state WHERE updated_at < ?");
 	const stmts: Prepared = {
 		get: (...params) =>
 			getStmt.get(...params) as Record<string, unknown> | undefined,
@@ -391,6 +434,25 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		servedPruneOlderThan: (...params) => {
 			withBusyRetry(() => {
 				servedPruneOlderThanStmt.run(...params);
+			});
+		},
+		anchorGet: (...params) =>
+			anchorGetStmt.get(...params) as Record<string, unknown> | undefined,
+		anchorProbe: (...params) =>
+			anchorProbeStmt.get(...params) as Record<string, unknown> | undefined,
+		anchorUpsert: (...params) => {
+			withBusyRetry(() => {
+				anchorUpsertStmt.run(...params);
+			});
+		},
+		anchorDelete: (...params) => {
+			withBusyRetry(() => {
+				anchorDeleteStmt.run(...params);
+			});
+		},
+		anchorPruneOlderThan: (...params) => {
+			withBusyRetry(() => {
+				anchorPruneOlderThanStmt.run(...params);
 			});
 		},
 	};
@@ -574,6 +636,7 @@ function makeDomainStore(stmts: Prepared): HashStore {
 					stmts.deleteOne(path);
 					stmts.undoDelete(path);
 					stmts.servedDeletePath(path);
+					stmts.anchorDelete(path);
 				}
 			});
 		},
@@ -666,6 +729,9 @@ async function openStore(storePath: string): Promise<HashStore> {
 	}
 	withBusyRetry(() => {
 		stmts.servedPruneOlderThan(Date.now() - SERVED_TTL_MS);
+	});
+	withBusyRetry(() => {
+		stmts.anchorPruneOlderThan(Date.now() - ANCHOR_STATE_TTL_MS);
 	});
 	const store = makeDomainStore(stmts);
 	stores.set(storePath, { path: storePath, db, stmts, store });
@@ -837,4 +903,56 @@ export async function upsertSnapshotFor(
 	const store = await loadHashStore();
 	store.upsertSnapshot(path, checksum, lineCount, hashes);
 }
+
+// ---- anchor-state persistence adapter (issue #136) -------------------------
+//
+// session-anchors (hashline layer) owns the anchor lifecycle; this module owns
+// the sqlite rows. The adapter keeps the layering one-way: hashline defines
+// the port, the domain wires it. Every call resolves the ACTIVE workspace's
+// already-open store — never opening one — so store-less contexts (pure unit
+// tests, the window before a tool call opens the db) simply run memory-only
+// in session-anchors, and its write-behind flush persists the state on the
+// first call after a store exists.
+registerAnchorPersistence({
+	probe(path) {
+		const entry = currentStore();
+		if (!entry) return undefined;
+		const row = entry.stmts.anchorProbe(path);
+		return row ? (row.checksum as string) : undefined;
+	},
+	get(path): PersistedAnchorState | undefined {
+		const entry = currentStore();
+		if (!entry) return undefined;
+		const row = entry.stmts.anchorGet(path);
+		if (!row) return undefined;
+		try {
+			const anchors = JSON.parse(row.anchors as string) as unknown;
+			const lineKeys = JSON.parse(row.line_keys as string) as unknown;
+			if (!isValidHashList(anchors) || !isValidLineKeyList(lineKeys)) {
+				// Same corruption contract as every other row family: unparseable or
+				// wrong-typed rows heal by delete. A length DRIFT between anchors and
+				// line_keys is NOT corrupt — it is the partial-write shape
+				// anchorsFor heals positionally (keep survivors, allocate gaps).
+				entry.stmts.anchorDelete(path);
+				return undefined;
+			}
+			return { checksum: row.checksum as string, anchors, lineKeys };
+		} catch {
+			entry.stmts.anchorDelete(path);
+			return undefined;
+		}
+	},
+	put(path, state) {
+		const entry = currentStore();
+		if (!entry) return; // no store yet: memory-only; flushed on the next wired call
+		entry.stmts.anchorUpsert(
+			path,
+			state.checksum,
+			state.anchors.length,
+			JSON.stringify(state.anchors),
+			JSON.stringify(state.lineKeys),
+			Date.now(),
+		);
+	},
+});
 

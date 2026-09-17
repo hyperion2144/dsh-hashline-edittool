@@ -14,6 +14,12 @@ export const EDITS_MAX_ITEMS = 32;
 /** @deprecated — kept for backward compat with pre-0.4 callers. */
 export const BATCH_EDIT_MAX_ITEMS = EDITS_MAX_ITEMS;
 export const SERVED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Anchor-state row family TTL (issue #136). Anchor state is per cwd + path,
+ * not per session: there is nothing to expire when a session ends, so rows
+ * are swept for liveness only — a path not touched for this long loses its
+ * persisted state and re-anchors on its next true first serve. */
+export const ANCHOR_STATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SERVED_ECHO_CAP = 150;
 export const NOOP_LOOP_THRESHOLD = 3;
 export const NEW_CONTENT_NOT_STRING_MSG =

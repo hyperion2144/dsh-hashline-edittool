@@ -729,14 +729,25 @@ async function applyFileResultTo(
 		// tool call) sees the migrated served mirror — otherwise the
 		// post-edit follow-up would race and hit [E_RANGE_UNVERIFIED] on
 		// the unchanged lines below the diff region.
-		await recordServedAfterEdit(
-			ctx.sessionKey,
-			ctx.absolutePath,
-			file.servedRows,
-			(file.result.match(/\n/g) ?? []).length + 1,
-			file.originalHashes,
-			file.resultHashes,
-		);
+		try {
+			await recordServedAfterEdit(
+				ctx.sessionKey,
+				ctx.absolutePath,
+				file.servedRows,
+				(file.result.match(/\n/g) ?? []).length + 1,
+				file.originalHashes,
+				file.resultHashes,
+			);
+		} catch (error) {
+			// issue #136: the write itself succeeded; a lost served mirror must
+			// still reach the model, or the next edit rejects with "never served"
+			// out of nowhere.
+			file.warnings.push(
+				`[E_SERVED_RECORD] served state could not be recorded for ${ctx.displayPath} (${
+					error instanceof Error ? error.message : String(error)
+				}); re-read before the next edit.`,
+			);
+		}
 	}
 }
 

@@ -1,12 +1,21 @@
 /**
  * SessionAnchorStore — per-path anchor state for the dynamic-hashline contract.
  *
- * Owns the "session state" decision (spec §4.4): per-path snapshots keyed by
- * content checksum, kept in memory only (no disk persistence). First read /
- * external change → deterministic full recompute; tool-driven edits →
- * incremental update (unchanged lines keep their anchors; removed lines
- * release theirs; inserted lines allocate fresh ones), preserving the
+ * Owns the "session state" decision (spec §4.4 as amended by issue #136):
+ * per-path snapshots keyed by content checksum, cached in memory and
+ * PERSISTED per cwd + path in the sqlite hash-store (the `anchor_state` row
+ * family, wired in by domain/session/hash-store through the persistence port
+ * below). True first reads allocate; a cache miss recovers from sqlite;
+ * external changes diff-inherit line by line; tool-driven edits update
+ * incrementally (unchanged lines keep their anchors; removed lines release
+ * theirs; inserted lines allocate fresh ones), preserving the
  * "session-internal anchors never change" promise.
+ *
+ * THERE IS NO FULL RECOMPUTE for a path that already carries anchors — not
+ * after a cache eviction (the cache is a sqlite front-end; eviction only
+ * ever loses the COPY), not after an external change (diff-inherit), and not
+ * for a poisoned snapshot (positional heal that keeps surviving anchors).
+ * `assignAnchors` runs exactly once per path: its true first serve.
  *
  * @module dsh-hashline-edittool/hashline/session-anchors
  */
@@ -25,7 +34,25 @@ export interface EditHunk {
   finalEnd1: number;
 }
 
-interface PathState {
+
+/**
+ * Persistence port — the sqlite hash-store registers an implementation at
+ * import time (domain/session/hash-store). All three calls are synchronous
+ * (`node:sqlite` is sync). When no store is open for the active workspace
+ * yet, `probe`/`get` answer undefined and `put` is a no-op: the state then
+ * lives in the cache alone until the first `anchorsFor` call after a store
+ * exists flushes it (write-behind, at most once per path).
+ */
+export interface AnchorStatePersistence {
+	/** The persisted state's checksum for a path, or undefined. */
+	probe(path: string): string | undefined;
+	/** The full persisted state for a path, or undefined. */
+	get(path: string): PersistedAnchorState | undefined;
+	/** Write the path's state through to the store. */
+	put(path: string, state: PersistedAnchorState): void;
+}
+
+export interface PersistedAnchorState {
 	checksum: string;
 	anchors: string[];
 	/** Per-line contentKey — the diff basis for inheriting anchors across
@@ -33,23 +60,34 @@ interface PathState {
 	lineKeys: number[];
 }
 
-const store = new Map<string, PathState>();
-const lru: string[] = [];
-const MAX_PATHS = 256;
+let persistence: AnchorStatePersistence | undefined;
 
-function upsert(path: string, checksum: string, anchors: string[], lineKeys: number[]) {
+/** Wire the persistence backend (hash-store does this at import time;
+ * passing undefined reverts to memory-only — a store-less environment). */
+export function registerAnchorPersistence(impl: AnchorStatePersistence | undefined): void {
+	persistence = impl;
+}
+
+/** Memory cache in front of sqlite — NEVER the source of truth. The cap is
+ *  * memory hygiene only: an evicted path is recovered from the store, so the
+ *  * cap cannot change what any caller sees (that was the #136 bug). */
+const store = new Map<string, PersistedAnchorState>();
+const lru: string[] = [];
+export const ANCHOR_CACHE_LIMIT = 1024;
+
+function setCached(path: string, state: PersistedAnchorState): void {
 	const existing = store.get(path);
-	if (!existing) {
+	if (existing) {
+		existing.checksum = state.checksum;
+		existing.anchors = state.anchors;
+		existing.lineKeys = state.lineKeys;
+	} else {
 		lru.push(path);
-		store.set(path, { checksum, anchors, lineKeys });
-		while (lru.length > MAX_PATHS) {
+		store.set(path, state);
+		while (lru.length > ANCHOR_CACHE_LIMIT) {
 			const evict = lru.shift()!;
 			store.delete(evict);
 		}
-	} else {
-		existing.checksum = checksum;
-		existing.anchors = anchors;
-		existing.lineKeys = lineKeys;
 	}
 }
 
@@ -63,18 +101,38 @@ function refreshLru(path: string): void {
 	}
 }
 
+function dropCached(path: string): void {
+	store.delete(path);
+	const at = lru.indexOf(path);
+	if (at >= 0) lru.splice(at, 1);
+}
+
+/**
+ * Commit a new state: STORE FIRST, cache second. If the store write throws,
+ * the cache is left untouched — the store stays the authority and the caller
+ * sees the failure instead of silently running on a state no other process
+ * will ever see (issue #136: persistence failures are loud, never swallowed).
+ */
+function commit(path: string, checksum: string, anchors: string[], lineKeys: number[]): void {
+	const state: PersistedAnchorState = { checksum, anchors, lineKeys };
+	persistence?.put(path, state);
+	setCached(path, state);
+}
 // ----------------------------------------------------------------------------
 // THE unified anchor lifecycle gate.
 //
 // Allocation happens in EXACTLY two situations, and nowhere else:
-//   1. a line is served for the FIRST time (no prior state for this path);
+//   1. a line is served for the FIRST time — no cache entry AND no persisted
+//      state for this path (its true first serve, project-wide);
 //   2. a line's CONTENT actually changed (alignment-paired survivor lines
 //      keep their anchors — being inside an edit range is not enough).
 //
-// Any other call — a rewrite, an external modification, an LRU miss —
-// INHERITS: prior state is diffed line-by-line (by contentKey alignment) and
-// unchanged lines keep their anchors. There is no whole-file recompute for
-// files that already carry anchors.
+// Every other acquisition INHERITS: the state — from the cache or, after a
+// miss, recovered from the persisted store (issue #136: an eviction used to
+// recompute the whole file, silently re-anchoring unchanged lines) — is
+// diffed line-by-line by contentKey alignment and unchanged lines keep their
+// anchors. A state too damaged to inherit from heals positionally (keep
+// every anchor that exists, allocate only the gaps) and says so loudly.
 // ----------------------------------------------------------------------------
 export function anchorsFor(path: string, content: string): string[] {
 	// Content-base normalization (BOM + CRLF→LF), mirroring edit-diff's
@@ -87,33 +145,108 @@ export function anchorsFor(path: string, content: string): string[] {
 	content = bom.includes("\r\n") ? bom.replace(/\r\n/g, "\n").replace(/\r/g, "\n") : bom;
 	const checksum = contentChecksum(content);
 	const lines = splitLines(content);
-	const st = store.get(path);
+
+	// Cross-process invalidation: the cache is trusted only while the store
+	// agrees with it. A probe checksum that differs means another session or
+	// process moved the file state forward — drop the cache and reload.
+	let cached = store.get(path);
+	if (cached && persistence) {
+		const diskChecksum = persistence.probe(path);
+		if (diskChecksum === undefined) {
+			// The state predates this workspace's store (the store-less window
+			// at the start of a process): flush it once, so every other session
+			// sees the same anchors — an anchor is a property of the file, not
+			// of a session.
+			persistence.put(path, cached);
+		} else if (diskChecksum !== cached.checksum) {
+			dropCached(path);
+			cached = undefined;
+		}
+	}
+	let st = cached;
+	if (!st && persistence) {
+		const disk = persistence.get(path);
+		if (disk) {
+			st = disk;
+			setCached(path, disk); // backfill — recovery, not recompute
+		}
+	}
 	if (st) {
+		refreshLru(path);
 		if (st.checksum === checksum) {
-			refreshLru(path);
-			// issue #66/B4: same checksum with length drift means the snapshot
-			// itself is corrupt (poisoned) — deterministic rebuild is the only
-			// honest response. This is NOT the external-change path.
-			if (st.anchors.length === lines.length) return st.anchors;
-			const rebuilt = assignAnchors(lines);
-			upsert(path, checksum, rebuilt, lines.map(contentKey));
-			return rebuilt;
+			if (st.anchors.length === lines.length && st.lineKeys.length === lines.length) {
+				return st.anchors;
+			}
+			// issue #66/B4 + #136: a same-checksum length drift means the
+			// STORED state itself is damaged (partial write / updater bug).
+			// The honest response keeps every anchor that exists and allocates
+			// only the gaps — a full rebuild would silently re-anchor lines the
+			// model was already served.
+			return healState(path, st, lines, checksum, "E_ANCHOR_STATE_POISONED");
 		}
 		// Content changed since the last serve: inherit by alignment. Unchanged
 		// lines KEEP their anchors; only genuinely new content allocates. This
 		// is the rule for rewrites AND external modifications alike.
 		const inherited = inheritAnchors(st, lines);
 		if (inherited !== undefined) {
-			upsert(path, checksum, inherited, lines.map(contentKey));
+			commit(path, checksum, inherited, lines.map(contentKey));
 			return inherited;
 		}
-		// st exists but predates lineKeys (legacy in-process snapshot): the
-		// inherited state is unavailable, so fall back to a deterministic pass.
-		// Transitions once; every subsequent miss inherits.
+		// st exists but predates usable lineKeys (a legacy snapshot): heal
+		// positionally. Unreachable for every state this module writes — kept
+		// as the loud terminal fallback, with NO recompute path.
+		return healState(path, st, lines, checksum, "E_ANCHOR_STATE_LEGACY");
 	}
 	// True first serve for this path: deterministic shortest-first allocation.
 	const anchors = assignAnchors(lines);
-	upsert(path, checksum, anchors, lines.map(contentKey));
+	commit(path, checksum, anchors, lines.map(contentKey));
+	return anchors;
+}
+
+/**
+ * Terminal fallback for a state too damaged to inherit from (anchors and
+ * lineKeys disagree, or the legacy no-lineKeys shape). Positional heal:
+ * keep each stored anchor that is still unique at its position, allocate
+ * fresh anchors only for the gaps. NEVER a full recompute — every anchor
+ * the model may still hold keeps meaning the same line it meant before.
+ */
+function healState(
+	path: string,
+	st: PersistedAnchorState,
+	lines: string[],
+	checksum: string,
+	code: string,
+): string[] {
+	console.error(
+		`[${code}] ${path}: stored anchor state is inconsistent ` +
+			`(anchors ${st.anchors.length}, lineKeys ${st.lineKeys.length}, content ${lines.length} lines); ` +
+			`healing positionally — surviving anchors keep their lines, gaps allocate fresh.`,
+	);
+	const merged: (string | undefined)[] = new Array(lines.length);
+	const used = new Set<string>();
+	const keep = Math.min(st.anchors.length, lines.length);
+	for (let i = 0; i < keep; i++) {
+		const anchor = st.anchors[i]!;
+		if (!used.has(anchor)) {
+			merged[i] = anchor;
+			used.add(anchor);
+		}
+	}
+	const cursorByKey = new Map<number, { offsets: Record<number, number> }>();
+	for (let i = 0; i < lines.length; i++) {
+		if (merged[i] !== undefined) continue;
+		const key = contentKey(lines[i]!);
+		let gc = cursorByKey.get(key);
+		if (!gc) {
+			gc = { offsets: {} };
+			cursorByKey.set(key, gc);
+		}
+		const { anchor } = allocateAnchor(used, lines[i]!, gc);
+		used.add(anchor);
+		merged[i] = anchor;
+	}
+	const anchors = merged as string[];
+	commit(path, checksum, anchors, lines.map(contentKey));
 	return anchors;
 }
 
@@ -134,7 +267,7 @@ export function anchorsPure(content: string): string[] {
  * in-process snapshot from before this field existed) — the caller then
  * falls back to a deterministic pass, once.
  */
-function inheritAnchors(st: PathState, lines: string[]): string[] | undefined {
+function inheritAnchors(st: PersistedAnchorState, lines: string[]): string[] | undefined {
 	if (st.anchors.length !== st.lineKeys.length) return undefined;
 	const newKeys = lines.map(contentKey);
 	const paired = alignPreserved(st.lineKeys, newKeys);
@@ -183,7 +316,7 @@ function inheritAnchors(st: PathState, lines: string[]): string[] | undefined {
 export function seedAnchors(path: string, content: string, anchors: string[]): boolean {
 	const lines = splitLines(content);
 	if (anchors.length !== lines.length) return false;
-	upsert(path, contentChecksum(content), anchors, lines.map(contentKey));
+	commit(path, contentChecksum(content), anchors, lines.map(contentKey));
 	return true;
 }
 
@@ -266,7 +399,7 @@ export function updateAnchorsAfterEdit(args: {
 		cursor = h.oldEnd1;
 	}
 	merged.push(...oldAnchors.slice(cursor));
-	upsert(path, contentChecksum(newContent), merged, merged.map(contentKey));
+	commit(path, contentChecksum(newContent), merged, newLines.map(contentKey));
 	return merged;
 }
 /**

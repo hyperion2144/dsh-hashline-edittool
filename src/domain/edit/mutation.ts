@@ -197,13 +197,19 @@ export async function execPipeline(
 				error instanceof AnchorMismatchError ||
 				error instanceof ServedRejectionError
 			) {
-				await recordEchoServes(
-					sessionKey,
-					absolutePath,
-					error.servedRows,
-					policy,
-					originalHashes.length,
-				)
+				try {
+					await recordEchoServes(
+						sessionKey,
+						absolutePath,
+						error.servedRows,
+						policy,
+						originalHashes.length,
+					);
+				} catch (recordError) {
+					// issue #136: loud, but the primary rejection must keep propagating —
+					// the echo text is already in the rejection the model will see.
+					console.error("[E_SERVED_RECORD] failed to record echo rows:", recordError);
+				}
 				if (error.servedRows.length > 0) {
 					// The echo IS a read: the session has seen these lines, so the dsh
 					// observation policy must know it too. Otherwise the echoed rows are

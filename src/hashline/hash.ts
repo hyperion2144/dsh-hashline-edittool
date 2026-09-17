@@ -3,9 +3,11 @@
  *
  * The v1.0-style pure content hash (fixed 3-char, deterministic per line) is
  * replaced by allocated variable-length anchors. Session state lives in
- * session-anchors.ts: per-path snapshots keyed by content checksum, held in
- * memory only (spec §4.4 — no disk persistence). Cold starts and true first
- * serves allocate deterministically; every later acquisition — rewrites,
+ * replaced by allocated variable-length anchors. Session state lives in
+ * session-anchors.ts: per-path snapshots keyed by content checksum, cached in
+ * memory and PERSISTED per cwd + path in the sqlite hash-store (issue #136 —
+ * spec §4.4's "no disk persistence" clause is superseded; a cache miss
+ * recovers from the store instead of recomputing). Cold starts and true first
  * external changes — inherits by line alignment through the lifecycle gate
  * (anchorsFor), so unchanged lines keep their anchors.
  *

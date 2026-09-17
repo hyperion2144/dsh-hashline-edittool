@@ -262,6 +262,8 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_NOT_OBSERVED]` | File never observed this session (read-before-write policy). |
 | `[E_OP_INS]` | Informational: `ins` placed lines after the anchor. |
 | `[E_PASTE_DUP]` | Replacement line matches an adjacent file line; kept verbatim. |
+| `[E_SERVED_DUP]` | Diagnostics: one anchor is served at two positions (an allocator-consistency signal); both records are kept and verification stays positional. |
+| `[E_SERVED_RECORD]` | Diagnostics: served state could not be persisted (storage failure); the response carries a re-read notice instead of silently losing the rows. |
 | `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. |
 | `[E_STALE]` | Anchor no longer matches served content; re-read. |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit`'s replacement would leave the file unparsable; not written. |

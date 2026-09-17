@@ -457,12 +457,22 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 				}
 				for (const served of allServed) {
 					if (served.rows.length === 0) continue;
-					await recordServed(
-						sessionKey,
-						served.path,
-					served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
-					served.lineCount,
-				);
+					try {
+						await recordServed(
+							sessionKey,
+							served.path,
+							served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
+							served.lineCount,
+						);
+					} catch (error) {
+						// issue #136: one file's serve-record failure must not kill the whole
+						// scan, but it must not be silent either — without the record the next
+						// edit on those rows rejects with an honest "never served" + echo.
+						console.error(
+							`[E_SERVED_RECORD] failed to record served rows for ${served.path}:`,
+							error,
+						);
+					}
 				}
 
 				if (fileSections.length === 0) {

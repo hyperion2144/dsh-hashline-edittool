@@ -287,13 +287,23 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			);
 
 			if (undoDiffResult.servedRows.length > 0) {
-await recordServedTruncated(
-				sessionKey,
-					absolutePath,
-					undoDiffResult.servedRows.map((r) => ({ position: r.position, anchor: r.anchor })),
-					splitLines(undo.content).length,
-					restoredRange?.firstChangedLine ?? 0,
-				);
+				try {
+					await recordServedTruncated(
+						sessionKey,
+						absolutePath,
+						undoDiffResult.servedRows.map((r) => ({ position: r.position, anchor: r.anchor })),
+						splitLines(undo.content).length,
+						restoredRange?.firstChangedLine ?? 0,
+					);
+				} catch (error) {
+					// issue #136: the revert itself succeeded; a lost served mirror must
+					// still reach the model or the next edit rejects with "never served".
+					parts.push(
+						`[E_SERVED_RECORD] served state could not be recorded (${
+							error instanceof Error ? error.message : String(error)
+						}); re-read before the next edit.`,
+					);
+				}
 			}
 
 			return {

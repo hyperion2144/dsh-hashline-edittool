@@ -181,9 +181,11 @@ describe("served state — merge helper (stale-tail invariant)", () => {
 			expect(() =>
 				_mergeServedRows([], [{ position: -1, anchor: "abc" }]),
 			).toThrow(/Invalid served position/);
-			// The async seam swallows store failures; an invalid batch must be
-			// a no-op, never a partial write.
-			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "ZZ!Z" }]);
+			// issue #136: the async seam no longer swallows — an invalid batch
+			// REJECTS loudly, and the store still never sees a partial write.
+			await expect(
+				recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "ZZ!Z" }]),
+			).rejects.toThrow(/Invalid served anchor/);
 			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
 		});
 	});
