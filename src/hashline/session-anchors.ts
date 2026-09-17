@@ -167,6 +167,13 @@ export function anchorsFor(path: string, content: string): string[] {
 	if (!st && persistence) {
 		const disk = persistence.get(path);
 		if (disk) {
+			// THE allocator invariant, enforced at the state-entry gate: one
+			// anchor names at most ONE line — from memory or from sqlite alike.
+			// A persisted row that violates it is upstream corruption: heal it,
+			// never trust it.
+			if (hasDuplicateAnchors(disk.anchors)) {
+				return healState(path, disk, lines, checksum, "E_ANCHOR_STATE_DUP");
+			}
 			st = disk;
 			setCached(path, disk); // backfill — recovery, not recompute
 		}
@@ -201,6 +208,18 @@ export function anchorsFor(path: string, content: string): string[] {
 	const anchors = assignAnchors(lines);
 	commit(path, checksum, anchors, lines.map(contentKey));
 	return anchors;
+}
+
+/**
+ * THE allocator invariant: one anchor names at most one line. Every write
+ * into the cache already upholds it (allocation probes the used-set;
+ * inherit reserves survivors before allocating; heal drops duplicates;
+ * sqlite backfill and undo re-seed are gated below), so the hot read path
+ * never re-validates — a violation can only enter through a gate that
+ * already caught it.
+ */
+function hasDuplicateAnchors(anchors: readonly string[]): boolean {
+	return new Set(anchors).size !== anchors.length;
 }
 
 /**
@@ -308,14 +327,17 @@ function inheritAnchors(st: PersistedAnchorState, lines: string[]): string[] | u
  * `undo.hashes` were allocated (first-serve rule) for exactly these lines
  * before the edit; the revert restores that content, so re-seeding this state
  * keeps the anchors the revert diff just served the model. Not a recompute:
- * a validation (length must match) plus a state write.
+ * a validation (length must match, anchors must be pairwise-unique) plus a
+ * state write.
  *
- * @returns false when `anchors` does not cover every line — caller falls back
- * to the normal lifecycle.
+ * @returns false when `anchors` does not cover every line, or when it names
+ * the same line twice (the allocator invariant is enforced at this entry
+ * gate too) — the caller falls back to the normal lifecycle.
  */
 export function seedAnchors(path: string, content: string, anchors: string[]): boolean {
 	const lines = splitLines(content);
 	if (anchors.length !== lines.length) return false;
+	if (hasDuplicateAnchors(anchors)) return false;
 	commit(path, contentChecksum(content), anchors, lines.map(contentKey));
 	return true;
 }

@@ -237,6 +237,45 @@ describe("anchor state persistence (#136)", () => {
 		expect(healedLoud).toBe(true); // loud, never silent
 	});
 
+	it("a persisted state with duplicate anchors is healed, never trusted", async () => {
+		// The allocator invariant holds at every write; a row that violates it
+		// (external corruption / legacy dirt) must be repaired at the entry gate,
+		// not handed to the served layer where duplicates become E_SERVED_DUP noise.
+		const s = "/proj/dup-state.ts";
+		await loadHashStore();
+		const p0 = anchorsFor(s, C0);
+		// Plant a row whose anchors repeat p0[0] at position 2:
+		plantAnchorState(
+			tmpHome,
+			s,
+			contentChecksum(C0),
+			[p0[0]!, p0[1]!, p0[0]!, ...p0.slice(3)],
+			splitLines(C0).map(contentKey),
+		);
+		floodCache("/flood-dup");
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const healed = anchorsFor(s, C0);
+		const healedLoud = errSpy.mock.calls.length > 0;
+		errSpy.mockRestore();
+		expect(new Set(healed).size).toBe(healed.length); // unique again
+		expect(healed[0]).toBe(p0[0]); // first occurrence keeps its line
+		expect(healed[1]).toBe(p0[1]);
+		expect(healed[2]).not.toBe(p0[0]); // the duplicate was re-allocated
+		expect(healedLoud).toBe(true);
+	});
+
+	it("seedAnchors refuses a duplicate-anchor array without polluting the state", async () => {
+		const t = "/proj/undo-seed-dup.ts";
+		await loadHashStore();
+		const seeded = assignAnchors(splitLines(C0));
+		const dirty = [seeded[0]!, seeded[0]!, ...seeded.slice(2)];
+		expect(seedAnchors(t, C0, dirty)).toBe(false); // gate refuses
+		// The state stays unseeded: the next anchorsFor is a normal first serve,
+		// unique and unpolluted by the rejected array.
+		const fresh = anchorsFor(t, C0);
+		expect(new Set(fresh).size).toBe(fresh.length);
+	});
+
 	it("seedAnchors persists — an undo re-seed survives eviction", async () => {
 		const t = "/proj/undo-seed.ts";
 		await loadHashStore();
