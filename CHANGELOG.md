@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-17
+
 ### Fixed
 
 - **Anchor state persisted per project (#136)**: the per-path anchor state no longer lives only in a 256-entry in-memory LRU. It is persisted per cwd + path in the sqlite hash-store (new `anchor_state` row family), the memory Map is a plain front-end with cross-process checksum invalidation, and every `assignAnchors` fallback path (LRU eviction, poisoned snapshot, legacy state) is gone: eviction and restarts recover the persisted state, external changes diff-inherit against it, and a damaged state heals positionally (keep surviving anchors, allocate only the gaps) with a loud `[E_ANCHOR_STATE_POISONED]` notice. This is the fix for large-file edits rejecting with `line was never served` / `served mirror is stale` after the model had touched many files.
