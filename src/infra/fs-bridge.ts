@@ -59,16 +59,19 @@ export interface FileIO {
 		signal?: AbortSignal,
 	): Promise<void>;
 	/**
+	/**
 	 * Emit `fs/observed` with an ABSENT observation for a read that failed
 	 * with not-found: the policy then treats the file as confirmed absent,
 	 * so a later write falls back to create-if-absent instead of demanding
 	 * a re-read it can never satisfy (read → not-found → read loop).
+	 * @param exec - the calling execution; carries the session the policy keys by.
+	 * @returns true when an absent observation was actually recorded.
 	 */
 	emitAbsent(
 		absolutePath: string,
 		exec?: ToolExecution,
 		signal?: AbortSignal,
-	): Promise<void>;
+	): Promise<boolean>;
 	/** Opaque change-version for snapshot bookkeeping, or undefined when unavailable. */
 	statVersion(
 		absolutePath: string,
@@ -128,6 +131,51 @@ export function mapFsError(error: unknown, displayPath: string): never {
 	throw error;
 }
 
+/**
+ * One guarded write attempt: resolve → `fs/write-intent` → `fs.writeText` →
+ * `fs/observed`. Errors propagate to the caller (mapFsError / retry logic).
+ */
+async function writeWithIntent(
+	fs: FileSystem,
+	ctx: Context,
+	absolutePath: string,
+	content: string,
+	signal: AbortSignal | undefined,
+	exec: ToolExecution | undefined,
+	sandboxPolicy: SandboxExecutionPolicy | undefined,
+): Promise<void> {
+	const target = await fs.resolve(absolutePath, {
+		...(signal !== undefined ? { signal } : {}),
+	});
+	// Single-slot decision: the observation policy produces
+	// createIfAbsent / replaceIfVersion; the bare default is
+	// undefined (unconditional) when no policy is mounted.
+	const intent = await ctx.waterfall(
+		"fs/write-intent",
+		target,
+		exec,
+		() => undefined,
+	);
+	// The sandbox policy (session workspace root + mode) is what a
+	// confined backend checks: without it the backend falls back to
+	// the deployment default root and denies writes inside the
+	// session workspace under workspace-write.
+	const outcome = await fs.writeText(
+		target,
+		content,
+		intent,
+		signal,
+		sandboxPolicy,
+	);
+	// Record the present observation (a no-op when no policy
+	// plugin listens), so later built-in tools see the new version.
+	ctx.emit(
+		"fs/observed",
+		target,
+		{ kind: "present", version: outcome.version },
+		exec,
+	);
+}
 /** FileIO over the deployment's `ctx.fs` service. */
 export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 	return {
@@ -150,38 +198,28 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 		},
 		async writeText(absolutePath, content, signal, exec, sandboxPolicy) {
 			try {
-				const target = await fs.resolve(absolutePath, {
-					...(signal !== undefined ? { signal } : {}),
-				});
-				// Single-slot decision: the observation policy produces
-				// createIfAbsent / replaceIfVersion; the bare default is
-				// undefined (unconditional) when no policy is mounted.
-				const intent = await ctx.waterfall(
-					"fs/write-intent",
-					target,
-					exec,
-					() => undefined,
-				);
-				// The sandbox policy (session workspace root + mode) is what a
-				// confined backend checks: without it the backend falls back to
-				// the deployment default root and denies writes inside the
-				// session workspace under workspace-write.
-				const outcome = await fs.writeText(
-					target,
-					content,
-					intent,
-					signal,
-					sandboxPolicy,
-				);
-				// Record the present observation (a no-op when no policy
-				// plugin listens), so later built-in tools see the new version.
-				ctx.emit(
-					"fs/observed",
-					target,
-					{ kind: "present", version: outcome.version },
-					exec,
-				);
+				await writeWithIntent(fs, ctx, absolutePath, content, signal, exec, sandboxPolicy);
 			} catch (error) {
+				// issue #136 dead loop: a file that was OBSERVED (read/written
+				// earlier this session) but has since been DELETED on disk can
+				// never satisfy the version guard — the demanded re-read throws
+				// not-found, so the stale observation never updates and every
+				// write bounces forever. Confirm the absence, record it, and
+				// retry once: the policy then treats the write as a create. A
+				// file that still exists keeps the guard's re-read demand (its
+				// content genuinely changed).
+				if (
+					exec !== undefined &&
+					(error as { code?: unknown })?.code === "FS_STALE_VERSION" &&
+					(await this.emitAbsent(absolutePath, exec, signal))
+				) {
+					try {
+						await writeWithIntent(fs, ctx, absolutePath, content, signal, exec, sandboxPolicy);
+						return;
+					} catch (retryError) {
+						return mapFsError(retryError, absolutePath);
+					}
+				}
 				// FS_SANDBOX_DENIED passes through raw; the tool layer maps it
 				// to the shared [sandbox: …] marker + escalation hint via its
 				// sandbox controller.
@@ -217,7 +255,9 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 				const info = await fs.stat(target, signal);
 				if (info === undefined) {
 					ctx.emit("fs/observed", target, { kind: "absent" }, exec);
+					return true;
 				}
+				return false;
 			} catch (error) {
 				// Re-resolve may race a recreate; only absence is worth recording.
 				const code = (error as { code?: string })?.code;
@@ -227,14 +267,16 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 							...(signal !== undefined ? { signal } : {}),
 						});
 						ctx.emit("fs/observed", target, { kind: "absent" }, exec);
+						return true;
 					} catch {
 						// resolve itself failed — nothing to record
+						return false;
 					}
-				} else {
-					console.error(
-						`dsh-hashline-edittool: fs/observed(absent) emission failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
-					);
 				}
+				console.error(
+					`dsh-hashline-edittool: fs/observed(absent) emission failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return false;
 			}
 		},
 		async statVersion(absolutePath, signal) {
@@ -270,6 +312,7 @@ export function localIO(): FileIO {
 		},
 		async emitAbsent() {
 			// No policy event gate on the host filesystem; nothing to record.
+			return false;
 		},
 		async statVersion(absolutePath) {
 			try {

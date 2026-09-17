@@ -148,6 +148,57 @@ describe("ctxFsIO writeText", () => {
 	});
 });
 
+	it("a STALE write on a DELETED file records absent and retries as create (issue #136 dead loop)", async () => {
+		const stale = Object.assign(new Error("stale"), { code: "FS_STALE_VERSION" });
+		let writeCalls = 0;
+		const { fs } = makeFs({
+			// The file no longer exists on disk: stat answers undefined.
+			stat: vi.fn(async () => undefined),
+			writeText: vi.fn(async () => {
+				writeCalls++;
+				if (writeCalls === 1) throw stale; // guarded by the stale observation
+				return { version: "v-created", operation: "create", before: null, after: "b" };
+			}),
+		});
+		const { ctx, events } = makeCtx();
+		// The policy falls back to create-if-absent once the absence is recorded.
+		(ctx.waterfall as ReturnType<typeof vi.fn>).mockImplementation(async () =>
+			writeCalls === 0 ? { kind: "replaceIfVersion", version: "v1" } : { kind: "createIfAbsent" },
+		);
+		const io: FileIO = ctxFsIO(fs as never, ctx);
+
+		await expect(io.writeText("/abs/file.txt", "content", undefined, exec)).resolves.toBeUndefined();
+
+		expect(writeCalls).toBe(2); // retried exactly once
+		const absent = events.find(
+			(e) => e.kind === "emit" && e.name === "fs/observed" &&
+			(e.args[1] as { kind?: string }).kind === "absent",
+		);
+		expect(absent).toBeTruthy(); // the absence was recorded before the retry
+	});
+
+	it("a STALE write on a file that still exists keeps the re-read demand (no retry)", async () => {
+		const stale = Object.assign(new Error("stale"), { code: "FS_STALE_VERSION" });
+		const { fs } = makeFs({
+			stat: vi.fn(async () => ({ version: "v-changed" })), // file still exists
+			writeText: vi.fn(async () => {
+				throw stale;
+			}),
+		});
+		const { ctx, events } = makeCtx();
+		const io: FileIO = ctxFsIO(fs as never, ctx);
+
+		await expect(
+			io.writeText("/abs/file.txt", "content", undefined, exec),
+		).rejects.toThrow("[E_RANGE_STALE]");
+
+		// No absent observation, no second attempt: the guard's semantics hold.
+		expect(
+			events.filter((e) => e.kind === "emit" && (e.args[1] as { kind?: string }).kind === "absent"),
+		).toHaveLength(0);
+		expect(fs.writeText).toHaveBeenCalledTimes(1);
+	});
+
 describe("ctxFsIO emitObserved", () => {
 	it("stats the target and emits fs/observed present at the current version", async () => {
 		const { fs } = makeFs();
