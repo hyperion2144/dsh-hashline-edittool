@@ -4,8 +4,11 @@
  * The v1.0-style pure content hash (fixed 3-char, deterministic per line) is
  * replaced by allocated variable-length anchors. Session state lives in
  * session-anchors.ts: per-path snapshots keyed by content checksum, held in
- * memory only (spec §4.4 — no disk persistence; cross-session consistency
- * comes from deterministic recomputation, not from a stored mapping).
+ * memory only (spec §4.4 — no disk persistence). Cold starts and true first
+ * serves allocate deterministically; every later acquisition — rewrites,
+ * external changes — inherits by line alignment through the lifecycle gate
+ * (anchorsFor), so unchanged lines keep their anchors.
+ *
  *
  * The legacy `store` / `persist` parameters are accepted for call-site
  * compatibility and ignored: the old on-disk hash-store snapshots (fixed

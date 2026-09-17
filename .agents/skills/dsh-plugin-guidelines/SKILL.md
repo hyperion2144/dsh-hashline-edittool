@@ -98,21 +98,28 @@ on disposal:
 
 ```ts
 const installed = new WeakSet<Agent>()
-ctx.on('agent/session-start', ({ agent }) => {
-  if (installed.has(agent)) return
-  installed.add(agent)
-  agent.ctx.effect(() => {
-    const disposers: Array<() => void> = []
-    disposers.push(agent.ctx.tools.register(defineTool({ ... })))   // own layer → shadows preset's
-    disposers.push(agent.ctx.systemPrompt.section({ name: 'tool:edit', order: 102, text }))
-    return () => { for (const dispose of disposers) dispose() }
+// dsh >= 0.1.6 renamed the event to 'agent/created'; register BOTH names so
+// the mount works on every harness line (the other is a silent no-op).
+const mount = (event: string) =>
+  ctx.on(event, ({ agent }) => {
+    if (installed.has(agent)) return
+    installed.add(agent)
+    agent.ctx.effect(() => {
+      const disposers: Array<() => void> = []
+      disposers.push(agent.ctx.tools.register(defineTool({ ... })))   // own layer → shadows preset's
+      const systemPrompt = agent.ctx.get('systemPrompt')              // scoped service (0.1.6+)
+      if (systemPrompt) disposers.push(systemPrompt.section({ name: 'tool:edit', order: 102, text }))
+      return () => { for (const dispose of disposers) dispose() }
+    })
   })
-})
+mount('agent/created')
+mount('agent/session-start')
 ```
 
-`agent/session-start` is the first startup-driving extension point, so the
-shadow is installed before the first request. A subagent is an agent too and
-fires its own `session-start`; the child's own layer shadows whatever it
+`agent/created` (dsh >= 0.1.6; formerly `agent/session-start`) is the first
+startup-driving extension point, so the shadow is installed before the first
+request. A subagent is an agent too and fires its own event; the child's own
+layer shadows whatever it
 inherited. `agent.ctx` is agent-local, auto-unwound, and rejects registration
 after disposal — do not hoist the registration to the plain context.
 
@@ -261,8 +268,8 @@ bundle list; `dsh plugin --profile <name> add <pkg>@<range>` reverts it.
 3. **`--dump-config` does NOT boot agents.** It shows the host-plane rows
 only — it will not run `apply()` side effects, register prompt sections, or
 materialize files. Confirming the row is loaded is necessary but not
-sufficient for verifying behaviour that happens at `agent/session-start` or
-boot.
+sufficient for verifying behaviour that happens at `agent/created` (legacy
+`agent/session-start`) or boot.
 4. Boot the app and observe the real effects: template files the plugin
 materializes into `$DSH_HOME/plugins/<pkg>/` on `apply()`, then per-
 preset/per-agent registrations the first session triggers. A plugin whose

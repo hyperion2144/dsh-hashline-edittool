@@ -160,7 +160,10 @@ export function allocateAnchor(
 
 /**
  * Deterministic full-file allocation: same content, same order → same anchors.
- * Used for first read and after external (non-tool) changes.
+ * Used ONLY for a path's true first serve and for poisoned-snapshot rebuilds.
+ * Rewrites and external (non-tool) changes do NOT run this — they inherit via
+ * session-anchors' diff alignment (unchanged lines keep their anchors); the
+ * tests in anchor-lifecycle-invariants pin that contract.
  */
 export function assignAnchors(lines: string[]): string[] {
 	const used = new Set<string>();
