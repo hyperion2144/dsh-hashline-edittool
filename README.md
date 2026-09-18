@@ -238,6 +238,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | --- | --- |
 | `[E_ACCESS]` | File exists but is not readable/writable. |
 | `[E_ANCHOR_AMBIGUOUS]` | The anchor is live on multiple lines (a freed anchor was re-allocated while the model still held the old binding) — refused; re-read. Nothing was written. |
+| `[E_ANCHOR_STATE_DUP]` | The file's anchor state has duplicate anchors (corruption). The state is rebuilt; the edit is refused — re-read to get fresh anchors. Nothing was written. |
 | `[E_AST_DISABLED]` / `[E_AST_PATTERN]` / `[E_AST_TOO_LARGE]` | AST capability off for the language / pattern did not parse as one node / file exceeds the AST size cap. |
 | `[E_AST_WORKER_ABORTED]` / `[E_AST_WORKER_FAILED]` | The tree-sitter worker was aborted / failed. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when reversed). |

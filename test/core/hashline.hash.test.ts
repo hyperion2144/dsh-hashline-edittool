@@ -78,7 +78,7 @@ describe("bare line numbers as references", () => {
 			undefined,
 			anchors,
 			"probe.txt",
-			[...anchors],
+			new Set(anchors),
 		);
 		expect(result.content).toBe("alpha\nBETA\ngamma\n");
 		expect(result.warnings?.some((w) => w.includes("[E_LINE_REF]"))).toBe(true);
@@ -88,7 +88,7 @@ describe("bare line numbers as references", () => {
 		const content = "alpha\nbeta\ngamma\n";
 		const edit = { content_lines: ["X"], hash_bounds: [{ anchor: "3" }, { anchor: "3" }] } as never;
 		expect(() =>
-			applyEdit(content, edit, undefined, lineHashesPure(content), "probe.txt", [null, null, null]),
+			applyEdit(content, edit, undefined, lineHashesPure(content), "probe.txt", new Set()),
 		).toThrow(/Bare-digit anchors are forbidden/);
 	});
 
@@ -99,7 +99,7 @@ describe("bare line numbers as references", () => {
 		const drifted = "alpha\nbeta\nGAMMA-CHANGED\n";
 		const edit = { content_lines: ["X"], hash_bounds: [{ anchor: "3" }, { anchor: "3" }] } as never;
 		expect(() =>
-			applyEdit(drifted, edit, undefined, lineHashesPure(drifted), "probe.txt", [...served]),
+			applyEdit(drifted, edit, undefined, lineHashesPure(drifted), "probe.txt", new Set(served)),
 		).toThrow(/Bare-digit anchors are forbidden/);
 	});
 });

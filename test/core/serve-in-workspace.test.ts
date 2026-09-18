@@ -77,8 +77,8 @@ describe("serveRowsInWorkspace", () => {
 			// Read back THROUGH the workspace the caller named: this is exactly what
 			// a later `edit` does, and it is what failed before.
 			const served = await withWorkspace(cwd, () => loadServed("serve-scope-session", path));
-			expect(served[0]).toBe("aa");
-			expect(served[1]).toBe("bb");
+			expect([...served][0]).toBe("aa");
+			expect([...served][1]).toBe("bb");
 		} finally {
 			shutdownHashStore();
 		}
@@ -102,7 +102,7 @@ describe("serveRowsInWorkspace", () => {
 			// `recordServed` is the bare call the two tools used to make; if the
 			// primitive had written there, this read would find the rows.
 			const outside = await loadServed("serve-scope-session", path);
-			expect(outside).toEqual([]);
+			expect(outside).toEqual(new Set());
 		} finally {
 			shutdownHashStore();
 		}
@@ -118,7 +118,7 @@ describe("serveRowsInWorkspace", () => {
 			await recordServed("serve-scope-session", path, ROWS, 2);
 
 			const served = await withWorkspace(cwd, () => loadServed("serve-scope-session", path));
-			expect(served).toEqual([]);
+			expect(served).toEqual(new Set());
 		} finally {
 			shutdownHashStore();
 		}

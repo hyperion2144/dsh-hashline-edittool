@@ -10,13 +10,10 @@
  *
  * @module dsh-hashline-edittool/anchor-lifecycle-invariants
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { anchorsFor } from "../../src/hashline/session-anchors.js";
 import { applyEdit, type HEdit } from "../../src/hashline/anchor-pipeline.js";
 import {
-	_mergeServedRows,
-	migrateServedAfterEdit,
-	type ServedEntry,
 } from "../../src/domain/session/session-view.js";
 
 let unique = 0;
@@ -78,37 +75,4 @@ describe("invariant 3 — exclusivity", () => {
 		);
 	});
 
-	it("_mergeServedRows keeps duplicate records and warns (issue #136)", () => {
-		const current: (string | null)[] = ["X", "Y", null];
-		const rows: ServedEntry[] = [{ position: 2, anchor: "X" }];
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const merged = _mergeServedRows(current, rows);
-		const warned = warnSpy.mock.calls.length > 0;
-		warnSpy.mockRestore();
-		// The old purge nulled X@0 to enforce single ownership — which is how
-		// served records were silently destroyed ("never served"). Duplicates
-		// are now EVIDENCE: kept, and loudly named. Verification is positional.
-		expect(merged).toEqual(["X", "Y", "X"]);
-		expect(warned).toBe(true);
-	});
-
-	it("migrateServedAfterEdit pairs repeated anchors positionally; the mirror keeps them (issue #136)", () => {
-		// Migration matches by ANCHOR VALUE identity: a survivor keeps its
-		// anchor string (updateAnchorsAfterEdit), so the new line's anchor is
-		// looked up in the OLD served mirror to decide served-ness.
-		const oldServed = ["S", null, "S"];
-		const oldHashes = ["S", "T", "S"]; // lines 1+3 share anchor value S
-		const newHashes = ["S", "S", "T"]; // reorder: S,S,T
-		const migrated = migrateServedAfterEdit(oldServed, oldHashes, newHashes);
-		expect(migrated).toEqual(["S", "S", null]);
-		// Positional pairing can leave the same value live twice. issue #136:
-		// the mirror no longer purges it (that destroyed records); both stay
-		// and a warning names the collision (asserted in the merge tests).
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const merged = _mergeServedRows(migrated, []);
-		const warned = warnSpy.mock.calls.length > 0;
-		warnSpy.mockRestore();
-		expect(merged).toEqual(["S", "S"]); // trailing nulls trim, records kept
-		expect(warned).toBe(true);
-	});
 });

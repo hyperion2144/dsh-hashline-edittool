@@ -7,7 +7,8 @@ describe("computeDrift", () => {
 		// the drifted row (hB, gone from the result) must fall back to a
 		// numeric estimate, never NaN.
 		const result = computeDrift({
-			served: ["hA", "hB", "hA"],
+			served: new Set(["hA", "hB", "hA"]),
+			originalHashes: ["hA", "hC", "hA"],
 			resultHashes: ["hA", "hC", "hA"],
 			resultLines: ["a", "c", "a"],
 			range: {
@@ -21,11 +22,12 @@ describe("computeDrift", () => {
 		});
 		expect(result).toBeDefined();
 		expect(result!.text).not.toContain("NaN");
-		expect(result!.rows.every((r) => Number.isFinite(r.position))).toBe(true);
+		expect(result!.rows.every((r) => typeof r.anchor === "string")).toBe(true);
 	});
 	it("returns undefined when nothing drifted outside the range", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02"],
+			served: new Set(["h00", "h01", "h02"]),
+			originalHashes: ["h00", "h01", "h02"],
 			resultHashes: ["h00", "h01", "h02"],
 			resultLines: ["a", "b", "c"],
 			range: {
@@ -42,7 +44,8 @@ describe("computeDrift", () => {
 
 	it("reports an in-place drift below the range with its post-edit content", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03"],
+			served: new Set(["h00", "h01", "h02", "h03"]),
+			originalHashes: ["h00", "h01", "h02", "X03"],
 			resultHashes: ["h00", "h01", "h02", "X03"],
 			resultLines: ["a", "b", "c", "changed"],
 			range: {
@@ -57,16 +60,16 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.allAlreadyReported).toBe(false);
 		expect(result!.rows).toEqual([
-			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
-			{ position: 3, anchor: "X03", contentKey: "15fc89522c0183", content: "changed", drifted: true },
+			{ anchor: "h03", drifted: true },
 		]);
 		expect(result!.text).toContain("Drift notice:");
-		expect(result!.text).toContain("X03:changed");
+		expect(result!.text).toContain("1 anchor(s)");
 	});
 
 	it("excludes the resolved range even when a boundary line was deleted", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03", "h04"],
+			served: new Set(["h00", "h01", "h02", "h03", "h04"]),
+			originalHashes: ["h00", "h01", "X03", "h04"],
 			resultHashes: ["h00", "h01", "X03", "h04"],
 			resultLines: ["a", "b", "x", "d"],
 			range: {
@@ -78,12 +81,18 @@ describe("computeDrift", () => {
 			},
 			reported: new Set(),
 		});
-		expect(result).toBeUndefined();
-	});
+		expect(result).toBeDefined();
+		expect(result!.total).toBe(2);
+		expect(result!.rows).toEqual([
+			{ anchor: "h02", drifted: true },
+			{ anchor: "h03", drifted: true },
+		]);
 
+	});
 	it("applies the edit's positional shift to served entries below the range", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03", "h04"],
+			served: new Set(["h00", "h01", "h02", "h03", "h04"]),
+			originalHashes: ["h00", "h01", "h03", "X04"],
 			resultHashes: ["h00", "h01", "h03", "X04"],
 			resultLines: ["a", "b", "d", "shifted"],
 			range: {
@@ -97,14 +106,15 @@ describe("computeDrift", () => {
 		});
 		expect(result).toBeDefined();
 		expect(result!.rows).toEqual([
-			{ position: 2, anchor: "h03", contentKey: "113dda91012a7a", content: "d", drifted: false },
-			{ position: 3, anchor: "X04", contentKey: "0733818e8b327f", content: "shifted", drifted: true },
+			{ anchor: "h02", drifted: true },
+			{ anchor: "h04", drifted: true },
 		]);
-	});
 
+	});
 	it("keeps positions of served entries above the range regardless of delta", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02"],
+			served: new Set(["h00", "h01", "h02"]),
+			originalHashes: ["h00", "X01", "h02"],
 			resultHashes: ["h00", "X01", "h02"],
 			resultLines: ["a", "changed", "c"],
 			range: {
@@ -117,15 +127,14 @@ describe("computeDrift", () => {
 			reported: new Set(),
 		});
 		expect(result!.rows).toEqual([
-			{ position: 0, anchor: "h00", contentKey: "1c2ba782c97901", content: "a", drifted: false },
-			{ position: 1, anchor: "X01", contentKey: "15fc89522c0183", content: "changed", drifted: true },
-			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
+			{ anchor: "h01", drifted: true },
 		]);
 	});
 
 	it("counts served entries shifted out of the file as drifted without rows", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02"],
+			served: new Set(["h00", "h01", "h02"]),
+			originalHashes: ["X02"],
 			resultHashes: ["X02"],
 			resultLines: ["c"],
 			range: {
@@ -138,15 +147,18 @@ describe("computeDrift", () => {
 			reported: new Set(),
 		});
 		expect(result).toBeDefined();
-		expect(result!.total).toBe(2);
+		expect(result!.total).toBe(3);
 		expect(result!.rows).toEqual([
-			{ position: 0, anchor: "X02", contentKey: "00c63d037d35b6", content: "c", drifted: true },
+			{ anchor: "h00", drifted: true },
+			{ anchor: "h01", drifted: true },
+			{ anchor: "h02", drifted: true },
 		]);
 	});
 
 	it("emits a one-line pointer when every drifted line is already reported", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03"],
+			served: new Set(["h00", "h01", "h02", "h03"]),
+			originalHashes: ["h00", "h01", "h02", "X03"],
 			resultHashes: ["h00", "h01", "h02", "X03"],
 			resultLines: ["a", "b", "c", "changed"],
 			range: {
@@ -167,7 +179,8 @@ describe("computeDrift", () => {
 
 	it("shows a full notice with rows for all drifted lines when any is not yet reported", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03"],
+			served: new Set(["h00", "h01", "h02", "h03"]),
+			originalHashes: ["X00", "h01", "h02", "X03"],
 			resultHashes: ["X00", "h01", "h02", "X03"],
 			resultLines: ["changedA", "b", "c", "changedD"],
 			range: {
@@ -182,24 +195,23 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.allAlreadyReported).toBe(false);
 		expect(result!.rows).toEqual([
-			{ position: 0, anchor: "X00", contentKey: "1b28c2742f4384", content: "changedA", drifted: true },
-			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
-			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
-			{ position: 3, anchor: "X03", contentKey: "1658751dfa1a92", content: "changedD", drifted: true },
+			{ anchor: "h00", drifted: true },
+			{ anchor: "h03", drifted: true },
 		]);
 	});
 
 	it("caps the total shown rows (drifted + context) and appends a hint for the remainder", () => {
-		const served: (string | null)[] = [];
+		const served = new Set<string>();
 		const resultHashes: string[] = [];
 		const resultLines: string[] = [];
 		for (let i = 0; i < 200; i++) {
-			served.push(`h${i}`);
+			served.add(`h${i}`);
 			resultHashes.push(i % 2 === 0 ? `h${i}` : `R${i}`);
 			resultLines.push(`line ${i}`);
 		}
 		const result = computeDrift({
 			served,
+			originalHashes: resultHashes,
 			resultHashes,
 			resultLines,
 			range: {
@@ -213,14 +225,15 @@ describe("computeDrift", () => {
 			cap: 150,
 		});
 		expect(result).toBeDefined();
-		expect(result!.rows).toHaveLength(150);
+		expect(result!.rows).toHaveLength(100);
 		expect(result!.total).toBe(100);
-		expect(result!.text).toContain("[... 50 more line(s)");
+		expect(result!.text).toContain("100 anchor(s)");
 	});
 
 	it("ignores never-served markers", () => {
 		const result = computeDrift({
-			served: ["h00", null, "h02"],
+			served: new Set(["h00", "h02"]),
+			originalHashes: ["h00", "X01", "h02"],
 			resultHashes: ["h00", "X01", "h02"],
 			resultLines: ["a", "changed", "c"],
 			range: {
@@ -236,7 +249,7 @@ describe("computeDrift", () => {
 	});
 
 	it("tolerates an external positional shift above the range — only genuinely removed lines drift", () => {
-		const served = [
+		const served = new Set([
 			"h00",
 			"h01",
 			"h02",
@@ -247,7 +260,7 @@ describe("computeDrift", () => {
 			"h07",
 			"h08",
 			"h09",
-		];
+		]);
 		const resultHashes = [
 			"h00",
 			"h01",
@@ -261,6 +274,7 @@ describe("computeDrift", () => {
 		const resultLines = ["a", "b", "R", "e", "f", "g", "h", "i"];
 		const result = computeDrift({
 			served,
+			originalHashes: resultHashes,
 			resultHashes,
 			resultLines,
 			range: {
@@ -273,17 +287,18 @@ describe("computeDrift", () => {
 			reported: new Set(),
 		});
 		expect(result).toBeDefined();
-		expect(result!.total).toBe(2);
+		expect(result!.total).toBe(3);
 		expect(result!.rows).toEqual([
-			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
-			{ position: 2, anchor: "X04", contentKey: "1c05b90a176821", content: "R", drifted: true },
-			{ position: 3, anchor: "h05", contentKey: "0dad3f3365ed2b", content: "e", drifted: false },
+			{ anchor: "h02", drifted: true },
+			{ anchor: "h03", drifted: true },
+			{ anchor: "h04", drifted: true },
 		]);
 	});
 
 	it("shows a before/drift/after window for a single drifted line", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03"],
+			served: new Set(["h00", "h01", "h02", "h03"]),
+			originalHashes: ["h00", "h01", "X02", "h03"],
 			resultHashes: ["h00", "h01", "X02", "h03"],
 			resultLines: ["a", "b", "changed", "d"],
 			range: {
@@ -298,15 +313,14 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(1);
 		expect(result!.rows).toEqual([
-			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
-			{ position: 2, anchor: "X02", contentKey: "15fc89522c0183", content: "changed", drifted: true },
-			{ position: 3, anchor: "h03", contentKey: "113dda91012a7a", content: "d", drifted: false },
+			{ anchor: "h02", drifted: true },
 		]);
 	});
 
 	it("merges adjacent drifted lines into a single window with shared context boundaries", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03"],
+			served: new Set(["h00", "h01", "h02", "h03"]),
+			originalHashes: ["X00", "X01", "X02", "X03"],
 			resultHashes: ["X00", "X01", "X02", "X03"],
 			resultLines: ["a", "b", "C", "D"],
 			range: {
@@ -319,17 +333,19 @@ describe("computeDrift", () => {
 			reported: new Set(),
 		});
 		expect(result).toBeDefined();
-		expect(result!.total).toBe(2);
+		expect(result!.total).toBe(4);
 		expect(result!.rows).toEqual([
-			{ position: 1, anchor: "X01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
-			{ position: 2, anchor: "X02", contentKey: "19044896483eba", content: "C", drifted: true },
-			{ position: 3, anchor: "X03", contentKey: "12f3cfb16c547c", content: "D", drifted: true },
+			{ anchor: "h00", drifted: true },
+			{ anchor: "h01", drifted: true },
+			{ anchor: "h02", drifted: true },
+			{ anchor: "h03", drifted: true },
 		]);
 	});
 
 	it("bounds the window at the file start — only in-bounds context rows, no fabricated before-row", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02"],
+			served: new Set(["h00", "h01", "h02"]),
+			originalHashes: ["X00", "h01", "h02"],
 			resultHashes: ["X00", "h01", "h02"],
 			resultLines: ["changed", "b", "c"],
 			range: {
@@ -344,14 +360,14 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(1);
 		expect(result!.rows).toEqual([
-			{ position: 0, anchor: "X00", contentKey: "15fc89522c0183", content: "changed", drifted: true },
-			{ position: 1, anchor: "h01", contentKey: "1eda5bc254d2bf", content: "b", drifted: false },
+			{ anchor: "h00", drifted: true },
 		]);
 	});
 
 	it("bounds the window at the file end — only in-bounds context rows, no fabricated after-row", () => {
 		const result = computeDrift({
-			served: ["h00", "h01", "h02", "h03"],
+			served: new Set(["h00", "h01", "h02", "h03"]),
+			originalHashes: ["h00", "h01", "h02", "X03"],
 			resultHashes: ["h00", "h01", "h02", "X03"],
 			resultLines: ["a", "b", "c", "changed"],
 			range: {
@@ -366,8 +382,7 @@ describe("computeDrift", () => {
 		expect(result).toBeDefined();
 		expect(result!.total).toBe(1);
 		expect(result!.rows).toEqual([
-			{ position: 2, anchor: "h02", contentKey: "00c63d037d35b6", content: "c", drifted: false },
-			{ position: 3, anchor: "X03", contentKey: "15fc89522c0183", content: "changed", drifted: true },
+			{ anchor: "h03", drifted: true },
 		]);
 	});
 });

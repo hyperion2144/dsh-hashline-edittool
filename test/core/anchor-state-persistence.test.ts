@@ -45,6 +45,7 @@ beforeAll(async () => {
 		join(await getWritableTempRoot(), "pi-hashline-anchor-state-test-"),
 	);
 	vi.stubEnv("HOME", tmpHome);
+	vi.stubEnv("USERPROFILE", tmpHome);
 	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
 	// homedir()/.dsh, matching sqlitePath(home) below.
 	vi.stubEnv("DSH_HOME", "");

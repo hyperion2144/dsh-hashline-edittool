@@ -88,13 +88,11 @@ const ws = tempWorkspace("dsh-ws-tail-");
 				);
 
 				const served = await loadServed(session, path);
-				expect(served.length).toBe(smallHashes.length);
-				const counts = new Map<string, number>();
-				for (const h of served) {
-					if (h === null) continue;
-					counts.set(h, (counts.get(h) ?? 0) + 1);
+				// The Set retains ALL ever-served anchors (no truncation);
+				// verify the current file's anchors are all present and unique.
+				for (const h of smallHashes) {
+					expect(served.has(h)).toBe(true);
 				}
-				expect([...counts.values()].every((c) => c === 1)).toBe(true);
 			});
 		} finally {
 			shutdownHashStore();

@@ -721,17 +721,17 @@ export function findNewEdge(
 function resolveLineReferences(
 	edit: HEdit,
 	fileAnchors: string[],
-	served: (string | null)[] | undefined,
+	served: Set<string> | undefined,
 	warnings: string[],
 ): HEdit {
-	if (served === undefined || served.length === 0) return edit;
+	if (served === undefined || served.size === 0) return edit;
 	const repaired = edit.hash_bounds.map((ref) => {
 		if (!/^\d+$/.test(ref.anchor)) return ref;
 		const line = Number.parseInt(ref.anchor, 10);
 		const anchor = line >= 1 && line <= fileAnchors.length ? fileAnchors[line - 1] : undefined;
-		// The served anchor for that position must be the anchor the file holds
-		// NOW; anything else is a stale or unknown line and stays rejected.
-		if (anchor === undefined || served[line - 1] !== anchor) return ref;
+		// The anchor at that position must be in the served set;
+		// anything else is a stale or unknown line and stays rejected.
+		if (anchor === undefined || !served.has(anchor)) return ref;
 		warnings.push(
 			`[E_LINE_REF] anchor "${ref.anchor}" is a LINE NUMBER, not an anchor — resolved to the served anchor of line ${line} ("${anchor}"). Pass the anchor (the first token of a row) to avoid this notice.`,
 		);
@@ -953,10 +953,7 @@ function paginationHint(nextOffset: number, more: number): string {
 }
 
 export function verifyServedRange(args: {
-	served: (string | null)[];
-	/** Optional contentKey mirror (contentChecksum(canon(line))) — when provided,
-	 *  per-row content drift is also rejected (E_RANGE_UNVERIFIED). */
-	servedContent?: (string | null)[];
+	served: Set<string>;
 	startAnchor: string;
 	endAnchor: string;
 	startLine: number;
@@ -967,7 +964,6 @@ export function verifyServedRange(args: {
 }): void {
 	const {
 		served,
-		servedContent,
 		startAnchor,
 		endAnchor,
 		startLine,
@@ -997,12 +993,12 @@ export function verifyServedRange(args: {
 		});
 	}
 
-	// Strict line-by-line check at the agent's claimed positions. The anchor
-	// verifies the row hasn't drifted since the read (the allocator guarantees
-	// uniqueness, so we never fall back to "find any position with this
-	// anchor", which would silently override the agent's intent). Each
-	// position in served[] independently tracks its anchor (anchors are
-	// unique per row, even when content repeats).
+	// Set-based verification: the anchor IS the content identity. If it's in
+	// the served set, the line was served and (because anchors are
+	// deterministic + stable across edits/inherit) the content hasn't changed.
+	// No position-indexed lookup, no content-key mirror — the anchor alone is
+	// the proof. A mismatch means the anchor was never served (or the line's
+	// content changed, producing a new anchor not in the set).
 	const currentLen = endLine - startLine + 1;
 	const firstMismatch: number | undefined = (() => {
 		for (let k = 0; k < currentLen; k++) {
@@ -1015,21 +1011,7 @@ export function verifyServedRange(args: {
 						: k === currentLen - 1
 							? endAnchor
 							: fileAnchors[position];
-			const servedAnchor = served[position];
-			if (servedAnchor === null) return position;
-			if (servedAnchor !== expectedAnchor) return position;
-			if (servedContent) {
-				const expectedContentKey = contentChecksum(
-					canon(fileLines[position]!),
-				);
-				const servedContentKey = servedContent[position];
-				if (
-					servedContentKey === null ||
-					servedContentKey !== expectedContentKey
-				) {
-					return position;
-				}
-			}
+			if (!served.has(expectedAnchor)) return position;
 		}
 		return undefined;
 	})();
@@ -1057,31 +1039,7 @@ export function verifyServedRange(args: {
 		}
 		const ctxEcho = `${hashlineHeader()}\n${ctxEchoLines.join("\n")}`;
 		const freshMarker = `${expectedAnchor}`;
-		const servedAtLine = served[firstMismatch];
-		const servedContentAtLine = servedContent?.[firstMismatch] ?? null;
-		let staleMsg: string;
-		let contentLocations: string | undefined;
-		if (servedAtLine === null) {
-			staleMsg = `line ${mismatchLine} was never served to the model`;
-		} else {
-			staleMsg = `served mirror at line ${mismatchLine} is stale (served anchor ${servedAtLine}, file now has ${expectedAnchor})`;
-			// Content-mismatch portion: locate where the served content currently
-			// appears in the file. Empty list = the served content has been deleted.
-			if (servedContent && servedContentAtLine !== null) {
-				const target = servedContentAtLine;
-				const linesWithServedContent: number[] = [];
-				for (let i = 0; i < fileLines.length; i++) {
-					if (contentChecksum(canon(fileLines[i]!)) === target) {
-						linesWithServedContent.push(i + 1);
-					}
-				}
-				if (linesWithServedContent.length > 0) {
-					contentLocations = `The served content currently appears at lines: ${linesWithServedContent.join(", ")}`;
-				} else {
-					contentLocations = `The served content no longer appears in the file.`;
-				}
-			}
-		}
+		const staleMsg = `line ${mismatchLine} was never served to the model (anchor ${expectedAnchor} not in served set)`;
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
@@ -1090,7 +1048,6 @@ export function verifyServedRange(args: {
 				`A full read() will re-sync, but if the line below is what you meant, you can reuse the fresh marker instead.\n` +
 				`Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
 				`If this is the line you meant, reuse the fresh marker ${freshMarker} without calling read.\n` +
-				(contentLocations ? `${contentLocations}\n` : "") +
 				`If not, call read() to find the correct line.`,
 			servedRows: ctxServedRows,
 		});
@@ -1244,7 +1201,7 @@ export function applyEdit(
 	signal?: AbortSignal,
 	precomputedAnchors?: string[],
 	filePath?: string,
-	served?: (string | null)[],
+	served?: Set<string>,
 	expected?: ExpectedLines,
 	opts?: {
 		lineNumbers?: boolean;
@@ -1255,7 +1212,6 @@ export function applyEdit(
 		 * verification, immediately before the range is replaced — so a rejected
 		 * edit never rewrites anything.
 		 */
-		servedContentKeys?: (string | null)[];
 		transform?: (lines: readonly string[]) => string[];
 	},
 ): {
@@ -1365,7 +1321,6 @@ export function applyEdit(
 		const endAnchor = resolved.hash_bounds[1];
 		verifyServedRange({
 			served,
-			servedContent: opts?.servedContentKeys,
 			startAnchor: startAnchor.anchor,
 			endAnchor: endAnchor.anchor,
 			startLine: startAnchor.line,

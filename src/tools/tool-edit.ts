@@ -55,7 +55,7 @@ import {
 	trackNoopPayload,
 } from "../domain/edit/noop-guard.js";
 import { commit, resolveMissingPath, snapshotIdFor } from "../domain/edit/mutation.js";
-import { recordServedTruncated, recordServedAfterEdit } from "../domain/session/session-view.js";
+import { recordServedAfterEdit } from "../domain/session/session-view.js";
 import { editDescription } from "../domain/edit/prompts.js";
 import type { JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
@@ -734,9 +734,6 @@ async function applyFileResultTo(
 				ctx.sessionKey,
 				ctx.absolutePath,
 				file.servedRows,
-				(file.result.match(/\n/g) ?? []).length + 1,
-				file.originalHashes,
-				file.resultHashes,
 			);
 		} catch (error) {
 			// issue #136: the write itself succeeded; a lost served mirror must

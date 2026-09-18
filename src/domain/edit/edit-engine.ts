@@ -24,7 +24,7 @@ import type { HashStore } from "../session/hash-store.js";
 import type { LineEnding } from "../../render/edit-diff.js";
 import { restoreEndings } from "../../render/edit-diff.js";
 import { normFromText } from "../session/file-view.js";
-import { scanDrift, loadServed, migrateServedAfterEdit, loadServedKeys } from "../session/session-view.js";
+import { scanDrift, loadServed } from "../session/session-view.js";
 import { isContentMismatch } from "../../hashline/declaration.js";
 import {
 	applyEdit,
@@ -300,9 +300,7 @@ if (isNoop) return { totalAddedLines: 0, totalRemovedLines: 0 };
 export interface ApplyOneInput {
 	content: string;
 	hashes: string[];
-	served: (string | null)[];
-	/** Content keys parallel to `served` — activates the drift gate. */
-	servedKeys?: (string | null)[];
+	served: Set<string>;
 	removeFrom: string;
 	removeTo: string;
 	replacementText: string;
@@ -826,7 +824,6 @@ export async function runFileEdits(
 	});
 
 	let served = await loadServed(opts.sessionKey, absolutePath);
-	const servedKeys = await loadServedKeys(opts.sessionKey, absolutePath);
 	const warnings: string[] = [];
 	// A literal U+2026 in a payload is almost always a pasted `ast_grep` outline
 	// row rather than source, and writing one puts the fold marker into the file.
@@ -994,7 +991,6 @@ const ordered = [...resolvedEdits].sort(
 				content: currentContent,
 				hashes: currentHashes,
 				served,
-				servedKeys,
 				removeFrom: item.remove_from,
 				removeTo: item.remove_to,
 				replacementText: item.replacement_text,
@@ -1129,9 +1125,6 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 		};
 		currentContent = applied.result;
 		currentHashes = applied.hashes;
-		// Migrate the in-memory served mirror: applying from the back keeps
-		// earlier rows' positions stable, but rows below this hunk shifted.
-		served = migrateServedAfterEdit(served, currentHashes, applied.hashes);
 		clearNoopLoop(absolutePath);
 		if (applied.anchorWarnings?.length)
 			warnings.push(...applied.anchorWarnings);
@@ -1179,6 +1172,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 					endHash: unionEndHash,
 					delta: resultLines.length - originalLines.length,
 				},
+				originalHashes,
 				path: absolutePath,
 				io,
 				exec: opts.exec,

@@ -179,6 +179,10 @@ export function anchorsFor(path: string, content: string): string[] {
 		}
 	}
 	if (st) {
+	// Guards the CACHE path — disk-loaded state is already checked at line 174.
+	if (hasDuplicateAnchors(st.anchors)) {
+		return healState(path, st, lines, checksum, "E_ANCHOR_STATE_DUP");
+	}
 		refreshLru(path);
 		if (st.checksum === checksum) {
 			if (st.anchors.length === lines.length && st.lineKeys.length === lines.length) {
@@ -306,6 +310,7 @@ function inheritAnchors(st: PersistedAnchorState, lines: string[]): string[] | u
 		const kept = pairedOld === undefined ? undefined : st.anchors[pairedOld];
 		if (kept !== undefined && reserved.has(kept)) {
 			merged.push(kept);
+			reserved.delete(kept); // issue #143: claim — no two lines share one anchor
 			continue;
 		}
 		const key = newKeys[k]!;
@@ -349,6 +354,15 @@ export function seedAnchors(path: string, content: string, anchors: string[]): b
  * their anchors for reuse, and inserted lines allocate against the released
  * pool (shortest-first, per spec §4.2/§4.5). Maintains the per-line
  * contentKeys the external-change diff-inheritance aligns on.
+ *
+ * issue #143: The old code deleted ALL hunk-range anchors from `used` upfront,
+ * then re-added surviving anchors per-hunk. But when multiple hunks exist,
+ * surviving anchors from LATER hunks were temporarily absent from `used` —
+ * so a new line in an EARLIER hunk could be allocated an anchor that belongs
+ * to a surviving line in a later hunk. Fix: pre-compute survivors for ALL hunks
+ * first, only release truly-replaced anchors, and keep survivors in `used`
+ * throughout. Also remove each anchor from `reserved` after use to prevent
+ * duplicates when oldAnchors already carries them.
  */
 export function updateAnchorsAfterEdit(args: {
 	path: string;
@@ -358,41 +372,56 @@ export function updateAnchorsAfterEdit(args: {
 	hunks: EditHunk[];
 }): string[] {
 	const { path, oldContent, newContent, oldAnchors, hunks } = args;
+	const newLines = splitLines(newContent);
+	// If oldAnchors already has duplicates, the anchor state is corrupted.
+	// Heal via the canonical entry point (anchorsFor handles cache + disk + healing),
+	// then REJECT the edit — the model must re-read to get fresh anchors.
+	if (hasDuplicateAnchors(oldAnchors)) {
+		anchorsFor(path, oldContent); // heals + commits
+		throw new Error(
+			`[E_ANCHOR_STATE_DUP] ${path} has duplicate anchors — the anchor state was corrupted. ` +
+			`The state has been rebuilt; nothing was written. Call read() to get fresh anchors before retrying.`,
+		);
+	}
 	// Batch paths report hunks in APPLICATION order (descending); the merge
 	// requires ascending original order — normalize defensively.
 	const ordered = [...hunks].sort((a, b) => a.oldStart1 - b.oldStart1);
-	const newLines = splitLines(newContent);
+	const oldLines = splitLines(oldContent);
+
+	// Pre-compute survivors for ALL hunks before any allocation. An anchor
+	// that survives in a later hunk must stay in `used` while an earlier hunk's
+	// new lines are allocated — otherwise the earlier hunk re-allocates it.
 	const used = new Set(oldAnchors);
-	for (const h of ordered) {
-		for (let i = h.oldStart1 - 1; i < h.oldEnd1; i++) used.delete(oldAnchors[i]!);
+	const hunkPreserved: Map<number, Map<number, number>> = new Map();
+	for (let hi = 0; hi < ordered.length; hi++) {
+		const h = ordered[hi]!;
+		const oldSeg = oldLines.slice(h.oldStart1 - 1, Math.min(h.oldEnd1, oldLines.length));
+		const newSeg = newLines.slice(h.finalStart1 - 1, Math.min(h.finalEnd1, newLines.length));
+		const preserved = alignPreserved(oldSeg, newSeg);
+		hunkPreserved.set(hi, preserved);
+		// Release ONLY truly-replaced anchors (non-survivors). Survivors stay
+		// in `used` for the entire allocation — they are never available.
+		const survivingOld = new Set(preserved.values());
+		for (let i = h.oldStart1 - 1; i < h.oldEnd1; i++) {
+			const relIdx = i - (h.oldStart1 - 1);
+			if (!survivingOld.has(relIdx)) used.delete(oldAnchors[i]!);
+		}
 	}
+
 	// Per-content probe continuity (same design as assignAnchors) so batches
 	// of identical inserted lines don't spill prematurely on the probe cap.
 	const cursorByKey = new Map<number, { offsets: Record<number, number> }>();
 	const merged: string[] = [];
 	let cursor = 0;
-	const oldLines = splitLines(oldContent);
-	for (const h of ordered) {
-		// Lines that SURVIVED this hunk keep their anchors. Paired by ALIGNMENT
-		// rather than by content alone (`alignPreserved`, latest-first): with two
-		// identical lines a content-keyed match cannot say which survived, and
-		// it handed the survivor its sibling's anchor. A `replace` keeps the
-		// anchor of the line it closed with.
-		//
-		// RESERVE every anchor a survivor is about to reclaim, BEFORE any fresh
-		// allocation: a changed line earlier in the hunk could otherwise allocate
-		// straight onto the anchor a later survivor needs.
-		const oldSeg = oldLines.slice(h.oldStart1 - 1, Math.min(h.oldEnd1, oldLines.length));
-		const newSeg = newLines.slice(h.finalStart1 - 1, Math.min(h.finalEnd1, newLines.length));
-		const preserved = alignPreserved(oldSeg, newSeg);
+	for (let hi = 0; hi < ordered.length; hi++) {
+		const h = ordered[hi]!;
+		const preserved = hunkPreserved.get(hi)!;
 		const segStart = h.finalStart1 - 1;
+		// Track which surviving anchors are still unclaimed in this hunk.
 		const reserved = new Set<string>();
 		for (const oldIdx of preserved.values()) {
 			const anchor = oldAnchors[h.oldStart1 - 1 + oldIdx];
-			if (anchor !== undefined) {
-				reserved.add(anchor);
-				used.add(anchor);
-			}
+			if (anchor !== undefined) reserved.add(anchor);
 		}
 		merged.push(...oldAnchors.slice(cursor, h.oldStart1 - 1));
 		for (let k = h.finalStart1 - 1; k < h.finalEnd1; k++) {
@@ -406,6 +435,7 @@ export function updateAnchorsAfterEdit(args: {
 			const kept = paired === undefined ? undefined : oldAnchors[h.oldStart1 - 1 + paired];
 			if (kept !== undefined && reserved.has(kept)) {
 				merged.push(kept);
+				reserved.delete(kept); // issue #143: claim — no two lines share one anchor
 				continue;
 			}
 			const key = contentKey(newLines[k]!);
