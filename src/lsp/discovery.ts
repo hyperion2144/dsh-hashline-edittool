@@ -43,7 +43,10 @@ export interface KnownServer {
 	 * an unknown flag and exit before answering a single request. The flags
 	 * are NOT uniform, so the flag each non-stdio server needs is written on
 	 * its own entry: `typescript-language-server` takes `--stdio`, `gopls`
-	 * takes `serve`, `bash-language-server` takes `start`.
+	 * takes `serve`, `bash-language-server` takes `start`. The stdio-default
+	 * entries are launched bare by their own editor integrations too —
+	 * nvim-lspconfig's cmds name `csharp-ls`, `ocamllsp`, `metals`, `jdtls` and
+	 * elixir-ls' `language_server.sh` with no transport flag.
 	 */
 	readonly args?: readonly string[];
 	/**
@@ -143,9 +146,7 @@ export const KNOWN_SERVERS: readonly KnownServer[] = [
 		install: { via: "argv", argv: ["go", "install", "golang.org/x/tools/gopls@latest"] },
 	},
 	{
-		// rust-analyzer IS stdio out of the box: handed `--stdio` it exits
-		// code 2 ("unexpected flag"). Absent args launch it bare, which is
-		// what it wants.
+		// stdio out of the box — it REJECTS `--stdio` (exit 2).
 		command: "rust-analyzer",
 		languages: ["rust"],
 		displayName: "rust-analyzer",
@@ -454,9 +455,7 @@ export function serverArgv(
 	platform: NodeJS.Platform = process.platform,
 ): string[] {
 	// Servers that default to stdio take no flag; the ones that do not carry
-	// their own. The `--stdio` fallback that stood here was the hardcoded argv
-	// of the first two entries outliving the entries — it exited `rust-analyzer`
-	// (code 2) and `clangd` (code 1) as unknown-flag errors before either could
-	// answer a request.
+	// their own. The `--stdio` fallback that stood here killed `rust-analyzer`
+	// (code 2) and `clangd` (code 1) as unknown-flag errors (#135).
 	return platformSpawnArgv([server.executable, ...(server.args ?? [])], platform);
 }

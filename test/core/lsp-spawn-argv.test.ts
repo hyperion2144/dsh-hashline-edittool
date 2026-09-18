@@ -115,10 +115,8 @@ describe("needsCommandShell", () => {
 });
 
 describe("serverArgv", () => {
-	// A server with no `args` of its own launches BARE: rust-analyzer and
-	// clangd reject `--stdio` as an unknown flag and exit before answering a
-	// single request. The cmd.exe translation still applies on Windows — a
-	// bare command name resolves through PATHEXT to a shim.
+	// A server with no `args` launches BARE — rust-analyzer and clangd reject
+	// `--stdio` as an unknown flag. The cmd.exe wrap still applies on Windows.
 	const bare = {
 		executable: "rust-analyzer",
 		languages: ["rust"],
