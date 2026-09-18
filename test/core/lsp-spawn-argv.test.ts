@@ -115,14 +115,27 @@ describe("needsCommandShell", () => {
 });
 
 describe("serverArgv", () => {
-	const server = {
-		executable: "typescript-language-server",
-		languages: ["typescript"],
+	// A server with no `args` launches BARE — rust-analyzer and clangd reject
+	// `--stdio` as an unknown flag. The cmd.exe wrap still applies on Windows.
+	const bare = {
+		executable: "rust-analyzer",
+		languages: ["rust"],
 	} as unknown as DiscoveredServer;
 
-	it("carries the stdio default on every platform", () => {
-		expect(serverArgv(server, "darwin")).toEqual(["typescript-language-server", "--stdio"]);
-		expect(serverArgv(server, "win32")).toEqual([
+	const flagged = {
+		executable: "typescript-language-server",
+		languages: ["typescript"],
+		args: ["--stdio"],
+	} as unknown as DiscoveredServer;
+
+	it("launches a stdio-default server with no extra flag, on every platform", () => {
+		expect(serverArgv(bare, "darwin")).toEqual(["rust-analyzer"]);
+		expect(serverArgv(bare, "win32")).toEqual(["cmd.exe", "/d", "/s", "/c", "rust-analyzer"]);
+	});
+
+	it("carries a server's own flag through, on every platform", () => {
+		expect(serverArgv(flagged, "darwin")).toEqual(["typescript-language-server", "--stdio"]);
+		expect(serverArgv(flagged, "win32")).toEqual([
 			"cmd.exe",
 			"/d",
 			"/s",
