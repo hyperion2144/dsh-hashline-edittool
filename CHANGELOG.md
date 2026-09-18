@@ -4,6 +4,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Served mirror is an anchor set (#143)**: the per-session served mirror stored `(string | null)[]` positions, and every path that moved lines without migrating it (external-change inheritance, positional healing) left stale entries behind — the same anchor was then "served at two positions" and tripped the `[E_SERVED_DUP]` warning on each merge. The mirror is now a `Set<string>` of served anchors: anchors are content identity, not line-number aliases, position is always resolved live from the current anchor array, and the `[E_SERVED_DUP]` code is retired because the structure can no longer express a duplicate.
+- **Multi-hunk anchor leak in `updateAnchorsAfterEdit` (#143)**: the incremental updater released every hunk-range anchor up front and re-claimed survivors per hunk, so with multiple hunks a new line in an EARLIER hunk could be allocated an anchor still owned by a surviving line in a LATER hunk. Survivors are now pre-computed across all hunks before any allocation, and a persisted state that already carries duplicate anchors is healed and the edit refused loudly with `[E_ANCHOR_STATE_DUP]`.
+
 ## [0.7.2] - 2026-09-17
 
 ### Fixed
