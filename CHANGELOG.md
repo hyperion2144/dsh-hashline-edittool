@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-18
+
 ### Fixed
 
 - **Served mirror is an anchor set (#143)**: the per-session served mirror stored `(string | null)[]` positions, and every path that moved lines without migrating it (external-change inheritance, positional healing) left stale entries behind — the same anchor was then "served at two positions" and tripped the `[E_SERVED_DUP]` warning on each merge. The mirror is now a `Set<string>` of served anchors: anchors are content identity, not line-number aliases, position is always resolved live from the current anchor array, and the `[E_SERVED_DUP]` code is retired because the structure can no longer express a duplicate.
