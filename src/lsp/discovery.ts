@@ -38,10 +38,12 @@ export interface KnownServer {
 	 * Extra argv after the executable, when the server does not default to
 	 * stdio.
 	 *
-	 * Absent means `--stdio`, which is what the two original entries take. It
-	 * exists because the flags are NOT uniform: `gopls` wants `serve`, and
-	 * `bash-language-server` wants `start` — passing `--stdio` to those is a
-	 * usage error that would look like a protocol bug.
+	 * Absent means NO extra argv — most servers speak LSP over stdio as soon
+	 * as they start, and some (`rust-analyzer`, `clangd`) REJECT `--stdio` as
+	 * an unknown flag and exit before answering a single request. The flags
+	 * are NOT uniform, so the flag each non-stdio server needs is written on
+	 * its own entry: `typescript-language-server` takes `--stdio`, `gopls`
+	 * takes `serve`, `bash-language-server` takes `start`.
 	 */
 	readonly args?: readonly string[];
 	/**
@@ -116,12 +118,16 @@ export const KNOWN_SERVERS: readonly KnownServer[] = [
 		command: "typescript-language-server",
 		languages: ["typescript", "tsx", "javascript"],
 		displayName: "TypeScript Language Server",
+		// Not stdio by default: without this flag it prints usage and exits.
+		args: ["--stdio"],
 		install: { via: "npm", package: "typescript-language-server" },
 	},
 	{
 		command: "pyright-langserver",
 		languages: ["python"],
 		displayName: "Pyright",
+		// Not stdio by default: it demands `--stdio` (or `--node-ipc`) up front.
+		args: ["--stdio"],
 		// The package is NOT the command: `npm i pyright-langserver` finds nothing.
 		install: { via: "npm", package: "pyright" },
 	},
@@ -137,6 +143,9 @@ export const KNOWN_SERVERS: readonly KnownServer[] = [
 		install: { via: "argv", argv: ["go", "install", "golang.org/x/tools/gopls@latest"] },
 	},
 	{
+		// rust-analyzer IS stdio out of the box: handed `--stdio` it exits
+		// code 2 ("unexpected flag"). Absent args launch it bare, which is
+		// what it wants.
 		command: "rust-analyzer",
 		languages: ["rust"],
 		displayName: "rust-analyzer",
@@ -240,7 +249,7 @@ export interface DiscoveredServer {
 	readonly languages: readonly string[];
 	readonly displayName: string;
 	readonly origin: ServerOrigin;
-	/** The argv after the executable; absent means `--stdio`. */
+	/** The argv after the executable; absent means none — the server defaults to stdio. */
 	readonly args?: readonly string[];
 }
 
@@ -433,8 +442,8 @@ export function serverForLanguage(
  *
  * On Windows an npm-installed server is a `.cmd` shim, which neither `spawn`
  * nor the OS can execute directly — see {@link platformSpawnArgv}, which owns
- * that translation. The `--stdio` default stays here: it is a property of the
- * server, not of the shell that launches it.
+ * that translation. Whether a flag is appended stays here as well: it is a
+ * property of the server, not of the shell that launches it.
  *
  * @param server - the discovered server.
  * @param platform - the platform the argv will be spawned on.
@@ -445,7 +454,9 @@ export function serverArgv(
 	platform: NodeJS.Platform = process.platform,
 ): string[] {
 	// Servers that default to stdio take no flag; the ones that do not carry
-	// their own. `--stdio` used to be hardcoded, which was right for exactly the
-	// two entries the list had.
-	return platformSpawnArgv([server.executable, ...(server.args ?? ["--stdio"])], platform);
+	// their own. The `--stdio` fallback that stood here was the hardcoded argv
+	// of the first two entries outliving the entries — it exited `rust-analyzer`
+	// (code 2) and `clangd` (code 1) as unknown-flag errors before either could
+	// answer a request.
+	return platformSpawnArgv([server.executable, ...(server.args ?? [])], platform);
 }

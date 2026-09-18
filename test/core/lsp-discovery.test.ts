@@ -149,11 +149,17 @@ describe("serving a language", () => {
 		expect(serverForLanguage(servers, "python")).toBeUndefined();
 	});
 
-	it("launches with the stdio flag both known servers accept", async () => {
+	it("launches pyright with its own --stdio and rust-analyzer with none", async () => {
 		const servers = await discoverServers({
 			pathDirs: ["/x"],
-			isExecutable: fakeFs(join("/x", "pyright-langserver")),
+			isExecutable: fakeFs(join("/x", "pyright-langserver"), join("/x", "rust-analyzer")),
 		});
-		expect(serverArgv(servers[0]!)).toEqual([join("/x", "pyright-langserver"), "--stdio"]);
+		const byCommand = new Map(servers.map((server) => [server.command, server]));
+		expect(serverArgv(byCommand.get("pyright-langserver")!)).toEqual([
+			join("/x", "pyright-langserver"),
+			"--stdio",
+		]);
+		// rust-analyzer is stdio out of the box and REJECTS `--stdio` (exit 2).
+		expect(serverArgv(byCommand.get("rust-analyzer")!)).toEqual([join("/x", "rust-analyzer")]);
 	});
 });
