@@ -24,7 +24,7 @@ describe("recordEchoServes — serve-record policy", () => {
 				],
 				"live",
 			);
-			expect(await loadServed("sessionA", path)).toEqual(["h00", "X01"]);
+			expect(await loadServed("sessionA", path)).toEqual(new Set(["h00", "X01"]));
 		});
 	});
 
@@ -32,7 +32,7 @@ describe("recordEchoServes — serve-record policy", () => {
 		await withTempHome(async () => {
 			const path = "/a.ts";
 			await recordEchoServes("sessionA", path, [{ position: 0, anchor: "h00", contentKey: "k0" }], "preview");
-			expect(await loadServed("sessionA", path)).toEqual([]);
+			expect(await loadServed("sessionA", path)).toEqual(new Set());
 		});
 	});
 });
@@ -41,7 +41,7 @@ describe("applyEdit — stale range beats would-empty", () => {
 	it("rejects E_RANGE_STALE before E_WOULD_EMPTY when both apply", () => {
 		const content = "aaa\nbbb\nccc";
 		const hashes = lineHashesPure(content);
-		const served = [hashes[0]!, "S1", hashes[2]!];
+		const served = new Set([hashes[0]!, "S1", hashes[2]!]);
 		let error: unknown;
 		try {
 			applyEdit(
@@ -179,6 +179,7 @@ async function withTempHome(run: () => Promise<void>): Promise<void> {
 		join(await getWritableTempRoot(), "pi-hashline-reject-and-serve-test-"),
 	);
 	vi.stubEnv("HOME", tmpHome);
+	vi.stubEnv("USERPROFILE", tmpHome);
 	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
 	// homedir()/.dsh, matching sqlitePath in this file.
 	vi.stubEnv("DSH_HOME", "");

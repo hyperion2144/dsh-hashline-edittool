@@ -33,8 +33,8 @@ describe("readAndServe", () => {
 			expect(lines[3]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*three$/);
 
 			const stored = await loadServed(sessionKey, path);
-			expect(stored).toHaveLength(3);
-			expect(stored.every((hash) => hash !== null)).toBe(true);
+			expect(stored.size).toBe(3);
+			expect([...stored].every((hash) => hash !== null)).toBe(true);
 			expect(await driftReported(sessionKey, path)).toEqual(new Set());
 		});
 	});
@@ -56,7 +56,7 @@ describe("readAndServe", () => {
 			expect(text).toContain("[Showing lines 2-3 of 4");
 
 			const stored = await loadServed(sessionKey, path);
-			expect(stored.filter((hash) => hash !== null)).toHaveLength(2);
+			expect([...stored].filter((hash) => hash !== null)).toHaveLength(2);
 		});
 	});
 });

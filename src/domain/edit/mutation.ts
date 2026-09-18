@@ -272,6 +272,7 @@ let driftNotice: string | undefined
 				resultHashes,
 				resultLines: splitLines(result),
 				range: applied.range,
+				originalHashes,
 				path: absolutePath,
 				io,
 				exec: options?.exec,

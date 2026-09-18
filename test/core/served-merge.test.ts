@@ -16,7 +16,6 @@ import {
   recordServed,
   loadServed,
   recordServedAfterEdit,
-  _mergeServedRows,
   sessionKeyFor,
 } from "../../src/domain/session/session-view.js";
 import { lineHashesPure, contentChecksum } from "../../src/hashline/hash-assign.js";
@@ -51,9 +50,8 @@ describe("serve loop round-trip (DIAG)", () => {
       await recordServed(key, path, rows, anchors.length);
 
       const served = await loadServed(key, path);
-      expect(served.length).toBe(anchors.length);
-      expect(served.some((v) => v === null)).toBe(false);
-      expect(served).toEqual(anchors);
+      expect(served.size).toBe(anchors.length);
+      expect(served).toEqual(new Set(anchors));
     });
   });
 
@@ -76,18 +74,15 @@ describe("serve loop round-trip (DIAG)", () => {
         key,
         path,
         [{ position: 2, anchor: newAnchors[2]! }],
-        newAnchors.length,
-        oldAnchors,
-        newAnchors,
       );
 
       const served = await loadServed(key, path);
       // line 3's anchor updated; others preserved
-      expect(served[2]).toBe(newAnchors[2]);
-      expect(served[0]).toBe(oldAnchors[0]);
-      expect(served[1]).toBe(oldAnchors[1]);
-      expect(served[3]).toBe(oldAnchors[3]);
-      expect(served.some((v) => v === null)).toBe(false);
+      // With a Set, order is insertion order — check membership, not position.
+      expect(served.has(newAnchors[2]!)).toBe(true);
+      expect(served.has(oldAnchors[0]!)).toBe(true);
+      expect(served.has(oldAnchors[1]!)).toBe(true);
+      expect(served.has(oldAnchors[3]!)).toBe(true);
     });
   });
 });
@@ -97,19 +92,3 @@ function anchorsOf(content: string): string[] {
   return assignAnchors(splitLines(content));
 }
 
-describe("merge doesn't corrupt under repeated serve", () => {
-  it("re-serving overlapping windows yields no nulls", () => {
-    const base: (string | null)[] = ["aa", "bb", "cc", null, null];
-    const merged = _mergeServedRows(
-      base,
-      [
-        // `ServedEntry` is position + anchor; the persisted shape has no
-        // contentKey, and these fixtures assert nothing about one.
-        { position: 3, anchor: "dd" },
-        { position: 4, anchor: "ee" },
-      ],
-    );
-    expect(merged).toEqual(["aa", "bb", "cc", "dd", "ee"]);
-    expect(merged.some((v) => v === null)).toBe(false);
-  });
-});

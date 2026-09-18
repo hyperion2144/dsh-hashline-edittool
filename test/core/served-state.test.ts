@@ -9,8 +9,6 @@ import {
 	markDriftReported,
 	clearDriftReported,
 	wipeServedState,
-	servedPositionsOf,
-	currentPositionOfDrifted,
 } from "../../src/domain/session/session-view.js";
 import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
@@ -27,13 +25,13 @@ describe("served-state — record semantics", () => {
 				{ position: 1, anchor: "def" },
 				{ position: 2, anchor: "ghi" },
 			]);
-			expect(await loadServed("sessionA", "/a.ts")).toEqual(["abc", "def", "ghi"]);
+			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set(["abc", "def", "ghi"]));
 		});
 	});
 
 	it("returns an empty record for a path with no served entries", async () => {
 		await withTempHome(async () => {
-			expect(await loadServed("sessionA", "/missing.ts")).toEqual([]);
+			expect(await loadServed("sessionA", "/missing.ts")).toEqual(new Set());
 		});
 	});
 
@@ -43,7 +41,7 @@ describe("served-state — record semantics", () => {
 				{ position: 0, anchor: "abc" },
 				{ position: 2, anchor: "def" },
 			]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "def"]);
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc", "def"]));
 		});
 	});
 
@@ -51,7 +49,7 @@ describe("served-state — record semantics", () => {
 		await withTempHome(async () => {
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "def" }]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(["def"]);
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc", "def"]));
 		});
 	});
 
@@ -63,7 +61,7 @@ describe("served-state — record semantics", () => {
 				{ position: 2, anchor: "ghi" },
 			]);
 		await recordServed("sessionA", "/p.ts", [{ position: 1, anchor: null }]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc", null, "ghi"]);
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc", "def", "ghi"]));
 		});
 	});
 
@@ -74,8 +72,8 @@ describe("served-state — record semantics", () => {
 				{ position: 0, anchor: "def" },
 				{ position: 1, anchor: "ghi" },
 			]);
-			expect(await loadServed("sessionA", "/a.ts")).toEqual(["abc"]);
-			expect(await loadServed("sessionA", "/b.ts")).toEqual(["def", "ghi"]);
+			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set(["abc"]));
+			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Set(["def", "ghi"]));
 		});
 	});
 });
@@ -84,8 +82,8 @@ describe("served-state — session isolation", () => {
 	it("keeps one session's rows invisible to another session", async () => {
 		await withTempHome(async () => {
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(["abc"]);
-			expect(await loadServed("sessionB", "/p.ts")).toEqual([]);
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc"]));
+			expect(await loadServed("sessionB", "/p.ts")).toEqual(new Set());
 		});
 	});
 
@@ -94,8 +92,8 @@ describe("served-state — session isolation", () => {
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
 		await recordServed("sessionB", "/p.ts", [{ position: 0, anchor: "def" }]);
 			await wipeServedState("sessionA");
-			expect(await loadServed("sessionA", "/p.ts")).toEqual([]);
-			expect(await loadServed("sessionB", "/p.ts")).toEqual(["def"]);
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set());
+			expect(await loadServed("sessionB", "/p.ts")).toEqual(new Set(["def"]));
 		});
 	});
 
@@ -147,51 +145,10 @@ describe("served-state — session wipe", () => {
 		await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
 			await markDriftReported("sessionA", "/a.ts", ["abc"]);
 			await wipeServedState("sessionA");
-			expect(await loadServed("sessionA", "/a.ts")).toEqual([]);
-			expect(await loadServed("sessionA", "/b.ts")).toEqual([]);
+			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set());
+			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Set());
 			expect(await driftReported("sessionA", "/a.ts")).toEqual(new Set());
 		});
-	});
-});
-
-describe("served-state — servedPositionsOf reconstruction", () => {
-	it("returns every served position of a hash", () => {
-		const served = ["h00", null, "h02", "h00"];
-		expect(servedPositionsOf(served, "h00")).toEqual([0, 3]);
-		expect(servedPositionsOf(served, "h02")).toEqual([2]);
-	});
-
-	it("returns an empty list for a hash never served", () => {
-		expect(servedPositionsOf(["h00", "h01"], "h99")).toEqual([]);
-	});
-});
-
-describe("served-state — currentPositionOfDrifted reconstruction", () => {
-	const served = ["h00", "h01", "h02", "h03", "h04"];
-
-	it("maps through the nearest surviving neighbor below", () => {
-		const currentPositions = new Map<string, number>([
-			["h00", 0],
-			["h04", 3],
-		]);
-		const surviving = new Set(["h00", "h04"]);
-		expect(
-			currentPositionOfDrifted(served, currentPositions, surviving, 2, 0),
-		).toBe(1);
-	});
-
-	it("maps through the nearest surviving neighbor above when none survive below", () => {
-		const currentPositions = new Map<string, number>([["h04", 1]]);
-		const surviving = new Set(["h04"]);
-		expect(
-			currentPositionOfDrifted(served, currentPositions, surviving, 3, 0),
-		).toBe(0);
-	});
-
-	it("falls back to served index plus delta when no neighbor survives", () => {
-		expect(
-			currentPositionOfDrifted(served, new Map(), new Set(), 2, 5),
-		).toBe(7);
 	});
 });
 
@@ -200,6 +157,7 @@ async function withTempHome(run: () => Promise<void>): Promise<void> {
 		join(await getWritableTempRoot(), "pi-hashline-served-state-test-"),
 	);
 	vi.stubEnv("HOME", tmpHome);
+	vi.stubEnv("USERPROFILE", tmpHome);
 	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
 	// homedir()/.dsh, matching sqlitePath in this file.
 	vi.stubEnv("DSH_HOME", "");

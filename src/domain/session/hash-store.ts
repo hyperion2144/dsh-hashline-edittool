@@ -146,10 +146,8 @@ export interface HashStore {
 	deleteUndo(path: string): void;
 
 	// ---- served rows (what the model has seen, per session+path) ------------
-	/** The served hashes array for a session+path, healing a corrupt row; [] when nothing was served. */
-	getServed(sessionKey: string, path: string): (string | null)[];
-	/** Content keys parallel to getServed (v2 envelope; legacy rows → all null). */
-	getServedKeys(sessionKey: string, path: string): (string | null)[];
+	/** The served anchors set for a session+path, healing a corrupt row; empty when nothing was served. */
+	getServed(sessionKey: string, path: string): Set<string>;
 	/** The reported-drift hash set for a session+path (lenient parse, never deletes). */
 	getServedReported(sessionKey: string, path: string): Set<string>;
 	/** Persist the hashes JSON column for a session+path. */
@@ -550,42 +548,28 @@ function makeDomainStore(stmts: Prepared): HashStore {
 
 		getServed(sessionKey, path) {
 			const row = stmts.servedGet(sessionKey, path);
-			if (!row) return [];
+			if (!row) return new Set();
 			try {
 				const parsed = JSON.parse(row.hashes as string) as unknown;
-				// v2 envelope: { v: 2, a: anchors, k: contentKeys }
+				// New format: string[] (array of anchor strings)
+				if (Array.isArray(parsed) && parsed.every((e) => typeof e === "string" && hashRe().test(e))) {
+					return new Set(parsed as string[]);
+				}
+				// Legacy v2 envelope: { v: 2, a: anchors, k: contentKeys }
 				if (
 					parsed !== null && typeof parsed === "object" &&
 					(parsed as { v?: unknown }).v === 2 && Array.isArray((parsed as { a?: unknown }).a)
 				) {
 					const anchors = (parsed as { a: unknown[] }).a;
-					if (isValidServedList(anchors)) return anchors;
+					if (isValidServedList(anchors)) return new Set(anchors.filter((a): a is string => a !== null));
 				}
-				if (isValidServedList(parsed)) return parsed;
+				// Legacy format: (string | null)[]
+				if (isValidServedList(parsed)) return new Set(parsed.filter((a): a is string => a !== null));
 				stmts.servedDelete(sessionKey, path);
-				return [];
+				return new Set();
 			} catch {
 				stmts.servedDelete(sessionKey, path);
-				return [];
-			}
-		},
-		getServedKeys(sessionKey, path) {
-			const row = stmts.servedGet(sessionKey, path);
-			if (!row) return [];
-			try {
-				const parsed = JSON.parse(row.hashes as string) as unknown;
-				if (
-					parsed !== null && typeof parsed === "object" &&
-					(parsed as { v?: unknown }).v === 2 && Array.isArray((parsed as { k?: unknown }).k)
-				) {
-					return (parsed as { k: unknown[] }).k.map((k) =>
-						typeof k === "string" ? k : null,
-					);
-				}
-				if (isValidServedList(parsed)) return parsed.map(() => null);
-				return [];
-			} catch {
-				return [];
+				return new Set();
 			}
 		},
 		getServedReported(sessionKey, path) {
