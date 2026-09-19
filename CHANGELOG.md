@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-19
+
 ### Added
 
 - **Structured error values + error cards across all 8 tools (#137, #139, #140, #146)**: tools no longer throw domain errors (`[E_*]`) at dsh — each `execute` boundary catches and returns a success-shaped `{ modelText, error }` value whose persisted `meta.error` (`code` / `message` / `path` / `context` / `hint`) the client renders as a red-dotted ErrorCard (code chip, path, message, the ±context echo block, and the hint). Model-facing text stays byte-identical to the thrown messages; JSON output mode emits a pure JSON error object. Stale and declared rejections keep serving fresh anchors inline — the echo rides `error.context`. Legacy `isError` logs degrade to a synthesized card. Domain-error conversion is whitelist-scoped (ADR-0007): aborts, sandbox denials and unexpected crashes still throw for the host.
