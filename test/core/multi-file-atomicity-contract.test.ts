@@ -205,7 +205,7 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 						{ op: "replace", anchor_start: a1[1]!.hash, anchor_end: a1[1]!.hash, lines: ["B"] },
 					],
 				}),
-			).rejects.toThrow(/E_BAD_SHAPE/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE/) }] });
 		});
 	});
 
@@ -303,7 +303,7 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 							{ op: "ins", anchor_after: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
 						],
 					}),
-				).rejects.toThrow(/E_BAD_SHAPE.*has no "anchor_end"/);
+				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE.*has no "anchor_end"/) }] });
 				// And nothing reached the disk: a refused call is refused whole.
 				expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
 			});
@@ -326,7 +326,7 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 						path: "b1.txt",
 						edits: [{ op: "ins", anchor_start: a1[0]!.hash, lines: ["X"] }],
 					}),
-				).rejects.toThrow(/E_BAD_SHAPE.*ins.*anchor_after.*not "anchor_start"/);
+				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE.*ins.*anchor_after.*not "anchor_start"/) }] });
 				expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
 			});
 		});

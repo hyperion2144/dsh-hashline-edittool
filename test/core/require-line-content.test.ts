@@ -200,7 +200,7 @@ describe("require_line_content ON — behavior", () => {
 						},
 					],
 				}),
-			).rejects.toThrow(/E_BAD_SHAPE.*SINGLE line/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE.*SINGLE line/) }] });
 		});
 	});
 
@@ -223,7 +223,7 @@ describe("require_line_content ON — behavior", () => {
 						},
 					],
 				}),
-			).rejects.toThrow(/E_CONTENT_MISMATCH[\s\S]*declared:[\s\S]*gamma[\s\S]*actual:[\s\S]*alpha[\s\S]*currently appears at line 3/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_CONTENT_MISMATCH[\s\S]*declared:[\s\S]*gamma[\s\S]*actual:[\s\S]*alpha[\s\S]*currently appears at line 3/) }] });
 			// Atomic: nothing was written.
 			expect(await readFile(path, "utf-8")).toBe(ABC);
 		});
@@ -287,7 +287,7 @@ describe("require_line_content ON — behavior", () => {
 						},
 					],
 				}),
-			).rejects.toThrow(/E_CONTENT_MISMATCH[\s\S]*`anchor_end\.line`/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_CONTENT_MISMATCH[\s\S]*`anchor_end\.line`/) }] });
 		});
 	});
 
@@ -352,7 +352,7 @@ describe("require_line_content ON — behavior", () => {
 						},
 					],
 				}),
-			).rejects.toThrow(/E_CONTENT_MISMATCH/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_CONTENT_MISMATCH/) }] });
 			expect(await readFile(path, "utf-8")).toBe(ABC);
 		});
 	});
@@ -377,7 +377,7 @@ describe("require_line_content ON — behavior", () => {
 						},
 					],
 				}),
-			).rejects.toThrow(/E_RANGE_UNSERVED|E_RANGE_UNVERIFIED|E_STALE/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_RANGE_UNSERVED|E_RANGE_UNVERIFIED|E_STALE/) }] });
 		});
 	});
 

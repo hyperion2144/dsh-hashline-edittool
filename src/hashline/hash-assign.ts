@@ -60,7 +60,7 @@ interface CompiledShape {
 	lineAnchorRe: RegExp;
 	rowRe: RegExp;
 	hashSpace: number;
-	header: string;
+	headerFor: (lineNumbers: boolean) => string;
 }
 
 function escapeReChar(ch: string): string {
@@ -111,8 +111,10 @@ function compileShape(s: HashlineShape): CompiledShape {
 		// (Base62, shortest-first, per-line uniqueness) are behavior-invisible
 		// to the caller — they cost tokens in every read/grep/diff echo and
 		// belonged in the spec, not in every tool result (issue #136 session).
-		header:
-			`ANCHOR${s.separator}FILELINE — <anchor>${s.separator}<content>; edit passes the anchor back as-is; text after ${s.separator} is content.`,
+		headerFor: (lineNumbers: boolean) =>
+			lineNumbers
+				? `ANCHOR:LINE${s.separator}CONTENT — the marker is <anchor>:<line>; the line number is a positional hint only, NOT part of the anchor — pass the anchor alone. edit passes the anchor back as-is; text after ${s.separator} is content.`
+				: `ANCHOR${s.separator}CONTENT — the marker is the anchor alone. edit passes the anchor back as-is; text after ${s.separator} is content.`,
 	};
 }
 
@@ -178,8 +180,8 @@ export function rowMarkerParts(match: RegExpMatchArray | RegExpExecArray): {
 	const line = match[3] ?? match[4];
 	return line === undefined ? { diff, anchor } : { diff, anchor, line };
 }
-export function hashlineHeader(): string {
-	return getCompiled().header;
+export function hashlineHeader(lineNumbers = true): string {
+	return getCompiled().headerFor(lineNumbers);
 }
 
 // --- default-shape compatibility constants ---

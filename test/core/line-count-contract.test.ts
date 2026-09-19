@@ -144,7 +144,7 @@ describe("exact line-count edit contract", () => {
 						{ op: "ins", anchor_after: by("a").hash, lines: ["X"] },
 					],
 				}),
-			).rejects.toThrow(/E_BATCH_CONFLICT/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BATCH_CONFLICT/) }] });
 
 			// interior (b): rejected
 			await expect(
@@ -155,7 +155,7 @@ describe("exact line-count edit contract", () => {
 						{ op: "ins", anchor_after: by("b").hash, lines: ["X"] },
 					],
 				}),
-			).rejects.toThrow(/E_BATCH_CONFLICT/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BATCH_CONFLICT/) }] });
 
 			// end line (c, line 3): legal — gap insert after the replaced range
 			const ok = await editTool(harness).execute("edit", {

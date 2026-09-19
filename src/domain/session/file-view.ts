@@ -496,7 +496,7 @@ const allHashes =
         (await (path ? lineHashes(text, path) : lineHashes(text)));
       const emptyLineHash = allHashes[0]!;
       return {
-		text: `${hashlineHeader()}\n${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
+		text: `${hashlineHeader(false)}\n${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
 		served: [{ position: 0, anchor: emptyLineHash, contentKey: contentChecksum(canon("")) }],
 	};
 	}
@@ -520,7 +520,7 @@ return {
     precomputedHashes ??
     (await (path ? lineHashes(text, path) : lineHashes(text)));
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
-	const formatted = `${hashlineHeader()}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers !== false })}`;
+		const formatted = `${hashlineHeader(options.lineNumbers !== false)}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers !== false })}`;
   const maxBytes = maxLineBytes;
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
@@ -564,9 +564,9 @@ return {
       (skippedTruncation.truncated || lastShownLine < totalLines)
     ) {
       nextOffset = lastShownLine + 1;
-      preview = `${hashlineHeader()}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
+	      preview = `${hashlineHeader(options.lineNumbers !== false)}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
     } else {
-      preview = `${hashlineHeader()}\n${preview}\n\n${warning}`;
+	      preview = `${hashlineHeader(options.lineNumbers !== false)}\n${preview}\n\n${warning}`;
 }
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {

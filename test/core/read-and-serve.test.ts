@@ -25,9 +25,9 @@ describe("readAndServe", () => {
 			expect(absolutePath).toBe(path);
 			expect(served).toHaveLength(3);
 
-			expect(text).toMatch(/^ANCHOR:FILELINE[^\n]*\n/);
+			expect(text).toMatch(/^ANCHOR:LINE[^\n]*\n/);
 			const lines = text.split("\n");
-			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[0]).toMatch(/^ANCHOR:LINE/);
 			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*one$/);
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*two$/);
 			expect(lines[3]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*three$/);
@@ -50,7 +50,7 @@ describe("readAndServe", () => {
 			});
 
 			const lines = text.split("\n");
-			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[0]).toMatch(/^ANCHOR:LINE/);
 			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*two$/);
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*three$/);
 			expect(text).toContain("[Showing lines 2-3 of 4");

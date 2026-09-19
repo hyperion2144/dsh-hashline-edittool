@@ -40,7 +40,14 @@ function install(fake: Fake) {
 		waitForSession: async () => (fake.ready === false ? undefined : (session as never)),
 		unavailability: () => ({ message: "no server is installed for typescript" }),
 		openDocumentFor: () => (text: string) => {
-			void text;
+			// The SENTINEL PROBE (verifiedReport): probe text carries a guaranteed
+			// syntax error naming a nonce — a real server reports it verbatim.
+			const nonce = /dsh_probe_[a-z0-9]+_[a-z0-9]+/.exec(text)?.[0];
+			if (nonce !== undefined) {
+				pushed.set(uri, [{ message: `Cannot find name '${nonce}'.`, severity: 1, range: { start: { line: 0 } } }]);
+				revision += 1;
+				return;
+			}
 			if (fake.pushOnOpen !== undefined) {
 				pushed.set(uri, fake.pushOnOpen);
 				revision += 1;
@@ -74,12 +81,12 @@ describe("lsp — refusing is a different answer from finding nothing", () => {
 		setLspManager(undefined);
 		// The distinction the whole tool is built around: an empty list would say
 		// "this file has no symbols", which is a claim about the CODE.
-		await expect(run({ operation: "symbols" })).rejects.toThrow(new RegExp(E_LSP_NO_SERVER.replace(/[[\]]/g, "\\$&")));
+		await expect(run({ operation: "symbols" })).resolves.toMatchObject({ modelText: expect.stringMatching(new RegExp(E_LSP_NO_SERVER.replace(/[[\]]/g, "\\$&"))) });
 	});
 
 	it("refuses with the MANAGER's reason when no server could be started", async () => {
 		install({ ready: false });
-		await expect(run({ operation: "symbols" })).rejects.toThrow(/no server is installed for typescript/);
+		await expect(run({ operation: "symbols" })).resolves.toMatchObject({ modelText: expect.stringMatching(/no server is installed for typescript/) });
 	});
 });
 
@@ -248,7 +255,7 @@ describe("lsp — diagnostics", () => {
 describe("lsp — request", () => {
 	it("needs a method, and says so instead of sending nothing", async () => {
 		install({});
-		await expect(run({ operation: "request" })).rejects.toThrow(/E_LSP_BAD_OPERATION/);
+		await expect(run({ operation: "request" })).resolves.toMatchObject({ modelText: expect.stringMatching(/E_LSP_BAD_OPERATION/) });
 	});
 
 	it("passes an unwrapped method through and returns its answer", async () => {

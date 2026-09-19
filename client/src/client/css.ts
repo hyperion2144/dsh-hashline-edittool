@@ -52,6 +52,19 @@ const CSS_TEXT = [
 	".dshl-diagCapsule[data-severity=error]{--dshl-diag-tint:var(--dsw-alias-state-error-primary)}",
 	".dshl-diagCapsule[data-severity=warning]{--dshl-diag-tint:var(--dsw-alias-state-warning-primary)}",
 	".dshl-diagDot{border-radius:50%;background:var(--dshl-diag-tint);width:7px;height:7px}",
+	// The #146 error card: a failed call's structured facts — code chip, path,
+	// message, echo context (monospace, folded), hint. The tint is the state
+	// error token; the frame mirrors the ioCard so the body family coheres.
+	".dshl-errorCard{border:.5px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 35%,transparent);background:var(--dsw-alias-markdown-code-block);border-radius:12px;flex-direction:column;gap:6px;margin:4px 0 4px 4px;padding:10px 14px;display:flex}",
+	".dshl-errorHead{align-items:center;gap:8px;display:flex;flex-wrap:wrap}",
+	".dshl-errorDot{border-radius:50%;background:var(--dsw-alias-state-error-primary);width:7px;height:7px;flex:none}",
+	".dshl-errorCode{font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);border-radius:4px;padding:1px 6px}",
+	".dshl-errorPath{font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);word-break:break-all}",
+	".dshl-errorCardMessage{white-space:pre-wrap;word-break:break-word;min-width:0;color:var(--dsw-alias-label-primary);font-size:var(--dsh-content-font-size-secondary,13px);line-height:calc(18px + var(--dsh-content-font-delta,0px))}",
+	".dshl-errorContext{margin:0;white-space:pre;overflow-x:auto;background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;font:var(--dsw-font-markdown-code-block-small);color:var(--dsw-alias-label-secondary)}",
+	".dshl-errorHint{color:var(--dsw-alias-label-secondary);font-size:var(--dsh-content-font-size-secondary,13px);line-height:calc(18px + var(--dsh-content-font-delta,0px))}",
+	".dshl-errorHintLabel{color:var(--dsw-alias-state-warning-primary);font-weight:500;margin-right:6px}",
+	".dshl-errorBody{margin:4px 0 4px 4px}",
 ].join("");
 
 /** Style-tag id guard (one sheet per page regardless of factory executions). */
@@ -94,4 +107,14 @@ export const css = {
 	diagWrap: "dshl-diagWrap",
 	diagCapsule: "dshl-diagCapsule",
 	diagDot: "dshl-diagDot",
+	errorCard: "dshl-errorCard",
+	errorHead: "dshl-errorHead",
+	errorDot: "dshl-errorDot",
+	errorCode: "dshl-errorCode",
+	errorPath: "dshl-errorPath",
+	errorCardMessage: "dshl-errorCardMessage",
+	errorContext: "dshl-errorContext",
+	errorHint: "dshl-errorHint",
+	errorHintLabel: "dshl-errorHintLabel",
+	errorBody: "dshl-errorBody",
 } as const;

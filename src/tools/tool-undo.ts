@@ -34,6 +34,7 @@ import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey } from "../domain/session/session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withWorkspace } from "../domain/session/session-view.js";
+import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
 import {
 	deliverDiagnosticsAfterWrite,
@@ -89,6 +90,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 					added: { type: "integer", required: true },
 					removed: { type: "integer", required: true },
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 					empty: { type: "boolean", required: true },
 					// The card's structured rows (declared because the DSL validates the
 					// returned value): the revert's diff, with the anchors the reader sees.
@@ -104,7 +106,8 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			// the anchored rows beside them — the same two fields `edit` emits, so an
 			// undo wears the edit card instead of the default view.
 			presentationMeta: (_args, value) => {
-				const v = value as UndoCanonicalValue;
+				const v = value as UndoCanonicalValue & { error?: ErrorMeta };
+				if (v.error !== undefined) return { error: v.error } as never;
 				if (v.empty) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				const diffRows = Array.isArray(v.diffRows) && v.diffRows.length > 0 ? v.diffRows : undefined;
@@ -327,7 +330,15 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 						: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff, "", diagSection].join("\n"),
 				empty: false,
 			} satisfies UndoCanonicalValue;
-			})
+		}).catch((error: unknown) => ({
+			path: pathFromArgs(args) ?? "",
+			before: "",
+			after: "",
+			added: 0,
+			removed: 0,
+			empty: true,
+			...(thrownErrorResult(error, { path: pathFromArgs(args) }) as unknown as Record<string, unknown>),
+		}) as never);
 		},
 	});
 }

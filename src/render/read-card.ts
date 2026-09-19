@@ -184,7 +184,7 @@ export function buildReadPresentation(
 				: `${hash}${hashSep()}${text}`,
 		)
 		.join("\n");
-	const modelText = `${hashlineHeader()}\n${body}\n\n${footer}`;
+	const modelText = `${hashlineHeader(opts.lineNumbers !== false)}\n${body}\n\n${footer}`;
 
 	return {
 		path,

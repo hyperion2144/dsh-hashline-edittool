@@ -335,7 +335,7 @@ function fmtMismatchWithServes(
 				: `reuse a fresh marker from: ${markers.join(", ")}`;
 		out.push("");
 		out.push(
-			`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader()}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
+			`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader(lineNumbers !== false)}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
 		);
 	}
 
@@ -1037,7 +1037,7 @@ export function verifyServedRange(args: {
 				contentKey: contentChecksum(canon(fileLines[ln - 1] ?? "")),
 			});
 		}
-		const ctxEcho = `${hashlineHeader()}\n${ctxEchoLines.join("\n")}`;
+		const ctxEcho = `${hashlineHeader(true)}\n${ctxEchoLines.join("\n")}`;
 		const freshMarker = `${expectedAnchor}`;
 		const staleMsg = `line ${mismatchLine} was never served to the model (anchor ${expectedAnchor} not in served set)`;
 		throw new ServedRejectionError({

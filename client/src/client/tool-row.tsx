@@ -26,10 +26,11 @@ import {
 import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readCardLabels } from "./labels.js";
-import { diffCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { GrepCard } from "./grep-card.js";
+import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { ReadCard } from "./read-card.js";
 import { LspDiagBlock } from "./lsp-block.js";
+import { ErrorCard } from "./error-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import { grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
@@ -70,6 +71,8 @@ interface ToolRowProps {
 	diff: ReturnType<typeof diffCardModel>;
 	grep: ReturnType<typeof grepCardModel>;
 	/** The `lsp` diagnostics card, drawn by our own block (see `LspDiagBlock`). */
+	/** The structured error card (meta.error, or synthesised for legacy logs). */
+	error: ReturnType<typeof errorCardModel>;
 	lsp: ReturnType<typeof lspCardModel>;
 	/** #131: inline diagnostics capsules, one per written file ([] = none). */
 	diag: readonly DiagCapsuleMeta[];
@@ -162,6 +165,7 @@ function ToolRow({
 	diff,
 	grep,
 	lsp,
+	error,
 	diag,
 	state,
 	filePath,
@@ -175,13 +179,15 @@ function ToolRow({
 	const readBody = read ?? null;
 	const grepBody = grep ?? null;
 	const lspBody = lsp ?? null;
+	const errorBody = error ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
 	const diffBody = diff ?? null;
 	const outputText = output ?? null;
-	// `lsp` first: it owns its body outright (frame included), so the read body
+	// `error` first: a failed call leads with the structured failure card.
+	// `lsp` next: it owns its body outright (frame included), so the read body
 	// never sees diagnostic rows masquerading as lines of a file.
-	const card = lspBody ?? diffBody ?? grepBody ?? readBody;
+	const card = errorBody ?? lspBody ?? diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -325,7 +331,12 @@ function ToolRow({
 				children: jsx_("div", {
 					className: css.bodyWrap,
 					children: [
-						diffBody !== null
+						errorBody !== null
+							? jsx_(ErrorCard, {
+									model: errorBody,
+									className: css.errorBody,
+								})
+							: diffBody !== null
 							? diffBody.rowGroups !== undefined
 								? // Per-file groups with the shared tab strip (issue #82 → #96).
 								  jsx_(DiffRowsBlock, {
@@ -432,6 +443,7 @@ function ToolRow({
  */
 export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride, icon }: ToolViewProps & { readonly titleOverride?: string; readonly icon?: ReactNode }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
+	const error = errorCardModel(block);
 	const read = readCardModel(block, cwd, home);
 	return jsx_(ToolRow, {
 		t,
@@ -448,6 +460,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		errorSummary: model.errorSummary,
 		read,
 		diag: [],
+		error,
 		grep: null,
 		diff: null,
 		state: model.state,
@@ -466,6 +479,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
  */
 export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride }: ToolViewProps & { readonly titleOverride?: string }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
+	const error = errorCardModel(block);
 	const diff = diffCardModel(block);
 	// #131: inline diagnostics, present only when a push arrived in the window.
 	// Running calls carry no meta, so the capsule appears only once settled.
@@ -491,6 +505,7 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		read: null,
 		grep: null,
 		diff,
+		error,
 		diag,
 		state: model.state,
 		filePath: model.filePath,
@@ -508,6 +523,7 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
  */
 export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
+	const error = errorCardModel(block);
 	const diff = writeCardModel(block);
 	// #131: a write reports diagnostics exactly like an edit does.
 	const diag = diagCapsulesFromMeta("kind" in block ? block.meta : undefined);
@@ -525,6 +541,7 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		grep: null,
 		diff,
 		diag,
+		error,
 		state: model.state,
 		filePath: model.filePath,
 		onOpenFile: openFile,
@@ -544,6 +561,7 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect, t, titleOverride }: ToolViewProps & { readonly titleOverride?: string }): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
 	const grep = grepCardModel(block);
+	const error = errorCardModel(block);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
@@ -563,6 +581,7 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		diff: null,
 		diag: [],
 		grep,
+		error,
 		state: model.state,
 		filePath: model.filePath,
 		onOpenFile: openFile,
@@ -616,6 +635,7 @@ export function HashlineUndoRow(props: ToolViewProps): ReactNode {
  */
 export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, t }: ToolViewProps): ReactNode {
 	const model = toolRowModel(toolName, block, cwd, home);
+	const error = errorCardModel(block);
 	// The diagnostics rows are drawn by our own block below, so the read/grep/diff
 	// bodies stay out of it — this row owns its body.
 	const lsp = lspCardModel(block);
@@ -633,6 +653,7 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		grep: null,
 		diff: null,
 		lsp,
+		error,
 		// The lsp row IS the diagnostics card; a second capsule would duplicate it.
 		diag: [],
 		state: model.state,

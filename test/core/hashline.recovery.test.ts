@@ -87,7 +87,7 @@ describe("applyEdit — recovery scenarios", () => {
     }
     expect(caught).toBeDefined();
     expect(caught!.message).toMatch(/E_RANGE_UNVERIFIED|fresh anchors/);
-    expect(caught!.message).toMatch(/ANCHOR:FILELINE|fresh anchors/);
+    expect(caught!.message).toMatch(/ANCHOR:LINE|fresh anchors/);
   });
 
   it("refuses a forged duplicate-anchor array with [E_ANCHOR_AMBIGUOUS] (no silent first-occurrence resolution)", () => {

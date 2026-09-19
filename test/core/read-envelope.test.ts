@@ -35,7 +35,7 @@ describe("read modelText has no dsh envelope (issue #71 direction B)", () => {
 				modelText: string;
 			};
 			expect(value.modelText).not.toMatch(DSH_READ_ENVELOPE_RE);
-			expect(value.modelText.startsWith("ANCHOR:FILELINE")).toBe(true);
+			expect(value.modelText.startsWith("ANCHOR:LINE")).toBe(true);
 			expect(value.modelText).toMatch(/\[End of file - total 2 lines\.\]$/);
 		});
 	});
@@ -112,7 +112,7 @@ describe("envelope helpers (legacy history tolerance)", () => {
 		expect(extractReadBody(legacy)).toBe("the-body");
 	});
 
-	it("extractReadBody strips the ANCHOR:FILELINE header from current texts", () => {
+	it("extractReadBody strips the ANCHOR:LINE header from current texts", () => {
 		expect(extractReadBody(`${hashlineHeader()}\nthe-body`)).toBe("the-body");
 	});
 });

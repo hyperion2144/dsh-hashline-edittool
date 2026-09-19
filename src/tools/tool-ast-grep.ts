@@ -26,6 +26,7 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure 
 // tools emit the SAME `files` shape precisely so one cap governs both.
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
 import { getEffectiveConfig, isJsonOutput } from "../config.js";
+import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
@@ -173,6 +174,7 @@ export function buildAstGrepTool(io: FileIO) {
 					// does not name is rejected outright (`value.modelText is not
 					// declared`), which is how this was found.
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 				},
 			},
 		// The model reads modelText — built in `execute`, so BOTH output modes are
@@ -190,15 +192,17 @@ export function buildAstGrepTool(io: FileIO) {
 		// sentence, delivered as the model text already carries it. Emitting an
 		// empty `files` there is honest: there is nothing to draw, and the grep
 		// card renders the empty state rather than falling back to raw IO.
-		presentationMeta: (_args: unknown, value: { readonly cardFiles: unknown; readonly truncated: boolean; readonly total: number; readonly isOutline?: boolean }) =>
-			capGrepMeta({
+		presentationMeta: (_args: unknown, value: { readonly cardFiles: unknown; readonly truncated: boolean; readonly total: number; readonly isOutline?: boolean; readonly error?: ErrorMeta }) => {
+			if (value.error !== undefined) return { error: value.error } as never;
+			return capGrepMeta({
 				files: value.cardFiles as never,
 				truncated: value.truncated,
 				total: value.total,
 				// An outline renders its rows but the footer must not read them as
 				// matches; the flag rides the meta to the card.
 				...(value.isOutline === true ? { outline: true } : {}),
-			}) as never,
+			}) as never;
+		},
 	},
 	// THE CARD ITSELF. The meta above is data; this is what turns it into the
 	// search card — file tabs, `行号:锚点` gutter, highlight — the SAME view
@@ -223,6 +227,7 @@ export function buildAstGrepTool(io: FileIO) {
 		};
 	},
 		async execute(args: { readonly pat?: string; readonly path: string }, exec: ToolRunContext) {
+			try {
 			const cwd = execCwd(exec);
 			const absolutePath = await io.resolve(args.path, cwd);
 			const language = languageForPath(absolutePath);
@@ -548,6 +553,16 @@ export function buildAstGrepTool(io: FileIO) {
 				total,
 				modelText,
 			};
+			} catch (error) {
+				return {
+					path: args.path,
+					matches: [],
+					cardFiles: [],
+					truncated: false,
+					total: 0,
+					...(thrownErrorResult(error, { path: args.path }) as unknown as Record<string, unknown>),
+				} as never;
+				}
 		},
 	});
 }

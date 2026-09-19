@@ -23,6 +23,7 @@ import type {
 	DiffRowGroup,
 	DiffRowMeta,
 	DiagCapsuleMeta,
+	ErrorCardModel,
 	FileDiff,
 	GrepCardModel,
 	GrepFileRowGroup,
@@ -212,7 +213,7 @@ export function toolRowModel(
 		? "running"
 		: block.error?.code === "interrupted"
 			? "stopped"
-			: block.isError
+			: block.isError || hasMetaError(block.meta)
 				? "error"
 				: "ok";
 	let base: string;
@@ -244,6 +245,59 @@ export function toolRowModel(
 		output,
 		errorSummary,
 		state,
+	};
+}
+
+//#endregion
+
+//#region error card (map #137 / spec #146: structured error values + legacy synthesis)
+
+/**
+ * Soft-validate the persisted `meta.error` object — the five-field failure the
+ * #139 error-value path persists. Any deviation yields `null`, which leaves the
+ * row on its generic body instead of drawing a half-fact.
+ */
+function metaErrorFromMeta(meta: unknown): ErrorCardModel | null {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+	const value = meta as Record<string, unknown>;
+	const error = value.error;
+	if (typeof error !== "object" || error === null || Array.isArray(error)) return null;
+	const fields = error as Record<string, unknown>;
+	if (typeof fields.code !== "string" || fields.code === "" || typeof fields.message !== "string") return null;
+	return {
+		code: fields.code,
+		message: fields.message,
+		...(typeof fields.path === "string" && fields.path !== "" ? { path: fields.path } : {}),
+		...(typeof fields.context === "string" && fields.context !== "" ? { context: fields.context } : {}),
+		...(typeof fields.hint === "string" && fields.hint !== "" ? { hint: fields.hint } : {}),
+	};
+}
+
+/** Does this call's persisted meta carry a structured error? (state + card pick) */
+export function hasMetaError(meta: unknown): boolean {
+	return metaErrorFromMeta(meta) !== null;
+}
+
+/**
+ * The error card model: the structured `meta.error` when the call carries one
+ * (the #139 error-value path), else — for LEGACY logs and host-level failures
+ * (`isError` with no structured meta) — a card synthesised from the result
+ * text, parsing the house `[E_*]` marker off its head when it opens with one.
+ * An interrupted call is a stop, not a failure: it synthesises nothing.
+ * `null` = nothing to draw; the row keeps its generic body.
+ */
+export function errorCardModel(block: ToolCallBlock): ErrorCardModel | null {
+	if (!("kind" in block)) return null;
+	const fromMeta = metaErrorFromMeta(block.meta);
+	if (fromMeta !== null) return fromMeta;
+	if (!block.isError) return null;
+	if (block.error?.code === "interrupted") return null;
+	const text = resultText(block).trim();
+	if (text === "") return null;
+	const marker = /^\[(E_[A-Z_]+)\]\s*/.exec(text);
+	return {
+		code: marker === null ? "ERROR" : marker[1]!,
+		message: marker === null ? text : text.slice(marker[0].length),
 	};
 }
 

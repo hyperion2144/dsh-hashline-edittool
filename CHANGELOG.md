@@ -4,6 +4,25 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- **Structured error values + error cards across all 8 tools (#137, #139, #140, #146)**: tools no longer throw domain errors (`[E_*]`) at dsh — each `execute` boundary catches and returns a success-shaped `{ modelText, error }` value whose persisted `meta.error` (`code` / `message` / `path` / `context` / `hint`) the client renders as a red-dotted ErrorCard (code chip, path, message, the ±context echo block, and the hint). Model-facing text stays byte-identical to the thrown messages; JSON output mode emits a pure JSON error object. Stale and declared rejections keep serving fresh anchors inline — the echo rides `error.context`. Legacy `isError` logs degrade to a synthesized card. Domain-error conversion is whitelist-scoped (ADR-0007): aborts, sandbox denials and unexpected crashes still throw for the host.
+- **`lsp diagnostics` freshness guarantee (#141)**: manual diagnostics and the write/edit/undo auto-delivery now go through `verifiedReport` — pull-first (`textDocument/diagnostic`) when the server advertises it, otherwise a sentinel probe: a `didChange` referencing a per-call nonce whose syntax error the server MUST report proves the pipeline reached the probe state, the revert back to the real content settles a push without the nonce, and only that report is delivered. typescript-language-server 6.0.0 supports neither pull nor versioned pushes, and the old delivery accepted any unversioned push — which systematically served pre-change diagnostics. The budget can now time out to an honest "no answer yet" instead.
+- **`read`'s header is line-numbers aware (#141)**: `ANCHOR:LINE|CONTENT` with an explicit "the line number is a positional hint only, NOT part of the anchor" legend when `line_numbers` is on; `ANCHOR|CONTENT` when off.
+- New test suites: `test/core/error-result.test.ts` (25 cases: builder, recognizer, every tool boundary with in-place schema conformance, JSON mode, presentationMeta, end-to-end echo, abort rethrow, multi-file fail[]) and `client/test/error-card.test.ts` (15 cases: the degradation matrix and row states).
+
+### Fixed
+
+- **Error results pass the host's enforced required-fields validation (#141)**: `defineTool` hoists authoring-side `required: true` into object-level required arrays and the host rejects a value missing them — each tool's error value now carries its witness fields (e.g. grep's `files: [], truncated: false, total: 0`), so live errors render as cards instead of dying as `invalid output`.
+- **Multi-file aggregate errors are lossless-JSON clean (#141)**: the all-failed aggregate omits the `path` key instead of carrying an explicit `undefined` (which the host's lossless check rejects), and the card header shows a path only when exactly one file failed.
+- **Manual `lsp diagnostics` no longer serves the pre-change report (#141)**: the `arrivedAlready` short-circuit returned whatever was cached — now the same verified flow backs the manual operation.
+- **`read`'s dynamic header is pinned by 14 test sites**; the legacy single-form header is retired.
+
+### Docs
+
+- ADR-0007: the domain-error whitelist conversion boundary (why aborts/sandbox/crashes rethrow while `[E_*]` returns).
+- CONTEXT.md: structured error value, `meta.error`, domain error.
+
 ## [0.7.3] - 2026-09-18
 
 ### Fixed

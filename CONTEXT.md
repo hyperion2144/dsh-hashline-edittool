@@ -68,3 +68,16 @@ _Avoid_: collision (that is the allocator's normal probe path), duplicate hash
 **Reject-and-serve**:
 A rejected edit echoes the current lines as served rows with fresh, immediately usable anchors — the fix is take-the-marker-and-resubmit, never re-read-from-scratch. The rejection is the recovery path, not a dead end.
 _Avoid_: error-only rejection, retry-with-re-read
+
+**Structured error value**:
+The success-shaped value a tool's `execute` returns after catching one of its own domain errors — minimal `{ modelText, error }` inside the tool's output schema instead of a throw; the model reads the same `[E_*]` text as before, and the client renders the error card from the persisted `error`.
+_Avoid_: error result (`isError: true` is host vocabulary), thrown error, error return value
+
+**`meta.error`**:
+The single error object persisted in presentationMeta on a failed call — `{ code, message, path?, context?, hint? }`; one failure carries one error, and batch per-item detail lives in `context` text. Unrelated to the `errors` array field of edit's JSON success shape (soft per-item notes there, not failures).
+_Avoid_: `errors` (plural — that is the JSON success shape's field), ErrorMeta as a model-facing term
+
+**Domain error (域错误)**:
+A failure carrying an `[E_*]` code from the tool's own vocabulary (`E_STALE`, `E_BAD_SHAPE`, `E_BATCH_ABORT`, …). The only kind converted into a structured error value; aborts, sandbox denials and unexpected crashes rethrow to the host untouched.
+_Avoid_: any failure, host error, framework error
+

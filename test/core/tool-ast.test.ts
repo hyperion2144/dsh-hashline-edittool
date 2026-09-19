@@ -148,7 +148,7 @@ describe("ast_grep", () => {
 	it("refuses a pattern the grammar cannot parse, rather than returning nothing", async () => {
 		// An empty result and a refusal are different answers: the first says the
 		// code is not there, the second says the question was malformed.
-		await expect(run({ pat: "const" })).rejects.toThrow(/E_AST_PATTERN/);
+		await expect(run({ pat: "const" })).resolves.toMatchObject({ modelText: expect.stringMatching(/E_AST_PATTERN/) });
 	});
 });
 
@@ -253,7 +253,7 @@ describe("ast_edit", () => {
 		// Deleting the closing brace leaves the function unterminated. The engine's
 		// gate must catch it and leave the file exactly as it was — the whole point
 		// of routing this tool through that engine rather than writing directly.
-		let outcome: { count: number; ok: boolean } | undefined;
+		let outcome: { count: number; ok: boolean; error?: { code: string } } | undefined;
 		let threw = false;
 		try {
 			outcome = await run({ pat: "export function alpha() {\n  return 1;\n}", out: "export function alpha() {\n  return 1;" });
@@ -266,8 +266,8 @@ describe("ast_edit", () => {
 		// And the pattern must have been found — otherwise "nothing was written"
 		// would be true for the wrong reason and this test would pass while the
 		// gate it claims to check was never reached.
-		expect(threw || outcome?.count === 1).toBe(true);
-		if (!threw) expect(outcome?.ok).toBe(false);
+		expect(threw || outcome?.count === 1 || outcome?.error !== undefined).toBe(true);
+		if (!threw && outcome?.error === undefined) expect(outcome?.ok).toBe(false);
 	});
 
 	it("a bare call pattern matches the call wherever it sits, declaration or not", async () => {
@@ -418,7 +418,7 @@ describe("the AST switch gates the AST tools", () => {
 		// "Switched off" is a fact about the session; "no matches" is a claim about
 		// the code. Reporting the first as the second is the failure this whole
 		// family of tools is built to avoid.
-		await expect(tool.execute({ path: file, pat: "const $N = $V;" }, exec(dir)({}))).rejects.toThrow(/E_AST_DISABLED/);
+		await expect(tool.execute({ path: file, pat: "const $N = $V;" }, exec(dir)({}))).resolves.toMatchObject({ modelText: expect.stringMatching(/E_AST_DISABLED/) });
 	});
 
 	it("refuses per-language too, and names the language", async () => {
@@ -429,7 +429,7 @@ describe("the AST switch gates the AST tools", () => {
 		// tested nothing — the `!` was taken as a language named `!typescript`.
 		applyEffective({ ast: { enabled: true, languages: { typescript: { enabled: false } } } });
 		const tool = buildAstGrepTool(localIO());
-		await expect(tool.execute({ path: file, pat: "const $N = $V;" }, exec(dir)({}))).rejects.toThrow(/turned off for/);
+		await expect(tool.execute({ path: file, pat: "const $N = $V;" }, exec(dir)({}))).resolves.toMatchObject({ modelText: expect.stringMatching(/turned off for/) });
 	});
 
 	it("lets `ast_edit` through only when the switch is on", async () => {
@@ -437,6 +437,6 @@ describe("the AST switch gates the AST tools", () => {
 		const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
 		const tool = buildAstEditTool(localIO(), sandbox);
-		await expect(tool.execute({ path: file, pat: "const $N = $V;", out: "x" }, exec(dir)({}))).rejects.toThrow(/E_AST_DISABLED/);
+		await expect(tool.execute({ path: file, pat: "const $N = $V;", out: "x" }, exec(dir)({}))).resolves.toMatchObject({ modelText: expect.stringMatching(/E_AST_DISABLED/) });
 	});
 });

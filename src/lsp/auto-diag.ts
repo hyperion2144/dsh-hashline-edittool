@@ -126,12 +126,6 @@ export interface WriteDiagContext {
 	/** The workspace root advertised to the server when warming. */
 	readonly workspaceRoot: string;
 	readonly uri: string;
-	/**
-	 * The revision baseline for `waitForPush`. For a ready session it is the
-	 * pre-write snapshot; for a pending cold start it is 0 and the REAL
-	 * baseline is taken once the session arrives.
-	 */
-	readonly revisionBefore: number;
 }
 
 /**
@@ -164,13 +158,13 @@ export function prepareWriteDiagnostics(absolutePath: string, workspaceRoot: str
 			languageId: language.id,
 			workspaceRoot,
 			uri,
-			revisionBefore: session.diagnosticsRevision,
+			// The freshness guarantee no longer needs a revision baseline.
 		};
 	}
 	// Cold or starting: kick the warm and let the async path wait it out. A
 	// slot that already exists (starting or failed) makes `warm` a no-op.
 	manager.warm(language.id, workspaceRoot);
-	return { languageId: language.id, workspaceRoot, uri, revisionBefore: 0 };
+	return { languageId: language.id, workspaceRoot, uri };
 }
 
 /** Everything {@link deliverDiagnosticsAfterWrite} needs once the write is on disk. */
@@ -204,31 +198,21 @@ export async function deliverDiagnosticsAfterWrite(
 			startAsyncWait(input);
 			return undefined;
 		}
-		// TRIGGER-STYLE FIRST (#131 field feedback): the edit is final, so we
-		// ASK for diagnostics once and wait for that exact computation. The
-		// request rides the same ordered connection after our `didChange`, so
-		// the answer describes the post-edit content — no push timing races,
-		// no stale intermediate snapshots, no repeated pushes to sift.
-		const pulled = await input.session.pullDiagnostics(input.uri, PULL_TIMEOUT_MS);
-		if (pulled !== undefined) {
-			const report = collectReport(input, pulled.items);
-			if (report === undefined) return undefined;
-			await serveReport(input, report.rows);
-			return report;
-		}
-		// FALLBACK (server has no pull): wait for the push stream, ignoring
-		// pushes computed against older content.
-		const arrived = await waitForFreshPush(
-			input.session,
-			input.uri,
-			input.revisionBefore,
-			INLINE_WINDOW_MS,
-		);
-		if (!arrived) {
+		const verified = await verifiedReport(input.session, input.uri, input.text, {
+			open: (next) => {
+				const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
+				open?.(next);
+			},
+			budgetMs: INLINE_WINDOW_MS,
+			signal: input.exec.signal,
+		});
+		if (verified === undefined) {
+			// The guarantee could not be established inside the window — the
+			// bounded background wait continues it and injects when it can.
 			startAsyncWait(input);
 			return undefined;
 		}
-		const report = collectReport(input);
+		const report = collectReport(input, verified.items);
 		if (report === undefined) return undefined;
 		await serveReport(input, report.rows);
 		return report;
@@ -247,46 +231,91 @@ export async function deliverDiagnosticsAfterWrite(
  * bounded poll against the session's revision counter — the same instrument
  * the manual `lsp diagnostics` operation reads, at a much shorter budget.
  */
-async function waitForPush(
-	session: LspSession,
-	revisionBefore: number,
-	budgetMs: number,
-	signal?: AbortSignal,
-): Promise<boolean> {
-	const deadline = Date.now() + budgetMs;
-	while (session.diagnosticsRevision === revisionBefore && Date.now() < deadline) {
-		if (signal?.aborted) return false;
-		await new Promise((resolve) => setTimeout(resolve, 25));
-	}
-	return session.diagnosticsRevision !== revisionBefore;
+export interface VerifiedReportOptions {
+	/** Re-sync the server to a given text (open-or-change). */
+	open: (next: string) => void;
+	/** Overall budget across every wave of the verification. */
+	budgetMs: number;
+	signal?: AbortSignal;
 }
 
 /**
- * Wait for a push that is FRESH for `uri`: one computed against the document
- * version we last announced. Servers analyze asynchronously, so right after
- * a `didChange` they may still push the PREVIOUS content's results — those
- * are stale and are skipped (a new baseline is taken and the wait continues
- * within the same budget). A push without a version is accepted: freshness
- * cannot be proven, and refusing every unversioned push would drop servers
- * that never send versions.
+ * A GUARANTEED-fresh diagnostics report for `text` — every returned item was
+ * computed against exactly this content.
+ *
+ * Method, in order:
+ *
+ * 1. **PULL** (`textDocument/diagnostic`) when the server advertised it: the
+ *    request rides the ordered connection after our `didChange`, so the
+ *    answer describes the current content by protocol ordering.
+ * 2. **SENTINEL PROBE** for servers without pull (typescript-language-server
+ *    registers no `diagnosticProvider`, and its pushes carry no `version` —
+ *    no push can prove its own freshness): `didChange` to
+ *    `text + <probe line>` — a statement referencing an undefined identifier
+ *    whose name is a per-call nonce, so the server MUST report it — then
+ *    wait for a push that mentions the nonce (the pipeline provably reached
+ *    the probe state). Then `didChange` back to `text` — the probe never
+ *    touches disk — and wait for a push that no longer mentions it: a report
+ *    without the sentinel error can only have been computed from the
+ *    reverted, real content.
+ * 3. Budget out → `undefined` ("no answer yet"), never an unverifiable
+ *    report. The probe lives only in the server's document state.
  */
-async function waitForFreshPush(
+export async function verifiedReport(
 	session: LspSession,
 	uri: string,
-	revisionBefore: number,
-	budgetMs: number,
+	text: string,
+	opts: VerifiedReportOptions,
+): Promise<{ items: readonly unknown[] } | undefined> {
+	const pulled = await session.pullDiagnostics?.(uri, PULL_TIMEOUT_MS);
+	if (pulled !== undefined) return { items: pulled.items };
+	const nonce = `dsh_probe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+	const probeText = `${text}\n${nonce};`;
+	const deadline = Date.now() + opts.budgetMs;
+	opts.open(probeText);
+	if (
+		(await waitPushMatching(
+			session,
+			uri,
+			(items) => itemsMentionNonce(items, nonce),
+			deadline,
+			opts.signal,
+		)) === undefined
+	) {
+		return undefined;
+	}
+	opts.open(text);
+	const settled = await waitPushMatching(
+		session,
+		uri,
+		(items) => !itemsMentionNonce(items, nonce),
+		deadline,
+		opts.signal,
+	);
+	return settled === undefined ? undefined : { items: settled };
+}
+
+/** Does this report still carry the probe's sentinel diagnostic? */
+function itemsMentionNonce(items: readonly unknown[], nonce: string): boolean {
+	return items.some((entry) => {
+		const message = (entry as { message?: unknown }).message;
+		return typeof message === "string" && message.includes(nonce);
+	});
+}
+
+/** Poll the session's pushed report for `uri` until `match` holds or the budget ends. */
+async function waitPushMatching(
+	session: LspSession,
+	uri: string,
+	match: (items: readonly unknown[]) => boolean,
+	deadline: number,
 	signal?: AbortSignal,
-): Promise<boolean> {
-	const deadline = Date.now() + budgetMs;
-	let baseline = revisionBefore;
+): Promise<readonly unknown[] | undefined> {
 	for (;;) {
-		if (!(await waitForPush(session, baseline, Math.max(0, deadline - Date.now()), signal))) return false;
-		const pushVersion = session.diagnosticsVersion(uri);
-		const documentVersion = session.documentVersion(uri);
-		if (pushVersion === undefined || documentVersion === undefined || pushVersion === documentVersion) return true;
-		// Stale push: it spent the baseline, so re-baseline and keep waiting.
-		baseline = session.diagnosticsRevision;
-		if (Date.now() >= deadline || signal?.aborted) return false;
+		if (signal?.aborted || Date.now() >= deadline) return undefined;
+		const items = session.getDiagnostics(uri);
+		if (items !== undefined && match(items)) return items;
+		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
 }
 
@@ -398,14 +427,21 @@ function startAsyncWait(input: AfterWriteInput): void {
 				const openDocument = manager?.openDocumentFor(input.languageId, input.uri);
 				openDocument?.(input.text);
 			}
-			const arrived = await waitForPush(
+			const verified = await verifiedReport(
 				session,
-				session.diagnosticsRevision,
-				ASYNC_TIMEOUT_MS - (Date.now() - startedAt),
-				signal,
+				input.uri,
+				input.text,
+				{
+					open: (next) => {
+						const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
+						open?.(next);
+					},
+					budgetMs: Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt)),
+					signal,
+				},
 			);
-			if (!arrived || signal.aborted) return;
-			const report = collectReport({ ...input, session });
+			if (verified === undefined || signal.aborted) return;
+			const report = collectReport({ ...input, session }, verified.items);
 			if (report === undefined) return;
 			await serveReport(input, report.rows);
 			agent.inject(buildInjectedMessage(input, report));

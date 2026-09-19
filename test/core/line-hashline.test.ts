@@ -1,6 +1,6 @@
 /**
  * Tests for the line#hash anchor upgrade. Covers:
- *   - `read` rendering carries the `ANCHOR:FILELINE` header
+ *   - `read` rendering carries the `ANCHOR:LINE` header
  *   - `parseRef` accepts both `line#hash` and bare-hash forms
  *   - `edit.remove_to` is optional (defaults to remove_from)
  *   - post-edit response carries the `Shift:` block
@@ -38,14 +38,14 @@ describe("parseRef — v2 anchor forms", () => {
 });
 
 describe("read — header line", () => {
-	it("emits the ANCHOR:FILELINE header on top", async () => {
+	it("emits the ANCHOR:LINE header on top", async () => {
 		await withTempFile("h.txt", "alpha\nbeta\n", async ({ cwd }) => {
 			const { ctx, readTool } = setupIntegrationTest(cwd);
 			const res = await readTool.execute("r", { path: "h.txt" }, undefined, undefined, ctx);
 			const text = getText(res);
 			const lines = text.split("\n");
 			// Issue #71 direction B: no dsh envelope — the legend is line 1.
-			expect(lines[0]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[0]).toMatch(/^ANCHOR:LINE/);
 			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*alpha$/);
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:beta$/);
 		});
@@ -162,7 +162,7 @@ describe("grep — line#hash output", () => {
 			const text = value.modelText;
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^--- .*g\.txt ---$/);
-			expect(lines[1]).toMatch(/^ANCHOR:FILELINE/);
+			expect(lines[1]).toMatch(/^ANCHOR:LINE/);
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
 			expect(lines.some((l) => l.includes("gamma"))).toBe(false);

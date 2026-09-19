@@ -219,6 +219,15 @@ export interface RowsDiffCard {
 	rows: readonly DiffRowMeta[];
 }
 
+/** The error card's model: the structured failure of one call (spec #146). */
+export interface ErrorCardModel {
+	code: string;
+	message: string;
+	path?: string;
+	context?: string;
+	hint?: string;
+}
+
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
 	variant: "read" | "edit" | "write" | "grep";

@@ -72,7 +72,7 @@ describe("grep recursion + include + default path (host-aligned)", () => {
 					pattern: "needle",
 					include: "!*.ts",
 				}),
-			).rejects.toThrow(/positive glob/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/positive glob/) }] });
 		});
 	});
 

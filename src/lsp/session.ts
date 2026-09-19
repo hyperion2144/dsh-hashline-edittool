@@ -267,6 +267,7 @@ export class LspSession {
 		}
 	}
 
+
 	/** The server's advertised capabilities, after a successful handshake. */
 	get serverCapabilities(): Record<string, unknown> {
 		return this.#serverCapabilities;

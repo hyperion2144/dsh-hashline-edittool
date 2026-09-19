@@ -73,7 +73,7 @@ describe("observed-on-serve", () => {
 					},
 					makeExec(cwd)({}),
 				),
-			).rejects.toThrow(/Bare-digit anchors are forbidden/);
+			).resolves.toMatchObject({ modelText: expect.stringMatching(/Bare-digit anchors are forbidden/) });
 			expect(seen.length).toBeGreaterThan(0);
 			expect(seen.every((call) => call.exec !== undefined)).toBe(true);
 			expect(seen.every((call) => call.path.includes("obs-echo.txt"))).toBe(true);

@@ -40,6 +40,7 @@ import {
 	type EditOp,
 } from "../contract/contract.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 // Marker parsing, not symbol reading: `lineHintOf` moved beside the other
 // `<line>:<anchor>` handling when the block-op path was removed.
 import { lineHintOf } from "../hashline/declaration.js";
@@ -348,13 +349,15 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					diagnostics: { type: "array" },
 					// 两种形态都有
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 				},
 			},
 			render: (_args, value) => [
 				{ type: "text", text: (value as EditCanonicalValue).modelText },
 			],
 			presentationMeta: (_args, value) => {
-				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[]; multiDiffRowGroups?: unknown };
+				const v = value as EditCanonicalValue & { success?: unknown[]; fail?: unknown[]; multiDiffRowGroups?: unknown; error?: ErrorMeta };
+				if (v.error !== undefined) return { error: v.error } as never;
 				// issue #82: multi-file form carries aggregated per-file diffs + diffRowGroups
 				// #131: inline diagnostics ride the SAME meta object in every form, so
 				// the capsule renders no matter which shape the call settled into.
@@ -492,7 +495,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					// makes the SINGLE-file batch reject: the raw error is re-thrown
 					// byte-identically instead of becoming a fail[] entry.
 					const outcome = await applyFileGroup(call, displayPath, group);
-					if (!outcome.ok) throw outcome.error;
+					if (!outcome.ok) return thrownErrorResult(outcome.error, { path: displayPath }) as never;
 					const { file, diagnostics } = outcome;
 					const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
 					const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
@@ -570,6 +573,20 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				const multiDiagJson = diagnosticsJson(multiDiag);
 				const multiDiagSection = formatDiagnosticsSection(multiDiag);
 
+				// spec #146 / ticket #139: a batch where EVERY file failed is a failed
+				// call — meta.error carries the aggregate (client card) while fail[]
+				// keeps the per-file detail. A mixed result is a success: fail[] alone.
+				const allFailedError =
+					successes.length === 0 && fails.length > 0
+						? {
+								code: fail[0]!.code.replace(/^\[/, "").replace(/\]$/, ""),
+								message: `All ${fail.length} file(s) failed; nothing was applied.`,
+								// The path key is OMITTED (never an undefined value) — the host's
+								// lossless-JSON check rejects explicit undefined properties.
+								...(new Set(fail.map((f) => f.path)).size === 1 ? { path: fail[0]!.path } : {}),
+								context: fail.map((f) => `${f.path}: ${f.code} ${f.message}`).join("\n"),
+							}
+						: undefined;
 				if (!isJsonOutput()) {
 					// text 模式: 聚合 prose (ADR-0004 D1) — 成功块在前, 失败块在后
 					const appliedTotal = successes.reduce((n, o) => n + o.file.appliedCount, 0);
@@ -586,7 +603,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						const detected = extractFailure(message);
 						return `Edit for ${o.displayPath} failed: ${detected.code} ${detected.message}`;
 					});
-					return { success, fail, ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}` };
+				return { success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}` };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)
@@ -596,8 +613,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					fail,
 					...(multiDiagJson.length > 0 ? { diagnostics: multiDiagJson } : {}),
 				});
-				return { ok: success.length > 0, success, fail, ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
-			});
+				return { ok: success.length > 0, success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
+			}).catch((error: unknown) => thrownErrorResult(error, { path: pathFromArgs(args) }) as never);
 		},
 	});
 }

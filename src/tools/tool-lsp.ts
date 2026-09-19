@@ -27,8 +27,9 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashl
 import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
+import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { anchorsFor } from "../hashline/session-anchors.js";
-import { diagRowsToJson } from "../lsp/auto-diag.js";
+import { diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
 interface FlatSymbol {
@@ -196,6 +197,7 @@ export function buildLspTool(io: FileIO) {
 					// value against this schema (`value.modelText is not declared` is the
 					// error a returned-but-undeclared field produces).
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 				},
 			},
 			// The model reads modelText, built by the wrapper below for EVERY branch
@@ -210,14 +212,16 @@ export function buildLspTool(io: FileIO) {
 		// `lines` must be an ARRAY ({number, text}), not an object: the read meta's
 		// soft-validator rejects an object outright, which silently dropped the
 		// whole projection and left the call as raw input/output.
-		presentationMeta: (_args: unknown, value: { readonly path: string; readonly hashlines: readonly { readonly number: number; readonly text: string }[]; readonly totalLines: number }) =>
-			({
+		presentationMeta: (_args: unknown, value: { readonly path: string; readonly hashlines: readonly { readonly number: number; readonly text: string }[]; readonly totalLines: number; readonly error?: ErrorMeta }) => {
+			if (value.error !== undefined) return { error: value.error } as never;
+			return ({
 				path: value.path,
 				offset: 1,
 				lines: value.hashlines.map(({ number, text }) => ({ number, text })),
 				totalLines: value.totalLines,
 				hashlines: value.hashlines,
-			}) as never,
+			}) as never;
+		},
 		},
 		// THE CARD ITSELF: `presentResult` is what makes the web draw one. The meta
 		// alone drew nothing — without this the call stayed raw input/output, which
@@ -293,23 +297,18 @@ export function buildLspTool(io: FileIO) {
 			const text = await io.readText(absolutePath);
 			sync(text);
 			if (args.operation === "diagnostics") {
-				// PUSH, not a request. A server sends `publishDiagnostics` on its own
-				// schedule, so the honest thing is to wait a bounded moment for the
-				// first one after opening rather than to report instant emptiness.
-				//
-				// `undefined` and `[]` are kept apart the whole way: a server that
-				// looked and found nothing sends an empty list, and reporting "clean"
-				// for "no answer yet" would be a confident lie about someone's code.
-				// If a push already arrived — servers often send one as soon as the
-				// document opens — there is nothing to wait for. Waiting anyway would
-				// spend the whole budget to learn what is already in hand.
-				const arrivedAlready = session.getDiagnostics(uri) !== undefined;
-				const before = session.diagnosticsRevision;
-				const deadline = Date.now() + DIAGNOSTIC_WAIT_MS;
-				while (!arrivedAlready && session.diagnosticsRevision === before && Date.now() < deadline) {
-					await new Promise((resolve) => setTimeout(resolve, 50));
-				}
-				const pushed = session.getDiagnostics(uri);
+				// THE FRESHNESS GUARANTEE (verifiedReport): pull-first for capable
+				// servers; otherwise the sentinel probe — a guaranteed-error canary
+				// proves the pipeline, the revert settles the true content's report.
+				// "no answer yet" is returned only when the guarantee could not be
+				// established inside the budget — never a stale pre-change report,
+				// which is what the old arrivedAlready short-circuit served.
+				const verified = await verifiedReport(session, uri, text, {
+					open: (next) => sync(next),
+					budgetMs: DIAGNOSTIC_WAIT_MS,
+					signal: exec.signal,
+				});
+				const pushed = verified?.items;
 				if (pushed === undefined) {
 					return {
 						path: args.path,
@@ -537,7 +536,12 @@ export function buildLspTool(io: FileIO) {
 	return {
 		...tool,
 		async execute(args: never, exec: never) {
-			const value = (await tool.execute(args, exec)) as unknown as Record<string, unknown>;
+			let value: Record<string, unknown>;
+			try {
+				value = (await tool.execute(args, exec)) as unknown as Record<string, unknown>;
+			} catch (error) {
+				return thrownErrorResult(error, { path: pathFromArgs(args) }) as never;
+			}
 			return { ...value, modelText: lspModelText(value) };
 		},
 	} as typeof tool;

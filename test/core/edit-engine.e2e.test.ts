@@ -93,7 +93,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 						{ op: "replace", anchor_start: "zzz", anchor_end: "zzz", lines: ["NOPE"] },
 					],
 				}),
-			).rejects.toThrow(/E_BATCH_ABORT/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BATCH_ABORT/) }] });
 
 			expect(await readFile(path, "utf-8")).toBe(CONTENT);
 		});
@@ -157,7 +157,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 
 			await expect(
 				editTool(harness).execute("edit", edit),
-			).rejects.toThrow(/E_NOOP_LOOP/);
+			).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_NOOP_LOOP/) }] });
 
 			expect(await readFile(path, "utf-8")).toBe("line one\n");
 		});
@@ -212,7 +212,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 							{ op: "del", anchor_start: by("l6").hash },
 						],
 					}),
-				).rejects.toThrow(/E_BATCH_CONFLICT/);
+				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BATCH_CONFLICT/) }] });
 				expect(await readFile(path, "utf-8")).toBe(MULTI);
 			});
 		});
@@ -230,7 +230,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 							{ op: "ins", anchor_after: by("l3").hash, lines: ["B"] },
 						],
 					}),
-				).rejects.toThrow(/E_BATCH_CONFLICT/);
+				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BATCH_CONFLICT/) }] });
 				expect(await readFile(path, "utf-8")).toBe(MULTI);
 			});
 		});
@@ -248,7 +248,7 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 							{ op: "ins", anchor_after: by("l4").hash, lines: ["Y"] },
 						],
 					}),
-				).rejects.toThrow(/E_BATCH_CONFLICT/);
+				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BATCH_CONFLICT/) }] });
 				expect(await readFile(path, "utf-8")).toBe(MULTI);
 			});
 		});
@@ -258,23 +258,18 @@ describe("edit-sequence engine — end-to-end through the tool builders", () => 
 				const harness = setupIntegrationTest(cwd);
 				const served = await servedRows(harness, "t.txt");
 				const by = (c: string) => served.find((r) => r.content === c)!;
-				let message = "";
-				try {
-					await editTool(harness).execute("edit", {
-						path: "t.txt",
-						edits: [
-							{ op: "replace", anchor_start: by("l1").hash, anchor_end: by("l1").hash, lines: ["A"] },
-							{ op: "replace", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B"] },
-						],
-					});
-					expect.unreachable("edit should have rejected");
-				} catch (e) {
-					message = e instanceof Error ? e.message : String(e);
-				}
+				const outcome = (await editTool(harness).execute("edit", {
+					path: "t.txt",
+					edits: [
+						{ op: "replace", anchor_start: by("l1").hash, anchor_end: by("l1").hash, lines: ["A"] },
+						{ op: "replace", anchor_start: "2#zzz", anchor_end: "2#zzz", lines: ["B"] },
+					],
+				})) as { content: Array<{ type: string; text?: string }> };
+				const message = outcome.content[0]?.type === "text" ? outcome.content[0].text ?? "" : "";
 				expect(message).toMatch(/E_BATCH_ABORT/);
 				// E_BAD_REF is a parse failure — the v2.0 contract surfaces no
 				// read-format echo for it (only stale/served rejections echo).
-				expect(message.split("ANCHOR:FILELINE").length - 1).toBe(0);
+				expect(message.split("ANCHOR:LINE").length - 1).toBe(0);
 				expect(await readFile(path, "utf-8")).toBe(MULTI);
 			});
 		});

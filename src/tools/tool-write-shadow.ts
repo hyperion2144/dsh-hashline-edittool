@@ -38,6 +38,7 @@ import { lineHashes } from "../hashline/index.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf } from "../infra/utils.js";
 import { isJsonOutput } from "../config.js";
+import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
 import {
 	deliverDiagnosticsAfterWrite,
@@ -109,13 +110,15 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					// #131: inline LSP diagnostics, when a push arrived in the window.
 					diagnostics: { type: "array" },
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 				},
 			},
 			render: (_args, value) => [
 				{ type: "text", text: (value as WriteValue).modelText },
 			],
 			presentationMeta: (args, value) => {
-				const v = value as WriteValue;
+				const v = value as WriteValue & { error?: ErrorMeta };
+				if (v.error !== undefined) return { error: v.error } as never;
 				const filePath =
 					(args as { file_path?: string } | undefined)?.file_path ?? v.path;
 				return {
@@ -297,7 +300,13 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 					modelText,
 				} as WriteValue;
-			});
+		}).catch((error: unknown) => ({
+			path: pathFromArgs(args) ?? "",
+			operation: "create",
+			before: null,
+			after: "",
+			...(thrownErrorResult(error, { path: pathFromArgs(args) }) as unknown as Record<string, unknown>),
+		}) as never);
 		},
 	});
 }

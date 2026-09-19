@@ -31,6 +31,7 @@ import { readDescription } from "../domain/edit/prompts.js";
 import { DEFAULT_MAX_LINES } from "../domain/session/file-view.js";
 import { splitLines } from "../infra/utils.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { readView } from "../domain/session/file-view.js";
 import { recordServed } from "../domain/session/session-view.js";
 import {
@@ -107,6 +108,7 @@ export function buildReadTool(io: FileIO) {
 					},
 					truncatedByBytes: { type: "boolean" },
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 					// Present only on a symbol/anchor read; JSON mode's extra projection.
 					symbol: {
 						type: "object",
@@ -124,7 +126,8 @@ export function buildReadTool(io: FileIO) {
 				{ type: "text", text: (value as ReadValue & { modelText: string }).modelText },
 			],
 			presentationMeta: (_args, value) => {
-				const v = value as ReadValue;
+				const v = value as ReadValue & { error?: ErrorMeta };
+				if (v.error !== undefined) return { error: v.error } as never;
 				const lang = langFromPath(v.path);
 				return {
 					path: v.path,
@@ -310,7 +313,14 @@ export function buildReadTool(io: FileIO) {
 				// mode emits pure JSON again. extractReadBody still strips the
 				// envelope from PRE-0.4.2 session history.
 				return { ...presentation, modelText: body };
-			});
+		}).catch((error: unknown) => ({
+			path: pathFromArgs(args) ?? "",
+			offset: 1,
+			totalLines: 0,
+			lines: [],
+			hashlines: [],
+			...(thrownErrorResult(error, { path: pathFromArgs(args) }) as unknown as Record<string, unknown>),
+		}) as never);
 		},
 	});
 }

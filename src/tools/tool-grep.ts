@@ -30,6 +30,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "../domain/session/session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { lineHashes } from "../hashline/index.js";
 import { hashlineHeader, contextLinesCfg } from "../hashline/hash-assign.js";
@@ -151,7 +152,7 @@ function renderSection(
 	includeFormatHeader = true,
 ): string {
 	const headerLines: string[] = [`--- ${path} ---`];
-	if (includeFormatHeader) headerLines.push(hashlineHeader());
+		if (includeFormatHeader) headerLines.push(hashlineHeader(lineNumbers));
 	const markers = section.contextRows.map((row) =>
 		fmtMarker(row.anchor, row.position + 1, lineNumbers),
 	);
@@ -274,6 +275,7 @@ export function buildGrepTool(io: FileIO) {
 					truncated: { type: "boolean", required: true },
 					total: { type: "integer", required: true },
 					modelText: { type: "string" },
+					error: errorFieldSchema,
 				},
 			},
 			render: (_args, value) => [
@@ -283,7 +285,8 @@ export function buildGrepTool(io: FileIO) {
 				},
 			],
 			presentationMeta: (_args, value) => {
-				const v = value as GrepCanonicalValue;
+				const v = value as GrepCanonicalValue & { error?: ErrorMeta };
+				if (v.error !== undefined) return { error: v.error } as never;
 				// The card projection is byte-budgeted independently of the model text:
 				// dropping trailing file groups never changes what the model was told.
 				return capGrepMeta({
@@ -494,7 +497,12 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 						: fileSections.join("\n\n"),
 				};
 				return value;
-			});
+		}).catch((error: unknown) => ({
+			files: [],
+			truncated: false,
+			total: 0,
+			...(thrownErrorResult(error, { path: pathFromArgs(args) }) as unknown as Record<string, unknown>),
+		}) as never);
 		},
 	});
 }

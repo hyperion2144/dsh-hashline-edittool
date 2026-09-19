@@ -52,7 +52,7 @@ describe("tool-read structured presentation", () => {
 			expect(value.hashlines[0]?.number).toBe(1);
 			// Issue #71 direction B: no dsh envelope — the hashline legend opens
 			// the model text directly (the web card renders from meta).
-			expect(value.modelText).toMatch(/^ANCHOR:FILELINE/);
+			expect(value.modelText).toMatch(/^ANCHOR:LINE/);
 		});
 	});
 
@@ -68,7 +68,7 @@ describe("tool-read structured presentation", () => {
 					arguments: args,
 				}) as never;
 			const value = (await tool.execute({ path: "p2.txt" }, exec({}))) as { modelText: string; lines: { number: number }[] };
-			expect(value.modelText.startsWith("ANCHOR:FILELINE")).toBe(true);
+			expect(value.modelText.startsWith("ANCHOR:LINE")).toBe(true);
 			expect(value.modelText).not.toContain("<type>file</type>");
 			expect(value.modelText).toMatch(/\[Showing lines 1-2000 of 2500/);
 			expect(value.lines).toHaveLength(2000);
@@ -179,7 +179,7 @@ describe("edit / undo structured value shape", () => {
 			expect(value.added).toBe(1);
 			// 1→1 line replacement produces no line shift below the edit, so the
 			// Shift block is suppressed. The model text carries the new
-			// ANCHOR:FILELINE block instead of a unified diff.
+			// ANCHOR:LINE block instead of a unified diff.
 			expect(value.modelText).toMatch(/Successfully edited in e\.txt/);
 			// Diff rows are `<anchor>:<line>: content` — the anchor, its line, content.
 			expect(value.modelText).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*B!/);

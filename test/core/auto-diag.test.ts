@@ -60,21 +60,55 @@ afterEach(() => {
  */
 function fakeSession(diagnostics: unknown[] | undefined): {
 	session: LspSession;
+	silent: () => void;
 	push: (opts?: { version?: number | undefined }) => void;
 	installPull: (items: readonly unknown[]) => void;
+	delay: (ms: number) => void;
+	openText: (text: string) => void;
 } {
 	const state = {
 		revision: 0,
 		docVersion: 1,
 		pushVersion: undefined as number | undefined,
 		pullItems: undefined as readonly unknown[] | undefined,
+		delayMs: 0,
+
+		sentinel: undefined as string | undefined,
+		silent: false,
+	};
+	const openText = (text: string) => {
+		if (state.silent) return;
+		const nonce = /dsh_probe_[a-z0-9]+_[a-z0-9]+/.exec(text)?.[0];
+		const respond = () => {
+			state.revision += 1;
+			state.docVersion += 1;
+			if (nonce !== undefined) {
+				state.pushVersion = undefined;
+				state.sentinel = `Cannot find name '${nonce}'.`;
+			} else {
+				state.pushVersion = state.docVersion;
+				state.sentinel = undefined;
+			}
+		};
+		if (state.delayMs > 0) setTimeout(respond, state.delayMs);
+		else respond();
 	};
 	return {
 		session: {
 				get diagnosticsRevision() {
 					return state.revision;
 				},
-				getDiagnostics: (uri: string) => (state.revision > 0 ? diagnostics : undefined),
+				getDiagnostics: (uri: string) => {
+					if (state.revision === 0) return undefined;
+					// The SENTINEL state: the probe's guaranteed error, naming the nonce.
+					return state.sentinel !== undefined
+						? [{ message: state.sentinel, severity: 1, range: { start: { line: 0 } } }]
+						: diagnostics;
+				},
+				// The server side of the SENTINEL PROBE (verifiedReport): an open of
+				// probe text reports the nonce error; an open of real text reports the
+				// file's own diagnostics — unless the test silences the server.
+				openText,
 				documentVersion: () => state.docVersion,
 				diagnosticsVersion: () => state.pushVersion,
 				supportsPullDiagnostics: () => state.pullItems !== undefined,
@@ -86,19 +120,26 @@ function fakeSession(diagnostics: unknown[] | undefined): {
 		push: (opts?: { version?: number | undefined }) => {
 				state.revision += 1;
 				state.pushVersion = opts?.version;
+				state.sentinel = undefined;
 			},
 		installPull: (items: readonly unknown[]) => {
 			state.pullItems = items;
 		},
+		silent: () => {
+			state.silent = true;
+		},
+		delay: (ms: number) => {
+			state.delayMs = ms;
+		},
+		openText,
 	};
 }
-
 /** A manager whose typescript slot is ready and serves the given session. */
-function installReady(session: LspSession): void {
+function installReady(session: LspSession | undefined): void {
 	setLspManager({
 		readySessionFor: () => session,
 		readyLanguages: ["typescript"],
-		openDocumentFor: () => () => undefined,
+		openDocumentFor: () => (text: string) => (session as { openText?: (t: string) => void }).openText?.(text),
 	} as never);
 }
 
@@ -131,13 +172,15 @@ function makeInput(overrides: Partial<AfterWriteInput> & { cwd: string }): After
 	// The DEFAULT session is one whose push has ALREADY arrived — the inline
 	// story. Tests that want silence build their own unpushed session.
 	const hot = fakeSession(DIAGNOSTICS);
-	hot.push();
+	// A test may pass `session: undefined` EXPLICITLY (the cold-start story) —
+	// `??` would erase that; only substitute when the key is absent.
+	const session = "session" in rest ? (rest.session as LspSession | undefined) : hot.session;
+	installReady(session);
 	return {
-		session: hot.session,
+		session,
 		languageId: "typescript",
 		workspaceRoot: cwd,
 		uri: pathToFileURL(join(cwd, "a.ts")).href,
-		revisionBefore: 0,
 		toolName: "edit",
 		text: SOURCE,
 		absolutePath: join(cwd, "a.ts"),
@@ -171,7 +214,6 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 		expect(context!.session).toBeUndefined();
 		expect(context!.languageId).toBe("typescript");
 		expect(context!.workspaceRoot).toBe("/repo");
-		expect(context!.revisionBefore).toBe(0);
 		expect(warm).toHaveBeenCalledWith("typescript", "/repo");
 	});
 
@@ -184,7 +226,6 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
 		const context = prepareWriteDiagnostics("/repo/a.ts", "/repo");
 		expect(context).toBeDefined();
-		expect(context!.revisionBefore).toBe(0);
 		expect(context!.uri).toBe(pathToFileURL("/repo/a.ts").href);
 	});
 });
@@ -256,6 +297,9 @@ describe("the async path — a push later than the window", () => {
 		await withTempDir("auto-diag-async-", async (cwd) => {
 			const injected: unknown[] = [];
 			const late = fakeSession(DIAGNOSTICS);
+			// A server that answers the probe LATE: the inline window lapses with
+			// nothing verified, and the background wait finishes the job.
+			late.delay(900);
 			const input = makeInput({
 				cwd,
 				session: late.session,
@@ -270,7 +314,7 @@ describe("the async path — a push later than the window", () => {
 			// But the bounded background wait is listening; when the push lands,
 			// the report is injected — without waking anyone.
 			late.push();
-			await vi.waitFor(() => expect(injected).toHaveLength(1));
+			await vi.waitFor(() => expect(injected).toHaveLength(1), { timeout: 6_000 });
 			const message = injected[0] as {
 				role: string;
 				content: Array<{ text: string }>;
@@ -295,6 +339,7 @@ describe("the async path — a push later than the window", () => {
 			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 			const injected: unknown[] = [];
 			const late = fakeSession(DIAGNOSTICS);
+			late.silent();
 			const input = makeInput({
 				cwd,
 				session: late.session,
@@ -315,6 +360,7 @@ describe("the async path — a push later than the window", () => {
 		await withTempDir("auto-diag-abort-", async (cwd) => {
 			const injected: unknown[] = [];
 			const late = fakeSession(DIAGNOSTICS);
+			late.silent();
 			const controller = new AbortController();
 			const exec = makeExec(cwd, (m) => injected.push(m));
 			(exec as { signal: AbortSignal }).signal = controller.signal;
@@ -476,9 +522,15 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 			setLspManager({
 				readySessionFor: () => session,
 				readyLanguages: ["typescript"],
-				openDocumentFor: () => () => {
-					pushed.set(uri, DIAGNOSTICS);
+				openDocumentFor: () => (text: string) => {
 					revision += 1;
+					const nonce = /dsh_probe_[a-z0-9]+_[a-z0-9]+/.exec(text)?.[0];
+					pushed.set(
+						uri,
+						nonce !== undefined
+							? [{ message: `Cannot find name '${nonce}'.`, severity: 1, range: { start: { line: 0 } } }]
+							: DIAGNOSTICS,
+					);
 				},
 			} as never);
 			const io = localIO();
@@ -535,9 +587,15 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 				setLspManager({
 					readySessionFor: () => session,
 					readyLanguages: ["typescript"],
-					openDocumentFor: () => () => {
-						pushed.set(uri, DIAGNOSTICS);
+					openDocumentFor: () => (text: string) => {
 						revision += 1;
+						const nonce = /dsh_probe_[a-z0-9]+_[a-z0-9]+/.exec(text)?.[0];
+						pushed.set(
+							uri,
+							nonce !== undefined
+								? [{ message: `Cannot find name '${nonce}'.`, severity: 1, range: { start: { line: 0 } } }]
+								: DIAGNOSTICS,
+						);
 					},
 				} as never);
 				const io = localIO();
@@ -652,9 +710,15 @@ describe("seam 1b — write delivers inline diagnostics too (story 20)", () => {
 			setLspManager({
 				readySessionFor: () => session,
 				readyLanguages: ["typescript"],
-				openDocumentFor: () => () => {
-					pushed.set(uri, DIAGNOSTICS);
+				openDocumentFor: () => (text: string) => {
 					revision += 1;
+					const nonce = /dsh_probe_[a-z0-9]+_[a-z0-9]+/.exec(text)?.[0];
+					pushed.set(
+						uri,
+						nonce !== undefined
+							? [{ message: `Cannot find name '${nonce}'.`, severity: 1, range: { start: { line: 0 } } }]
+							: DIAGNOSTICS,
+					);
 				},
 			} as never);
 			const io = localIO();
@@ -691,14 +755,15 @@ describe("BUG-1 regression — a cold start delivers through the async path", ()
 				},
 				openDocumentFor: (_languageId: string, uri: string) => (text: string) => {
 					opened.push(`${uri} ${text.split("\n")[0]}`);
+					late.openText(text);
 				},
 			};
-			setLspManager(manager as never);
 			const input = makeInput({
 				cwd,
 				session: undefined,
 				exec: makeExec(cwd, (m) => injected.push(m)),
 			});
+			setLspManager(manager as never);
 			const started = Date.now();
 			// No inline wait at all: with nobody to wait on, the delivery
 			// hands straight to the background path.
@@ -756,7 +821,7 @@ describe("触发式诊断与版本门控（#131 实测反馈）", () => {
 		});
 	});
 
-	it("stale push 被忽略：版本不匹配的推送不算到达", async () => {
+	it("哨兵保证：探测态的诊断永不投递，交付的必是新内容的报告", async () => {
 		await withTempDir("auto-diag-stale-", async (cwd) => {
 			const inject = vi.fn();
 			const late = fakeSession(DIAGNOSTICS);
@@ -765,11 +830,21 @@ describe("触发式诊断与版本门控（#131 实测反馈）", () => {
 				session: late.session,
 				exec: makeExec(cwd, (m) => inject(m)),
 			});
-			// 过期推送（版本号小于当前文档版本）：落在 inline 窗口内，但必须被忽略。
-			late.push({ version: 0 });
+			// The sentinel flow runs against this fake: the probe state's report
+			// (the nonce error) exists transiently and is NEVER the one delivered —
+			// the gate requires a push without it, i.e. the real content's analysis.
 			const report = await deliverDiagnosticsAfterWrite(input);
-			expect(report).toBeUndefined();
-			// 未推版本号的服务器无法证明新鲜度，推了就收（现状语义不变）。
+			expect(report).toBeDefined();
+			for (const row of report!.rows) {
+				for (const message of row.messages) {
+					expect(message).not.toContain("dsh_probe_");
+				}
+			}
+			// The delivered report IS the real content's analysis.
+			expect(report!.rows.map((r) => r.messages)).toEqual([
+				["error: Cannot find name 'gamma'."],
+				["warning: 'beta' is declared but never used."],
+			]);
 		});
 	});
 });

@@ -15,6 +15,7 @@ import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { languageForPath } from "../ast/language.js";
 import { isAstEnabled, isAstLanguageEnabled, isJsonOutput } from "../config.js";
+import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import { runFileEdits, type PreparedItem } from "../domain/edit/edit-engine.js";
@@ -139,6 +140,7 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 					ok: { type: "boolean", required: true },
 					message: { type: "string" },
 					modelText: { type: "string", required: true },
+					error: errorFieldSchema,
 				},
 			},
 			// The model reads modelText, built in `execute` so it is the right mode
@@ -152,8 +154,9 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 			// and not a `diffs` field. Deriving them instead of carrying them is not
 			// a style choice — an empty `diffs` array reads to the client as "nothing
 			// was applied", so the card silently fell back to raw input/output.
-			presentationMeta: (_args: unknown, value: { readonly path: string; readonly before?: string; readonly after?: string; readonly diffRows?: readonly unknown[] }) =>
-				({
+			presentationMeta: (_args: unknown, value: { readonly path: string; readonly before?: string; readonly after?: string; readonly diffRows?: readonly unknown[]; readonly error?: ErrorMeta }) => {
+				if (value.error !== undefined) return { error: value.error } as never;
+				return ({
 					diffs:
 						value.before !== undefined && value.after !== undefined
 							? computeHunkDiffs(value.path, value.before, value.after)
@@ -164,7 +167,8 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 					...(Array.isArray((value as AstEditValue).diagnostics)
 						? { diagnostics: (value as AstEditValue).diagnostics }
 						: {}),
-				}) as never,
+				}) as never;
+			},
 		},
 		// The tool-level hooks, siblings of `output` (which is where `edit` keeps
 		// them too): `presentResult` is what makes the web draw the diff card, and
@@ -181,7 +185,13 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 		// its undo history under a DIFFERENT workspace — and `undo_last_edit`, which
 		// does wrap, answered "No undo history" for an edit that had happened.
 		async execute(args: { readonly pat: string; readonly out: string; readonly path: string }, exec: ToolRunContext) {
-			return withWorkspace(execCwd(exec), () => runAstEdit(args, exec, io, sandbox));
+			return withWorkspace(execCwd(exec), () => runAstEdit(args, exec, io, sandbox)).catch((error: unknown) => ({
+				path: args.path,
+				pat: args.pat,
+				count: 0,
+				ok: false,
+				...(thrownErrorResult(error, { path: args.path }) as unknown as Record<string, unknown>),
+			}) as never);
 		},
 	});
 }
