@@ -682,9 +682,10 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 
 describe("timing sanity", () => {
 	it("uses the documented budgets", () => {
-		// 800ms: a hot typescript-language-server pushes consistently past
-		// 300ms (#131 field report); 800 stays inside the perception band.
-		expect(INLINE_WINDOW_MS).toBe(800);
+		// 1s: a hot typescript-language-server pushes consistently past
+		// 300ms and the tail runs past 800ms (#131 field report); 1s stays
+		// inside the perception band.
+		expect(INLINE_WINDOW_MS).toBe(1_000);
 		expect(ASYNC_TIMEOUT_MS).toBe(10_000);
 	});
 });

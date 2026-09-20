@@ -279,7 +279,7 @@ async function applyFileGroup(
 			absolutePath,
 			sessionKey,
 		});
-		// #131: inline delivery — waits at most the 300ms window, serves the
+		// #131: inline delivery — waits at most the inline window (1s), serves the
 		// reported anchors, starts the bounded async wait on timeout. Only a
 		// REAL write reports: a noop left the file untouched. On the multi-file
 		// path the waits of parallel groups OVERLAP inside Promise.all, so the

@@ -231,7 +231,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				notifyDocumentWritten(absolute, content);
 				const after = content;
 
-				// #131: inline delivery — at most one 300ms window, then the bounded
+				// #131: inline delivery — at most one inline window (1s), then the bounded
 				// async wait injects at the model's next natural step.
 				const diagnostics =
 					diagCtx === undefined
