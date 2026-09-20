@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-20
+
 ### Fixed
 
 - **The settings card renders on the plugin manager's bundle page (#149)**: the client half registered its configuration card on the retired `settings.plugin.item` slot, which current DSH (0.1.6-alpha.2) consumes nowhere — so the plugin's entry in the plugin manager opened to a switch and component facts with no settings at all. The card now registers on the keyed `plugins.bundle.config` slot under the bundle's package name (`dsh-hashline-edittool`), the key the page indexes entries by, and answers the page's two views: `summary` renders the one-liner, `page` renders the form without the card chrome the page now draws (the card's own title/description header went with it). Declared behavior change: a runtime old enough to still consume `settings.plugin.item` shows no settings card — that slot is dead in every runtime this release targets. The view decision and summary text move to the new pure seam `client/src/client/settings-model.ts` so the unit suite stays free of the primitives import graph, and `verify-bundle.mjs` now pins the new slot/key against the shipped artifact.
