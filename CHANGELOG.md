@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every line-number-producing tool reports lines in read's line space (#147)**: `grep`, `lsp`, `ast_grep` and `ast_edit` used to split the raw `io.readText` text on `\n` only, while `read` (and the anchor allocator) normalize through `toLF` — on any file carrying bare CRs (progress-bar / ANSI overwrite logs), their line numbers, row contents and anchor pairings drifted from read's by the cumulative number of CRs above each line (a 1.14 MB log with 290 stray CRs read as 3774 grep lines vs 4064 read lines, offsets 173→198→229). All four now fold CRLF / bare CR / LF to LF at the read boundary and hand that one text to the matcher, the AST client, the language server and the row splitter alike, so a match row is byte-identical to the read row at the same number and directly editable. Declared behavior change: a regex that matched ACROSS a bare-CR boundary (`alpha.r` inside `alpha\rbeta`) no longer matches — the CR is a line boundary now; grep also stops showing invisible trailing CRs on CRLF files' rows. The LF-only `linesOf` duplicate in tool-grep is gone (`visLines` serves the json context lookup). New suite: `test/core/issue-147-line-space.test.ts` (9 cases: grep text/json/cross-CR/CRLF, lsp symbols/sync/diagnostics, ast_grep/ast_edit against a real in-process tree-sitter worker).
+
 ## [0.8.0] - 2026-09-19
 
 ### Added

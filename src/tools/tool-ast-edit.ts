@@ -29,6 +29,7 @@ import { canon, contentChecksum } from "../hashline/hash-assign.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController } from "../infra/sandbox.js";
 import { splitLines } from "../infra/utils.js";
+import { toLF } from "../render/edit-diff.js";
 import {
 	deliverDiagnosticsAfterWrite,
 	diagnosticsMeta,
@@ -234,7 +235,8 @@ async function runAstEdit(
 			`${E_AST_DISABLED} AST is on, but turned off for ${language.displayName} — the per-language switches sit under the master switch in the hashline settings.`
 		);
 	}
-	const text = await io.readText(absolutePath);
+	// Issue #147 (ADR-0008): the READ LINE SPACE — matches, sourceLines and served keys live in the space read serves.
+	const text = toLF(await io.readText(absolutePath));
 	let matches: readonly GrepMatchLike[];
 	try {
 		matches = await getAstClient().grepPattern({

@@ -21,6 +21,7 @@ import { languageForPath } from "../ast/language.js";
 import { getLspManager } from "../lsp/manager.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { splitLines } from "../infra/utils.js";
+import { toLF } from "../render/edit-diff.js";
 // The SAME anchor assigner `read` uses, so a row the card shows carries the
 // marker an `edit` accepts — otherwise the card would be decorative.
 import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashline/hash-assign.js";
@@ -294,7 +295,8 @@ export function buildLspTool(io: FileIO) {
 			}
 			// Read once: the sync below needs the text, and a position-based operation
 			// needs the same text to turn a line number into a range.
-			const text = await io.readText(absolutePath);
+			// Issue #147 (ADR-0008): the READ LINE SPACE — the server sync and every row below live in the space read serves.
+			const text = toLF(await io.readText(absolutePath));
 			sync(text);
 			if (args.operation === "diagnostics") {
 				// THE FRESHNESS GUARANTEE (verifiedReport): pull-first for capable

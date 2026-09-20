@@ -9,12 +9,19 @@ export function normalizeFilePath(record: Record<string, unknown>): void {
   }
 }
 
+/**
+ * Split ALREADY-NORMALIZED text into lines — the read line space (issue #147):
+ * a caller holding raw file text must run it through `toLF` first, because the
+ * line-index math everywhere above (anchors, diffs, buildIdx) assumes CRLF and
+ * bare CR were already folded to LF.
+ */
 export function splitLines(text: string): string[] {
   if (text.length === 0) return [""];
   const lines = text.split("\n");
   return text.endsWith("\n") ? lines.slice(0, -1) : lines;
 }
 
+/** Same split as `splitLines` — same toLF precondition — but an empty text yields NO lines (display use). */
 export function visLines(text: string): string[] {
   if (text.length === 0) return [];
   const lines = text.split("\n");

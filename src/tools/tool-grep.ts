@@ -37,6 +37,7 @@ import { hashlineHeader, contextLinesCfg } from "../hashline/hash-assign.js";
 import { fmtHashlineRow, fmtMarker, anchorWidth } from "../hashline/hash-assign.js";
 import { visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
+import { toLF } from "../render/edit-diff.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
 	capGrepMeta,
@@ -97,7 +98,10 @@ function buildMatcher(pattern: string, regex: boolean): (line: string) => boolea
 	return (line) => compiled.test(line);
 }
 
-/** Pure helper: extract sections from one file's content given a matcher. */
+/** Pure helper: extract sections from one file's content given a matcher.
+ * `content` must already be in the read line space (toLF — issue #147): the row
+ * positions index into `content`'s lines AND into `hashes`, which is always
+ * computed from toLF text. */
 export async function grepFileContent(
 	path: string,
 	content: string,
@@ -395,8 +399,14 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 					} catch {
 						continue;
 					}
-					const hashes = await lineHashes(raw, file);
-					const section = await grepFileContent(file, raw, hashes, params.pattern, opts);
+					// Issue #147 (ADR-0008): the READ LINE SPACE — every line number this tool reports is
+					// computed in the space read serves: toLF folds CRLF, bare CR and LF each to
+					// one line break, so a progress-bar log's \r overwrites count as lines
+					// exactly as pwsh counts them, and the toLF-based anchors pair with these
+					// rows again instead of drifting by the cumulative CR count above each line.
+					const text = toLF(raw);
+					const hashes = await lineHashes(text, file);
+					const section = await grepFileContent(file, text, hashes, params.pattern, opts);
 					if (!section) continue;
 					// Truncation = the per-file cap was hit.
 					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
@@ -443,10 +453,10 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 						};
 						for (const m of section.matches) {
 								matches[anchorAt(m.position)] =
-								rowsByPos.get(m.position)?.content ?? linesOf(raw)[m.position] ?? "";
-							for (let k = Math.max(0, m.position - context); k <= Math.min(linesOf(raw).length - 1, m.position + context); k++) {
+								rowsByPos.get(m.position)?.content ?? visLines(text)[m.position] ?? "";
+							for (let k = Math.max(0, m.position - context); k <= Math.min(visLines(text).length - 1, m.position + context); k++) {
 								if (k === m.position) continue;
-								matches[anchorAt(k)] = rowsByPos.get(k)?.content ?? linesOf(raw)[k] ?? "";
+								matches[anchorAt(k)] = rowsByPos.get(k)?.content ?? visLines(text)[k] ?? "";
 							}
 						}
 						jsonFiles.push({ path: displayPath, matches });
@@ -516,13 +526,6 @@ export function registerGrepTool(
 }
 
 
-/** Split content for json context lookup (mirrors splitLines semantics). */
-function linesOf(content: string): string[] {
-	if (content.length === 0) return [];
-	const lines = content.split("\n");
-	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-	return lines;
-}
 
 
 

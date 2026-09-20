@@ -31,6 +31,7 @@ import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
 import { splitLines } from "../infra/utils.js";
+import { toLF } from "../render/edit-diff.js";
 
 /** The description the model reads — it has to teach the pattern syntax. */
 function astGrepDescription(): string {
@@ -259,7 +260,8 @@ export function buildAstGrepTool(io: FileIO) {
 					`${E_AST_DISABLED} AST is on, but turned off for ${language.displayName} — the per-language switches sit under the master switch in the hashline settings.`
 				);
 			}
-			const text = await io.readText(absolutePath);
+			// Issue #147 (ADR-0008): the READ LINE SPACE — the AST client and the row splitter see the space read serves.
+			const text = toLF(await io.readText(absolutePath));
 			// NO PATTERN means the OUTLINE. It is a different question from matching
 			// and it is answered by a different primitive, but it is the same KIND of
 			// question — what is the shape of this code — and that is why it lives
