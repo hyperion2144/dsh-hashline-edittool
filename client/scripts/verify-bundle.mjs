@@ -135,16 +135,18 @@ if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 for (const entry of ctx.slots.registeredEntries) {
 	if (entry && typeof entry === "object" && typeof entry.component !== "function") throw new Error("component is not a function");
 }
-// The settings card is the one registration the Host pairs by NAMESPACE, so the
-// key is a contract rather than a label: a typo here shows no card at all.
+// The settings card registers on the plugin manager's bundle-config slot,
+// keyed by the bundle's package name: the page indexes `plugins.bundle.config`
+// by `pkg.name`, and a typo in either the slot or the key shows no card at all
+// (#149 — the predecessor slot `settings.plugin.item` has no consumer left).
 const settingsCards = ctx.slots.registeredEntries
-	.filter((entry) => entry?.options?.name === "settings.plugin.item")
+	.filter((entry) => entry?.options?.name === "plugins.bundle.config")
 	.map((entry) => `${entry.options.key}`);
-if (JSON.stringify(settingsCards) !== JSON.stringify(["hashline"])) {
+if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool"])) {
 	throw new Error(`unexpected settings card registration: ${settingsCards.join(", ")}`);
 }
-if (ctx.slots.injectCalls.filter((key) => key === "settings.plugin.item").length !== 1) {
-	throw new Error("expected the settings card to inject the settings.plugin.item declaration");
+if (ctx.slots.injectCalls.filter((key) => key === "plugins.bundle.config").length !== 1) {
+	throw new Error("expected the settings card to inject the plugins.bundle.config declaration");
 }
 // The namespace is the join key the Host pairs on; binding the wrong one would
 // render a card that edits somebody else's settings.

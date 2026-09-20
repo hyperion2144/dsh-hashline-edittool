@@ -14,17 +14,16 @@
  * format every output depends on, AST 管理 the grammars, 语言服务器 the semantic
  * half. Each answers a question the others cannot.
  *
- * The chrome is a faithful copy of the SHIPPED plugin card, and the reason is
- * documented in their own source: a settings card stacks its name over its
- * description, while `DisclosureRow` lays the two SIDE BY SIDE — it is the
- * "shared 24px disclosure chrome for compact flow rows", i.e. for tool-call
- * rows, not for this tab. Using it here produced a bare dropdown line, which is
- * not what the neighbouring cards look like.
- *
- * So the card renders the same structure the shipped one does — `<li>`, a
- * header button holding a stacked name/description, then a collapsible body —
- * and carries the shipped CSS rules verbatim (extracted from the published
- * bundle, which inlines that private module), with the design tokens intact.
+ * The card renders in the two views the plugin manager asks of every
+ * configuration entry (`PluginConfigViewProps`): `summary` — the one-liner
+ * under the bundle page's title — and `page` — the form itself. The page
+ * draws the title, the icon and the crumb, so the form wears NO card chrome
+ * of its own: an earlier revision wrapped it in a shipped-style collapsible
+ * `<li>` with a header of its own, stacking a second “Hashline 工具配置”
+ * heading under the page's package title. The tabs inside still follow the
+ * settings page's own tab language (plain label, underline on the active
+ * one), and the manager CSS remains the shipped rules with the design
+ * tokens intact, minus the card chrome this card no longer draws.
  *
  * Three kinds of catalog entry stay visibly distinct:
  *   builtin   内置 · version, and NO install/remove control at all
@@ -37,10 +36,13 @@ import { useCallback, useEffect, useMemo, useReducer, useState, type ReactElemen
 import { Button, Pill, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
 import type { SettingsScope, SettingsScopeSnapshot } from "./types.js";
+import { requestedView, settingsSummaryText, type SettingsCardView } from "./settings-model.js";
 
-/** Props the slot hands the card (the controller's `inject()` result). */
+/** Props the slot hands the card: the bound scope plus the view it asks for. */
 export interface SettingsCardProps {
 	readonly scope: SettingsScope;
+	/** Absent means the page view — the full form is the safe default. */
+	readonly view?: SettingsCardView;
 }
 
 /** Where the manager's facts live. */
@@ -113,8 +115,6 @@ const ORIGIN_TEXT: Record<string, string> = {
 	installed: "卡片安装",
 };
 
-/** What the card says this governs — the shipped cards all carry a description. */
-const CARD_DESCRIPTION = "read / edit / grep 的行为与语言支持。";
 
 /** One catalog row, as the route reports it. */
 interface LanguageRow {
@@ -130,25 +130,13 @@ interface LanguageRow {
 }
 
 /**
- * Styles copied from the shipped `PluginCard.module.css`.
- *
- * Verbatim apart from the class prefix: the selectors are renamed so they cannot
- * collide, but every value — the `.5px` hairline, the 16px radius, the
- * `layer-3`/`layer-2` open state, the 15px/600 name over a 13px tertiary
- * description — is theirs, because matching by eye is how a card ends up
- * almost-but-not-quite aligned with its neighbours.
+ * Copied from the shipped `PluginCard.module.css`, minus the card chrome the
+ * manager page draws for us now: the selectors that remain are renamed so they
+ * cannot collide, and every value — the `.5px` hairline, the 15px/600 label
+ * over its 13px tertiary hint — is theirs, because matching by eye is how a
+ * card ends up almost-but-not-quite aligned with its neighbours.
  */
 const CSS_TEXT = [
-	".dshl-mgr-card{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);border-radius:16px;list-style:none;transition:border-color .16s,background .16s}",
-	".dshl-mgr-card--open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}",
-	".dshl-mgr-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}",
-	".dshl-mgr-head-text{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}",
-	".dshl-mgr-name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}",
-	".dshl-mgr-description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}",
-	".dshl-mgr-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}",
-	".dshl-mgr-chevron--open{transform:rotate(180deg)}",
-	".dshl-mgr-body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}",
-	// The settings page's own tab language: a plain label with an underline on
 	// the active one, so these read as tabs rather than as buttons.
 	".dshl-mgr-tabs{display:flex;gap:18px;margin:12px 0 4px;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
 	".dshl-mgr-tab{appearance:none;background:0 0;border:0;border-bottom:2px solid transparent;padding:6px 0 8px;font:inherit;font-size:13px;color:var(--dsw-alias-label-tertiary);cursor:pointer}",
@@ -223,7 +211,7 @@ function ensureManagerStyles(): void {
 	document.head.appendChild(tag);
 }
 
-/** `Switch` and the chevron icon are runtime-only in our pinned type copy. */
+/** `Switch` is runtime-only in our pinned type copy. */
 interface SwitchLike {
 	(props: {
 		readonly checked: boolean;
@@ -232,12 +220,7 @@ interface SwitchLike {
 		readonly onChange: (checked: boolean) => void;
 	}): ReactElement | null;
 }
-interface IconLike {
-	(props: { readonly className?: string }): ReactElement | null;
-}
 const Switch = (primitives as unknown as { Switch?: SwitchLike }).Switch;
-const Chevron =
-	(primitives as unknown as { IconChevronDownOutline14?: IconLike }).IconChevronDownOutline14;
 
 /** Human-readable byte size; the figure a user judges a download by. */
 function bytesText(size: number | undefined): string {
@@ -511,11 +494,26 @@ function LanguageRowItem(props: {
 }
 
 /**
- * The card.
+ * The card the slot hands over: dispatch on the view the manager page asks
+ * for. No hooks live here on purpose — the summary must stay a one-liner
+ * without dragging the form's catalog fetches into the page's first paint.
+ *
+ * @param props - the bound scope and the requested view.
+ */
+export function HashlineSettingsCard(props: SettingsCardProps): ReactElement {
+	if (requestedView(props.view) === "summary") {
+		return <>{settingsSummaryText()}</>;
+	}
+	return <HashlineSettingsPageView scope={props.scope} />;
+}
+
+/**
+ * The page view: the whole form, no card chrome of its own — the bundle page
+ * draws the title, the icon and the crumb.
  *
  * @param props - the bound scope.
  */
-export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement {
+function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }): ReactElement {
 	ensureManagerStyles();
 	const snapshot = useScopeSnapshot(scope);
 	const ast = readAst(snapshot);
@@ -538,7 +536,6 @@ export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement
 	const [separatorDraft, setSeparatorDraft] = useState(core.separator);
 	/** Same draft-on-blur treatment for the numeric field. */
 	const [contextDraft, setContextDraft] = useState(String(core.contextLines));
-	const [open, setOpen] = useState(false);
 	/** Which of the card's two sections is showing. */
 	const [tab, setTab] = useState<"core" | "ast" | "lsp">("core");
 	const [query, setQuery] = useState("");
@@ -676,445 +673,414 @@ export function HashlineSettingsCard({ scope }: SettingsCardProps): ReactElement
 	// Not ready means the Host has not served this namespace yet; offering
 	// controls that cannot write would be worse than saying nothing.
 	if (snapshot.status !== "ready") {
-		return (
-			<li className="dshl-mgr-card">
-				<div className="dshl-mgr-header">
-					<span className="dshl-mgr-head-text">
-						<span className="dshl-mgr-name">语言管理器</span>
-						<span className="dshl-mgr-description">设置尚未就绪。</span>
-					</span>
-				</div>
-			</li>
-		);
+		return <p className="dshl-mgr-hint">设置尚未就绪。</p>;
 	}
 
 	return (
-		<li className={`dshl-mgr-card${open ? " dshl-mgr-card--open" : ""}`}>
-			<button
-				type="button"
-				className="dshl-mgr-header"
-				aria-expanded={open}
-				onClick={() => setOpen((value) => !value)}
-			>
-				<span className="dshl-mgr-head-text">
-					<span className="dshl-mgr-name">Hashline 工具配置</span>
-					<span className="dshl-mgr-description">{CARD_DESCRIPTION}</span>
-				</span>
-				{Chevron === undefined ? (
-					<span className={`dshl-mgr-chevron${open ? " dshl-mgr-chevron--open" : ""}`}>▾</span>
-				) : (
-					<Chevron className={`dshl-mgr-chevron${open ? " dshl-mgr-chevron--open" : ""}`} />
-				)}
-			</button>
-
-			{open ? (
-				<div className="dshl-mgr-body">
+		<>
+			{/*
+			 * Two sections, one card. Cards are dispatched by settings NAMESPACE
+			 * and both live under `hashline`, so two cards would need two
+			 * namespaces — and a namespace with nothing in it is a slot reserved
+			 * for nothing. A switch keeps one namespace and still separates the two
+			 * layers, which is the part that matters to a reader.
+			 */}
+			<div className="dshl-mgr-tabs" role="tablist">
+				<button
+					type="button"
+					role="tab"
+					aria-selected={tab === "core"}
+					className={`dshl-mgr-tab${tab === "core" ? " dshl-mgr-tab--active" : ""}`}
+					onClick={() => setTab("core")}
+				>
+					行为
+				</button>
+				<button
+					type="button"
+					role="tab"
+					aria-selected={tab === "ast"}
+					className={`dshl-mgr-tab${tab === "ast" ? " dshl-mgr-tab--active" : ""}`}
+					onClick={() => setTab("ast")}
+				>
+					AST 管理
+				</button>
+				<button
+					type="button"
+					role="tab"
+					aria-selected={tab === "lsp"}
+					className={`dshl-mgr-tab${tab === "lsp" ? " dshl-mgr-tab--active" : ""}`}
+					onClick={() => setTab("lsp")}
+				>
+					语言服务器
+				</button>
+			</div>
+			{/*
+			 * ABOVE the tab content, not below it.
+			 *
+			 * This is where the result of an action is announced, and it used to sit after
+			 * every tab — under a list nineteen rows long. Clicking 安装 and getting an
+			 * error scrolled off the bottom is indistinguishable from getting nothing,
+			 * which is exactly how it was reported: the button went back to 安装 and no
+			 * reason appeared.
+			 */}
+			{notice === undefined ? null : (
+				<p className="dshl-mgr-hint" role="status">
+					{notice}
+				</p>
+			)}
+			{error === undefined ? null : (
+				<p className="dshl-mgr-error" role="status">
+					{error}
+				</p>
+			)}
+			{tab === "core" ? (
+				<>
 					{/*
-					 * Two sections, one card. Cards are dispatched by settings NAMESPACE
-					 * and both live under `hashline`, so two cards would need two
-					 * namespaces — and a namespace with nothing in it is a slot reserved
-					 * for nothing. A switch keeps one namespace and still separates the two
-					 * layers, which is the part that matters to a reader.
+					 * The settings that shape every ROW, which had no control anywhere.
+					 * They were reachable only by editing settings.yaml, so the card showed
+					 * the two capability sections while the behaviour every one of their rows
+					 * depends on — the character between anchor and content, whether an edit
+					 * must re-state the line it touches — was invisible.
 					 */}
-					<div className="dshl-mgr-tabs" role="tablist">
-						<button
-							type="button"
-							role="tab"
-							aria-selected={tab === "core"}
-							className={`dshl-mgr-tab${tab === "core" ? " dshl-mgr-tab--active" : ""}`}
-							onClick={() => setTab("core")}
-						>
-							行为
-						</button>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={tab === "ast"}
-							className={`dshl-mgr-tab${tab === "ast" ? " dshl-mgr-tab--active" : ""}`}
-							onClick={() => setTab("ast")}
-						>
-							AST 管理
-						</button>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={tab === "lsp"}
-							className={`dshl-mgr-tab${tab === "lsp" ? " dshl-mgr-tab--active" : ""}`}
-							onClick={() => setTab("lsp")}
-						>
-							语言服务器
-						</button>
-					</div>
-					{/*
-					 * ABOVE the tab content, not below it.
-					 *
-					 * This is where the result of an action is announced, and it used to sit after
-					 * every tab — under a list nineteen rows long. Clicking 安装 and getting an
-					 * error scrolled off the bottom is indistinguishable from getting nothing,
-					 * which is exactly how it was reported: the button went back to 安装 and no
-					 * reason appeared.
-					 */}
-					{notice === undefined ? null : (
-						<p className="dshl-mgr-hint" role="status">
-							{notice}
-						</p>
-					)}
-					{error === undefined ? null : (
-						<p className="dshl-mgr-error" role="status">
-							{error}
-						</p>
-					)}
-					{tab === "core" ? (
-						<>
-							{/*
-							 * The settings that shape every ROW, which had no control anywhere.
-							 * They were reachable only by editing settings.yaml, so the card showed
-							 * the two capability sections while the behaviour every one of their rows
-							 * depends on — the character between anchor and content, whether an edit
-							 * must re-state the line it touches — was invisible.
-							 */}
-							<h4 className="dshl-mgr-section">行格式</h4>
-							<div className="dshl-mgr-master">
-								<span className="dshl-mgr-label">分隔符</span>
-								<input
-									className="dshl-mgr-search"
-									style={{ maxWidth: "8ch" }}
-									value={separatorDraft}
-									disabled={!writable}
-									onChange={(event) => setSeparatorDraft(event.target.value)}
-									onBlur={() =>
-										void write("separator", () =>
-											separatorDraft === ""
-												? scope.unset("separator")
-												: scope.set("separator", separatorDraft),
-										)
-									}
-								/>
-								<span className="dshl-mgr-grow" />
-								<span className="dshl-mgr-hint">
-									锚点与内容之间。行号与锚点之间永远是 `:`，不可配置。
-								</span>
-							</div>
-
-							<h4 className="dshl-mgr-section">输出</h4>
-							<div className="dshl-mgr-master">
-								<span className="dshl-mgr-label">JSON 输出</span>
-								<span className="dshl-mgr-grow" />
-								{/*
-								 * A switch rather than a free-text field: `output_format` is a two-value
-								 * enum in the schema, and offering a text box for it would let the card
-								 * write a value the reader will not accept.
-								 */}
-								{renderSwitch(core.outputFormat === "json", !writable, "output", (checked) =>
-									void write("output", () =>
-										checked ? scope.set("output_format", "json") : scope.unset("output_format"),
-									),
-								)}
-							</div>
-							<div className="dshl-mgr-master">
-								<span className="dshl-mgr-label">上下文行数</span>
-								<input
-									className="dshl-mgr-search"
-									style={{ maxWidth: "8ch" }}
-									type="number"
-									min={0}
-									max={20}
-									value={contextDraft}
-									disabled={!writable}
-									onChange={(event) => setContextDraft(event.target.value)}
-									onBlur={() => {
-										const parsed = Number.parseInt(contextDraft, 10);
-										void write("context", () =>
-											Number.isInteger(parsed) && parsed >= 0 && parsed <= 20
-												? scope.set("context_lines", parsed)
-												: scope.unset("context_lines"),
-										);
-									}}
-								/>
-								<span className="dshl-mgr-grow" />
-								<span className="dshl-mgr-hint">diff 与错误回显里上下各留几行（0–20）。域外或非数字则恢复默认。</span>
-							</div>
-
-							<h4 className="dshl-mgr-section">编辑</h4>
-							<div className="dshl-mgr-master">
-								<span className="dshl-mgr-label">重述被改的行</span>
-								<span className="dshl-mgr-grow" />
-								{renderSwitch(core.requireLineContent, !writable, "require", (checked) =>
-									void write("require", () =>
-										checked ? scope.set("require_line_content", true) : scope.unset("require_line_content"),
-									),
-								)}
-							</div>
-							<p className="dshl-mgr-hint">
-								开启后每个锚点必须连同行内容一起声明（`{'{'}`anchor, line{'}'}`），声明与磁盘不符就拒绝——防的是“拿着旧读的数去改新文件”。
-							</p>
-						</>
-					) : tab === "ast" ? (
-						<>
+					<h4 className="dshl-mgr-section">行格式</h4>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">总开关</span>
-						<span className="dshl-mgr-hint">关闭时 ast_grep / ast_edit 拒绝运行（read / edit 不受影响）</span>
+						<span className="dshl-mgr-label">分隔符</span>
+						<input
+							className="dshl-mgr-search"
+							style={{ maxWidth: "8ch" }}
+							value={separatorDraft}
+							disabled={!writable}
+							onChange={(event) => setSeparatorDraft(event.target.value)}
+							onBlur={() =>
+								void write("separator", () =>
+									separatorDraft === ""
+										? scope.unset("separator")
+										: scope.set("separator", separatorDraft),
+								)
+							}
+						/>
 						<span className="dshl-mgr-grow" />
-						{overridden ? (
-							<Button size="sm" disabled={!writable} onClick={() => void write("reset", () => scope.unset("ast"))}>
-								恢复默认
-							</Button>
-						) : (
-							<span className="dshl-mgr-hint">继承预设</span>
-						)}
-						{/* 
-						 * `checked` is the CURRENT state, not its negation. It was inverted here,
-						 * which produced two symptoms from one bug: the switch read OFF while
-						 * settings.yaml said true, and clicking it sent the value it already had —
-						 * so nothing changed and the control looked dead.
+						<span className="dshl-mgr-hint">
+							锚点与内容之间。行号与锚点之间永远是 `:`，不可配置。
+						</span>
+					</div>
+
+					<h4 className="dshl-mgr-section">输出</h4>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">JSON 输出</span>
+						<span className="dshl-mgr-grow" />
+						{/*
+						 * A switch rather than a free-text field: `output_format` is a two-value
+						 * enum in the schema, and offering a text box for it would let the card
+						 * write a value the reader will not accept.
 						 */}
-						{renderSwitch(ast.enabled, !writable, "master", (checked) =>
-							void write("master", () => scope.set("ast", { ...ast, enabled: checked })),
+						{renderSwitch(core.outputFormat === "json", !writable, "output", (checked) =>
+							void write("output", () =>
+								checked ? scope.set("output_format", "json") : scope.unset("output_format"),
+							),
 						)}
 					</div>
-
-					<input
-						className="dshl-mgr-search"
-						placeholder={`搜索语言或扩展名（${catalog.rows.length} 个条目）`}
-						value={query}
-						onChange={(event) => setQuery(event.target.value)}
-					/>
-
-					{inFlight === undefined ? null : (
-						<button type="button" className="dshl-mgr-cancel" onClick={() => inFlight.abort()}>
-							取消安装
-						</button>
-					)}
-
-					{catalog.failure === undefined ? null : (
-						<p className="dshl-mgr-error" role="status">
-							无法读取语言目录：{catalog.failure}
-						</p>
-					)}
-
-					<div className="dshl-mgr-columns">
-						<section>
-							<h4 className="dshl-mgr-section">已可用 · {usable.length}</h4>
-							<ul className="dshl-mgr-list">
-								{usable.map((row) => (
-									<LanguageRowItem
-										key={row.id}
-										row={row}
-										astEnabled={ast.enabled}
-										disabled={ast.languages[row.id]?.enabled === false}
-										// Presence, not value: only an explicit entry is an override.
-										writable={writable}
-										overridden={ast.languages[row.id] !== undefined}
-										busy={busy}
-										onToggle={() => {
-											const languages = { ...ast.languages };
-											// Absent = inherit the master switch; only an explicit
-											// `false` is stored, and clearing is DELETION.
-											if (languages[row.id]?.enabled === false) delete languages[row.id];
-											else languages[row.id] = { enabled: false };
-											void write(`lang:${row.id}`, () => scope.set("ast", { ...ast, languages }));
-										}}
-										onRemove={() => void callRoute("uninstall", row.id)}
-									/>
-								))}
-							</ul>
-						</section>
-						<section>
-							<h4 className="dshl-mgr-section">可添加 · {available.length}</h4>
-							<ul className="dshl-mgr-list">
-								{available.map((row) => (
-									<LanguageRowItem
-										key={row.id}
-										row={row}
-										astEnabled={ast.enabled}
-										// No switch here: this row's grammar is not on disk, so it cannot be
-										// used yet whatever the enable list says. 添加 is the only action that
-										// changes that, and the row offers exactly it.
-										writable={writable}
-										// Reported even here: a language can be named explicitly in settings
-										// before its grammar is ever installed.
-										overridden={ast.languages[row.id] !== undefined}
-										busy={busy}
-										onToggle={() => undefined}
-										onInstall={() => {
-											const controller = new AbortController();
-											setInFlight(controller);
-											void callRoute("install", row.id, controller.signal).finally(() => setInFlight(undefined));
-										}}
-									/>
-								))}
-								{available.length === 0 ? <li className="dshl-mgr-hint">没有匹配的条目</li> : null}
-							</ul>
-						</section>
-					</div>
-						{updates.length === 0 ? null : (
-							// A NOTICE, never an action. The newer grammar's hash was published by
-							// the registry and nothing here has measured it against a catalog, so
-							// the honest thing is to say one exists rather than to offer it — and
-							// to say WHERE it comes from, because "update" with no object reads as
-							// a button that is missing rather than a decision already made.
-							<p className="dshl-mgr-hint">
-								{updates.length} 门文法有新版本（
-								{updates.map((row) => `${row.id} ${row.installed}→${row.latest}`).join("、")}）——跟随插件更新获取。
-							</p>
-						)}
-						</>
-					) : null}
-					{tab === "lsp" ? (
-						<>
-
-
-					{/*
-					 * The SERVER half, in the same card as the grammar half because the two
-					 * answer the same question from different layers: a tree-sitter grammar
-					 * gives structure, a language server gives cross-file reference
-					 * precision. References fall back to heuristic scanning without one, and
-					 * the reason is the part that was previously unreachable from the screen.
-					 */}
-					<h4 className="dshl-mgr-section">语言服务器</h4>
-					{lsp.failure !== undefined ? (
-						<p className="dshl-mgr-error" role="status">
-							无法读取语言服务器状态：{lsp.failure}
-						</p>
-					) : !lsp.available ? (
-						// A state, not a failure: the LSP packages are not installed by default.
-						<p className="dshl-mgr-hint">{lsp.message ?? "语言服务器客户端未启用，所以语义操作没有可用的服务器。"}</p>
-					) : (
-						<ul className="dshl-mgr-list">
-							{lsp.rows.map((entry) => (
-								<li key={entry.languageId} className="dshl-mgr-row">
-									<StateDot state={entry.ready ? "done" : entry.server === undefined ? "error" : "warning"} size={8} />
-									<span className="dshl-mgr-display-name">{entry.languageId}</span>
-									<span className="dshl-mgr-ext">
-										{entry.server === undefined
-											? "未找到"
-											: `${entry.server.displayName} · ${ORIGIN_TEXT[entry.server.origin] ?? entry.server.origin}`}
-									</span>
-									{/*
-									 * TWO SLOTS, not one. The status is where a message goes; the
-									 * button is where the action lives, and the action does not
-									 * disappear because an attempt failed.
-									 *
-									 * It did exactly that before: a failure replaced the button,
-									 * so a failed install could not be retried without reloading
-									 * the page — the one moment you most want to try again.
-									 */}
-									{/*
-									 * TWO SLOTS, and the error is the one that wraps.
-									 *
-									 * A short status reads fine beside the name; a failed install does
-									 * not, and squeezing it into the same slot truncated the one thing
-									 * the reader needs. So the status stays inline and the error —
-									 * rendered AFTER the button — takes a line of its own below.
-									 */}
-									{installing === entry.languageId ? (
-										<span className="dshl-mgr-hint">安装中，请稍候</span>
-									) : failedInstall?.languageId === entry.languageId ? null : entry.ready ? null : (
-										<span className="dshl-mgr-hint">{entry.message ?? entry.reason}</span>
-									)}
-									<span className="dshl-mgr-grow" />
-									{!entry.ready && entry.server === undefined && entry.canInstall === true ? (
-										// The host's own Button. The label says 重试 once this language has
-										// failed once — the action is available either way, and saying so
-										// is the difference between "it broke" and "it is broken".
-										<Button size="sm" disabled={installing !== undefined} onClick={() => void installServer(entry.languageId)}>
-											{failedInstall?.languageId === entry.languageId ? "重试" : "安装"}
-										</Button>
-									) : null}
-									{/* LAST in DOM order, so its `flex:1 0 100%` wraps BELOW the button
-									 * instead of shoving the button onto a second line. */}
-									{failedInstall?.languageId === entry.languageId ? (
-										<span className="dshl-mgr-error">失败：{failedInstall.message}</span>
-									) : null}
-								</li>
-							))}
-						</ul>
-					)}
-					{/* #131: the delivery switch, beside the servers it governs. The card
-					 * shows the effective state; only an explicit `false` turns it off, and
-					 * switching it back on writes that value explicitly so the file says
-					 * what the card shows. */}
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">自动诊断回送</span>
-						<span className="dshl-mgr-hint">edit / write / undo 落盘后自动把语言服务器诊断回送模型（默认开）</span>
-						<span className="dshl-mgr-grow" />
-						{renderSwitch(
-							autoDiag,
-							!writable,
-							"autoDiag",
-							(checked) =>
-								void write("autoDiag", () =>
-									scope.set("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
-								),
-						)}
-					</div>
-					{/*
-					 * Naming a server is INTENT and lives here; whether that command exists
-					 * is a fact the status list above reports. Keeping them apart is what
-					 * lets a typo be VISIBLE — it shows as 未找到 with the command beside it
-					 * — instead of being silently refused at the point of entry.
-					 */}
-					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">指定服务器</span>
-						<span className="dshl-mgr-hint">按语言指定命令；留空则用探测到的</span>
-						<span className="dshl-mgr-grow" />
-					</div>
-					{Object.keys(namedServers).length === 0 ? (
-						<p className="dshl-mgr-hint">没有指定任何服务器，全部使用探测结果。</p>
-					) : (
-						<ul className="dshl-mgr-list">
-							{Object.entries(namedServers).map(([id, command]) => (
-								<li key={id} className="dshl-mgr-row">
-									<span className="dshl-mgr-display-name">{id}</span>
-									<span className="dshl-mgr-ext" title={command}>{command}</span>
-									<span className="dshl-mgr-grow" />
-									<Button
-										size="sm"
-										disabled={!writable}
-										onClick={() => {
-											const servers = { ...namedServers };
-											delete servers[id];
-											void write(`lsp:${id}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
-										}}
-									>
-										移除
-									</Button>
-								</li>
-							))}
-						</ul>
-					)}
-					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">上下文行数</span>
 						<input
 							className="dshl-mgr-search"
-							placeholder="语言，如 typescript"
-							value={serverLang}
-							onChange={(event) => setServerLang(event.target.value)}
-						/>
-						<input
-							className="dshl-mgr-search"
-							placeholder="命令，如 /usr/local/bin/tsserver"
-							value={serverCommand}
-							onChange={(event) => setServerCommand(event.target.value)}
-						/>
-						<Button
-							size="sm"
-							variant="primary"
-							disabled={!writable || serverLang.trim() === "" || serverCommand.trim() === ""}
-							onClick={() => {
-								const servers = { ...namedServers, [serverLang.trim()]: serverCommand.trim() };
-								setServerLang("");
-								setServerCommand("");
-								void write(`lsp:${serverLang.trim()}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
+							style={{ maxWidth: "8ch" }}
+							type="number"
+							min={0}
+							max={20}
+							value={contextDraft}
+							disabled={!writable}
+							onChange={(event) => setContextDraft(event.target.value)}
+							onBlur={() => {
+								const parsed = Number.parseInt(contextDraft, 10);
+								void write("context", () =>
+									Number.isInteger(parsed) && parsed >= 0 && parsed <= 20
+										? scope.set("context_lines", parsed)
+										: scope.unset("context_lines"),
+								);
 							}}
-						>
-							指定
-						</Button>
+						/>
+						<span className="dshl-mgr-grow" />
+						<span className="dshl-mgr-hint">diff 与错误回显里上下各留几行（0–20）。域外或非数字则恢复默认。</span>
 					</div>
-						</>
-					) : null}
 
-				</div>
+					<h4 className="dshl-mgr-section">编辑</h4>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">重述被改的行</span>
+						<span className="dshl-mgr-grow" />
+						{renderSwitch(core.requireLineContent, !writable, "require", (checked) =>
+							void write("require", () =>
+								checked ? scope.set("require_line_content", true) : scope.unset("require_line_content"),
+							),
+						)}
+					</div>
+					<p className="dshl-mgr-hint">
+						开启后每个锚点必须连同行内容一起声明（`{'{'}`anchor, line{'}'}`），声明与磁盘不符就拒绝——防的是“拿着旧读的数去改新文件”。
+					</p>
+				</>
+			) : tab === "ast" ? (
+				<>
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">总开关</span>
+				<span className="dshl-mgr-hint">关闭时 ast_grep / ast_edit 拒绝运行（read / edit 不受影响）</span>
+				<span className="dshl-mgr-grow" />
+				{overridden ? (
+					<Button size="sm" disabled={!writable} onClick={() => void write("reset", () => scope.unset("ast"))}>
+						恢复默认
+					</Button>
+				) : (
+					<span className="dshl-mgr-hint">继承预设</span>
+				)}
+				{/* 
+				 * `checked` is the CURRENT state, not its negation. It was inverted here,
+				 * which produced two symptoms from one bug: the switch read OFF while
+				 * settings.yaml said true, and clicking it sent the value it already had —
+				 * so nothing changed and the control looked dead.
+				 */}
+				{renderSwitch(ast.enabled, !writable, "master", (checked) =>
+					void write("master", () => scope.set("ast", { ...ast, enabled: checked })),
+				)}
+			</div>
+
+			<input
+				className="dshl-mgr-search"
+				placeholder={`搜索语言或扩展名（${catalog.rows.length} 个条目）`}
+				value={query}
+				onChange={(event) => setQuery(event.target.value)}
+			/>
+
+			{inFlight === undefined ? null : (
+				<button type="button" className="dshl-mgr-cancel" onClick={() => inFlight.abort()}>
+					取消安装
+				</button>
+			)}
+
+			{catalog.failure === undefined ? null : (
+				<p className="dshl-mgr-error" role="status">
+					无法读取语言目录：{catalog.failure}
+				</p>
+			)}
+
+			<div className="dshl-mgr-columns">
+				<section>
+					<h4 className="dshl-mgr-section">已可用 · {usable.length}</h4>
+					<ul className="dshl-mgr-list">
+						{usable.map((row) => (
+							<LanguageRowItem
+								key={row.id}
+								row={row}
+								astEnabled={ast.enabled}
+								disabled={ast.languages[row.id]?.enabled === false}
+								// Presence, not value: only an explicit entry is an override.
+								writable={writable}
+								overridden={ast.languages[row.id] !== undefined}
+								busy={busy}
+								onToggle={() => {
+									const languages = { ...ast.languages };
+									// Absent = inherit the master switch; only an explicit
+									// `false` is stored, and clearing is DELETION.
+									if (languages[row.id]?.enabled === false) delete languages[row.id];
+									else languages[row.id] = { enabled: false };
+									void write(`lang:${row.id}`, () => scope.set("ast", { ...ast, languages }));
+								}}
+								onRemove={() => void callRoute("uninstall", row.id)}
+							/>
+						))}
+					</ul>
+				</section>
+				<section>
+					<h4 className="dshl-mgr-section">可添加 · {available.length}</h4>
+					<ul className="dshl-mgr-list">
+						{available.map((row) => (
+							<LanguageRowItem
+								key={row.id}
+								row={row}
+								astEnabled={ast.enabled}
+								// No switch here: this row's grammar is not on disk, so it cannot be
+								// used yet whatever the enable list says. 添加 is the only action that
+								// changes that, and the row offers exactly it.
+								writable={writable}
+								// Reported even here: a language can be named explicitly in settings
+								// before its grammar is ever installed.
+								overridden={ast.languages[row.id] !== undefined}
+								busy={busy}
+								onToggle={() => undefined}
+								onInstall={() => {
+									const controller = new AbortController();
+									setInFlight(controller);
+									void callRoute("install", row.id, controller.signal).finally(() => setInFlight(undefined));
+								}}
+							/>
+						))}
+						{available.length === 0 ? <li className="dshl-mgr-hint">没有匹配的条目</li> : null}
+					</ul>
+				</section>
+			</div>
+				{updates.length === 0 ? null : (
+					// A NOTICE, never an action. The newer grammar's hash was published by
+					// the registry and nothing here has measured it against a catalog, so
+					// the honest thing is to say one exists rather than to offer it — and
+					// to say WHERE it comes from, because "update" with no object reads as
+					// a button that is missing rather than a decision already made.
+					<p className="dshl-mgr-hint">
+						{updates.length} 门文法有新版本（
+						{updates.map((row) => `${row.id} ${row.installed}→${row.latest}`).join("、")}）——跟随插件更新获取。
+					</p>
+				)}
+				</>
 			) : null}
-		</li>
+			{tab === "lsp" ? (
+				<>
+
+
+			{/*
+			 * The SERVER half, in the same card as the grammar half because the two
+			 * answer the same question from different layers: a tree-sitter grammar
+			 * gives structure, a language server gives cross-file reference
+			 * precision. References fall back to heuristic scanning without one, and
+			 * the reason is the part that was previously unreachable from the screen.
+			 */}
+			<h4 className="dshl-mgr-section">语言服务器</h4>
+			{lsp.failure !== undefined ? (
+				<p className="dshl-mgr-error" role="status">
+					无法读取语言服务器状态：{lsp.failure}
+				</p>
+			) : !lsp.available ? (
+				// A state, not a failure: the LSP packages are not installed by default.
+				<p className="dshl-mgr-hint">{lsp.message ?? "语言服务器客户端未启用，所以语义操作没有可用的服务器。"}</p>
+			) : (
+				<ul className="dshl-mgr-list">
+					{lsp.rows.map((entry) => (
+						<li key={entry.languageId} className="dshl-mgr-row">
+							<StateDot state={entry.ready ? "done" : entry.server === undefined ? "error" : "warning"} size={8} />
+							<span className="dshl-mgr-display-name">{entry.languageId}</span>
+							<span className="dshl-mgr-ext">
+								{entry.server === undefined
+									? "未找到"
+									: `${entry.server.displayName} · ${ORIGIN_TEXT[entry.server.origin] ?? entry.server.origin}`}
+							</span>
+							{/*
+							 * TWO SLOTS, not one. The status is where a message goes; the
+							 * button is where the action lives, and the action does not
+							 * disappear because an attempt failed.
+							 *
+							 * It did exactly that before: a failure replaced the button,
+							 * so a failed install could not be retried without reloading
+							 * the page — the one moment you most want to try again.
+							 */}
+							{/*
+							 * TWO SLOTS, and the error is the one that wraps.
+							 *
+							 * A short status reads fine beside the name; a failed install does
+							 * not, and squeezing it into the same slot truncated the one thing
+							 * the reader needs. So the status stays inline and the error —
+							 * rendered AFTER the button — takes a line of its own below.
+							 */}
+							{installing === entry.languageId ? (
+								<span className="dshl-mgr-hint">安装中，请稍候</span>
+							) : failedInstall?.languageId === entry.languageId ? null : entry.ready ? null : (
+								<span className="dshl-mgr-hint">{entry.message ?? entry.reason}</span>
+							)}
+							<span className="dshl-mgr-grow" />
+							{!entry.ready && entry.server === undefined && entry.canInstall === true ? (
+								// The host's own Button. The label says 重试 once this language has
+								// failed once — the action is available either way, and saying so
+								// is the difference between "it broke" and "it is broken".
+								<Button size="sm" disabled={installing !== undefined} onClick={() => void installServer(entry.languageId)}>
+									{failedInstall?.languageId === entry.languageId ? "重试" : "安装"}
+								</Button>
+							) : null}
+							{/* LAST in DOM order, so its `flex:1 0 100%` wraps BELOW the button
+							 * instead of shoving the button onto a second line. */}
+							{failedInstall?.languageId === entry.languageId ? (
+								<span className="dshl-mgr-error">失败：{failedInstall.message}</span>
+							) : null}
+						</li>
+					))}
+				</ul>
+			)}
+			{/* #131: the delivery switch, beside the servers it governs. The card
+			 * shows the effective state; only an explicit `false` turns it off, and
+			 * switching it back on writes that value explicitly so the file says
+			 * what the card shows. */}
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">自动诊断回送</span>
+				<span className="dshl-mgr-hint">edit / write / undo 落盘后自动把语言服务器诊断回送模型（默认开）</span>
+				<span className="dshl-mgr-grow" />
+				{renderSwitch(
+					autoDiag,
+					!writable,
+					"autoDiag",
+					(checked) =>
+						void write("autoDiag", () =>
+							scope.set("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
+						),
+				)}
+			</div>
+			{/*
+			 * Naming a server is INTENT and lives here; whether that command exists
+			 * is a fact the status list above reports. Keeping them apart is what
+			 * lets a typo be VISIBLE — it shows as 未找到 with the command beside it
+			 * — instead of being silently refused at the point of entry.
+			 */}
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">指定服务器</span>
+				<span className="dshl-mgr-hint">按语言指定命令；留空则用探测到的</span>
+				<span className="dshl-mgr-grow" />
+			</div>
+			{Object.keys(namedServers).length === 0 ? (
+				<p className="dshl-mgr-hint">没有指定任何服务器，全部使用探测结果。</p>
+			) : (
+				<ul className="dshl-mgr-list">
+					{Object.entries(namedServers).map(([id, command]) => (
+						<li key={id} className="dshl-mgr-row">
+							<span className="dshl-mgr-display-name">{id}</span>
+							<span className="dshl-mgr-ext" title={command}>{command}</span>
+							<span className="dshl-mgr-grow" />
+							<Button
+								size="sm"
+								disabled={!writable}
+								onClick={() => {
+									const servers = { ...namedServers };
+									delete servers[id];
+									void write(`lsp:${id}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
+								}}
+							>
+								移除
+							</Button>
+						</li>
+					))}
+				</ul>
+			)}
+			<div className="dshl-mgr-master">
+				<input
+					className="dshl-mgr-search"
+					placeholder="语言，如 typescript"
+					value={serverLang}
+					onChange={(event) => setServerLang(event.target.value)}
+				/>
+				<input
+					className="dshl-mgr-search"
+					placeholder="命令，如 /usr/local/bin/tsserver"
+					value={serverCommand}
+					onChange={(event) => setServerCommand(event.target.value)}
+				/>
+				<Button
+					size="sm"
+					variant="primary"
+					disabled={!writable || serverLang.trim() === "" || serverCommand.trim() === ""}
+					onClick={() => {
+						const servers = { ...namedServers, [serverLang.trim()]: serverCommand.trim() };
+						setServerLang("");
+						setServerCommand("");
+						void write(`lsp:${serverLang.trim()}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
+					}}
+				>
+					指定
+				</Button>
+			</div>
+				</>
+			) : null}
+		</>
 	);
 }

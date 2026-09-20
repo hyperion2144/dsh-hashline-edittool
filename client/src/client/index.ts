@@ -153,22 +153,34 @@ const astToolviews = {
 /**
  * The plugin-configuration card.
  *
- * The Host half already registers the `hashline` namespace, and the tab keys
- * its cards on the namespace, so the two halves pair up with no host change.
+ * The plugin manager renders a bundle's configuration on the bundle's page
+ * through the keyed `plugins.bundle.config` slot, indexing entries by the
+ * bundle's package name; the predecessor slot `settings.plugin.item` it
+ * replaced has no consumer left in the shell, so a registration there renders
+ * nowhere (#149). The key below is therefore the ROOT package's name — the
+ * bundle the Loader row and the page's `pkg.name` are keyed on — not this
+ * client workspace's `-client` name.
+ *
+ * The Host half already registers the `hashline` namespace, and the settings
+ * scope binding keys on it, so the two halves pair up with no host change.
  * The card reads and writes ONLY through the bound scope: the cookbook's hard
  * constraint is that it must not add its own `settings.describe` reader,
  * because the client's cold-boot read budget is pinned by a platform test.
  */
+
+/** The bundle's package name — the key the manager indexes this entry by. */
+const BUNDLE_PACKAGE_NAME = "dsh-hashline-edittool";
+
 const settingsCard = {
 	name: "hashline-settings-card",
 	inject: ["slots", "settingsScope"],
 	apply(ctx: ClientCtx) {
 		const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
-		ctx.slots.inject("settings.plugin.item", () =>
+		ctx.slots.inject("plugins.bundle.config", () =>
 			ctx.slots.register(
 				{
-					name: "settings.plugin.item",
-					key: SETTINGS_NAMESPACE,
+					name: "plugins.bundle.config",
+					key: BUNDLE_PACKAGE_NAME,
 					locale: CONVERSATION_NS,
 					inject: () => ({ scope }),
 				},
