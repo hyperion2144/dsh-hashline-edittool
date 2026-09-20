@@ -62,7 +62,7 @@ export interface HashlineSettings {
 		 * Automatic diagnostics after a write (issue #131). When true (default),
 		 * edit / ast_edit / write / undo_last_edit deliver the language server's
 		 * diagnostics for the written file back to the model: inline on the tool
-		 * result when a push arrives within the 300ms window, otherwise injected
+		 * result when a push arrives within the inline window (1s), otherwise injected
 		 * at the next natural model step. A write never starts a server and never
 		 * fails because of diagnostics — this switch only governs the delivery.
 		 */

@@ -383,7 +383,7 @@ async function runAstEdit(
 		sandboxPolicy,
 		signal: (exec as { signal?: AbortSignal }).signal,
 	});
-	// #131: same delivery `edit` runs — inline inside the 300ms window, else
+	// #131: same delivery `edit` runs — inline inside the inline window (1s), else
 	// the bounded async wait. The syntax gate above already ran, so a report
 	// here is the SERVER's opinion, complementing the parse we just did.
 	const diagnostics =

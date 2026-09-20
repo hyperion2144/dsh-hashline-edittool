@@ -52,11 +52,11 @@ import type { LspSession } from "./session.js";
 /**
  * How long a tool holds its result for an inline push. Measured on a real
  * typescript-language-server: a HOT server still pushes consistently past
- * 300ms (#131 field report), so the window is 800ms — inside the tail of the
- * human-perception band, and a server with nothing to say costs no more than
- * the window once per write.
+ * 300ms (#131 field report), and the tail runs past 800ms — so the window is
+ * 1s: still inside the tail of the human-perception band, and a server with
+ * nothing to say costs no more than the window once per write.
  */
-export const INLINE_WINDOW_MS = 800;
+export const INLINE_WINDOW_MS = 1_000;
 
 /** How long the background wait listens before giving up. A cold start is 2.6–3.1s; 10s is ~3× headroom. Past it, the model can still call `lsp diagnostics`. */
 export const ASYNC_TIMEOUT_MS = 10_000;
