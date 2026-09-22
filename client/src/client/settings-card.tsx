@@ -35,8 +35,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useState, type ReactElement } from "react";
 import { Button, Pill, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ConfigFormSnapshot, ConfigPageForm, SettingsPathOpView } from "./types.js";
-import { requestedView, settingsSummaryText, type SettingsCardView } from "./settings-model.js";
+import type { ConfigFormSnapshot, ConfigPageForm } from "./types.js";
+import { buildFieldOp, requestedView, settingsSummaryText, type SettingsCardView } from "./settings-model.js";
 
 /** Props the slot hands the card: the page's form plus the view it asks for. */
 export interface SettingsCardProps {
@@ -629,11 +629,14 @@ function HashlineSettingsPageView({ form }: { readonly form?: ConfigPageForm }):
 	 * base) — the same "empty means revert" the card's drafts already use.
 	 */
 	const writeField = async (field: string, ...value: readonly unknown[]): Promise<void> => {
-		const ops: readonly SettingsPathOpView[] =
-			value.length > 0
-				? [{ op: "set", path: [field], value: value[0] }]
-				: [{ op: "unset", path: [field] }];
-		await form?.mutate(ops);
+		if (form === undefined) return;
+		// mutate resolves `false` on refusal (revision conflict, rejected
+		// validation) rather than throwing — surface it so the control shows
+		// WHY nothing wrote instead of silently looking dead.
+		const accepted = await form.mutate([buildFieldOp(field, value[0])]);
+		if (accepted !== true) {
+			throw new Error("写入被拒绝：配置已在他处修改（revision 冲突）或校验未通过，请重试。");
+		}
 	};
 
 	const callRoute = useCallback(
