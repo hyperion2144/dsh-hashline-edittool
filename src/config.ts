@@ -72,22 +72,36 @@ export interface HashlineSettings {
 
 export const HashlineSettingsSchema: z<HashlineSettings> = z
 	.object({
-		separator: z.string().min(1).max(4),
-		output_format: z.union(["text", "json"]),
-		context_lines: z.number().min(0).max(20),
-		require_line_content: z.boolean(),
-		ast: z.object({
+		// Every field is .volatile(): dsh 0.1.7 keeps the plugin instance mounted
+		// while only these change, handing `apply` live references instead of
+		// plain values (read them through resolveSettings at use time).
+		separator: z.string().min(1).max(4).volatile(),
+		output_format: z.union(["text", "json"]).volatile(),
+		context_lines: z.number().min(0).max(20).volatile(),
+		require_line_content: z.boolean().volatile(),
+		// The volatile mark sits on the OUTERMOST node of each live-editable
+		// subtree only: schemastery requires a volatile field to have a fixed
+		// path with no enclosing volatile, and every descendant of a volatile
+		// node is already live (isVolatilePath walks ancestors) — so the
+		// children here carry NO mark of their own.
+		ast: z
+			.object({
+				enabled: z.boolean(),
+				languages: z.dict(z.object({ enabled: z.boolean() })),
+			})
+			.volatile(),
 		// Named servers, by language. A dict rather than a list of objects on
-		// purpose: it matches the shape of `ast.languages`, so the hand-rolled
-		// settings reader handles it with the same indentation rules it already
-		// has, and "which server does typescript use" is the question being asked.
-		lsp: z.object({
-			servers: z.dict(z.string()),
-			auto_diagnostics: z.boolean(),
-		}),
-			enabled: z.boolean(),
-			languages: z.dict(z.object({ enabled: z.boolean() })),
-		}),
+		// purpose: it matches the shape of `ast.languages`, and "which server
+		// does typescript use" is the question being asked. Sibling of `ast` —
+		// the pre-0.1.7 schema accidentally nested this INSIDE `ast` (masked by
+		// the `as unknown as` cast); the type and the YAML reader always had it
+		// top-level, so the schema now agrees with both (#155).
+		lsp: z
+			.object({
+				servers: z.dict(z.string()),
+				auto_diagnostics: z.boolean(),
+			})
+			.volatile(),
 	})
 	.loose() as unknown as z<HashlineSettings>;
 	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
@@ -341,17 +355,77 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 
 
 /**
- * TEMPORARY stub (wayfinder #153 / PR ①): dsh 0.1.7 removed the 0.1.6
- * `SettingsProvider` seam this function rode (`svc.register` + `scope.watch`
- * no longer exist). Real settings now arrive as the plugin's own Config —
- * volatile fields read via `config.<field>.get()` — implemented by #155
- * (host Config 化). Until that lands this applies the built-in defaults so
- * every tool keeps a stable effective config.
+ * Unwrap one volatile config reference (`.get()`), passing plain values
+ * through unchanged.
  *
- * The context parameter stays: `apply` still passes it, and #155 needs it
- * again for the `settings/document-updated` signal.
+ * dsh 0.1.7 hands volatile fields to `apply` as live references so a change
+ * never remounts the plugin; tests and plain compositions may hand the same
+ * fields as ordinary values. Both shapes are first-class — duck-typing the
+ * `get` member beats importing the runtime's ref type into a plugin.
  */
-export function installHashlineSettings(_ctx: Context): void {
-	// TODO(#155): apply(ctx, config) with volatile reads + document-updated watch.
-	applyEffective(undefined);
+function unwrapVolatile(value: unknown): unknown {
+	if (
+		value !== null &&
+		typeof value === "object" &&
+		typeof (value as { get?: unknown }).get === "function"
+	) {
+		return (value as { get(): unknown }).get();
+	}
+	return value;
+}
+
+/**
+ * Structurally unwrap a whole config: volatile refs → plain values, deeply,
+ * unknown keys carried along (the schema is loose). Field-level validation
+ * is NOT done here — `applyEffective` owns that contract, exactly as it
+ * always has for provider-published sections.
+ */
+function deepUnwrap(value: unknown): unknown {
+	const plain = unwrapVolatile(value);
+	if (plain !== null && typeof plain === "object") {
+		if (Array.isArray(plain)) return plain.map(deepUnwrap);
+		return Object.fromEntries(
+			Object.entries(plain).map(([key, child]) => [key, deepUnwrap(child)]),
+		);
+	}
+	return plain;
+}
+
+/**
+ * Resolve the plugin's Config (volatile refs or plain values) into a plain
+ * settings object for `applyEffective`. `undefined` in, `undefined` out —
+ * absent config means built-in defaults.
+ */
+export function resolveSettings(config: unknown): HashlineSettings | undefined {
+	if (config === null || typeof config !== "object") return undefined;
+	return deepUnwrap(config) as HashlineSettings;
+}
+
+/**
+ * Wire the plugin's Config into the effective settings snapshot.
+ *
+ * dsh 0.1.7: settings live in the profile's plugin configuration. The loader
+ * resolves our `Config` schema and hands the result to `apply(ctx, config)`;
+ * every field is `.volatile()`, so values arrive as live references — read
+ * them at use time, never cache the raw section.
+ *
+ * Re-apply on `settings/document-updated`: the event is not per-entry
+ * filtered host-side, so any revision bump re-reads OUR refs — cheap and
+ * idempotent — and `applyEffective` lands the change (including the
+ * `require_line_content` surface rebuild and the AST arena release).
+ */
+export function installHashlineSettings(ctx: Context, config: unknown): void {
+	const reapply = (): void => {
+		applyEffective(resolveSettings(config));
+	};
+	reapply();
+	// `settings/document-updated` is declared in @deepseek-ai/dsh-settings'
+	// type space, which this plugin deliberately does not depend on — the
+	// runtime event bus is string-keyed, so subscribe through the same
+	// duck-typed seam the optional services (agentPresets, webServer) use.
+	// cordis still tracks the subscription as an effect of this context.
+	(ctx as unknown as { on(name: string, listener: () => void): () => void }).on(
+		"settings/document-updated",
+		reapply,
+	);
 }

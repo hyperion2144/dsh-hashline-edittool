@@ -16,7 +16,7 @@ import {
 	parseSettingsYaml,
 } from "../../src/config.js";
 import { readDescription } from "../../src/domain/edit/prompts.js";
-import { HashlineSettingsSchema } from "../../src/config.js";
+import { HashlineSettingsSchema, resolveSettings } from "../../src/config.js";
 
 afterEach(() => {
 	// Restore the compiled defaults so suites cannot leak a flag into each other.
@@ -25,11 +25,15 @@ afterEach(() => {
 
 describe("the ast namespace", () => {
 	it("accepts the documented shape", () => {
-		const resolved = HashlineSettingsSchema({
-			ast: { enabled: true, languages: { python: { enabled: false } } },
-		}) as { ast?: { enabled?: boolean; languages?: Record<string, { enabled?: boolean }> } };
-		expect(resolved.ast?.enabled).toBe(true);
-		expect(resolved.ast?.languages?.python?.enabled).toBe(false);
+		// 0.1.7: the volatile marks mean the resolved value carries live
+		// references — resolve through resolveSettings exactly like apply does.
+		const resolved = resolveSettings(
+			HashlineSettingsSchema({
+				ast: { enabled: true, languages: { python: { enabled: false } } },
+			}),
+		);
+		expect(resolved?.ast?.enabled).toBe(true);
+		expect(resolved?.ast?.languages?.python?.enabled).toBe(false);
 	});
 
 	it("reads the nested form from settings.yaml, not a flat key", () => {
