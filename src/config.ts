@@ -30,6 +30,16 @@ import { getAstClient } from "./ast/client.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
+/**
+ * The plugin's profile entry id — the settings join key on BOTH halves.
+ *
+ * dsh 0.1.7 addresses settings by the Loader ENTRY id (our patch row id,
+ * identical to the package name), not by a registered namespace: the client
+ * card binds `ctx.configForms.get(entryId)` with this key, and the legacy
+ * migration writes into this entry.
+ */
+export const HASHLINE_ENTRY_ID = "dsh-hashline-edittool";
+
 export interface HashlineSettings {
 	separator?: string;
 	output_format?: "text" | "json";

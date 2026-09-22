@@ -54,6 +54,7 @@ import {
 	type SectionOverride,
 } from "./guidance.js";
 import { configDir } from "./infra/paths.js";
+import { migrateLegacyHashlineSettings } from "./infra/legacy-migration.js";
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = "dsh-hashline-edittool";
@@ -257,6 +258,15 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	// require_line_content / ast / lsp): applied once here and re-applied on
 	// every `settings/document-updated` — the refs are read live each time.
 	installHashlineSettings(rootCtx, config);
+
+	// One-time import of the pre-0.1.7 `hashline:` section (the host's own
+	// legacy import does not know third-party namespaces). Fire-and-forget:
+	// a failure warns and retries on the next boot, never failing this one.
+	void migrateLegacyHashlineSettings(rootCtx).catch((error) => {
+		rootCtx.logger.warn(
+			`dsh-hashline-edittool: legacy settings migration failed (will retry next boot): ${error instanceof Error ? error.message : String(error)}`,
+		);
+	});
 
 	installGrammarRoutes(rootCtx);
 
