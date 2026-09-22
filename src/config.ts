@@ -23,7 +23,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
 import { rebuildEditSurfaces } from "./domain/edit/edit-rebuild.js";
@@ -342,30 +341,17 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 
 
 /**
- * Attach the `hashline` settings namespace to the settings service and keep
- * the effective config live.
+ * TEMPORARY stub (wayfinder #153 / PR ①): dsh 0.1.7 removed the 0.1.6
+ * `SettingsProvider` seam this function rode (`svc.register` + `scope.watch`
+ * no longer exist). Real settings now arrive as the plugin's own Config —
+ * volatile fields read via `config.<field>.get()` — implemented by #155
+ * (host Config 化). Until that lands this applies the built-in defaults so
+ * every tool keeps a stable effective config.
  *
- * No retry, no fallback: `settings` is declared in the plugin's `inject`, so
- * cordis starts the service BEFORE this plugin's `apply` runs — there is no
- * race left to poll around. File access happens only inside the settings
- * provider's own load/persist, never around it.
+ * The context parameter stays: `apply` still passes it, and #155 needs it
+ * again for the `settings/document-updated` signal.
  */
-export function installHashlineSettings(ctx: Context): void {
-	const svc = (ctx as unknown as { get(name: string): unknown }).get("settings") as
-		SettingsProvider | undefined;
-	if (svc === undefined) {
-		// Unreachable with `settings` injected — cordis fails the plugin at load
-		// when an injected service is missing. Guarded anyway so the type-level
-		// contract holds without a cast.
-		throw new Error(
-			"dsh-hashline-edittool: the settings service is missing from the context.",
-		);
-	}
-	// THE DSH CAPABILITY: `register` returns the owner scope for reads,
-	// observation, and updates — and is an effect on the calling plugin's
-	// fiber, so it unwinds with the plugin by itself.
-	const scope = svc.register(HASHLINE_SETTINGS_NAMESPACE, HashlineSettingsSchema);
-	applyEffective(scope.get());
-	// Every committed change (card write, file reload) re-applies.
-	scope.watch((next) => applyEffective(next));
+export function installHashlineSettings(_ctx: Context): void {
+	// TODO(#155): apply(ctx, config) with volatile reads + document-updated watch.
+	applyEffective(undefined);
 }

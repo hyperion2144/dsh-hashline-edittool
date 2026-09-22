@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
-import { IconEllipsisOutline16, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconEllipsisOutlineMedium, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
 import { foldTabs } from "./models.js";
 
 /**
@@ -243,7 +243,7 @@ export function TabStrip({
 								"aria-label": labels.more,
 								title: labels.more,
 								onClick: () => setMenuOpen((value) => !value),
-								children: jsx_(IconEllipsisOutline16, { size: 14 }),
+								children: jsx_(IconEllipsisOutlineMedium, { size: 14 }),
 							}),
 						}),
 					]

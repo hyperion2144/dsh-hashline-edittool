@@ -18,10 +18,10 @@ import {
 	DiffBlock,
 	StateDot,
 	diffTotals,
-	IconBrowseOutline16,
-	IconSearchOutline16,
-	IconEditOutline16,
-	IconInspectOutline12,
+	IconBrowseOutlineMedium,
+	IconSearchOutlineMedium,
+	IconEditOutlineMedium,
+	IconInspectOutlineMedium,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
@@ -426,7 +426,7 @@ function ToolRow({
 								type: "button",
 								className: css.inspectButton,
 								onClick: inspect,
-								children: [jsx_(IconInspectOutline12, {}), t("row.inspect")],
+								children: [jsx_(IconInspectOutlineMedium, {}), t("row.inspect")],
 							}),
 					],
 				}),
@@ -449,7 +449,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		t,
 		variant: model.variant,
 		toolName,
-		icon: icon ?? jsx_(IconBrowseOutline16, { size: 14 }),
+		icon: icon ?? jsx_(IconBrowseOutlineMedium, { size: 14 }),
 		// `titleOverride` is how a tool that WEARS this row says its own name. Without
 		// it the title falls back to the variant's label, which is right for `read`
 		// and wrong for everything borrowing it.
@@ -488,7 +488,7 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		t,
 		variant: model.variant,
 		toolName,
-		icon: jsx_(IconEditOutline16, { size: 14 }),
+		icon: jsx_(IconEditOutlineMedium, { size: 14 }),
 		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
 		summary: model.summary,
 		// ALWAYS the diff stat, never the anchor hints.
@@ -531,7 +531,7 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		t,
 		variant: model.variant,
 		toolName,
-		icon: jsx_(IconEditOutline16, { size: 14 }),
+		icon: jsx_(IconEditOutlineMedium, { size: 14 }),
 		title: t(model.titleKey),
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
@@ -566,7 +566,7 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		t,
 		variant: model.variant,
 		toolName,
-		icon: jsx_(IconSearchOutline16, { size: 14 }),
+		icon: jsx_(IconSearchOutlineMedium, { size: 14 }),
 		// `titleOverride` lets `ast_grep` wear this row under its own name: the card
 		// data is grep-shaped (files/rows/spans), so the drawing is identical and
 		// only the label differs.
@@ -643,7 +643,7 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		t,
 		variant: model.variant,
 		toolName,
-		icon: jsx_(IconBrowseOutline16, { size: 14 }),
+		icon: jsx_(IconBrowseOutlineMedium, { size: 14 }),
 		title: "LSP",
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
