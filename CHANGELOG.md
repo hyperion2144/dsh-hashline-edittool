@@ -4,6 +4,24 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows（D: 盘）上根套件的 18 项失败（#162）**：逐条定位后全部是**测试侧与平台假设**，产品代码未改：
+  - 模式匹配测试用 `URL.pathname` 解析 wasm 核心路径：Windows 下盘符前会留前导 `/`（`/D:/…`），wasm 文件层再按当前盘解析就成了 `D:\D:\…`，核心加载失败、该文件 7 例整体 skip。改用产品自身 worker 与同族测试都在用的 `fileURLToPath`。
+  - 6 个测试文件把 `DSH_HOME` stub 成空串、指望回落 `$HOME/.dsh`；该回落走 `os.homedir()`，Windows 下读 USERPROFILE——于是直接按路径开库的用例报 `unable to open database file`，同文件其余用例则读写开发者**真实** `~/.dsh`（正是全局 setup 要堵的漏）。现一律显式指向 `<temp home>/.dsh`。
+  - `~` 展开断言改用与实现同源的 home（环境变量优先），并补一条「无环境 home 时回落 `os.homedir()`」；`DSH_HOME` 用例改喂平台合法绝对根（`/custom/dsh` 在 Windows 是当前盘相对）；两处 grep 输出断言不再写死 `/`。
+  - 两个 Windows argv 用例显式钉住 `ComSpec`（原先读机器上的 `%ComSpec%`，Windows 是绝对路径），并补一条「环境指定的解释器优先」用例。
+  - 顺手改正一条失真的测试名：它声称 `grep` JSON 源码 bug（`matches dict values come back undefined`），而该断言本机通过，Windows 上真正倒在上一行的分隔符断言。
+
+### Changed
+
+- **重型测试文件不再与并行池互抢（#162）**：跑 2s–17s 的 5 个文件拆到独立项目、串行执行并各给 30s 预算；**全局 `testTimeout` 保持默认**（抬高全局会把真实挂死一起掩盖），断言一条未删。
+
+### Added
+
+- **CI 增加 Windows job（#162）**：矩阵此前只有 `ubuntu-latest`，上面那一类回归只能靠人肉在 Windows 上跑才会发现。新 job 以 `engines` 下限 Node 22 跑 typecheck + 全套测试（版本矩阵与构建仍由 POSIX 侧承担）。
+
+
 ## [0.9.1] - 2026-09-23
 
 ### Fixed

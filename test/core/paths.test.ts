@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { defaultDshHome } from "@deepseek-ai/dsh-home-paths";
 import { configDir, hashStorePath, hashStoreDir } from "../../src/infra/paths.js";
@@ -19,9 +20,13 @@ describe("configDir", () => {
 
 	it("uses DSH_HOME when set", () => {
 		const previousDsh = process.env.DSH_HOME;
-		process.env.DSH_HOME = "/custom/dsh";
+		// A platform-LEGAL absolute root. The old "/custom/dsh" is drive-relative
+		// on Windows (a leading separator with no drive), so resolving it gained the
+		// current drive and the expectation — built with the platform's own join —
+		// no longer matched. A temp path is absolute on every platform.
+		process.env.DSH_HOME = join(tmpdir(), "dsh-custom-home");
 		try {
-			expect(configDir()).toBe(join("/custom/dsh", "plugins", "dsh-hashline-edittool"));
+			expect(configDir()).toBe(join(process.env.DSH_HOME, "plugins", "dsh-hashline-edittool"));
 		} finally {
 			if (previousDsh === undefined) delete process.env.DSH_HOME;
 			else process.env.DSH_HOME = previousDsh;

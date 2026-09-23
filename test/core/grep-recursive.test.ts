@@ -24,7 +24,10 @@ describe("grep recursion + include + default path (host-aligned)", () => {
 			await writeFile(join(cwd, "src", "deep2.ts"), "no hit here\n");
 			const res = await grepTool(harness).execute("g", { path: ".", pattern: "needle" });
 			const out = getText(res);
-			expect(out).toContain("src/deep.txt");
+			// The product derives this path with the platform's relative-path
+			// function, so the expectation has to be derived the same way — a
+			// hardcoded "src/deep.txt" only ever matched where the separator is `/`.
+			expect(out).toContain(join("src", "deep.txt"));
 			expect(out).not.toContain("deep2.ts");
 			expect(out).toContain("needle");
 		});
@@ -84,7 +87,7 @@ describe("grep recursion + include + default path (host-aligned)", () => {
 		});
 	});
 
-	it("json mode reports recursive matches per file — SRC BUG: grep-json matches dict values come back undefined (same root as line-count-contract grep-json); needs src check", async () => {
+	it("json mode reports recursive matches per file, keyed by anchor", async () => {
 		await withTempFile("t.txt", "x\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);
 			await mkdir(join(cwd, "sub"));
@@ -94,7 +97,11 @@ describe("grep recursion + include + default path (host-aligned)", () => {
 			const out = JSON.parse(getText(res)) as {
 				files: Array<{ path: string; matches: Record<string, string> }>;
 			};
-			expect(out.files[0]!.path).toContain("sub/hit.txt");
+			// Same rule as the text case above: derive the path the way the product
+			// does. The old name on this test blamed a `grep` JSON source bug
+			// ("matches dict values come back undefined") — that assertion passes,
+			// while THIS line only ever held where the separator is `/`.
+			expect(out.files[0]!.path).toContain(join("sub", "hit.txt"));
 			expect(Object.values(out.files[0]!.matches)[0]).toBe("json needle");
 			applyEffective({});
 		});

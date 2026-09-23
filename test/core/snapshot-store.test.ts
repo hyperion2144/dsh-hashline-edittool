@@ -23,9 +23,15 @@ async function withTempHome(
 		join(await getWritableTempRoot(), "pi-hashline-snapshot-test-"),
 	);
 	vi.stubEnv("HOME", tmpHome);
-	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
-	// homedir()/.dsh, matching sqlitePath(home) below (home/.dsh/...).
-	vi.stubEnv("DSH_HOME", "");
+	vi.stubEnv("USERPROFILE", tmpHome);
+	// Point the harness home at the TEMP home explicitly. It used to be stubbed
+	// EMPTY and rely on resolveDshHome's `homedir()/.dsh` fallback — but
+	// `os.homedir()` reads USERPROFILE on Windows, so the store escaped to the
+	// developer's real profile directory there: the tests that open the sqlite
+	// file directly then hit "unable to open database file" (no such directory)
+	// while every other test in the file read and wrote the REAL store. Naming
+	// the directory removes the platform dependency instead of tracking it.
+	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
 	vi.stubEnv("XDG_CONFIG_HOME", "");
 	try {
 		await run(tmpHome);
