@@ -6,9 +6,9 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [0.9.0] - 2026-09-23
 
-### Changed（未发布 / unreleased）
+### Changed
 
-- **dsh 0.1.7 适配（wayfinder 地图 #152，未发布）**：host 设置面迁移到 Profile 插件配置——
+- **dsh 0.1.7 适配（wayfinder 地图 #152）**：host 设置面迁移到 Profile 插件配置——
 `Config` schema 全字段 `.volatile()`，`apply(ctx, config)` 以活引用读值并在 `settings/document-updated` 重应用；旧
 `settings.yaml` 的 `hashline:` 节一次性导入（宿主白名单不含第三方命名空间）；client 半边
 `inject` 去 `settingsScope`，设置卡经行级槽位读 `form.state` / 写 `form.mutate`；`@deepseek-ai/dsh-*`
@@ -16,7 +16,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 `settings-provider.ts` 死代码删除；client 图标改名跟进。仅支持 0.1.7（0.8.x 留给 0.1.6）。
 - **内置 preset 种子对齐 0.1.7（#154 / #160）**：`DEFAULT_PRESETS` 中 `code` → `ptc`（0.1.7 内置为 `standard`/`ptc`/`minimal`/`cordis`，`code` 已不存在，保留只会生成永远无法命中的死目录）；guidance home README 双语文本量同步。调研依据：`docs/research/preset-ids-0.1.7.md`。
 
-### Fixed（未发布 / unreleased）
+### Fixed
 
 - **设置卡改注行级槽位（冒烟发现）**：0.1.7 的插件页只在**行级** `plugins.row.config`（key 为 `<包名>#<行 id>`）随 owner props 交付 `form`；bundle 级 `plugins.bundle.config` 仅传 `view`——注册在那里的设置卡永远停留在「设置尚未就绪」。卡片改注行级槽位（key `dsh-hashline-edittool#dsh-hashline-edittool`），`verify-bundle.mjs` 同步钉住新槽位/key。
 - **折叠组内展开卡片闪烁（冒烟发现）**：`TabStrip` 的宽度追踪 effect 缺依赖数组，每次 render 重建 ResizeObserver，而 `observe()` 必先同步回调一次；0.1.7 折叠过程组隐藏时元素宽度报 0、展开报实宽，值振荡叠加 observe 自触发形成 set→render→重建→再 set 的闪烁死循环。修复：observer 只建一次；宽度为 0（隐藏态）视为无信息忽略；同值经 functional set 由 React bail 吸收。
