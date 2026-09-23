@@ -470,7 +470,7 @@ describe("ensurePresetGuidance", () => {
 	it("never rewrites existing files - a user-edited preset file survives repeated calls", async () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
-			const editFile = join(home, "code", "edit.md");
+			const editFile = join(home, "ptc", "edit.md");
 			const custom =
 				"---\norder: 150\n---\nMy custom edit guidance, kept verbatim.";
 			await writeFile(editFile, custom, "utf-8");
@@ -481,19 +481,19 @@ describe("ensurePresetGuidance", () => {
 
 	it("fills in only the files that are missing", async () => {
 		await withHome(async (home) => {
-			await mkdir(join(home, "code"), { recursive: true });
+			await mkdir(join(home, "ptc"), { recursive: true });
 			await writeFile(
-				join(home, "code", "edit.md"),
+				join(home, "ptc", "edit.md"),
 				"custom edit guidance",
 				"utf-8",
 			);
 			await ensurePresetGuidance(home);
-			expect(await readFile(join(home, "code", "edit.md"), "utf-8")).toBe(
+			expect(await readFile(join(home, "ptc", "edit.md"), "utf-8")).toBe(
 				"custom edit guidance",
 			);
 			for (const section of GUIDANCE_SECTIONS) {
 				if (section.file === "edit.md") continue;
-				expect(await readFile(join(home, "code", section.file), "utf-8")).toBe(
+				expect(await readFile(join(home, "ptc", section.file), "utf-8")).toBe(
 					`---\norder: ${section.defaultOrder}\n---\n\n${section.renderDefault()}`,
 				);
 			}
@@ -510,12 +510,12 @@ describe("ensurePresetGuidance", () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
 			await writeFile(
-				join(home, "code", "edit.md"),
+				join(home, "ptc", "edit.md"),
 				"---\norder: 151\n---\ncustom code edit guidance",
 				"utf-8",
 			);
 			const resolved = await resolveSection("tool:edit", {
-				presetId: "code",
+				presetId: "ptc",
 				homeDir: home,
 			});
 			expect(resolved).toEqual({
@@ -524,7 +524,7 @@ describe("ensurePresetGuidance", () => {
 			});
 			// An unedited seeded section still equals the compiled default.
 			const read = await resolveSection("tool:read", {
-				presetId: "code",
+				presetId: "ptc",
 				homeDir: home,
 			});
 			expect(read).toEqual({
@@ -537,7 +537,7 @@ describe("ensurePresetGuidance", () => {
 	it("re-seeds a blank section file in a shipped preset with the compiled default", async () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
-			const editFile = join(home, "code", "edit.md");
+			const editFile = join(home, "ptc", "edit.md");
 			await writeFile(editFile, "", "utf-8");
 			await ensurePresetGuidance(home);
 			expect(await readFile(editFile, "utf-8")).toBe(
@@ -561,7 +561,7 @@ describe("ensurePresetGuidance", () => {
 	it("leaves a malformed override file byte-identical", async () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
-			const editFile = join(home, "code", "edit.md");
+			const editFile = join(home, "ptc", "edit.md");
 			const malformed = "---\norder: abc\n---\nsalvageable body";
 			await writeFile(editFile, malformed, "utf-8");
 			await ensurePresetGuidance(home);
@@ -572,7 +572,7 @@ describe("ensurePresetGuidance", () => {
 	it("leaves a non-blank override file byte-identical", async () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
-			const editFile = join(home, "code", "edit.md");
+			const editFile = join(home, "ptc", "edit.md");
 			const custom = "plain prose guidance";
 			await writeFile(editFile, custom, "utf-8");
 			await ensurePresetGuidance(home);
@@ -591,7 +591,7 @@ describe("ensurePresetGuidance", () => {
 	it("lets a deliberate-blank (valid-fence) file survive boot untouched", async () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
-			const editFile = join(home, "code", "edit.md");
+			const editFile = join(home, "ptc", "edit.md");
 			const deliberate = "---\norder: 150\n---\n";
 			await writeFile(editFile, deliberate, "utf-8");
 			await ensurePresetGuidance(home);
@@ -602,7 +602,7 @@ describe("ensurePresetGuidance", () => {
 	it("lets a deliberate keyless-blank (valid-fence) file survive boot untouched", async () => {
 		await withHome(async (home) => {
 			await ensurePresetGuidance(home);
-			const editFile = join(home, "code", "edit.md");
+			const editFile = join(home, "ptc", "edit.md");
 			const deliberate = "---\n---\n";
 			await writeFile(editFile, deliberate, "utf-8");
 			await ensurePresetGuidance(home);

@@ -13,7 +13,7 @@ import { GUIDANCE_SECTIONS, type GuidanceSection } from "./resolve.js";
 /** The presets shipped by the harness, each seeded with editable guidance. */
 export const DEFAULT_PRESETS: readonly string[] = [
 	"standard",
-	"code",
+	"ptc",
 	"minimal",
 	"cordis",
 ];
@@ -25,7 +25,7 @@ export const DEFAULT_PRESETS: readonly string[] = [
 export const GUIDANCE_HOME_README = `# dsh-hashline-edittool guidance
 
 Each agent preset has its own guidance directory here: \`<preset>/<section>.md\`.
-On first boot the plugin seeds the shipped presets (\`standard\`, \`code\`,
+On first boot the plugin seeds the shipped presets (\`standard\`, \`ptc\`,
 \`minimal\`, \`cordis\`) with the compiled defaults; existing files are never
 overwritten, so your edits survive.
 
@@ -65,7 +65,7 @@ seeded directory, copy a seeded one to its name.
 export const GUIDANCE_HOME_README_ZH = `# dsh-hashline-edittool 指引
 
 每个 agent preset 在这里都有自己的指引目录：\`<preset>/<section>.md\`。首次启动时
-插件会为随附的 preset（\`standard\`、\`code\`、\`minimal\`、\`cordis\`）写入编译内置的
+插件会为随附的 preset（\`standard\`、\`ptc\`、\`minimal\`、\`cordis\`）写入编译内置的
 默认内容；已有文件绝不被覆盖，因此你的编辑会保留。
 
 每个文件对应一个工具片段：

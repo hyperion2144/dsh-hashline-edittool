@@ -170,22 +170,24 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
 
 ## 设置
 
-所有键位于 dsh 设置的 `hashline` 命名空间（`~/.dsh/settings.yaml`），全部可选，且
-**热更新**：提交的改动在下一次工具调用即生效，无需重启。
+所有键是插件自身的 **Profile 配置**（dsh ≥ 0.1.7）：在网页端 **设置 → 插件 → `dsh-hashline-edittool`**（行页面的配置表单）里编辑并提交。所有改动**热更新**：下一次工具调用即生效，无需重启。同一份值的原生编辑视图是 profile 补丁（`$DSH_HOME/profiles/<名>/cordis.patch.yml`）中本条目的 `config:` 块；全部键可选：
 
 ```yaml
-hashline:
-  separator: "|"           # 标记/内容列分隔符（默认 ":"）
-  output_format: text      # "text" | "json"
-  context_lines: 3         # 陈旧回显 / diff 的上下文行数（0..20）
-  require_line_content: false
-  ast:
-    enabled: true
-    languages: {}          # 按语言收窄：{ <id>: { enabled: false } }
-  lsp:
-    servers: {}            # 命名服务器：{ <languageId>: <command> }
-    auto_diagnostics: true # 写入后内联投递服务器诊断
+- id: dsh-hashline-edittool
+  config:
+    separator: "|"           # 标记/内容列分隔符（默认 ":"）
+    output_format: text      # "text" | "json"
+    context_lines: 3         # 陈旧回显 / diff 的上下文行数（0..20）
+    require_line_content: false
+    ast:
+      enabled: true
+      languages: {}          # 按语言收窄：{ <id>: { enabled: false } }
+    lsp:
+      servers: {}            # 命名服务器：{ <languageId>: <command> }
+      auto_diagnostics: true # 写入后内联投递服务器诊断
 ```
+
+从 0.1.6 迁移？旧 `~/.dsh/settings.yaml` 里的 `hashline:` 节会在插件首次启动时**一次性**自动导入本配置——除非你已在 0.1.7 上自行配置过（你的新值优先）。
 
 ### 按 preset 配置指引
 

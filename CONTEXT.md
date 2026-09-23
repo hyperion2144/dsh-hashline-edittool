@@ -20,7 +20,8 @@ _Avoid_: preset ("the preset file" is the composition row, not this override fil
 The numeric ordering of a prompt section within the assembled system prompt. Overridable alongside guidance.
 
 **Preset**:
-A per-session agent composition from the dsh roster (`agent.cordis.yml` plus metadata, system- or user-authored). The unit guidance overrides are keyed by; the plugin reads the agent's preset id at `agent/created` (dsh ≥ 0.1.6; the legacy `agent/session-start` is still registered for older harnesses) via `agentPresets.composedPreset`.
+A per-session agent composition. Since dsh 0.1.7 presets are declared and installed by plugin bundles (the shipped ones — `standard`, `ptc`, `minimal`, `cordis` — ride the harness's own web bundle; the 0.1.6 user-authored `agent.cordis.yml` directory presets are gone). The unit guidance overrides are keyed by; the plugin reads the agent's preset id at `agent/created` (dsh ≥ 0.1.6; the legacy `agent/session-start` is still registered for older harnesses) via `agentPresets.composedPreset`.
+_Avoid_: roster (the 0.1.6 `agent.cordis.yml` term)
 
 **Reset**:
 Restoring the compiled default guidance and order for an override file. Triggered by emptying an override file without a front-matter fence, deleting it, or deleting its whole `<preset>/` directory: the plugin renders the compiled default at session-start and re-seeds at next boot — shipped presets always re-seed; a deleted custom-preset override stays absent (absence is no override).
