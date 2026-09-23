@@ -15,7 +15,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Changed
 
-- **大纲门槛 100 → 20 行（#151/P7）**：这道门槛的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已删除；唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）。`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件，`docs/manual-smoke-ast.md` 同步标注新门槛。
+- **大纲门槛 100 → 20 行（#151/P7）**：`AST_SUMMARY_MIN_TOTAL_LINES` 降到 20。这道门槛原本的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已随重构删除，唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）；`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件。效果：31 行的双函数文件现在给出真实大纲（两处折叠区间、行仍可编辑），不到 20 行仍报 `no outline — too-few-lines`。
 
 ## [0.9.1] - 2026-09-23
 
