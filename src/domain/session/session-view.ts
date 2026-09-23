@@ -330,13 +330,20 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
 
 export async function scanDrift(input: { sessionKey: string; served: Set<string>; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; originalHashes: string[]; path: string; io?: FileIO; exec?: ToolExecution }): Promise<string | undefined> {
   const reported = await driftReported(input.sessionKey, input.path);
-  // Only an anchor that was LIVE immediately before this edit can have been
-  // invalidated BY it (#151/P4). `served` accumulates every anchor the model
-  // was ever shown, including the ones an earlier edit (or an external
-  // rewrite) already released; re-reporting those on every later edit claimed
-  // that anchors had drifted when nothing had moved, and bought the model a
-  // pointless re-read. What survives is the real signal: an anchor that was
-  // valid, sits outside the edited range, and is gone after the edit.
+  // Narrowing `served` is THIS layer's job, not `computeDrift`'s: what the
+  // model was served is a session fact, and the session is what accumulates it
+  // (#151/P4). `computeDrift` stays the pure walk it always was — "which of
+  // these anchors no longer name a line" — so its contract (and its own tests)
+  // do not change under a caller that offers it a different set.
+  //
+  // Only an anchor LIVE immediately before this edit can have been invalidated
+  // BY it. The accumulated set still holds the ones an earlier edit (or an
+  // external rewrite) already released; re-reporting those on every later edit
+  // claimed that anchors had drifted when nothing had moved, and bought the
+  // model a pointless re-read. What survives is the real signal: an anchor
+  // that was valid, sits outside the edited range, and is gone after the edit
+  // — which a healthy incremental update never does, so the notice now says
+  // something whenever it appears.
   const liveBefore = new Set(input.originalHashes);
   const served = new Set<string>();
   for (const anchor of input.served) if (liveBefore.has(anchor)) served.add(anchor);

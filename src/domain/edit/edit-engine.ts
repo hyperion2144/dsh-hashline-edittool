@@ -220,6 +220,55 @@ export interface HunkShift {
 	isIns?: boolean;
 }
 
+/**
+ * The anchor-update hunk for one edit (#151).
+ *
+ * The one place the engine's two coordinate systems meet the op, and so the
+ * one place the `ins` rule lives — every caller states its range and this
+ * function states what the anchor update must see:
+ *
+ * - `ins` contributes an EMPTY old range. Its anchor line sits OUTSIDE the
+ *   hunk, so the line is not touched and keeps its anchor verbatim while every
+ *   inserted row allocates a fresh one. It used to be modelled as a one-line
+ *   REPLACE whose replacement repeats the anchor line — which is what
+ *   `resolveIns` produces for the TEXT — and the aligner, walking from the end,
+ *   paired the anchor with an inserted row of the same content instead, moving
+ *   the anchor off the line the model holds, with no error.
+ * - `del` needs no case: it replaces its range with nothing, so the aligner's
+ *   new segment is already empty and nothing is inherited.
+ * - everything else covers its whole old range, and alignment decides which
+ *   pairs survive.
+ *
+ * @param args.isIns - true for `op: "ins"`.
+ * @param args.oldStart1 - 1-indexed first line of the edit in the ORIGINAL
+ *   file; for `ins`, the anchor line (the LAST line before the insertion).
+ * @param args.oldEnd1 - 1-indexed last line of the edit in the ORIGINAL file.
+ * @param args.finalStart1 - 1-indexed first line of the replacement in the FINAL file.
+ * @param args.finalEnd1 - 1-indexed last line of the replacement in the FINAL file.
+ */
+export function toAnchorHunk(args: {
+	isIns?: boolean;
+	oldStart1: number;
+	oldEnd1: number;
+	finalStart1: number;
+	finalEnd1: number;
+}): EditHunk {
+	if (args.isIns !== true) {
+		return {
+			oldStart1: args.oldStart1,
+			oldEnd1: args.oldEnd1,
+			finalStart1: args.finalStart1,
+			finalEnd1: args.finalEnd1,
+		};
+	}
+	return {
+		oldStart1: args.oldStart1 + 1,
+		oldEnd1: args.oldStart1, // empty range: pure insertion
+		finalStart1: args.finalStart1 + 1,
+		finalEnd1: args.finalEnd1,
+	};
+}
+
 export interface FileEditResult {
 	displayPath: string;
 	absolutePath: string;
@@ -639,26 +688,15 @@ export async function applyOne(
 	const removedCount = anchorResult.range.endLine - anchorResult.range.startLine + 1;
 	const addedCount =
 		splitLines(result).length - splitLines(input.content).length + removedCount;
-	// `ins` leaves its anchor line OUTSIDE the hunk. The line is not touched at
-	// all, so it keeps its anchor verbatim while every inserted row allocates a
-	// fresh one. Modelling the op as a one-line REPLACE whose replacement repeats
-	// the anchor line — what `resolveIns` produces for the TEXT — instead let the
-	// LCS trailing-match pair the anchor with an inserted row of the same content,
-	// silently moving the anchor the model holds (#151).
-	const hunk: EditHunk =
-		input.op === "ins"
-			? {
-					oldStart1: anchorResult.range.startLine + 1,
-					oldEnd1: anchorResult.range.startLine, // empty range: pure insertion
-					finalStart1: anchorResult.range.startLine + 1,
-					finalEnd1: anchorResult.range.startLine + addedCount - 1,
-				}
-			: {
-					oldStart1: anchorResult.range.startLine,
-					oldEnd1: anchorResult.range.endLine,
-					finalStart1: anchorResult.range.startLine,
-					finalEnd1: anchorResult.range.startLine + addedCount - 1,
-				};
+	// One hunk, and the `ins` shape lives in `toAnchorHunk` so this path, the
+	// batch path and the legacy pipeline cannot disagree about it (#151).
+	const hunk = toAnchorHunk({
+		isIns: input.op === "ins",
+		oldStart1: anchorResult.range.startLine,
+		oldEnd1: anchorResult.range.endLine,
+		finalStart1: anchorResult.range.startLine,
+		finalEnd1: anchorResult.range.startLine + addedCount - 1,
+	});
 	const resultHashes = updateAnchorsAfterEdit({
 		path: input.absolutePath,
 		oldContent: input.content,
@@ -1174,24 +1212,17 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			oldContent: originalNormalized,
 			newContent: result,
 			oldAnchors: originalHashes,
-			// `ins` hunks are PURE insertions: their anchor line stays outside the
-			// range, so it keeps its anchor and only the inserted rows are fresh
-			// (#151). `replace`/`sed`/`del` cover the full old range.
+			// The batch's hunks are already in original + final coordinates; the op is
+			// what `toAnchorHunk` turns into the anchor update's shape (#151).
 			hunks: hunkShifts.map((s) =>
-				s.isIns
-					? {
-							oldStart1: s.originalStartLine + 1,
-							oldEnd1: s.originalStartLine,
-							finalStart1: s.finalStartLine + 1,
-							finalEnd1: s.finalEndLine,
-						}
-					: {
-							oldStart1: s.originalStartLine,
-							oldEnd1: s.originalEndLine,
-							finalStart1: s.finalStartLine,
-							finalEnd1: s.finalEndLine,
-						},
-				),
+				toAnchorHunk({
+					isIns: s.isIns === true,
+					oldStart1: s.originalStartLine,
+					oldEnd1: s.originalEndLine,
+					finalStart1: s.finalStartLine,
+					finalEnd1: s.finalEndLine,
+				}),
+			),
 		});
 	}
 

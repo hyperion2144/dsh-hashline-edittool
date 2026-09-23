@@ -38,7 +38,7 @@ import type { ResolvedRange } from "../../hashline/anchor-pipeline.js";
 import { AnchorMismatchError, ServedRejectionError } from "../../hashline/anchor-pipeline.js";
 import { loadServed, sessionKeyFor, recordEchoServes, scanDrift, type ServeRecordPolicy } from "../session/session-view.js";
 import { abortIf, splitLines } from "../../infra/utils.js";
-import { applyOne } from "./edit-engine.js";
+import { applyOne, toAnchorHunk } from "./edit-engine.js";
 import { updateAnchorsAfterEdit } from "../../hashline/session-anchors.js";
 import {
   runFileEdits,
@@ -257,23 +257,16 @@ let driftNotice: string | undefined
 				oldContent: originalNormalized,
 				newContent: result,
 				oldAnchors: originalHashes,
-				// `ins` is a PURE insertion: its anchor line sits outside the range and
-				// keeps its anchor; only the inserted rows allocate fresh (#151).
+				// The single edit's hunk, shaped by the one rule that owns it (#151).
 				hunks: hunkShifts.map((s) =>
-					s.isIns
-						? {
-								oldStart1: s.originalStartLine + 1,
-								oldEnd1: s.originalStartLine,
-								finalStart1: s.finalStartLine + 1,
-								finalEnd1: s.finalEndLine,
-							}
-						: {
-								oldStart1: s.originalStartLine,
-								oldEnd1: s.originalEndLine,
-								finalStart1: s.finalStartLine,
-								finalEnd1: s.finalEndLine,
-							},
-					),
+					toAnchorHunk({
+						isIns: s.isIns === true,
+						oldStart1: s.originalStartLine,
+						oldEnd1: s.originalEndLine,
+						finalStart1: s.finalStartLine,
+						finalEnd1: s.finalEndLine,
+					}),
+				),
 			})
 
 	if (options?.noPersist !== true) {
