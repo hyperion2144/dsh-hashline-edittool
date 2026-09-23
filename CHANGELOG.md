@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-23
+
 ### Fixed
 
 - **LSP 异步诊断注入不再中断会话（#165）**：注入消息的 `source.kind` 沿用了 v3 保留值 `"plugin"`，dsh 0.1.7 的 v4 会话准入拒绝该 kind（`format v4 message requires a producer-owned source kind`），消息在持久化前被拒、当轮会话随之中断——仅在异步诊断真正到达时触发，故发布冒烟（无 LSP 服务器）全绿、测试也因断言钉死了旧形状而全绿。现改为生产者自有 kind `plugin:<plugin-name>`（与 v3→v4 迁移对第三方插件的推导产物一致），并移除随旧包装一起废弃的 `plugin` 字段；钉死旧形状的断言同步更新并加防回归守卫（kind 非空且 ≠ `"plugin"`、无 `plugin` 字段）。
