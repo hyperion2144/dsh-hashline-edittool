@@ -25,7 +25,11 @@ import { ctxFsIO } from "./infra/fs-bridge.js";
 import { FsSandboxController } from "./infra/sandbox.js";
 import { registerReadTool } from "./tools/tool-read.js";
 import { registerEditTool } from "./tools/tool-edit.js";
-import { installHashlineSettings, lspConfiguredServers } from "./config.js";
+import {
+	HashlineSettingsSchema,
+	installHashlineSettings,
+	lspConfiguredServers,
+} from "./config.js";
 import { registerUndoTool } from "./tools/tool-undo.js";
 import { registerGrepTool } from "./tools/tool-grep.js";
 import { registerAstGrepTool } from "./tools/tool-ast-grep.js";
@@ -50,6 +54,7 @@ import {
 	type SectionOverride,
 } from "./guidance.js";
 import { configDir } from "./infra/paths.js";
+import { migrateLegacyHashlineSettings } from "./infra/legacy-migration.js";
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = "dsh-hashline-edittool";
@@ -61,10 +66,13 @@ export const name = "dsh-hashline-edittool";
  * inject"), so these MUST be listed or every agent install fails at
  * session-start.
  */
-// `settings` is core dsh and declared here so cordis STARTS it before this
-// plugin's apply runs — that is what retired the boot-order retry. The other
-// three are the per-agent registration and IO seams.
-export const inject = ["tools", "systemPrompt", "fs", "settings"];
+// No `settings` inject anymore: dsh 0.1.7 hands settings to `apply` as the
+// plugin's own Config (every field volatile), and the document-updated
+// signal rides the string-keyed event bus — no service property access left.
+export const inject = ["tools", "systemPrompt", "fs"];
+
+/** The plugin's configuration schema — the 0.1.7 settings entry surface. */
+export const Config = HashlineSettingsSchema;
 
 /** One per-agent registration bundle, disposed with the agent. */
 interface AgentTools {
@@ -239,16 +247,26 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 	});
 }
 
-/** Mount the bundle: initialize the store, then install tools per agent. */
-export function apply(rootCtx: Context): void {
-	// Hashline settings namespace (separator / output_format / context_lines /
-	// require_line_content / ast / lsp): registers on the settings service and
-	// re-applies the effective config on every commit. The `settings` service is
-	// core dsh — every deployment mounts one — so it is declared in `inject`
-	// above and cordis guarantees it is STARTED before this apply runs. That is
-	// what retired the old retry-and-fallback machinery: there is no race left
-	// to retry.
-	installHashlineSettings(rootCtx);
+/**
+ * Mount the bundle: initialize the store, then install tools per agent.
+ *
+ * `config` is the loader-resolved Config (0.1.7): every field arrives as a
+ * volatile live reference, unwrapped at use time by `resolveSettings`.
+ */
+export function apply(rootCtx: Context, config?: unknown): void {
+	// Hashline settings (separator / output_format / context_lines /
+	// require_line_content / ast / lsp): applied once here and re-applied on
+	// every `settings/document-updated` — the refs are read live each time.
+	installHashlineSettings(rootCtx, config);
+
+	// One-time import of the pre-0.1.7 `hashline:` section (the host's own
+	// legacy import does not know third-party namespaces). Fire-and-forget:
+	// a failure warns and retries on the next boot, never failing this one.
+	void migrateLegacyHashlineSettings(rootCtx).catch((error) => {
+		rootCtx.logger.warn(
+			`dsh-hashline-edittool: legacy settings migration failed (will retry next boot): ${error instanceof Error ? error.message : String(error)}`,
+		);
+	});
 
 	installGrammarRoutes(rootCtx);
 

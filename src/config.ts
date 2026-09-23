@@ -23,13 +23,22 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import type SettingsProvider from "@deepseek-ai/dsh-settings";
 import z from "@deepseek-ai/schemastery";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
 import { rebuildEditSurfaces } from "./domain/edit/edit-rebuild.js";
 import { getAstClient } from "./ast/client.js";
 
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
+
+/**
+ * The plugin's profile entry id — the settings join key on BOTH halves.
+ *
+ * dsh 0.1.7 addresses settings by the Loader ENTRY id (our patch row id,
+ * identical to the package name), not by a registered namespace: the client
+ * card binds `ctx.configForms.get(entryId)` with this key, and the legacy
+ * migration writes into this entry.
+ */
+export const HASHLINE_ENTRY_ID = "dsh-hashline-edittool";
 
 export interface HashlineSettings {
 	separator?: string;
@@ -73,22 +82,36 @@ export interface HashlineSettings {
 
 export const HashlineSettingsSchema: z<HashlineSettings> = z
 	.object({
-		separator: z.string().min(1).max(4),
-		output_format: z.union(["text", "json"]),
-		context_lines: z.number().min(0).max(20),
-		require_line_content: z.boolean(),
-		ast: z.object({
+		// Every field is .volatile(): dsh 0.1.7 keeps the plugin instance mounted
+		// while only these change, handing `apply` live references instead of
+		// plain values (read them through resolveSettings at use time).
+		separator: z.string().min(1).max(4).volatile(),
+		output_format: z.union(["text", "json"]).volatile(),
+		context_lines: z.number().min(0).max(20).volatile(),
+		require_line_content: z.boolean().volatile(),
+		// The volatile mark sits on the OUTERMOST node of each live-editable
+		// subtree only: schemastery requires a volatile field to have a fixed
+		// path with no enclosing volatile, and every descendant of a volatile
+		// node is already live (isVolatilePath walks ancestors) — so the
+		// children here carry NO mark of their own.
+		ast: z
+			.object({
+				enabled: z.boolean(),
+				languages: z.dict(z.object({ enabled: z.boolean() })),
+			})
+			.volatile(),
 		// Named servers, by language. A dict rather than a list of objects on
-		// purpose: it matches the shape of `ast.languages`, so the hand-rolled
-		// settings reader handles it with the same indentation rules it already
-		// has, and "which server does typescript use" is the question being asked.
-		lsp: z.object({
-			servers: z.dict(z.string()),
-			auto_diagnostics: z.boolean(),
-		}),
-			enabled: z.boolean(),
-			languages: z.dict(z.object({ enabled: z.boolean() })),
-		}),
+		// purpose: it matches the shape of `ast.languages`, and "which server
+		// does typescript use" is the question being asked. Sibling of `ast` —
+		// the pre-0.1.7 schema accidentally nested this INSIDE `ast` (masked by
+		// the `as unknown as` cast); the type and the YAML reader always had it
+		// top-level, so the schema now agrees with both (#155).
+		lsp: z
+			.object({
+				servers: z.dict(z.string()),
+				auto_diagnostics: z.boolean(),
+			})
+			.volatile(),
 	})
 	.loose() as unknown as z<HashlineSettings>;
 	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
@@ -342,30 +365,77 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 
 
 /**
- * Attach the `hashline` settings namespace to the settings service and keep
- * the effective config live.
+ * Unwrap one volatile config reference (`.get()`), passing plain values
+ * through unchanged.
  *
- * No retry, no fallback: `settings` is declared in the plugin's `inject`, so
- * cordis starts the service BEFORE this plugin's `apply` runs — there is no
- * race left to poll around. File access happens only inside the settings
- * provider's own load/persist, never around it.
+ * dsh 0.1.7 hands volatile fields to `apply` as live references so a change
+ * never remounts the plugin; tests and plain compositions may hand the same
+ * fields as ordinary values. Both shapes are first-class — duck-typing the
+ * `get` member beats importing the runtime's ref type into a plugin.
  */
-export function installHashlineSettings(ctx: Context): void {
-	const svc = (ctx as unknown as { get(name: string): unknown }).get("settings") as
-		SettingsProvider | undefined;
-	if (svc === undefined) {
-		// Unreachable with `settings` injected — cordis fails the plugin at load
-		// when an injected service is missing. Guarded anyway so the type-level
-		// contract holds without a cast.
-		throw new Error(
-			"dsh-hashline-edittool: the settings service is missing from the context.",
+function unwrapVolatile(value: unknown): unknown {
+	if (
+		value !== null &&
+		typeof value === "object" &&
+		typeof (value as { get?: unknown }).get === "function"
+	) {
+		return (value as { get(): unknown }).get();
+	}
+	return value;
+}
+
+/**
+ * Structurally unwrap a whole config: volatile refs → plain values, deeply,
+ * unknown keys carried along (the schema is loose). Field-level validation
+ * is NOT done here — `applyEffective` owns that contract, exactly as it
+ * always has for provider-published sections.
+ */
+function deepUnwrap(value: unknown): unknown {
+	const plain = unwrapVolatile(value);
+	if (plain !== null && typeof plain === "object") {
+		if (Array.isArray(plain)) return plain.map(deepUnwrap);
+		return Object.fromEntries(
+			Object.entries(plain).map(([key, child]) => [key, deepUnwrap(child)]),
 		);
 	}
-	// THE DSH CAPABILITY: `register` returns the owner scope for reads,
-	// observation, and updates — and is an effect on the calling plugin's
-	// fiber, so it unwinds with the plugin by itself.
-	const scope = svc.register(HASHLINE_SETTINGS_NAMESPACE, HashlineSettingsSchema);
-	applyEffective(scope.get());
-	// Every committed change (card write, file reload) re-applies.
-	scope.watch((next) => applyEffective(next));
+	return plain;
+}
+
+/**
+ * Resolve the plugin's Config (volatile refs or plain values) into a plain
+ * settings object for `applyEffective`. `undefined` in, `undefined` out —
+ * absent config means built-in defaults.
+ */
+export function resolveSettings(config: unknown): HashlineSettings | undefined {
+	if (config === null || typeof config !== "object") return undefined;
+	return deepUnwrap(config) as HashlineSettings;
+}
+
+/**
+ * Wire the plugin's Config into the effective settings snapshot.
+ *
+ * dsh 0.1.7: settings live in the profile's plugin configuration. The loader
+ * resolves our `Config` schema and hands the result to `apply(ctx, config)`;
+ * every field is `.volatile()`, so values arrive as live references — read
+ * them at use time, never cache the raw section.
+ *
+ * Re-apply on `settings/document-updated`: the event is not per-entry
+ * filtered host-side, so any revision bump re-reads OUR refs — cheap and
+ * idempotent — and `applyEffective` lands the change (including the
+ * `require_line_content` surface rebuild and the AST arena release).
+ */
+export function installHashlineSettings(ctx: Context, config: unknown): void {
+	const reapply = (): void => {
+		applyEffective(resolveSettings(config));
+	};
+	reapply();
+	// `settings/document-updated` is declared in @deepseek-ai/dsh-settings'
+	// type space, which this plugin deliberately does not depend on — the
+	// runtime event bus is string-keyed, so subscribe through the same
+	// duck-typed seam the optional services (agentPresets, webServer) use.
+	// cordis still tracks the subscription as an effect of this context.
+	(ctx as unknown as { on(name: string, listener: () => void): () => void }).on(
+		"settings/document-updated",
+		reapply,
+	);
 }

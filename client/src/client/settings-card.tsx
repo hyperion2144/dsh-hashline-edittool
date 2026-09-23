@@ -35,12 +35,13 @@
 import { useCallback, useEffect, useMemo, useReducer, useState, type ReactElement } from "react";
 import { Button, Pill, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
-import type { SettingsScope, SettingsScopeSnapshot } from "./types.js";
-import { requestedView, settingsSummaryText, type SettingsCardView } from "./settings-model.js";
+import type { ConfigFormSnapshot, ConfigPageForm } from "./types.js";
+import { buildFieldOp, requestedView, settingsSummaryText, type SettingsCardView } from "./settings-model.js";
 
-/** Props the slot hands the card: the bound scope plus the view it asks for. */
+/** Props the slot hands the card: the page's form plus the view it asks for. */
 export interface SettingsCardProps {
-	readonly scope: SettingsScope;
+	/** The plugins page's form (0.1.7); absent means the page gave us none. */
+	readonly form?: ConfigPageForm;
 	/** Absent means the page view — the full form is the safe default. */
 	readonly view?: SettingsCardView;
 }
@@ -231,7 +232,7 @@ function bytesText(size: number | undefined): string {
 }
 
 /** Read the AST subtree out of a snapshot without trusting its shape. */
-function readAst(snapshot: SettingsScopeSnapshot): {
+function readAst(snapshot: ConfigFormSnapshot): {
 	enabled: boolean;
 	languages: Record<string, { enabled?: boolean } | undefined>;
 } {
@@ -256,7 +257,7 @@ function readAst(snapshot: SettingsScopeSnapshot): {
  * Defaults come from `DEFAULT_CONFIG` through the same shape, so the card shows
  * what the tools will actually do rather than an empty box.
  */
-function readCore(snapshot: SettingsScopeSnapshot): {
+function readCore(snapshot: ConfigFormSnapshot): {
 	separator: string;
 	outputFormat: "text" | "json";
 	contextLines: number;
@@ -278,7 +279,7 @@ function readCore(snapshot: SettingsScopeSnapshot): {
  * facts the STATUS route reports — this side must not guess at them, or a typo
  * would look like a working server.
  */
-function readLspServers(snapshot: SettingsScopeSnapshot): Record<string, string> {
+function readLspServers(snapshot: ConfigFormSnapshot): Record<string, string> {
 	const lsp = snapshot.value?.lsp;
 	if (typeof lsp !== "object" || lsp === null) return {};
 	const servers = (lsp as { servers?: unknown }).servers;
@@ -296,24 +297,20 @@ function readLspServers(snapshot: SettingsScopeSnapshot): Record<string, string>
  * opt-out, so only an explicit `false` in the settings turns it off — the
  * same absence-means-default rule the AST master switch follows.
  */
-function readAutoDiagnostics(snapshot: SettingsScopeSnapshot): boolean {
+function readAutoDiagnostics(snapshot: ConfigFormSnapshot): boolean {
 	const lsp = snapshot.value?.lsp;
 	if (typeof lsp !== "object" || lsp === null) return true;
 	return (lsp as { auto_diagnostics?: unknown }).auto_diagnostics !== false;
 }
 
 /** Whether the user layer has an explicit `ast.enabled` (presence, not value). */
-function hasExplicitMaster(snapshot: SettingsScopeSnapshot): boolean {
-	const ast = snapshot.user?.ast;
+function hasExplicitMaster(snapshot: ConfigFormSnapshot): boolean {
+	const user = snapshot.user;
+	if (typeof user !== "object" || user === null) return false;
+	const ast = (user as { ast?: unknown }).ast;
 	return typeof ast === "object" && ast !== null && (ast as { enabled?: unknown }).enabled !== undefined;
 }
 
-/** Re-render whenever the scope publishes a change. */
-function useScopeSnapshot(scope: SettingsScope): SettingsScopeSnapshot {
-	const [, bump] = useReducer((n: number) => n + 1, 0);
-	useEffect(() => scope.subscribe(() => bump()), [scope]);
-	return scope.getSnapshot();
-}
 
 /** What the catalog fetch produced — including WHY, when it produced nothing. */
 interface CatalogState {
@@ -498,24 +495,36 @@ function LanguageRowItem(props: {
  * for. No hooks live here on purpose — the summary must stay a one-liner
  * without dragging the form's catalog fetches into the page's first paint.
  *
- * @param props - the bound scope and the requested view.
+ * @param props - the page's form and the requested view.
  */
 export function HashlineSettingsCard(props: SettingsCardProps): ReactElement {
 	if (requestedView(props.view) === "summary") {
 		return <>{settingsSummaryText()}</>;
 	}
-	return <HashlineSettingsPageView scope={props.scope} />;
+	return <HashlineSettingsPageView form={props.form} />;
 }
 
 /**
  * The page view: the whole form, no card chrome of its own — the bundle page
  * draws the title, the icon and the crumb.
  *
- * @param props - the bound scope.
+ * @param props - the page's form.
  */
-function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }): ReactElement {
+function HashlineSettingsPageView({ form }: { readonly form?: ConfigPageForm }): ReactElement {
 	ensureManagerStyles();
-	const snapshot = useScopeSnapshot(scope);
+	// 0.1.7: the page hands the form in as PROPS — re-rendering when the state
+	// moves is the page owner's job, so no subscription hook lives here. A
+	// page that passes no form degrades through the same not-ready gate below.
+	const snapshot: ConfigFormSnapshot =
+		form?.state ?? {
+			status: "unavailable",
+			value: undefined,
+			base: undefined,
+			user: undefined,
+			revision: undefined,
+			writable: false,
+			mode: "host",
+		};
 	const ast = readAst(snapshot);
 	const core = readCore(snapshot);
 	const overridden = hasExplicitMaster(snapshot);
@@ -613,6 +622,22 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 			setBusy(undefined);
 		}
 	}, []);
+
+	/**
+	 * Queue one field edit through the page form's mutate: a VALUE sets the
+	 * field, no value CLEARS it (the field re-inherits the composition
+	 * base) — the same "empty means revert" the card's drafts already use.
+	 */
+	const writeField = async (field: string, ...value: readonly unknown[]): Promise<void> => {
+		if (form === undefined) return;
+		// mutate resolves `false` on refusal (revision conflict, rejected
+		// validation) rather than throwing — surface it so the control shows
+		// WHY nothing wrote instead of silently looking dead.
+		const accepted = await form.mutate([buildFieldOp(field, value[0])]);
+		if (accepted !== true) {
+			throw new Error("写入被拒绝：配置已在他处修改（revision 冲突）或校验未通过，请重试。");
+		}
+	};
 
 	const callRoute = useCallback(
 		async (action: "install" | "uninstall", id: string, signal?: AbortSignal) => {
@@ -754,8 +779,8 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 							onBlur={() =>
 								void write("separator", () =>
 									separatorDraft === ""
-										? scope.unset("separator")
-										: scope.set("separator", separatorDraft),
+										? writeField("separator")
+										: writeField("separator", separatorDraft),
 								)
 							}
 						/>
@@ -776,7 +801,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 						 */}
 						{renderSwitch(core.outputFormat === "json", !writable, "output", (checked) =>
 							void write("output", () =>
-								checked ? scope.set("output_format", "json") : scope.unset("output_format"),
+								checked ? writeField("output_format", "json") : writeField("output_format"),
 							),
 						)}
 					</div>
@@ -795,8 +820,8 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 								const parsed = Number.parseInt(contextDraft, 10);
 								void write("context", () =>
 									Number.isInteger(parsed) && parsed >= 0 && parsed <= 20
-										? scope.set("context_lines", parsed)
-										: scope.unset("context_lines"),
+										? writeField("context_lines", parsed)
+										: writeField("context_lines"),
 								);
 							}}
 						/>
@@ -810,7 +835,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 						<span className="dshl-mgr-grow" />
 						{renderSwitch(core.requireLineContent, !writable, "require", (checked) =>
 							void write("require", () =>
-								checked ? scope.set("require_line_content", true) : scope.unset("require_line_content"),
+								checked ? writeField("require_line_content", true) : writeField("require_line_content"),
 							),
 						)}
 					</div>
@@ -825,7 +850,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 				<span className="dshl-mgr-hint">关闭时 ast_grep / ast_edit 拒绝运行（read / edit 不受影响）</span>
 				<span className="dshl-mgr-grow" />
 				{overridden ? (
-					<Button size="sm" disabled={!writable} onClick={() => void write("reset", () => scope.unset("ast"))}>
+					<Button size="sm" disabled={!writable} onClick={() => void write("reset", () => writeField("ast"))}>
 						恢复默认
 					</Button>
 				) : (
@@ -838,7 +863,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 				 * so nothing changed and the control looked dead.
 				 */}
 				{renderSwitch(ast.enabled, !writable, "master", (checked) =>
-					void write("master", () => scope.set("ast", { ...ast, enabled: checked })),
+					void write("master", () => writeField("ast", { ...ast, enabled: checked })),
 				)}
 			</div>
 
@@ -881,7 +906,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 									// `false` is stored, and clearing is DELETION.
 									if (languages[row.id]?.enabled === false) delete languages[row.id];
 									else languages[row.id] = { enabled: false };
-									void write(`lang:${row.id}`, () => scope.set("ast", { ...ast, languages }));
+									void write(`lang:${row.id}`, () => writeField("ast", { ...ast, languages }));
 								}}
 								onRemove={() => void callRoute("uninstall", row.id)}
 							/>
@@ -1013,7 +1038,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 					"autoDiag",
 					(checked) =>
 						void write("autoDiag", () =>
-							scope.set("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
+							writeField("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
 						),
 				)}
 			</div>
@@ -1043,7 +1068,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 								onClick={() => {
 									const servers = { ...namedServers };
 									delete servers[id];
-									void write(`lsp:${id}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
+									void write(`lsp:${id}`, () => writeField("lsp", { servers, auto_diagnostics: autoDiag }));
 								}}
 							>
 								移除
@@ -1073,7 +1098,7 @@ function HashlineSettingsPageView({ scope }: { readonly scope: SettingsScope }):
 						const servers = { ...namedServers, [serverLang.trim()]: serverCommand.trim() };
 						setServerLang("");
 						setServerCommand("");
-						void write(`lsp:${serverLang.trim()}`, () => scope.set("lsp", { servers, auto_diagnostics: autoDiag }));
+						void write(`lsp:${serverLang.trim()}`, () => writeField("lsp", { servers, auto_diagnostics: autoDiag }));
 					}}
 				>
 					指定

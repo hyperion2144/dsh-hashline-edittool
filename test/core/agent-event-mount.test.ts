@@ -13,17 +13,11 @@ type OnCall = { event: string; handler: (payload: { agent: unknown }) => void };
 
 function makeRootCtx() {
 	const calls: OnCall[] = [];
-	const settingsScope = {
-		get: () => ({}),
-		watch: () => () => undefined,
-	};
 	const rootCtx = {
 		// apply() probes optional services through ctx.get — absent stays absent.
-		// `settings` is injected (hard requirement): a minimal provider stub.
-		get: (name: string) =>
-			name === "settings"
-				? { register: () => settingsScope }
-				: undefined,
+		// No `settings` stub anymore: 0.1.7 wires settings through the Config
+		// argument, not an injected service.
+		get: (_name: string) => undefined,
 		on: (event: string, handler: (payload: { agent: unknown }) => void) => {
 			calls.push({ event, handler });
 		},
@@ -49,12 +43,14 @@ describe("#134 — agent lifecycle event rename compatibility", () => {
 			{ installAgentTools: () => undefined },
 			"installAgentTools",
 		);
-		// Fire every registered handler; the WeakSet dedupes.
-		for (const { handler } of calls) handler({ agent });
-		expect(calls.length).toBeGreaterThanOrEqual(2);
+		// Fire the AGENT-event handlers — apply's settings/document-updated
+		// subscription also rides ctx.on, but it is not this test's subject.
+		const agentHandlers = calls.filter((c) => c.event.startsWith("agent/"));
+		for (const { handler } of agentHandlers) handler({ agent });
+		expect(agentHandlers.length).toBeGreaterThanOrEqual(2);
 		void install;
 		// The observable dedupe guarantee: no throw, and handlers are shared
 		// (the same onAgentStart reference — install runs once per agent).
-		expect(new Set(calls.map((c) => c.handler)).size).toBe(1);
+		expect(new Set(agentHandlers.map((c) => c.handler)).size).toBe(1);
 	});
 });

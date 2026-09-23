@@ -247,57 +247,55 @@ export interface ClientCtx {
 		inject(key: string, create: () => () => void): void;
 		register(options: Record<string, unknown>, component: unknown): () => void;
 	};
-	/**
-	 * The revision-fenced settings writer. Bound to a namespace, it reads the
-	 * current snapshot and refuses a write made against a stale revision —
-	 * which is why a card never needs its own reader.
-	 */
-	settingsScope: SettingsScopeService;
 }
 
 /**
- * The structural mirror of `ctx.settingsScope`, transcribed from the SHIPPED
- * implementation rather than from the cookbook's prose.
+ * Structural mirrors of the 0.1.7 settings-form contract, transcribed from
+ * the SHIPPED `@deepseek-ai/dsh-client-ui-settings` client types rather
+ * than from prose.
  *
- * That distinction is the whole point of this comment: the first version of
- * this mirror guessed `scope.snapshot` as a *property* because the cookbook
- * says "the scope snapshot carries…". The real accessor is
- * `scope.getSnapshot()` — a method — so the card threw during render and was
- * removed from the settings tab by the slot host's entry-error handling. It
- * was invisible in every test we had, which is exactly why the guess is worth
- * naming here.
+ * That discipline is the whole point of this comment block: the first
+ * pre-0.1.7 mirror guessed `scope.snapshot` as a *property* because docs
+ * said "the scope snapshot carries…" — the real accessor was a METHOD,
+ * `getSnapshot()` — so the card threw during render and was removed by the
+ * slot host's entry-error handling, invisible to every test. Transcribe
+ * from the shipped .d.ts, never from prose.
  */
-export interface SettingsScopeSnapshot {
-	/** Host-side state: a form is only usable once this reads `"ready"`. */
-	readonly status: string;
-	/** Whether a write would be accepted at all. */
+
+/** One path-addressed edit carried by a settings write (wire shape). */
+export type SettingsPathOpView =
+	| { readonly op: "set"; readonly path: readonly string[]; readonly value: unknown }
+	| { readonly op: "unset"; readonly path: readonly string[] };
+
+/** Client-side sync state of one settings entry (0.1.7 `ConfigFormSnapshot`). */
+export interface ConfigFormSnapshot {
+	/** `loading` until the first accepted section, `ready` while one stands, `unavailable` otherwise. */
+	readonly status: "loading" | "ready" | "unavailable";
+	/** Last accepted schema-resolved section; undefined before the first acceptance. */
+	readonly value: Record<string, unknown> | undefined;
+	/** Composition layer the Host resolved `value` over — what a field reverts to once cleared. */
+	readonly base: unknown;
+	/** Raw user layer as stored. A field's PRESENCE here marks it overridden. */
+	readonly user: unknown;
+	/** Entry revision fencing the next write; undefined before the first Host view. */
+	readonly revision: number | undefined;
+	/** Whether the Host document accepts writes. */
 	readonly writable: boolean;
-	/** Monotonic revision; a write made against a stale one is refused. */
-	readonly revision: number;
-	/** Resolved value: the base layer merged with the user layer. */
-	readonly value: Record<string, unknown>;
-	/** The composition layer, for "reset to default". */
-	readonly base: Record<string, unknown>;
-	/**
-	 * The raw user layer. **Key PRESENCE, not the value, marks a field
-	 * overridden** — which is why clearing is `unset` rather than writing the
-	 * base value back.
-	 */
-	readonly user: Record<string, unknown>;
+	/** `host` syncs with the Host document; `memory` keeps a remote browser process-local. */
+	readonly mode: "host" | "memory";
 }
 
-/** The bound scope a card reads and writes through. */
-export interface SettingsScope {
-	/** Current snapshot. A METHOD, not a property. */
-	getSnapshot(): SettingsScopeSnapshot;
-	/** Subscribe to changes; returns the unsubscribe. */
+/** The settings form a client editor drives (0.1.7 `ConfigForm`, structural). */
+export interface ConfigForm {
+	getSnapshot(): ConfigFormSnapshot;
 	subscribe(listener: () => void): () => void;
-	set(field: string, value: unknown): Promise<void>;
-	unset(field: string): Promise<void>;
-	mutate?(mutator: unknown): Promise<void>;
+	set(field: string, value: unknown): Promise<boolean>;
+	unset(field: string): Promise<boolean>;
+	mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean>;
 }
 
-/** The `settingsScope` service, structurally. */
-export interface SettingsScopeService {
-	bind(options: { readonly namespace: string }): SettingsScope;
+/** Reactive page values + the submit command the plugins page hands a config entry. */
+export interface ConfigPageForm {
+	readonly state: ConfigFormSnapshot;
+	readonly mutate: ConfigForm["mutate"];
 }

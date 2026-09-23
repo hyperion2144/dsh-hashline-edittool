@@ -68,24 +68,6 @@ if (typeof exports_.apply !== "function" || exports_.inject?.[0] !== "slots") {
 
 const ctx = {
 	plugins: [],
-	/** Namespaces the settings card bound itself to, in order. */
-	boundNamespaces: [],
-	settingsScope: {
-		bind(options) {
-			ctx.boundNamespaces.push(options.namespace);
-			// Mirrors the SHIPPED scope API, not a convenient guess: `getSnapshot`
-			// is a method and `subscribe` powers re-rendering. An earlier version
-			// of this fake offered `snapshot` as a property — the shape our card
-			// wrongly assumed — so this harness confirmed an assumption instead of
-			// the service. The real card threw on it and vanished from the tab.
-			return {
-				getSnapshot: () => ({ status: "ready", writable: true, revision: 1, value: {}, base: {}, user: {} }),
-				subscribe: () => () => {},
-				async set() {},
-				async unset() {},
-			};
-		},
-	},
 	plugin(pluginObject) {
 		this.plugins.push(pluginObject);
 		pluginObject.apply(this); // cordis mounts sub-plugins: apply runs immediately
@@ -135,23 +117,27 @@ if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 for (const entry of ctx.slots.registeredEntries) {
 	if (entry && typeof entry === "object" && typeof entry.component !== "function") throw new Error("component is not a function");
 }
-// The settings card registers on the plugin manager's bundle-config slot,
-// keyed by the bundle's package name: the page indexes `plugins.bundle.config`
-// by `pkg.name`, and a typo in either the slot or the key shows no card at all
-// (#149 — the predecessor slot `settings.plugin.item` has no consumer left).
+// The settings card registers on the plugin manager's ROW-config slot: the
+// 0.1.7 row page is the one that hands `{ view, form }` — the bundle-level
+// `plugins.bundle.config` renders with view only, so a registration there
+// is exactly the “设置尚未就绪” trap. The row key is `<package name>#<row
+// id>`, and the row id doubles as the settings entry id.
 const settingsCards = ctx.slots.registeredEntries
-	.filter((entry) => entry?.options?.name === "plugins.bundle.config")
+	.filter((entry) => entry?.options?.name === "plugins.row.config")
 	.map((entry) => `${entry.options.key}`);
-if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool"])) {
+if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool#dsh-hashline-edittool"])) {
 	throw new Error(`unexpected settings card registration: ${settingsCards.join(", ")}`);
 }
-if (ctx.slots.injectCalls.filter((key) => key === "plugins.bundle.config").length !== 1) {
-	throw new Error("expected the settings card to inject the plugins.bundle.config declaration");
+if (ctx.slots.injectCalls.filter((key) => key === "plugins.row.config").length !== 1) {
+	throw new Error("expected the settings card to inject the plugins.row.config declaration");
 }
-// The namespace is the join key the Host pairs on; binding the wrong one would
-// render a card that edits somebody else's settings.
-if (JSON.stringify(ctx.boundNamespaces) !== JSON.stringify(["hashline"])) {
-	throw new Error(`settings card bound to the wrong namespace: ${ctx.boundNamespaces.join(", ")}`);
+// 0.1.7: the settings form arrives as OWNER PROPS from the plugins page —
+// the card requests NO settings service. The old `settingsScope` is gone
+// from the client composition, so injecting it would keep the card (and,
+// through the shared root inject, every row) from loading at all.
+const settingsCardPlugin = ctx.plugins.find((p) => p.name === "hashline-settings-card");
+if (JSON.stringify(settingsCardPlugin?.inject) !== JSON.stringify(["slots"])) {
+	throw new Error(`settings card injects unavailable services: ${settingsCardPlugin?.inject?.join(", ")}`);
 }
 // EIGHT, not seven: the AST sub-plugin loops over its THREE keys and each
 // iteration asks the slot for its entry, so five single-key sub-plugins plus

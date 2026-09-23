@@ -31,11 +31,16 @@ import type { ClientCtx } from "./types.js";
 /** Locale namespace of the conversation seat the shipped tool views use. */
 const CONVERSATION_NS = "conversation";
 
-/** Required services: the slot registry plus the settings scope we write through. */
-export const inject = ["slots", "settingsScope"];
+/** Required services: the slot registry is the only hard dependency left —
+ * 0.1.7 took the settings scope service away (forms arrive as slot props). */
+export const inject = ["slots"];
 
-/** The settings namespace, spelled identically in both halves — it is the join key. */
-const SETTINGS_NAMESPACE = "hashline";
+/**
+ * The settings entry id, spelled identically in both halves — the join key.
+ * 0.1.7 addresses settings by the profile ENTRY id (= the patch row id = the
+ * package name), not by a registered namespace: the host half exports
+ * HASHLINE_ENTRY_ID with this exact value.
+ */
 
 /** Registers the hashline read conversation row (priority -1 takeover). */
 const readToolview = {
@@ -153,36 +158,32 @@ const astToolviews = {
 /**
  * The plugin-configuration card.
  *
- * The plugin manager renders a bundle's configuration on the bundle's page
- * through the keyed `plugins.bundle.config` slot, indexing entries by the
- * bundle's package name; the predecessor slot `settings.plugin.item` it
- * replaced has no consumer left in the shell, so a registration there renders
- * nowhere (#149). The key below is therefore the ROOT package's name — the
- * bundle the Loader row and the page's `pkg.name` are keyed on — not this
- * client workspace's `-client` name.
- *
- * The Host half already registers the `hashline` namespace, and the settings
- * scope binding keys on it, so the two halves pair up with no host change.
- * The card reads and writes ONLY through the bound scope: the cookbook's hard
- * constraint is that it must not add its own `settings.describe` reader,
- * because the client's cold-boot read budget is pinned by a platform test.
+ * The plugins page renders one ROW's configuration on the row's own page
+ * through the keyed `plugins.row.config` slot — keyed `<package name>#<row
+ * id>`, and the row's id doubles as the settings entry id. The 0.1.7 row page
+ * hands each entry `{ view, form }` as OWNER PROPS (the bundle-level
+ * `plugins.bundle.config` slot renders with NO form — registering there is
+ * exactly the "设置尚未就绪" trap this card once fell into), so the card
+ * reads and writes ONLY through `form` (snapshot state + path-op mutate);
+ * it must not add its own `settings.describe` reader, because the client's
+ * cold-boot read budget stays pinned by a platform test.
  */
 
-/** The bundle's package name — the key the manager indexes this entry by. */
+/** The host plugin's package name — also its row id, and with it the row key. */
 const BUNDLE_PACKAGE_NAME = "dsh-hashline-edittool";
 
 const settingsCard = {
 	name: "hashline-settings-card",
-	inject: ["slots", "settingsScope"],
+	inject: ["slots"],
 	apply(ctx: ClientCtx) {
-		const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
-		ctx.slots.inject("plugins.bundle.config", () =>
+		ctx.slots.inject("plugins.row.config", () =>
 			ctx.slots.register(
 				{
-					name: "plugins.bundle.config",
-					key: BUNDLE_PACKAGE_NAME,
+					name: "plugins.row.config",
+					// `<package name>#<row id>`: the ROOT package declares the host
+					// plugin's row, and the row id doubles as the settings entry id.
+					key: `${BUNDLE_PACKAGE_NAME}#${BUNDLE_PACKAGE_NAME}`,
 					locale: CONVERSATION_NS,
-					inject: () => ({ scope }),
 				},
 				HashlineSettingsCard,
 			),

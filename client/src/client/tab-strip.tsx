@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
-import { IconEllipsisOutline16, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
+import { IconEllipsisOutlineMedium, Menu } from "@deepseek-ai/dsh-client-ui-primitives";
 import { foldTabs } from "./models.js";
 
 /**
@@ -137,18 +137,30 @@ export function TabStrip({
 		: { visible: paths.map((_, index) => index), folded: [] as number[] };
 
 	// Track the strip's usable width (`clientWidth` excludes its own padding).
-	useLayoutEffect(() => {
+	// The functional set bails on an unchanged value, and a ZERO width — what a
+	// collapsed process group reports while its content is hidden — is "no
+	// information", not "narrow": folding against it would thrash.
+	const trackWidth = (): void => {
 		const element = stripRef.current;
 		if (element === null) return;
-		setStripWidth(element.clientWidth);
-	});
+		const width = element.clientWidth;
+		if (width <= 0) return;
+		setStripWidth((previous) => (previous === width ? previous : width));
+	};
+	useLayoutEffect(trackWidth);
+	// One observer for the element's lifetime, NOT one per render: observe()
+	// fires its callback once immediately, so an unkeyed effect that rebuilds
+	// the observer feeds set → render → rebuild → fire → set — the loop that
+	// flickered inside 0.1.7's collapsible process groups, where widths
+	// oscillate while the group animates.
 	useEffect(() => {
 		const element = stripRef.current;
 		if (element === null || typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(() => setStripWidth(element.clientWidth));
+		const observer = new ResizeObserver(trackWidth);
 		observer.observe(element);
 		return () => observer.disconnect();
-	});
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- element identity is stable for the ref's lifetime
+	}, []);
 
 	// Read every tab's natural width while they are all mounted. Only the
 	// unmounted (already-folded) case is skipped: `measured` stays true from the
@@ -243,7 +255,7 @@ export function TabStrip({
 								"aria-label": labels.more,
 								title: labels.more,
 								onClick: () => setMenuOpen((value) => !value),
-								children: jsx_(IconEllipsisOutline16, { size: 14 }),
+								children: jsx_(IconEllipsisOutlineMedium, { size: 14 }),
 							}),
 						}),
 					]
