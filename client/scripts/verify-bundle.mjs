@@ -117,18 +117,19 @@ if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 for (const entry of ctx.slots.registeredEntries) {
 	if (entry && typeof entry === "object" && typeof entry.component !== "function") throw new Error("component is not a function");
 }
-// The settings card registers on the plugin manager's bundle-config slot,
-// keyed by the bundle's package name: the page indexes `plugins.bundle.config`
-// by `pkg.name`, and a typo in either the slot or the key shows no card at all
-// (#149 — the predecessor slot `settings.plugin.item` has no consumer left).
+// The settings card registers on the plugin manager's ROW-config slot: the
+// 0.1.7 row page is the one that hands `{ view, form }` — the bundle-level
+// `plugins.bundle.config` renders with view only, so a registration there
+// is exactly the “设置尚未就绪” trap. The row key is `<package name>#<row
+// id>`, and the row id doubles as the settings entry id.
 const settingsCards = ctx.slots.registeredEntries
-	.filter((entry) => entry?.options?.name === "plugins.bundle.config")
+	.filter((entry) => entry?.options?.name === "plugins.row.config")
 	.map((entry) => `${entry.options.key}`);
-if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool"])) {
+if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool#dsh-hashline-edittool"])) {
 	throw new Error(`unexpected settings card registration: ${settingsCards.join(", ")}`);
 }
-if (ctx.slots.injectCalls.filter((key) => key === "plugins.bundle.config").length !== 1) {
-	throw new Error("expected the settings card to inject the plugins.bundle.config declaration");
+if (ctx.slots.injectCalls.filter((key) => key === "plugins.row.config").length !== 1) {
+	throw new Error("expected the settings card to inject the plugins.row.config declaration");
 }
 // 0.1.7: the settings form arrives as OWNER PROPS from the plugins page —
 // the card requests NO settings service. The old `settingsScope` is gone

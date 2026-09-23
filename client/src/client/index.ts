@@ -158,27 +158,31 @@ const astToolviews = {
 /**
  * The plugin-configuration card.
  *
- * The plugins page renders a bundle's configuration on the bundle's page
- * through the keyed `plugins.bundle.config` slot, indexing entries by the
- * bundle's package name. The 0.1.7 page hands each entry
- * `{ view, form }` as OWNER PROPS — the card reads and writes ONLY through
- * `form` (snapshot state + path-op mutate); it must not add its own
- * `settings.describe` reader, because the client's cold-boot read budget
- * stays pinned by a platform test.
+ * The plugins page renders one ROW's configuration on the row's own page
+ * through the keyed `plugins.row.config` slot — keyed `<package name>#<row
+ * id>`, and the row's id doubles as the settings entry id. The 0.1.7 row page
+ * hands each entry `{ view, form }` as OWNER PROPS (the bundle-level
+ * `plugins.bundle.config` slot renders with NO form — registering there is
+ * exactly the "设置尚未就绪" trap this card once fell into), so the card
+ * reads and writes ONLY through `form` (snapshot state + path-op mutate);
+ * it must not add its own `settings.describe` reader, because the client's
+ * cold-boot read budget stays pinned by a platform test.
  */
 
-/** The bundle's package name — the key the manager indexes this entry by. */
+/** The host plugin's package name — also its row id, and with it the row key. */
 const BUNDLE_PACKAGE_NAME = "dsh-hashline-edittool";
 
 const settingsCard = {
 	name: "hashline-settings-card",
 	inject: ["slots"],
 	apply(ctx: ClientCtx) {
-		ctx.slots.inject("plugins.bundle.config", () =>
+		ctx.slots.inject("plugins.row.config", () =>
 			ctx.slots.register(
 				{
-					name: "plugins.bundle.config",
-					key: BUNDLE_PACKAGE_NAME,
+					name: "plugins.row.config",
+					// `<package name>#<row id>`: the ROOT package declares the host
+					// plugin's row, and the row id doubles as the settings entry id.
+					key: `${BUNDLE_PACKAGE_NAME}#${BUNDLE_PACKAGE_NAME}`,
 					locale: CONVERSATION_NS,
 				},
 				HashlineSettingsCard,
