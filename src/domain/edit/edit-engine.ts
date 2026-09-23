@@ -53,7 +53,7 @@ import {
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
 import { findSnapshotPathsByHashes } from "../session/hash-store.js";
-import { updateAnchorsAfterEdit } from "../../hashline/session-anchors.js";
+import { updateAnchorsAfterEdit, type EditHunk } from "../../hashline/session-anchors.js";
 import { saveUndo } from "./undo-edit.js";
 import {
 	clearNoopLoop,
@@ -100,8 +100,18 @@ function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
 	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : bound.line };
 }
 
-/** Returns the pinned edit plus a warning list for hints that
- *  disagreed with the resolved position (#59/#66: mismatch is informational). */
+/**
+ * Pin both anchor bounds to their authoritative line, and warn when a supplied
+ * `<line>:<anchor>` hint disagreed (#59/#66: the mismatch is informational, the
+ * anchor wins).
+ *
+ * A single-line edit offers the SAME bound twice (`anchor_end` folds to
+ * `anchor_start`), so it is pinned ONCE: pinning it twice emitted the
+ * `[E_LINE_HINT]` warning twice (#151/P2) and, on a stale anchor, reported the
+ * same anchor twice in the `[E_STALE]` list (#151/P3). Two bounds that differ
+ * in either field are still pinned independently — a caller who wrote two
+ * different hints made two different claims.
+ */
 function pinBounds(
 	edit: HEdit,
 	fileAnchors: string[],
@@ -116,14 +126,17 @@ function pinBounds(
 			bound.line !== pinned.line
 		) {
 			warnings.push(
-				`[E_LINE_HINT] line hint ${bound.line} does not match anchor ${bound.anchor} (resolved to line ${pinned.line}); anchor is authoritative, edit proceeds.`,
+				`[E_LINE_HINT] line hint ${bound.line} does not match anchor ${bound.anchor} (resolved to line ${pinned.line}); anchor is authoritative, edit proceeds.`
 			);
 		}
 		return pinned;
 	};
+	const [start, end] = edit.hash_bounds;
+	const pinnedStart = pin(start);
+	const sameBound = start.anchor === end.anchor && start.line === end.line;
 	return {
 		content_lines: edit.content_lines,
-		hash_bounds: [pin(edit.hash_bounds[0]), pin(edit.hash_bounds[1])],
+		hash_bounds: [pinnedStart, sameBound ? pinnedStart : pin(end)],
 	};
 }
 
@@ -199,6 +212,12 @@ export interface HunkShift {
 	finalStartLine: number;
 	/** 1-indexed last line of this hunk's replacement in the FINAL file. */
 	finalEndLine: number;
+	/**
+	 * `op: "ins"` — a PURE insertion. Its anchor line is not part of the hunk
+	 * (see {@link EditHunk}), so the anchor update must exclude it: the line
+	 * keeps its anchor and only the inserted rows allocate fresh ones.
+	 */
+	isIns?: boolean;
 }
 
 export interface FileEditResult {
@@ -620,18 +639,33 @@ export async function applyOne(
 	const removedCount = anchorResult.range.endLine - anchorResult.range.startLine + 1;
 	const addedCount =
 		splitLines(result).length - splitLines(input.content).length + removedCount;
+	// `ins` leaves its anchor line OUTSIDE the hunk. The line is not touched at
+	// all, so it keeps its anchor verbatim while every inserted row allocates a
+	// fresh one. Modelling the op as a one-line REPLACE whose replacement repeats
+	// the anchor line — what `resolveIns` produces for the TEXT — instead let the
+	// LCS trailing-match pair the anchor with an inserted row of the same content,
+	// silently moving the anchor the model holds (#151).
+	const hunk: EditHunk =
+		input.op === "ins"
+			? {
+					oldStart1: anchorResult.range.startLine + 1,
+					oldEnd1: anchorResult.range.startLine, // empty range: pure insertion
+					finalStart1: anchorResult.range.startLine + 1,
+					finalEnd1: anchorResult.range.startLine + addedCount - 1,
+				}
+			: {
+					oldStart1: anchorResult.range.startLine,
+					oldEnd1: anchorResult.range.endLine,
+					finalStart1: anchorResult.range.startLine,
+					finalEnd1: anchorResult.range.startLine + addedCount - 1,
+				};
 	const resultHashes = updateAnchorsAfterEdit({
 		path: input.absolutePath,
 		oldContent: input.content,
 		newContent: result,
 		oldAnchors: input.hashes,
 		hunks: [
-			{
-				oldStart1: anchorResult.range.startLine,
-				oldEnd1: anchorResult.range.endLine,
-				finalStart1: anchorResult.range.startLine,
-				finalEnd1: anchorResult.range.startLine + addedCount - 1,
-			},
+			hunk,
 		],
 	});
 
@@ -1118,6 +1152,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			originalEndLine: edit.hash_bounds[1].line!,
 			finalStartLine: fp.finalStart,
 			finalEndLine: fp.finalEnd,
+			isIns: item.op === "ins",
 		});
 		lastApplied = {
 			content: currentContent,
@@ -1139,12 +1174,24 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			oldContent: originalNormalized,
 			newContent: result,
 			oldAnchors: originalHashes,
-			hunks: hunkShifts.map((s) => ({
-				oldStart1: s.originalStartLine,
-				oldEnd1: s.originalEndLine,
-				finalStart1: s.finalStartLine,
-				finalEnd1: s.finalEndLine,
-			})),
+			// `ins` hunks are PURE insertions: their anchor line stays outside the
+			// range, so it keeps its anchor and only the inserted rows are fresh
+			// (#151). `replace`/`sed`/`del` cover the full old range.
+			hunks: hunkShifts.map((s) =>
+				s.isIns
+					? {
+							oldStart1: s.originalStartLine + 1,
+							oldEnd1: s.originalStartLine,
+							finalStart1: s.finalStartLine + 1,
+							finalEnd1: s.finalEndLine,
+						}
+					: {
+							oldStart1: s.originalStartLine,
+							oldEnd1: s.originalEndLine,
+							finalStart1: s.finalStartLine,
+							finalEnd1: s.finalEndLine,
+						},
+				),
 		});
 	}
 

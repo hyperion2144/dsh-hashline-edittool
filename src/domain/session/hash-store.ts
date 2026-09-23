@@ -27,6 +27,7 @@ import {
 	HASH_STORE_BUSY_TIMEOUT,
 	SERVED_TTL_MS,
 	ANCHOR_STATE_TTL_MS,
+	UNDO_STACK_DEPTH,
 } from "../../infra/constants.js";
 import {
 	registerAnchorPersistence,
@@ -93,8 +94,10 @@ interface Prepared {
 	allHashes: (...params: SqlParams) => Record<string, unknown>[];
 	deleteOne: (...params: SqlParams) => void;
 	upsert: (...params: SqlParams) => void;
-	undoUpsert: (...params: SqlParams) => void;
+	undoPush: (...params: SqlParams) => void;
+	undoPop: (...params: SqlParams) => void;
 	undoGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	undoDepth: (...params: SqlParams) => number;
 	undoDelete: (...params: SqlParams) => void;
 	servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	servedUpsert: (...params: SqlParams) => void;
@@ -139,11 +142,17 @@ export interface HashStore {
 	/** Paths whose stored snapshot hashes contain every given anchor. */
 	findSnapshotPaths(hashes: string[]): string[];
 
-	// ---- undo entries (one per path) ----------------------------------------
-	/** The undo row for a path, healing a corrupt row (parse → validate → delete). */
+	// ---- undo entries (a bounded stack per path, newest first) --------------
+	/** The NEWEST undo row for a path, healing a corrupt row (parse → validate → clear). */
 	getUndo(path: string): UndoRecord | undefined;
-	upsertUndo(path: string, entry: UndoRecord): void;
+	/** Push an entry as the newest; the oldest past {@link UNDO_STACK_DEPTH} is dropped. */
+	pushUndo(path: string, entry: UndoRecord): void;
+	/** Drop the newest entry — the one below it is the next undo. */
+	popUndo(path: string): void;
+	/** Drop the path's whole history (an external write invalidated the chain). */
 	deleteUndo(path: string): void;
+	/** How many edits on this path can still be undone. */
+	undoDepth(path: string): number;
 
 	// ---- served rows (what the model has seen, per session+path) ------------
 	/** The served anchors set for a session+path, healing a corrupt row; empty when nothing was served. */
@@ -243,6 +252,52 @@ function openDb(storePath: string): { db: DatabaseSync; stmts: Prepared } {
 	}
 }
 
+/**
+ * The undo row family: a bounded STACK per path, NEWEST at the HIGHEST
+ * `depth`. Depths are an APPEND counter (never renumbered — renumbering
+ * collides with the primary key mid-statement), so `MAX(depth)` is the undo a
+ * call reverts and the deepest rows past the bound are the ones dropped.
+ *
+ * It used to hold one row per path (`path` the primary key), which capped the
+ * history at a single level — the write that consumed an undo also wiped it
+ * (#151/P5).
+ */
+const UNDO_TABLE_DDL =
+	"CREATE TABLE IF NOT EXISTS undo (" +
+	"path TEXT NOT NULL, " +
+	"depth INTEGER NOT NULL, " +
+	"content TEXT NOT NULL, " +
+	"bom TEXT NOT NULL, " +
+	"ending TEXT NOT NULL, " +
+	"hashes TEXT NOT NULL, " +
+	"result_content TEXT NOT NULL, " +
+	"updated_at INTEGER NOT NULL, " +
+	"PRIMARY KEY (path, depth)" +
+	")";
+
+/**
+ * Run one statement group inside a single transaction, retrying the WHOLE group
+ * on a busy lock (a rolled-back transaction is safe to replay). A failure inside
+ * rolls back, so a multi-statement move is never half-applied.
+ */
+function withTransaction(db: DatabaseSync, fn: () => void): void {
+	withBusyRetry(() => {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			fn();
+			db.exec("COMMIT");
+		} catch (error) {
+			try {
+				db.exec("ROLLBACK");
+			} catch {
+				// Already unwound (the failure WAS the commit): the original error is
+				// the one worth reporting.
+			}
+			throw error;
+		}
+	});
+}
+
 function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec("PRAGMA synchronous = NORMAL");
@@ -261,17 +316,24 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"value TEXT NOT NULL" +
 			")",
 	);
-	db.exec(
-		"CREATE TABLE IF NOT EXISTS undo (" +
-			"path TEXT PRIMARY KEY, " +
-			"content TEXT NOT NULL, " +
-			"bom TEXT NOT NULL, " +
-			"ending TEXT NOT NULL, " +
-			"hashes TEXT NOT NULL, " +
-			"result_content TEXT NOT NULL, " +
-			"updated_at INTEGER NOT NULL" +
-			")",
-	);
+	db.exec(UNDO_TABLE_DDL);
+	// Migration for a store written before #151/P5: the table exists in its old
+	// single-row shape. Rebuild it IN PLACE rather than bumping
+	// HASH_STORE_VERSION — a version change wipes anchor_state as well, and every
+	// anchor the session served would go stale. The existing entry becomes the
+	// stack's top, so an in-flight undo survives the upgrade.
+	const undoColumns = db.prepare("PRAGMA table_info(undo)").all() as {
+		name: string;
+	}[];
+	if (undoColumns.length > 0 && !undoColumns.some((column) => column.name === "depth")) {
+		db.exec("ALTER TABLE undo RENAME TO undo_legacy");
+		db.exec(UNDO_TABLE_DDL);
+		db.exec(
+			"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) " +
+				"SELECT path, 0, content, bom, ending, hashes, result_content, updated_at FROM undo_legacy",
+		);
+		db.exec("DROP TABLE undo_legacy");
+	}
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS anchor_state (" +
 			"path TEXT PRIMARY KEY, " +
@@ -328,14 +390,27 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"INSERT INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?) " +
 			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at",
 	);
-	const undoUpsertStmt = db.prepare(
-		"INSERT INTO undo (path, content, bom, ending, hashes, result_content, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-			"ON CONFLICT(path) DO UPDATE SET content = excluded.content, bom = excluded.bom, ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, updated_at = excluded.updated_at",
+	// The newest entry is the one with the HIGHEST depth. `depth` is an append
+	// counter, never renumbered: renumbering on push/pop collided with the
+	// (path, depth) primary key mid-statement (`UNIQUE constraint failed`),
+	// because SQLite checks the constraint row by row.
+	const undoPushStmt = db.prepare(
+		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) " +
+			"VALUES (?, COALESCE((SELECT MAX(depth) FROM undo WHERE path = ?), -1) + 1, ?, ?, ?, ?, ?, ?)",
 	);
+	const undoMaxStmt = db.prepare("SELECT MAX(depth) AS max FROM undo WHERE path = ?");
+	const undoPruneStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth < ?");
 	const undoGetStmt = db.prepare(
-		"SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ?",
+		"SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ? ORDER BY depth DESC LIMIT 1",
 	);
+	const undoPopStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth = ?");
+	const undoDepthStmt = db.prepare("SELECT COUNT(*) AS n FROM undo WHERE path = ?");
 	const undoDelStmt = db.prepare("DELETE FROM undo WHERE path = ?");
+	/** The highest depth stored for a path (the newest undo), or undefined. */
+	const topDepth = (path: string | number): number | undefined => {
+		const row = undoMaxStmt.get(path) as { max?: number | null } | undefined;
+		return row?.max === null || row?.max === undefined ? undefined : Number(row.max);
+	};
 	const servedGetStmt = db.prepare(
 		"SELECT hashes, reported FROM served WHERE session_id = ? AND path = ?",
 	);
@@ -385,13 +460,31 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				upsertStmt.run(...params);
 			});
 		},
-		undoUpsert: (...params) => {
-			withBusyRetry(() => {
-				undoUpsertStmt.run(...params);
+		undoPush: (...params) => {
+			// `params` = [path, content, bom, ending, hashesJson, resultContent, updatedAt];
+			// the path appears TWICE in the INSERT — once for the row, once for the
+			// MAX(depth) that numbers it. Insert and prune are ONE move: a crash between
+			// them would leave the stack one deeper than advertised.
+			withTransaction(db, () => {
+				undoPushStmt.run(params[0], ...params);
+				const top = topDepth(params[0]) ?? 0;
+				undoPruneStmt.run(params[0], top - UNDO_STACK_DEPTH + 1);
+			});
+		},
+		undoPop: (...params) => {
+			// Read the top depth FIRST, then delete exactly that row: a
+			// `depth = (SELECT MAX(depth) …)` in the DELETE re-evaluates as rows go
+			// and would walk the whole stack out.
+			withTransaction(db, () => {
+				const top = topDepth(params[0]);
+				if (top === undefined) return;
+				undoPopStmt.run(params[0], top);
 			});
 		},
 		undoGet: (...params) =>
 			undoGetStmt.get(...params) as Record<string, unknown> | undefined,
+		undoDepth: (...params) =>
+			((undoDepthStmt.get(...params) as { n?: number } | undefined)?.n ?? 0),
 		undoDelete: (...params) => {
 			withBusyRetry(() => {
 				undoDelStmt.run(...params);
@@ -516,6 +609,8 @@ function makeDomainStore(stmts: Prepared): HashStore {
 			try {
 				const parsed = JSON.parse(row.hashes as string);
 				if (!isValidHashList(parsed)) {
+					// A corrupt TOP breaks the chain: every entry below it describes a state
+					// this one was supposed to lead to, so the whole stack goes.
 					stmts.undoDelete(path);
 					return undefined;
 				}
@@ -531,8 +626,8 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				return undefined;
 			}
 		},
-		upsertUndo(path, entry) {
-			stmts.undoUpsert(
+		pushUndo(path, entry) {
+			stmts.undoPush(
 				path,
 				entry.content,
 				entry.bom,
@@ -542,8 +637,14 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				Date.now(),
 			);
 		},
+		popUndo(path) {
+			stmts.undoPop(path);
+		},
 		deleteUndo(path) {
 			stmts.undoDelete(path);
+		},
+		undoDepth(path) {
+			return stmts.undoDepth(path);
 		},
 
 		getServed(sessionKey, path) {

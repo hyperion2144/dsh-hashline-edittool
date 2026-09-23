@@ -364,7 +364,7 @@ describe("hash-store — schema versioning", () => {
 		await withTempHome(async (home) => {
 			const store = await loadHashStore();
 			await put(store, "/p.ts", "x\n", ["XYZ"]);
-			store.upsertUndo("/u.ts", {
+			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",

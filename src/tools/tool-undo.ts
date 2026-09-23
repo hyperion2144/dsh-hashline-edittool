@@ -20,7 +20,7 @@ import { upsertSnapshotFor } from "../domain/session/hash-store.js";
 import { contentChecksum, contextLinesCfg } from "../hashline/hash-assign.js";
 import { lineHashes } from "../hashline/hash.js";
 import { changedRange } from "../hashline/anchor-pipeline.js";
-import { getUndo, clearUndo } from "../domain/edit/undo-edit.js";
+import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
 import { recordServedTruncated } from "../domain/session/session-view.js";
 import { seedAnchors } from "../hashline/session-anchors.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
@@ -277,7 +277,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				);
 			}
 
-			await clearUndo(absolutePath);
+			// CONSUME the entry, do not wipe the history: the entry below it is the
+			// next edit to revert, which is what makes this a stack (#151/P5).
+			await popUndo(absolutePath);
+			const remaining = await undoDepth(absolutePath);
 
 			const parts: string[] = [`Undone last edit on ${path}.`];
 			if (linesAddedByEdit > 0 || linesRemovedByEdit > 0) {
@@ -288,6 +291,11 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			parts.push(
 				"File reverted to previous state. The revert diff\u2019s `+` rows (restored lines) carry fresh anchors for follow-up edits; `-` rows are the removed lines — their anchors are dead.",
 			);
+			if (remaining > 0) {
+				parts.push(
+					`${remaining} earlier edit(s) on this file can still be undone with another undo_last_edit call.`
+				);
+			}
 
 			if (undoDiffResult.servedRows.length > 0) {
 				try {

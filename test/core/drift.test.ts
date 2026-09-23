@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeDrift } from "../../src/domain/session/session-view.js";
+import { computeDrift, scanDrift } from "../../src/domain/session/session-view.js";
+import { withTempDir } from "../support/fixtures.js";
 
 describe("computeDrift", () => {
 	it("never anchors drift echoes to an ambiguous (duplicated) hash", () => {
@@ -384,5 +385,56 @@ describe("computeDrift", () => {
 		expect(result!.rows).toEqual([
 			{ anchor: "h03", drifted: true },
 		]);
+	});
+});
+
+/**
+ * The seam #151/P4 lives at: `computeDrift` answers "which of THESE anchors no
+ * longer name a line", and `scanDrift` decides which anchors count as served.
+ *
+ * The decision is what changed. A session's served set is an accumulator, so it
+ * still carries every anchor an EARLIER edit released; offering those made every
+ * later edit claim that anchors had drifted when nothing had moved.
+ *
+ * @module
+ */
+describe("scanDrift — the notice is about THIS edit", () => {
+	const range = { startLine: 2, endLine: 2, startHash: "h01", endHash: "h01", delta: 0 };
+
+	it("says nothing about an anchor an earlier edit already released", async () => {
+		await withTempDir("drift-history-", async () => {
+			const notice = await scanDrift({
+				sessionKey: "s-history",
+				// `hDead` was served once and is no longer live: it is NOT in
+				// originalHashes, so this edit cannot have invalidated it.
+				served: new Set(["hDead", "h01", "h02"]),
+				originalHashes: ["h00", "h01", "h02"],
+				resultHashes: ["h00", "X01", "h02"],
+				resultLines: ["a", "changed", "c"],
+				range,
+				path: "/drift-history.ts",
+			});
+			expect(notice).toBeUndefined();
+		});
+	});
+
+	it("still reports an anchor that WAS live and is gone outside the range", async () => {
+		await withTempDir("drift-real-", async () => {
+			// The shape a genuine engine fault has: h02 was valid immediately before
+			// this edit, the edit did not touch its line, and it is gone afterwards.
+			const notice = await scanDrift({
+				sessionKey: "s-real",
+				served: new Set(["h00", "h01", "h02"]),
+				originalHashes: ["h00", "h01", "h02"],
+				resultHashes: ["h00", "h01", "RELEASED"],
+				resultLines: ["a", "b", "changed"],
+				range,
+				path: "/drift-real.ts",
+			});
+			expect(notice).toContain("Drift notice:");
+			expect(notice).toContain("1 anchor(s)");
+			expect(notice).toContain("no longer valid");
+			expect(notice).not.toContain("drifted");
+		});
 	});
 });

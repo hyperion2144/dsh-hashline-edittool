@@ -4,6 +4,19 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`op:"ins"` 锚点漂移（#151/P1）**：`ins` 曾展开为「把锚点行替换为 `[锚点行, ...新行]`」的单行 replace，而 hunk 对齐的 LCS 走「末尾匹配优先」——对 replace 正确（它保留的是收尾行），对 ins 错误。当插入行与锚点行内容相同（在下一条 `}` 下面插入一条 `}`，最常见的形状），旧锚点被配给了**新插入的那行**，锚点行反而重新分配：模型缓存 `MC` 后再编辑，静默落到 div 的闭合括号上，无报错也无警告。现在 `ins` 的 hunk 是空 old 区间（锚点行在 hunk 之外，verbatim 保留），`del` 本就是空 new 区间，`alignPreserved` 任一侧为空即返回空配对——ins/del 不再走 LCS，只有 `replace`/`sed` 会对齐。单条路径、批量路径与 `mutation.ts` 遗留的 `execPipeline` 三处 hunk 计算同步修正，并在三处都补了 del 的纯删除语义。新增 `test/core/issue-151-ins-anchor.test.ts`（11 例：重复内容、块内/块首重复、已编辑文件、批内 ins、文件末尾 ins、del 释放与边界）。
+- **单行编辑的重复告警与重复计数（#151/P2、#151/P3）**：单行 replace 的两个 bound 是同一个引用（`anchor_end` 折叠自 `anchor_start`），却被当成两次独立声明——行提示不符时打印两遍 `[E_LINE_HINT]`，锚点失效时报 `2 stale anchors … "UU", "UU"`（实际只有 1 个）。`pinBounds` 对同一 bound 只 pin 一次；`fmtMismatchWithServes` 的 `notFound` 按锚点去重（重复项中带行提示的那条胜出——行提示决定 echo 居中在哪一行）。
+- **drift 提示把历史死锚点报成「漂移」（#151/P4）**：`scanDrift` 现在只把「本次编辑前仍有效」的锚点交给 `computeDrift`。会话的 served 集合是累积的，里面还留着更早编辑（或外部改写）释放掉的锚点；之前每次后续编辑都会报 `N anchor(s) outside the edited range drifted`，而实际上没有任何锚点移动——模型白读一遍。措辞同步改成 `are no longer valid`，不再说 drifted；真正被本次编辑在区间外释放掉的锚点仍会报（新增 `scanDrift` 两例钉住两侧）。
+- **`undo_last_edit` 只能回退一层（#151/P5）**：`undo` 行族原本 `path` 主键、一行一条，而撤销本身又清空记录，因此最多回退一步。现改为按 path 的有界栈（`UNDO_STACK_DEPTH = 10`），`depth` 是追加计数（最高 depth = 最新，避免重编号撞主键）；成功回退消费栈顶而非清空历史，响应里给出剩余可回退步数。旧库**原地升级**：旧行成为栈顶，刻意**不** bump `HASH_STORE_VERSION`——那会连 `anchor_state` 一起清掉，让会话已服务过的锚点全部失效。新增 `test/core/issue-151-undo-stack.test.ts`（迁移、anchor_state 不受影响、损坏行清栈、连续两次撤销）。
+- **`ast_grep` 把覆盖行数报成匹配数（#151/P6）**：`22 match(es)` 里的 22 是被匹配覆盖的**行数**，结构匹配只有 2 个。文本通道现在报 `2 match(es) covering 12 line(s)`（每个匹配恰好一行时保留短形式），JSON 通道同时给出 `matchCount` 与 `total`（`total` 仍是卡片用的行数，卡片「N of M matches」的算法不变）。
+- **`lsp request` 丢弃 `textDocument`（#151/P8）**：带 `payload` 时默认参数被整体替换，`{position}` 这类 payload 到服务器手里就没有 `textDocument`（`Cannot read properties of undefined (reading 'uri')`）。现在按需合并：payload 没有 `textDocument` 时补齐，有但缺 `uri` 时补 `uri`，显式给出的文档/uri 原样保留，非对象 payload 原样透传。
+
+### Changed
+
+- **大纲门槛 100 → 20 行（#151/P7）**：这道门槛的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已删除；唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）。`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件，`docs/manual-smoke-ast.md` 同步标注新门槛。
+
 ## [0.9.1] - 2026-09-23
 
 ### Fixed

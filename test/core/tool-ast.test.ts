@@ -122,6 +122,52 @@ describe("ast_grep", () => {
 		expect(Object.values(parsed.matches[0]!.rows)).toContain("export function alpha() {");
 	});
 
+	it("counts structural matches, and reports the line count separately (#151/P6)", async () => {
+		// Two functions, five-line bodies: 12 lines in 2 structural matches. The
+		// old header said "12 match(es)", which is the LINE count wearing the
+		// match vocabulary — a model reading it concludes the pattern matched 12
+		// places and goes looking for the other ten.
+		await writeFile(
+			file,
+			[
+				"export function alpha() {",
+				"  const a = 1;",
+				"  const b = 2;",
+				"  const c = 3;",
+				"  return a + b + c;",
+				"}",
+				"export function beta() {",
+				"  const d = 4;",
+				"  const e = 5;",
+				"  const f = 6;",
+				"  return d + e + f;",
+				"}",
+			].join("\n"),
+			"utf-8",
+		);
+		const value = await run({ pat: "export function $N() { $$$B }" });
+		// The schema's `total` stays the matched LINE count — the card lists rows.
+		const { total } = value as unknown as { total: number };
+		expect(total).toBe(12);
+		expect(value.matches).toHaveLength(2);
+		expect(value.modelText).toContain("2 match(es) covering 12 line(s)");
+
+		// One line per match: the short form, with no redundant line count.
+		const single = await run({ pat: "const $N = $V;" });
+		expect(single.matches).toHaveLength(6);
+		expect(single.modelText).toContain("6 match(es) for");
+		expect(single.modelText).not.toContain("covering");
+
+		// JSON mode names BOTH counts, so the confusion cannot survive there either.
+		applyEffective({ ast: { enabled: true }, output_format: "json" });
+		const json = JSON.parse(String((await run({ pat: "export function $N() { $$$B }" })).modelText)) as {
+			matchCount: number;
+			total: number;
+		};
+		expect(json).toMatchObject({ matchCount: 2, total: 12 });
+		applyEffective({ ast: { enabled: true } });
+	});
+
 	it("finds imports by SHAPE, with no kind table involved", async () => {
 		const value = await run({ pat: 'import $$$BODY from "$MODULE"' });
 		// Three forms — named, default, namespace — and a name-keyed rule can only
@@ -395,6 +441,37 @@ describe("ast_grep — no pattern means the OUTLINE", () => {
 		// and it must not be the same sentence.
 		await write(["const a = 1;", "const b = 2;", ...Array.from({ length: 120 }, () => "// filler")].join("\n"));
 		expect((await outlineOf()).outline).toContain("nothing to fold");
+	});
+
+	it("outlines a file the old 100-line gate refused (#151/P7)", async () => {
+		// 32 lines — well past the new 20-line gate, far below the old 100 one, and
+		// folding two twelve-line bodies clears the shrink ratio easily.
+		const chunky = (bodies: number, bodyLines: number) =>
+			[
+				'import { a } from "./m";',
+				"",
+				...Array.from({ length: bodies }, (_, i) =>
+					[
+						`export function fn${i}() {`,
+						...Array.from({ length: bodyLines }, (_, j) => `  const v${i}_${j} = ${j};`),
+						"}",
+						"",
+					].join("\n"),
+				),
+			].join("\n");
+
+		await write(chunky(2, 12));
+		const value = await outlineOf();
+		// The refusal this used to produce was "too-few-lines" on a file far too
+		// small for a read window to be the better answer.
+		expect(value.outline).not.toContain("no outline");
+		expect(value.outline).toContain("fn0");
+		expect(value.outline).toContain("fn1");
+		expect(value.outline).toMatch(/[A-Za-z0-9]{2,8}:\d+-\d+:/);
+
+		// And the gate is still a gate: 11 lines is below it.
+		await write(chunky(1, 5));
+		expect((await outlineOf()).outline).toContain("too-few-lines");
 	});
 
 	it("names the rule for a file past the SIZE gate too", async () => {

@@ -26,7 +26,12 @@ import { contentChecksum } from "./hash-assign.js";
 export interface EditHunk {
   /** 1-indexed first line of the hunk's range in the ORIGINAL snapshot. */
   oldStart1: number;
-  /** 1-indexed last line of the hunk's range in the ORIGINAL snapshot. */
+  /**
+   * 1-indexed last line of the hunk's range in the ORIGINAL snapshot.
+   *
+   * `oldEnd1 < oldStart1` is an EMPTY range — a pure insertion (`op:"ins"`),
+   * whose anchor line sits OUTSIDE the hunk and therefore keeps its anchor.
+   */
   oldEnd1: number;
   /** 1-indexed first line of the hunk's replacement in the FINAL file. */
   finalStart1: number;
@@ -463,6 +468,12 @@ export function updateAnchorsAfterEdit(args: {
  * match wins — which is what a `replace` means, since its closing line is the
  * one being kept.
  *
+ * A PURE insert (empty old segment) or a PURE delete (empty new segment) has
+ * nothing to pair: no line crosses the edit, so there is no survivor to hand an
+ * anchor to. The walk is skipped and nothing is inherited. `ins` and `del` both
+ * reduce to this case — `ins` by leaving its anchor line outside the hunk,
+ * `del` by replacing its range with nothing.
+ *
  * @param oldSeg - the hunk's old lines.
  * @param newSeg - the hunk's new lines.
  * @returns new index -> old index, for the lines worth carrying an anchor over.
@@ -470,6 +481,11 @@ export function updateAnchorsAfterEdit(args: {
 function alignPreserved(oldSeg: readonly unknown[], newSeg: readonly unknown[]): Map<number, number> {
 	const m = oldSeg.length;
 	const n = newSeg.length;
+	// Nothing to align: `ins` leaves the OLD segment empty (its anchor line is
+	// outside the hunk) and `del` leaves the NEW one empty — neither has two
+	// sides to compare, so the DP table is never built and NOTHING is inherited.
+	// Only `replace`/`sed` reach the walk below.
+	if (m === 0 || n === 0) return new Map();
 	const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
 	for (let i = 1; i <= m; i++) {
 		for (let j = 1; j <= n; j++) {

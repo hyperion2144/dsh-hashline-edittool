@@ -244,6 +244,7 @@ let driftNotice: string | undefined
 			originalEndLine: applied.range.endLine,
 			finalStartLine: applied.range.startLine,
 			finalEndLine: lastReplacementLineNew,
+			isIns: op === "ins",
 		});
 	}
 
@@ -256,12 +257,23 @@ let driftNotice: string | undefined
 				oldContent: originalNormalized,
 				newContent: result,
 				oldAnchors: originalHashes,
-				hunks: hunkShifts.map((s) => ({
-					oldStart1: s.originalStartLine,
-					oldEnd1: s.originalEndLine,
-					finalStart1: s.finalStartLine,
-					finalEnd1: s.finalEndLine,
-				})),
+				// `ins` is a PURE insertion: its anchor line sits outside the range and
+				// keeps its anchor; only the inserted rows allocate fresh (#151).
+				hunks: hunkShifts.map((s) =>
+					s.isIns
+						? {
+								oldStart1: s.originalStartLine + 1,
+								oldEnd1: s.originalStartLine,
+								finalStart1: s.finalStartLine + 1,
+								finalEnd1: s.finalEndLine,
+							}
+						: {
+								oldStart1: s.originalStartLine,
+								oldEnd1: s.originalEndLine,
+								finalStart1: s.finalStartLine,
+								finalEnd1: s.finalEndLine,
+							},
+					),
 			})
 
 	if (options?.noPersist !== true) {

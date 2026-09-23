@@ -135,7 +135,7 @@ describe("applyEdit — stale echo locates only with evidence (issue #136)", () 
 	};
 
 	it("a stale anchor WITH a line hint echoes the hinted line's fresh marker", () => {
-		const { edited, hashes } = mkFile();
+		const { edited, hashes, editedHashes } = mkFile();
 		const staleAnchor = hashes[9]!; // released by round 1
 		let message = "";
 		try {
@@ -149,8 +149,62 @@ describe("applyEdit — stale echo locates only with evidence (issue #136)", () 
 		expect(message).toMatch(/\[E_STALE\]/);
 		// The echo is centered on the HINTED line (10 ±3), with its fresh marker:
 		expect(message).toContain("export function beta()");
-		expect(message).toMatch(/reuse a fresh marker from: [A-Za-z0-9]+/);
+		// ONE anchor means ONE marker: the singular form names the hinted line's
+		// own fresh marker (the duplicated bound no longer doubles the offer).
+		expect(message).toContain(`reuse the fresh marker ${editedHashes[9]!}`);
 		expect(message).not.toContain("cannot be located");
+	});
+
+	it("a duplicated stale bound is reported ONCE (#151/P3)", () => {
+		const { edited, hashes } = mkFile();
+		const staleAnchor = hashes[9]!;
+		let message = "";
+		try {
+			applyEdit(
+				edited,
+				{ hash_bounds: [{ anchor: staleAnchor }, { anchor: staleAnchor }], content_lines: ["    return 43;"] },
+			);
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		// A single-line edit offers the SAME anchor twice; it is one stale anchor,
+		// so it is counted once and listed once.
+		expect(message).toMatch(/\[E_STALE\] 1 stale anchor:/);
+		expect(message.match(/\[E_STALE\][^\n]*/g) ?? []).toHaveLength(1);
+		expect(message.split(`"${staleAnchor}"`).length - 1).toBe(1);
+	});
+
+	it("keeps a duplicate's line hint, and counts DIFFERENT anchors separately", () => {
+		const { edited, hashes } = mkFile();
+		const staleAnchor = hashes[9]!;
+		// The same anchor twice, but only the SECOND bound carries the hint: the
+		// hint is what centers the echo, so the surviving report must keep it.
+		let withHint = "";
+		try {
+			applyEdit(edited, {
+				hash_bounds: [{ anchor: staleAnchor }, { anchor: staleAnchor, line: 10 }],
+				content_lines: ["    return 43;"],
+			});
+		} catch (error) {
+			withHint = (error as Error).message;
+		}
+		expect(withHint).toMatch(/\[E_STALE\] 1 stale anchor/);
+		expect(withHint).toContain("export function beta()"); // centered on line 10
+		expect(withHint).not.toContain("cannot be located");
+
+		// Deduping is per ANCHOR: two different stale anchors are still two.
+		let two = "";
+		try {
+			applyEdit(edited, {
+				hash_bounds: [{ anchor: "ZZZ" }, { anchor: "QQQ" }],
+				content_lines: ["    return 43;"],
+			});
+		} catch (error) {
+			two = (error as Error).message;
+		}
+		expect(two).toMatch(/\[E_STALE\] 2 stale anchors/);
+		expect(two).toContain('"ZZZ"');
+		expect(two).toContain('"QQQ"');
 	});
 
 	it("a stale anchor WITHOUT any hint does not fake an echo at line 1", () => {

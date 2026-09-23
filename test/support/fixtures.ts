@@ -182,6 +182,21 @@ export function makeExec(
 		}) as unknown as ToolRunContext;
 }
 
+
+/**
+ * A tool as the tests drive it: `execute(callId, params)` → the rendered
+ * content block. The wrapper drops signal/update/ctx, so a test never passes
+ * them.
+ */
+export interface TestTool {
+	execute(
+		_callId: string,
+		params: unknown,
+		_signal?: AbortSignal,
+		_onUpdate?: unknown,
+		_ctx?: unknown,
+	): Promise<{ content: Array<{ type: "text"; text: string }> }>;
+}
 /** pi-hashline-compatible wrapper: execute(id, params, signal, onUpdate, ctx) → { content } */
 function wrapTool(
 	tool: { execute: (args: unknown, exec: ToolRunContext) => Promise<unknown> },
@@ -248,11 +263,14 @@ export function setupIntegrationTest(cwd: string) {
 		sessionKey,
 		makeExecFor,
 		ctx: { cwd } as unknown,
-		getTool: (name: string) => (tools as Record<string, unknown>)[name],
+		getTool: (name: string) => (tools as Record<string, TestTool>)[name],
 		readTool: tools.read,
 		editTool: tools.edit,
 	};
 }
+
+/** The integration harness type, so helpers can name it without re-deriving it. */
+export type Harness = ReturnType<typeof setupIntegrationTest>;
 
 /** Read-only harness: just the hashline `read` tool. */
 export function setupReadTest(cwd: string) {
@@ -269,6 +287,47 @@ export function setupReadTest(cwd: string) {
 
 export function getText(result: { content: Array<{ text?: string }> }): string {
 	return result.content[0]?.text ?? "";
+}
+
+export interface ServedRow {
+	hash: string;
+	content: string;
+}
+
+/**
+ * Read through the hashline `read` tool so anchors are served, then parse the
+ * rendered rows back into `{hash, content}` pairs — INDEX == line - 1.
+ *
+ * Both row dialects are tolerated: `<anchor>:<line>:content` (the current
+ * output) and the legacy `<line>:<anchor>:content`, with or without the
+ * diff `+`/`-`/space prefix. The line number is a positional hint, never part
+ * of the anchor, so it is dropped here exactly as `edit` drops it.
+ */
+export async function servedRows(
+	harness: Harness,
+	path: string,
+): Promise<ServedRow[]> {
+	const res = await harness.readTool.execute("read", { path });
+	const rows: ServedRow[] = [];
+	for (const line of getText(res).split("\n")) {
+		if (line.startsWith("ANCHOR:")) continue;
+		const body = line.replace(/^[+\- ]+/, "");
+		const sep = body.indexOf(":");
+		if (sep === -1) continue;
+		const first = body.slice(0, sep);
+		const rest = body.slice(sep + 1);
+		if (/^\d+$/.test(first)) {
+			// Legacy `<line>:<anchor>:content` — the number came first.
+			const h = rest.indexOf(":");
+			if (h === -1) continue;
+			rows.push({ hash: rest.slice(0, h), content: rest.slice(h + 1) });
+		} else {
+			// `<anchor>:<line>:content` — drop the hint, keep the content.
+			const h = rest.indexOf(":");
+			rows.push({ hash: first, content: h === -1 ? rest : rest.slice(h + 1) });
+		}
+	}
+	return rows;
 }
 
 export function extractHash(line: string): string {

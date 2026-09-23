@@ -285,6 +285,16 @@ export interface DriftNoticeResult {
   allAlreadyReported: boolean;
 }
 
+/**
+ * Which of `served` no longer name a line in the result — excluding the edit's
+ * own range, whose lines were meant to change.
+ *
+ * The CALLER decides what to offer as `served`. A session's served set is an
+ * accumulator of everything the model was ever shown, so `scanDrift` narrows it
+ * to the anchors that were live immediately before the edit: what this function
+ * reports is then what the EDIT invalidated, not the session's whole stale
+ * history (#151/P4).
+ */
 export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | undefined {
   const { served, resultHashes, range, originalHashes, reported } = input;
   const resultHashSet = new Set(resultHashes);
@@ -303,7 +313,7 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
   const countLabel = `${total} anchor(s)`;
   if (!anyNotReported) {
     return {
-      text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range drifted and were already reported — call read to refresh.`,
+      text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range are no longer valid and were already reported — call read to refresh.`,
       rows: [],
       total,
       allAlreadyReported: true,
@@ -311,7 +321,7 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
   }
   const rows: DriftRow[] = driftedAnchors.map((anchor) => ({ anchor, drifted: true }));
   return {
-    text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range drifted — call read to refresh.`,
+    text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range are no longer valid — call read to refresh.`,
     rows,
     total,
     allAlreadyReported: false,
@@ -320,7 +330,17 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
 
 export async function scanDrift(input: { sessionKey: string; served: Set<string>; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; originalHashes: string[]; path: string; io?: FileIO; exec?: ToolExecution }): Promise<string | undefined> {
   const reported = await driftReported(input.sessionKey, input.path);
-  const result = computeDrift({ ...input, reported });
+  // Only an anchor that was LIVE immediately before this edit can have been
+  // invalidated BY it (#151/P4). `served` accumulates every anchor the model
+  // was ever shown, including the ones an earlier edit (or an external
+  // rewrite) already released; re-reporting those on every later edit claimed
+  // that anchors had drifted when nothing had moved, and bought the model a
+  // pointless re-read. What survives is the real signal: an anchor that was
+  // valid, sits outside the edited range, and is gone after the edit.
+  const liveBefore = new Set(input.originalHashes);
+  const served = new Set<string>();
+  for (const anchor of input.served) if (liveBefore.has(anchor)) served.add(anchor);
+  const result = computeDrift({ ...input, served, reported });
   if (!result || result.allAlreadyReported) return result?.text;
   let servedNote = "";
   try {

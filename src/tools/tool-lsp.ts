@@ -110,6 +110,29 @@ function lspDescription(): string {
 }
 
 /**
+ * Add the document a request is about, unless the caller already named one.
+ *
+ * `payload` is optional PARAMS, not a replacement for the document: a
+ * `textDocument/definition` payload carrying only a `position` used to reach
+ * the server without its `textDocument`, and the server answered `Cannot read
+ * properties of undefined (reading 'uri')` (#151/P8). An explicit
+ * `textDocument` — or an explicit `uri` inside one — is left exactly as the
+ * caller wrote it; a non-object payload is returned untouched, for the server
+ * (or the protocol layer) to reject in its own words.
+ */
+function withDocument(params: unknown, uri: string): unknown {
+	if (params === null || typeof params !== "object" || Array.isArray(params)) return params;
+	const record = params as Record<string, unknown>;
+	const textDocument = record.textDocument;
+	if (textDocument === undefined) return { ...record, textDocument: { uri } };
+	if (textDocument !== null && typeof textDocument === "object" && !Array.isArray(textDocument)) {
+		const doc = textDocument as Record<string, unknown>;
+		if (doc.uri === undefined) return { ...record, textDocument: { ...doc, uri } };
+	}
+	return record;
+}
+
+/**
  * Build the tool.
  *
  * @param io - the session's file access, for resolve + read.
@@ -448,7 +471,7 @@ export function buildLspTool(io: FileIO) {
 						{ textDocument: { uri }, range, context: { diagnostics: [] } }
 					: args.payload === undefined
 						? { textDocument: { uri } }
-						: (JSON.parse(args.payload) as unknown);
+						: withDocument(JSON.parse(args.payload), uri);
 			const answer = await session.request(method, params);
 
 			if (args.operation === "symbols") {

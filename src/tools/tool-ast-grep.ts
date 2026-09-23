@@ -530,11 +530,22 @@ export function buildAstGrepTool(io: FileIO) {
 			// mode renders the matched rows with their `<anchor>:<line>` markers
 			// (editable exactly as a read's are), the JSON mode keys the same rows by
 			// that same marker. Nothing is re-parsed and the two cannot drift.
+			// `total` is the card's count — the matched LINES, which is what the card
+			// lists. The MODEL text has to say both, because a pattern that matches
+			// multi-line nodes reports far fewer structural matches than lines, and
+			// "22 match(es)" for 2 function matches is simply false (#151/P6).
 			const total = cardRows.length;
+			const matchCount = matches.length;
+			const counted =
+				matchCount === total
+					? `${matchCount} match(es)`
+					: `${matchCount} match(es) covering ${total} line(s)`;
 			const modelText = isJsonOutput()
 				? JSON.stringify({
 						path: args.path,
 						pattern: args.pat,
+						// Both counts, named: `total` stays the card's line count.
+						matchCount,
 						total,
 						matches: rows.map((row, index) => ({
 							startLine: row.startLine,
@@ -543,7 +554,7 @@ export function buildAstGrepTool(io: FileIO) {
 							rows: dicts[index] ?? {},
 						})),
 					})
-				: [`${args.path} — ${total} match(es) for \`${args.pat}\``, ...rows.flatMap((row) => [...row.rows, ...row.captures.map((c) => `  ${c}`), ""])]
+				: [`${args.path} — ${counted} for \`${args.pat}\``, ...rows.flatMap((row) => [...row.rows, ...row.captures.map((c) => `  ${c}`), ""])]
 						.join("\n")
 						.trimEnd();
 			return {

@@ -178,7 +178,7 @@ describe("snapshot-store — pruneMissing", () => {
 	it("removes undo entries for files that no longer exist", async () => {
 		await withTempHome(async () => {
 			const store = await loadHashStore();
-			store.upsertUndo("/gone.ts", {
+			store.pushUndo("/gone.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",
@@ -196,7 +196,7 @@ describe("snapshot-store — pruneMissing", () => {
 			await writeFile(existing, "keep\n", "utf-8");
 
 			const store = await loadHashStore();
-			store.upsertUndo(existing, {
+			store.pushUndo(existing, {
 				content: "old",
 				bom: "",
 				ending: "\n",

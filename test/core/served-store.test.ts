@@ -193,7 +193,7 @@ describe("served state — session wipe keeps snapshots and undo", () => {
 			await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
 			await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
 			store.upsertSnapshot("/a.ts", contentChecksum("a\n"), 1, ["abc"]);
-			store.upsertUndo("/u.ts", {
+			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",
@@ -289,7 +289,7 @@ describe("served state — schema versioning", () => {
 			const store = await loadHashStore();
 			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "XYZ" }]);
 			store.upsertSnapshot("/p.ts", contentChecksum("x\n"), 1, ["XYZ"]);
-			store.upsertUndo("/u.ts", {
+			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",
@@ -376,14 +376,14 @@ describe("served state — pruneMissing", () => {
 			await recordServed("sessionA", "/gone.ts", [{ position: 0, anchor: "GON" }]);
 			store.upsertSnapshot(existing, contentChecksum("keep\n"), 1, ["KEP"]);
 			store.upsertSnapshot("/gone.ts", contentChecksum("gone\n"), 1, ["GON"]);
-			store.upsertUndo(existing, {
+			store.pushUndo(existing, {
 				content: "old",
 				bom: "",
 				ending: "\n",
 				hashes: ["KEP"],
 				resultContent: "new",
 			});
-			store.upsertUndo("/gone.ts", {
+			store.pushUndo("/gone.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",

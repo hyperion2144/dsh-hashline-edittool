@@ -17,13 +17,19 @@ async function readUndo(path: string): Promise<UndoRecord | undefined> {
 	return store.getUndo(path)
 }
 
-/** Persist the undo row for a path to the active store. */
+/** Push an undo row as the path's NEWEST entry (the stack is bounded). */
 async function writeUndo(path: string, entry: UndoRecord): Promise<void> {
 	const store = await loadHashStore()
-	store.upsertUndo(path, entry)
+	store.pushUndo(path, entry)
 }
 
-/** Drop the undo row for a path from the active store. */
+/** Drop the path's NEWEST undo row — the one below it becomes the next undo. */
+async function popUndoRow(path: string): Promise<void> {
+	const store = await loadHashStore()
+	store.popUndo(path)
+}
+
+/** Drop the whole undo history for a path (a later external write invalidates it). */
 async function removeUndo(path: string): Promise<void> {
 	const store = await loadHashStore()
 	store.deleteUndo(path)
@@ -47,9 +53,7 @@ export async function saveUndo(
 	path: string,
 	entry: UndoEntry,
 ): Promise<{ persisted: boolean; restore: () => Promise<void> }> {
-	let previous: UndoRecord | undefined
 	try {
-		previous = await readUndo(path)
 		await writeUndo(path, {
 			content: entry.content,
 			bom: entry.bom,
@@ -63,14 +67,39 @@ export async function saveUndo(
 	}
 	return {
 		persisted: true,
+		// Cancelling the push pops it: whatever was newest before is newest again,
+		// because the write this entry belonged to never happened.
 		restore: async () => {
 			try {
-				if (previous) await writeUndo(path, previous)
-				else await removeUndo(path)
+				await popUndoRow(path)
 			} catch (error) {
 				console.error('Failed to restore previous undo entry:', error)
 			}
 		},
+	}
+}
+
+/**
+ * Consume the newest entry — call this AFTER a successful revert. The entry
+ * below it becomes the next undo, which is what makes the history a stack
+ * rather than a single slot (#151/P5).
+ */
+export async function popUndo(path: string): Promise<void> {
+	try {
+		await popUndoRow(path)
+	} catch (error) {
+		console.error('Failed to consume undo entry:', error)
+	}
+}
+
+/** How many successive edits on this path can still be undone. */
+export async function undoDepth(path: string): Promise<number> {
+	try {
+		const store = await loadHashStore()
+		return store.undoDepth(path)
+	} catch (error) {
+		console.error('Failed to read undo depth:', error)
+		return 0
 	}
 }
 
@@ -101,7 +130,7 @@ export async function getUndo(path: string): Promise<UndoEntry | undefined> {
 	}
 }
 
-/** Drop the undo entry for a path (a write or an undone revert clears history). */
+/** Drop the whole undo history for a path (an external write clears the chain). */
 export async function clearUndo(path: string): Promise<void> {
 	try {
 		await removeUndo(path)
