@@ -204,26 +204,30 @@ structured.
 
 ## Settings
 
-All keys live under the `hashline` namespace in dsh settings (`~/.dsh/settings.yaml`), are
-optional, and **hot-reload**: a committed change takes effect on the next tool call, no
-restart.
+All keys are the plugin's own **profile configuration** (dsh ≥ 0.1.7): edit them in the web at
+**Settings → Plugins → `dsh-hashline-edittool`** — the ROW page's configuration form — and
+commit through the page. Every change **hot-reloads**: it takes effect on the next tool
+call, no restart. The native-editor view of the same values is the entry's `config:` block in
+the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are optional:
 
 ```yaml
-hashline:
-  separator: "|"           # marker/content column separator (default ":")
-  output_format: text      # "text" | "json"
-  context_lines: 3         # context rows around stale echoes / diffs (0..20)
-  require_line_content: false
-  ast:
-    enabled: true
-    languages: {}          # per-language { <id>: { enabled: false } } narrowing
-  lsp:
-    servers: {}            # named servers: { <languageId>: <command> }
-    auto_diagnostics: true # deliver server diagnostics inline after writes
+- id: dsh-hashline-edittool
+  config:
+    separator: "|"           # marker/content column separator (default ":")
+    output_format: text      # "text" | "json"
+    context_lines: 3         # context rows around stale echoes / diffs (0..20)
+    require_line_content: false
+    ast:
+      enabled: true
+      languages: {}          # per-language { <id>: { enabled: false } } narrowing
+    lsp:
+      servers: {}            # named servers: { <languageId>: <command> }
+      auto_diagnostics: true # deliver server diagnostics inline after writes
 ```
 
-Every one of these keys is editable in the web through the plugin's own **settings card**
-(`HashlineSettingsCard`) — change, commit, done; see [Highlights](#highlights).
+Migrating from 0.1.6? A pre-0.1.7 `~/.dsh/settings.yaml` with a `hashline:` section is
+imported into this configuration **once**, automatically, on the plugin's first boot — unless
+you had already configured the entry yourself (your newer values win).
 
 ### Per-preset guidance
 

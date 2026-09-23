@@ -12,6 +12,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 `inject` 去 `settingsScope`，设置卡经行级槽位读 `form.state` / 写 `form.mutate`；`@deepseek-ai/dsh-*`
 升级至 0.1.7-alpha.1、schemastery ≥3.18.3，`@deepseek-ai/dsh-settings` 依赖移除；
 `settings-provider.ts` 死代码删除；client 图标改名跟进。仅支持 0.1.7（0.8.x 留给 0.1.6）。
+- **内置 preset 种子对齐 0.1.7（#154 / #160）**：`DEFAULT_PRESETS` 中 `code` → `ptc`（0.1.7 内置为 `standard`/`ptc`/`minimal`/`cordis`，`code` 已不存在，保留只会生成永远无法命中的死目录）；guidance home README 双语文本量同步。调研依据：`docs/research/preset-ids-0.1.7.md`。
 
 ### Fixed（未发布 / unreleased）
 
