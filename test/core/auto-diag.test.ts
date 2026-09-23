@@ -318,11 +318,15 @@ describe("the async path — a push later than the window", () => {
 			const message = injected[0] as {
 				role: string;
 				content: Array<{ text: string }>;
-				source: { kind: string; plugin: string; form: string };
+				source: { kind: string; form: string };
 			};
 			expect(message.role).toBe("user");
-			expect(message.source.kind).toBe("plugin");
-			expect(message.source.plugin).toBe("dsh-hashline-edittool");
+			// v4 session admission (#165): the kind is the producer's OWN —
+			// non-empty and never the retired v3 wrapper "plugin" — and the legacy
+			// `plugin` field is gone with the wrapper that carried it.
+			expect(message.source.kind).toBe("plugin:dsh-hashline-edittool");
+			expect(message.source.kind).not.toBe("plugin");
+			expect(message.source).not.toHaveProperty("plugin");
 			const text = message.content[0]!.text;
 			// Story 15: file, tool, and call id all identify the edit that caused it.
 			expect(text).toContain("a.ts");

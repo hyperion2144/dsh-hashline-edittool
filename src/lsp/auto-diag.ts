@@ -466,8 +466,14 @@ function buildInjectedMessage(input: AfterWriteInput, report: FileDiagnostics): 
 	return createUserMessage({
 		content: [{ type: "text", text: formatInjectedText(input, report) }],
 		source: {
-			kind: "plugin",
-			plugin: PLUGIN_NAME,
+			// v4 session admission (#165): the kind must be the producer's OWN,
+			// non-empty kind — the literal "plugin" is the retired v3 wrapper and is
+			// refused (`format v4 message requires a producer-owned source kind`),
+			// which used to kill the very turn the diagnostics arrived in.
+			// `plugin:<name>` is what the v3→v4 migration itself derives for a
+			// third-party plugin, so live injection and migrated history agree,
+			// and the legacy `plugin` field is gone with the wrapper that carried it.
+			kind: `plugin:${PLUGIN_NAME}`,
 			form: "diagnostics",
 		} as never,
 	});
