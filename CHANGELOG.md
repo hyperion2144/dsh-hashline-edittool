@@ -13,12 +13,14 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - **`ast_grep` 把覆盖行数报成匹配数（#151/P6）**：`22 match(es)` 里的 22 是被匹配覆盖的**行数**，结构匹配只有 2 个。文本通道现在报 `2 match(es) covering 12 line(s)`（每个匹配恰好一行时保留短形式），JSON 通道同时给出 `matchCount` 与 `total`（`total` 仍是卡片用的行数，卡片「N of M matches」的算法不变）。
 - **`lsp request` 丢弃 `textDocument`（#151/P8）**：带 `payload` 时默认参数被整体替换，`{position}` 这类 payload 到服务器手里就没有 `textDocument`（`Cannot read properties of undefined (reading 'uri')`）。现在按需合并：payload 没有 `textDocument` 时补齐，有但缺 `uri` 时补 `uri`，显式给出的文档/uri 原样保留，非对象 payload 原样透传。
 - **`grep` 扫大内容造成宿主进程 OOM（#167）**：grep 过去把整棵树的文件**逐个读成完整字符串**再处理，而这条路径上一个尺寸闸门都没有——`read` 有 `MAX_BYTES`（100 MiB）兜底，grep 从未接上（`tool-grep.ts` 不引用该常量，`gatherFiles` 也无文件数/总字节预算）；命中上限只置 `truncated` 标志位、不 `break`，遍历照走到底。于是「读入体积」随命中文件数线性增长、无上限，宿主堆被吃光后进程被 OOM 杀掉、由桌面端拉起——表现为「grep 大内容时概率性崩溃重启」。现在单次 grep 跑在显式内存预算下（新增 `src/infra/read-budget.ts`，纯函数、可单测）：**读前先 `stat`**，单个文件超过 `GREP_MAX_FILE_BYTES`（4 MiB）一律**不读**；全次扫描总量上限 `GREP_MAX_TOTAL_BYTES`（64 MiB），触顶即**停扫**而非继续空转；stat 与实际读入不一致时按真实字节数重新入账，否则文件在 stat 与 read 之间变化就会让上限泄漏；model 侧文本另有 `GREP_MODEL_TEXT_MAX_BYTES`（1 MiB）上限，与卡片 meta 的 64 KiB 预算对齐（此前只有卡片侧有保护）。被跳过的文件绝不静默——`[grep budget]` 提示同时进 model 文本与 `truncated`，否则「被截断的部分结果」会被读成完整答案。新增 `test/core/grep-read-budget.test.ts`（13 例：两侧边界、release 钳位、默认值真为上限、surrogate 不截半）与 `test/core/issue-167-grep-budget.test.ts`（3 例：超限文件跳过但同目录正常文件照常命中、无可用命中时不得报成「无匹配」、普通树不出提示）。
-- **Windows（D: 盘）上根套件的 18 项失败（#162）**：逐条定位后全部是**测试侧与平台假设**，产品代码未改：
+- **Windows（D: 盘）上根套件的 18 项失败（#162）**：逐条定位后绝大多数是**测试侧与平台假设**，但新增的 Windows CI job 上线后又逼出**一个真产品 bug**（见下）：
+  - **产品**：`matchInclude` 只按 `/` 切 basename，而 Windows 上 `relative()` 给的是反斜杠；`minimatch` 又是 POSIX 语义（`\` 在那里是转义），于是 `include: "*.ts"` 在 Windows 上**静默匹配不到根目录以下的任何文件**。现在先把相对路径归一成 `/` 再切/再匹配（`src/infra/file-scan.ts`），并新增单测钉住 Windows 形状的相对路径。
   - 模式匹配测试用 `URL.pathname` 解析 wasm 核心路径：Windows 下盘符前会留前导 `/`（`/D:/…`），wasm 文件层再按当前盘解析就成了 `D:\D:\…`，核心加载失败、该文件 7 例整体 skip。改用产品自身 worker 与同族测试都在用的 `fileURLToPath`。
   - 6 个测试文件把 `DSH_HOME` stub 成空串、指望回落 `$HOME/.dsh`；该回落走 `os.homedir()`，Windows 下读 USERPROFILE——于是直接按路径开库的用例报 `unable to open database file`，同文件其余用例则读写开发者**真实** `~/.dsh`（正是全局 setup 要堵的漏）。现一律显式指向 `<temp home>/.dsh`。
   - `~` 展开断言改用与实现同源的 home（环境变量优先），并补一条「无环境 home 时回落 `os.homedir()`」；`DSH_HOME` 用例改喂平台合法绝对根（`/custom/dsh` 在 Windows 是当前盘相对）；两处 grep 输出断言不再写死 `/`。
   - 两个 Windows argv 用例显式钉住 `ComSpec`（原先读机器上的 `%ComSpec%`，Windows 是绝对路径），并补一条「环境指定的解释器优先」用例。
   - 顺手改正一条失真的测试名：它声称 `grep` JSON 源码 bug（`matches dict values come back undefined`），而该断言本机通过，Windows 上真正倒在上一行的分隔符断言。
+  - **Windows CI 上线后追加的 7 项**（GitHub runner 的环境差异：`D:\a\…` cwd + `C:\Users\runneradmin` home + 8.3 短名）：`tool-lsp`/`issue-147` 的假服务器用 `file://${FILE}` 拼 uri，而产品用 `pathToFileURL`——Windows 下 `file:///tmp/…` 与 `file:///D:/tmp/…` 不同，3 个诊断用例静默「没有诊断」；改用同一个 `pathToFileURL`。`fs-write` 的 `resolveTarget` 两例把 `tmpdir()`（runner 上是 `RUNNER~1` 短名）与 `realpath`（长名）对比，改用 canonical 的 fixture 根。
 
 
 ### Changed

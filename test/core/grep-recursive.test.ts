@@ -3,6 +3,7 @@ import { applyEffective } from "../../src/config.js";
 import { getText, withTempFile, setupIntegrationTest } from "../support/fixtures.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { matchInclude } from "../../src/infra/file-scan.js";
 
 type GrepTool = {
 	execute: (
@@ -105,5 +106,24 @@ describe("grep recursion + include + default path (host-aligned)", () => {
 			expect(Object.values(out.files[0]!.matches)[0]).toBe("json needle");
 			applyEffective({});
 		});
+	});
+});
+
+describe("matchInclude — one separator space", () => {
+	it("matches a Windows-shaped relative path", () => {
+		// `relative()` yields backslashes on Windows. The basename split needs a
+		// separator to find, and minimatch is a POSIX-glob matcher — without
+		// normalising first, `*.ts` matched NOTHING below the root on Windows,
+		// silently (the E2E case above only caught it on a Windows runner).
+		expect(matchInclude("*.ts", "a\\one.ts")).toBe(true);
+		expect(matchInclude("*.ts", "a\\b\\deep.ts")).toBe(true);
+		expect(matchInclude("*.js", "a\\one.ts")).toBe(false);
+		// A pattern WITH a slash compares the root-relative path — same space.
+		expect(matchInclude("a/*.ts", "a\\one.ts")).toBe(true);
+		expect(matchInclude("b/*.ts", "a\\one.ts")).toBe(false);
+		// POSIX paths keep behaving exactly as before.
+		expect(matchInclude("*.ts", "a/one.ts")).toBe(true);
+		expect(matchInclude("*.ts", "a/b/deep.ts")).toBe(true);
+		expect(matchInclude("a/*.ts", "a/one.ts")).toBe(true);
 	});
 });

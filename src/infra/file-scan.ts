@@ -61,11 +61,18 @@ export async function gatherFiles(
 /**
  * Host-style include glob: a pattern without "/" matches the basename at ANY
  * depth (like ripgrep --glob); with "/" it matches the root-relative path.
+ *
+ * The comparison happens in ONE space: minimatch is a POSIX-glob matcher, so
+ * a Windows `relPath` (`a\\one.ts`) is converted to `a/one.ts` FIRST. Without
+ * that, the basename split below found no `/` and handed minimatch the whole
+ * `a\\one.ts`, where `*` cannot cross the (normalised) separator — the include
+ * filter then matched NOTHING below the root, silently, on Windows.
  */
 export function matchInclude(pattern: string, relPath: string): boolean {
+	const posix = relPath.replaceAll("\\", "/");
 	if (!pattern.includes("/")) {
-		const name = relPath.split("/").pop() ?? relPath;
+		const name = posix.split("/").pop() ?? posix;
 		return minimatch(name, pattern, { dot: true });
 	}
-	return minimatch(relPath, pattern, { dot: true });
+	return minimatch(posix, pattern, { dot: true });
 }

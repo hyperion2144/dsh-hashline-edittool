@@ -14,8 +14,17 @@ import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildLspTool } from "../../src/tools/tool-lsp.js";
 import { E_LSP_NO_SERVER } from "../../src/tools/tool-lsp.js";
+import { pathToFileURL } from "node:url";
 
 const FILE = "/tmp/lsp-tool-probe/a.ts";
+/**
+ * The uri the tool derives for {@link FILE}.
+ *
+ * `pathToFileURL`, not string concatenation: on Windows the tool asks for
+ * `file:///D:/tmp/…` while `` file://${FILE} `` says `file:///tmp/…`, and the
+ * fake server's pushed map is keyed by the tool's own spelling.
+ */
+const FILE_URI = pathToFileURL(FILE).href;
 
 /** What a fake server will answer, per method. */
 interface Fake {
@@ -37,7 +46,11 @@ function install(fake: Fake) {
 	requested = [];
 	const pushed = new Map<string, readonly unknown[]>();
 	let revision = 0;
-	const uri = `file://${FILE}`;
+	// The PRODUCT derives the document uri with `pathToFileURL`; the fake server
+	// must key its pushes the same way, or on Windows the tool asks for
+	// `file:///D:/tmp/…` while the map holds `file:///tmp/…` — three diagnostics
+	// cases silently "found nothing" for that reason.
+	const uri = FILE_URI;
 	const session = {
 		get diagnosticsRevision() {
 			return revision;
@@ -286,7 +299,7 @@ describe("lsp — request", () => {
 		expect(requested).toHaveLength(1);
 		expect(requested[0]!.params).toEqual({
 			position: { line: 0, character: 0 },
-			textDocument: { uri: `file://${FILE}` },
+			textDocument: { uri: FILE_URI },
 		});
 
 		// A payload that NAMES a document keeps it — including a uri the caller
@@ -308,7 +321,7 @@ describe("lsp — request", () => {
 			payload: JSON.stringify({ textDocument: { languageId: "typescript" } }),
 		});
 		expect(requested[2]!.params).toEqual({
-			textDocument: { languageId: "typescript", uri: `file://${FILE}` },
+			textDocument: { languageId: "typescript", uri: FILE_URI },
 		});
 	});
 });

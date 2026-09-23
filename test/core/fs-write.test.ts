@@ -16,7 +16,11 @@ const isWindows = process.platform === "win32";
 
 describe("resolveTarget", () => {
 	it("resolves a simple path", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-hashline-resolve-"));
+		// Canonicalise the fixture root FIRST: on a Windows runner `tmpdir()` can
+		// be the 8.3 short spelling (`C:\\Users\\RUNNER~1\\…`) while `realpath`
+		// answers the long one (`runneradmin`), so the two sides of the assertion
+		// would differ by spelling and not by resolution.
+		const dir = await realpath(await mkdtemp(join(tmpdir(), "pi-hashline-resolve-")));
 		try {
 			const filePath = join(dir, "test.txt");
 			await writeFile(filePath, "hello", "utf-8");
@@ -61,7 +65,9 @@ describe("resolveTarget", () => {
 	);
 
 	it("resolves a path with non-existent final component", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-hashline-resolve-"));
+		// Same rule as the simple-path case: feed the canonical spelling, so this
+		// compares resolutions rather than short-vs-long names on Windows.
+		const dir = await realpath(await mkdtemp(join(tmpdir(), "pi-hashline-resolve-")));
 		try {
 			const nonExistent = join(dir, "nonexistent", "file.txt");
 			const resolved = await resolveTarget(nonExistent);

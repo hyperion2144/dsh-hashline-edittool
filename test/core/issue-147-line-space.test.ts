@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { applyEffective } from "../../src/config.js";
 import { getText, setupIntegrationTest, withTempFile } from "../support/fixtures.js";
 import { setLspManager } from "../../src/lsp/manager.js";
@@ -159,7 +160,10 @@ describe("#147 lsp — server positions mapped onto read's line space", () => {
 	function install(fake: LspFake) {
 		const pushed = new Map<string, readonly unknown[]>();
 		let revision = 0;
-		const uri = `file://${LSP_FILE}`;
+		// The tool derives the uri with `pathToFileURL` — key the fake's pushes the
+		// same way, or on Windows the tool asks for `file:///D:/tmp/…` while this
+		// map holds `file:///tmp/…` and every diagnostics case sees nothing.
+		const uri = pathToFileURL(LSP_FILE).href;
 		const session = {
 			get diagnosticsRevision() {
 				return revision;
