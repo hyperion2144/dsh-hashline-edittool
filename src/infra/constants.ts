@@ -2,9 +2,37 @@ export const AUTO_READ_MAX = 2000;
 export const SNIFF_BYTES = 8192;
 export const MAX_BYTES = 100 * 1024 * 1024;
 export const MAX_READ_LINE_BYTES = 200 * 1024;
+/**
+ * Per-file admission limit for `grep` (issue #167). Deliberately far below
+ * {@link MAX_BYTES}: a served row needs its line's anchor, and anchors plus the
+ * per-file `hashes` array cost several times the file's own bytes, so a file
+ * that `read` can still serve is not automatically safe for a whole-tree
+ * grep. Files above this are omitted with an explicit notice — never read.
+ */
+export const GREP_MAX_FILE_BYTES = 4 * 1024 * 1024;
+/**
+ * Total bytes one `grep` call may READ across every visited file (#167). The
+ * tree walk accumulates sections, card rows and anchor state as it goes; with
+ * no ceiling a large tree grows the host heap until the process dies. Hitting
+ * it stops the scan and reports what was skipped.
+ */
+export const GREP_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+/**
+ * Serialized byte ceiling for grep's model-facing text (#167). The card-side
+ * projection already has its own budget ({@link GREP_META_MAX_BYTES}); without
+ * a matching one here a many-file scan can hand the host a multi-megabyte
+ * string to serialize and inject.
+ */
+export const GREP_MODEL_TEXT_MAX_BYTES = 1024 * 1024;
 
 export const HASH_STORE_BUSY_TIMEOUT = 1000;
 export const HASH_STORE_VERSION = 6;
+/**
+ * How many successive edits `undo_last_edit` can walk back on one path
+ * (#151/P5). The undo row family is a bounded STACK: the newest entry is the
+ * one a call reverts, and the oldest beyond this depth is dropped on push.
+ */
+export const UNDO_STACK_DEPTH = 10;
 /**
  * Per-call cap on the `edits` array length. Same default (32) as the
  * pre-0.4 `batch_edit` cap. Above this, the call is hard-rejected with
@@ -77,8 +105,17 @@ export const AST_WORKER_RECYCLE_HEAP_BYTES = 1024 * 1024 * 1024;
 export const AST_WORKER_RECYCLE_RETAINED_NODES = 3_000_000;
 /** Per-query bound on a language-server request (consumers own timeouts). */
 export const AST_LSP_QUERY_TIMEOUT_MS = 10_000;
-/** Structural-summary gates (spec §5.3). */
-export const AST_SUMMARY_MIN_TOTAL_LINES = 100;
+/**
+ * Structural-summary gates (spec §5.3).
+ *
+ * The low gate is 20, not 100 (#151/P7): the only caller left is `ast_grep`
+ * with no pattern — a model EXPLICITLY asking for the shape of a file — and
+ * `read {summary: true}` (the reason the gate was high) no longer exists. A
+ * file between the two numbers is one the model can see whole anyway, and
+ * `summaryIsWorthIt` still refuses an outline that folds too little to be
+ * worth replacing the source.
+ */
+export const AST_SUMMARY_MIN_TOTAL_LINES = 20;
 export const AST_SUMMARY_MAX_BYTES = 2 * 1024 * 1024;
 export const AST_SUMMARY_MAX_LINES = 20_000;
 export const AST_SUMMARY_MIN_BODY_LINES = 4;

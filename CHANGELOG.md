@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`grep` 扫大内容造成宿主进程 OOM（#167）**：grep 过去把整棵树的文件**逐个读成完整字符串**再处理，而这条路径上一个尺寸闸门都没有——`read` 有 `MAX_BYTES`（100 MiB）兜底，grep 从未接上（`tool-grep.ts` 不引用该常量，`gatherFiles` 也无文件数/总字节预算）；命中上限只置 `truncated` 标志位、不 `break`，遍历照走到底。于是「读入体积」随命中文件数线性增长、无上限，宿主堆被吃光后进程被 OOM 杀掉、由桌面端拉起——表现为「grep 大内容时概率性崩溃重启」。现在单次 grep 跑在显式内存预算下（新增 `src/infra/read-budget.ts`，纯函数、可单测）：**读前先 `stat`**，单个文件超过 `GREP_MAX_FILE_BYTES`（4 MiB）一律**不读**；全次扫描总量上限 `GREP_MAX_TOTAL_BYTES`（64 MiB），触顶即**停扫**而非继续空转；stat 与实际读入不一致时按真实字节数重新入账，否则文件在 stat 与 read 之间变化就会让上限泄漏；model 侧文本另有 `GREP_MODEL_TEXT_MAX_BYTES`（1 MiB）上限，与卡片 meta 的 64 KiB 预算对齐（此前只有卡片侧有保护）。被跳过的文件绝不静默——`[grep budget]` 提示同时进 model 文本与 `truncated`，否则「被截断的部分结果」会被读成完整答案。新增 `test/core/grep-read-budget.test.ts`（13 例：两侧边界、release 钳位、默认值真为上限、surrogate 不截半）与 `test/core/issue-167-grep-budget.test.ts`（3 例：超限文件跳过但同目录正常文件照常命中、无可用命中时不得报成「无匹配」、普通树不出提示）。
+
 ## [0.9.1] - 2026-09-23
 
 ### Fixed

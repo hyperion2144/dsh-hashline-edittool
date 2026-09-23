@@ -30,6 +30,8 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "../domain/session/session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { GREP_MAX_FILE_BYTES, GREP_MAX_TOTAL_BYTES, GREP_MODEL_TEXT_MAX_BYTES } from "../infra/constants.js";
+import { capModelText, makeReadBudget, type BudgetUsage, type SkipReason } from "../infra/read-budget.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { lineHashes } from "../hashline/index.js";
@@ -81,6 +83,36 @@ export interface GrepToolOptions {
 }
 
 const DEFAULT_LIMIT = 100;
+/**
+ * One line reporting what the memory budget refused (issue #167).
+ *
+ * A budget-hit scan is NOT a complete one, and a silently partial result is
+ * the failure mode that matters here: a model reads it as the whole answer.
+ * The line names the two ceilings so the next call can be narrowed.
+ *
+ * @param skipped - every file the scan did not read, in visit order.
+ * @param usage - the final tally.
+ * @returns the notice, or "" when nothing was refused.
+ */
+function buildBudgetNotice(
+	skipped: ReadonlyArray<{ path: string; reason: SkipReason; bytes: number }>,
+	usage: BudgetUsage,
+): string {
+	// `exhausted` is itself one of the omitted files: it is the file that did not
+	// fit, and it is what stopped the scan.
+	const skippedByBudget = usage.exhausted ? 1 : 0;
+	if (skipped.length === 0) return "";
+	const parts = skipped.map((entry) => {
+		const name = entry.reason === "unreadable" ? entry.path : `${entry.path} (${formatSize(entry.bytes)})`;
+		return name;
+	});
+	const shown = parts.slice(0, 5).join(", ");
+	const more = parts.length > 5 ? `, and ${parts.length - 5} more` : "";
+	const head = usage.exhausted
+		? `${skipped.length} file(s) were not searched: the scan stopped at its ${formatSize(GREP_MAX_TOTAL_BYTES)} total read budget, with ${skippedByBudget} file(s) past the cut.`
+		: `${skipped.length} file(s) were not searched: each is larger than the ${formatSize(GREP_MAX_FILE_BYTES)} per-file limit.`;
+	return `[grep budget] ${head} Not searched: ${shown}${more}.`;
+}
 
 function buildMatcher(pattern: string, regex: boolean): (line: string) => boolean {
 	if (!regex) {
@@ -391,12 +423,40 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 				const allSeen: Array<{ path: string }> = [];
 				let totalMatches = 0;
 				let truncated = false;
+				// issue #167: the scan runs under a memory budget. Every visited file
+				// contributes a line-`hashes` array, a model section, card rows and a
+				// serve record, so without a ceiling a large tree grew the host heap
+				// until the process died and the desktop app restarted it.
+				const budget = makeReadBudget({
+					maxFileBytes: GREP_MAX_FILE_BYTES,
+					maxTotalBytes: GREP_MAX_TOTAL_BYTES,
+				});
+				const skipped: Array<{ path: string; reason: SkipReason; bytes: number }> = [];
 				for (const file of files) {
 					abortIf(signal);
+					// Stat before reading: the whole point of the per-file ceiling is to
+					// never pull an oversized file into the heap at all.
+					const size = await io.statSize(file, signal);
+					if (size === undefined) {
+						skipped.push({ path: file, reason: "unreadable", bytes: 0 });
+						continue;
+					}
+					const admitted = budget.admit(size);
+					if (!admitted.ok) {
+						skipped.push({ path: file, reason: admitted.reason, bytes: admitted.bytes });
+						// An exhausted total ends the scan; a too-large file is skipped and
+						// the walk keeps going.
+						if (budget.usage().exhausted) break;
+						continue;
+					}
 					let raw: string;
 					try {
 						raw = await io.readText(file, signal);
-					} catch {
+					} catch (error) {
+						budget.release(admitted.bytes);
+						// An abort is the caller's, not this file's: it must stop the scan.
+						if (signal?.aborted === true) throw error;
+						skipped.push({ path: file, reason: "unreadable", bytes: 0 });
 						continue;
 					}
 					// Issue #147 (ADR-0008): the READ LINE SPACE — every line number this tool reports is
@@ -405,6 +465,19 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 					// exactly as pwsh counts them, and the toLF-based anchors pair with these
 					// rows again instead of drifting by the cumulative CR count above each line.
 					const text = toLF(raw);
+					// The reservation was made from the stat size. A file that changed in
+					// between must re-enter the budget honestly, or the ceiling leaks:
+					// release the old reservation before adding the real byte count.
+					const actualBytes = Buffer.byteLength(text, "utf8");
+					if (actualBytes !== admitted.bytes) {
+						budget.release(admitted.bytes);
+						const reAdmitted = budget.admit(actualBytes);
+						if (!reAdmitted.ok) {
+							skipped.push({ path: file, reason: reAdmitted.reason, bytes: reAdmitted.bytes });
+							if (budget.usage().exhausted) break;
+							continue;
+						}
+					}
 					const hashes = await lineHashes(text, file);
 					const section = await grepFileContent(file, text, hashes, params.pattern, opts);
 					if (!section) continue;
@@ -488,11 +561,16 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 					}
 				}
 
+				// issue #167: a budget-hit scan is not a complete one — say so, or the
+				// model reads a partial result as the whole answer.
+				const budgetNotice = buildBudgetNotice(skipped, budget.usage());
+				const noticeText = budgetNotice === "" ? "" : `\n\n${budgetNotice}`;
+
 				if (fileSections.length === 0) {
-					const noMatchModelText = `No matches for "${params.pattern}" in ${root}.`;
+					const noMatchModelText = `No matches for "${params.pattern}" in ${root}.${noticeText}`;
 					return {
 						files: [],
-						truncated: false,
+						truncated: budgetNotice !== "",
 						total: 0,
 						modelText: noMatchModelText,
 					} satisfies GrepCanonicalValue & { modelText: string };
@@ -500,11 +578,14 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 
 				const value: GrepCanonicalValue & { modelText: string } = {
 					files: cardFiles,
-					truncated,
+					truncated: truncated || budgetNotice !== "",
 					total: totalMatches,
-					modelText: jsonOutput
-						? JSON.stringify({ total: totalMatches, truncated, files: jsonFiles })
-						: fileSections.join("\n\n"),
+					modelText: capModelText(
+						(jsonOutput
+							? JSON.stringify({ total: totalMatches, truncated, files: jsonFiles })
+							: fileSections.join("\n\n")) + noticeText,
+						GREP_MODEL_TEXT_MAX_BYTES,
+					),
 				};
 				return value;
 		}).catch((error: unknown) => ({

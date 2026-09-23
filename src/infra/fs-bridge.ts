@@ -15,7 +15,7 @@
  * @module dsh-hashline-edittool/fs-bridge
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { Context } from "@deepseek-ai/cordis";
 import type { FileSystem } from "@deepseek-ai/dsh-fs";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
@@ -77,6 +77,19 @@ export interface FileIO {
 		absolutePath: string,
 		signal?: AbortSignal,
 	): Promise<string | undefined>;
+	/**
+	 * Byte size of a regular file, or undefined when it cannot be reported.
+	 *
+	 * Used by `grep`'s memory budget (issue #167) to decide whether a file may
+	 * be read BEFORE reading it. `undefined` is the honest "unknown" answer —
+	 * the caller then reads at its own risk rather than skipping a file it could
+	 * have searched. Deliberately a size probe and not a `stat` wrapper: the
+	 * tool layer has no business seeing the backend's version tokens.
+	 */
+	statSize(
+		absolutePath: string,
+		signal?: AbortSignal,
+	): Promise<number | undefined>;
 }
 
 /**
@@ -290,6 +303,21 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 				return undefined;
 			}
 		},
+		async statSize(absolutePath, signal) {
+			try {
+				const target = await fs.resolve(absolutePath, {
+					...(signal !== undefined ? { signal } : {}),
+				});
+				const info = await fs.stat(target, signal);
+				// `size` is optional in the fs contract: an "other" entry (socket,
+				// device) has none, and so may a backend that cannot report it.
+				return info?.type === "file" ? info.size : undefined;
+			} catch {
+				// An unresolvable or unreadable path is not the budget's business:
+				// the read that follows reports the real error.
+				return undefined;
+			}
+		},
 	};
 }
 
@@ -317,6 +345,14 @@ export function localIO(): FileIO {
 		async statVersion(absolutePath) {
 			try {
 				return (await fileSnap(absolutePath)).snapshotId;
+			} catch {
+				return undefined;
+			}
+		},
+		async statSize(absolutePath) {
+			try {
+				const st = await stat(absolutePath);
+				return st.isFile() ? st.size : undefined;
 			} catch {
 				return undefined;
 			}
