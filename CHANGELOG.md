@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-23
+
 ### Changed（未发布 / unreleased）
 
 - **dsh 0.1.7 适配（wayfinder 地图 #152，未发布）**：host 设置面迁移到 Profile 插件配置——
