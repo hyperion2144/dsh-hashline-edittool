@@ -29,7 +29,7 @@ export {
 } from "./hash-assign.js";
 
 export { assignAnchors, allocateAnchor, probeStep, MIN_ANCHOR_DEPTH, PROBE_LIMIT } from "./alloc.js";
-export { anchorsFor, anchorsPure, updateAnchorsAfterEdit } from "./session-anchors.js";
+export { anchorsFor, anchorsPure, allocateForLines, updateAnchorsAfterEdit } from "./session-anchors.js";
 
 export { lineHashes } from "./hash.js";
 

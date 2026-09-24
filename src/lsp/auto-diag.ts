@@ -46,7 +46,7 @@ import {
 import { execSessionKey, recordServed } from "../domain/session/session-view.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { getLspManager } from "./manager.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import type { LspSession } from "./session.js";
 
 /**
@@ -360,6 +360,12 @@ function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): 
 		totalSeen += 1;
 	}
 	if (byLine.size === 0) return undefined;
+	// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
+	const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
+	const diagAllocated = allocateForLines(input.absolutePath, input.text, diagLineNos);
+	for (let k = 0; k < diagLineNos.length; k++) {
+		anchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
+	}
 	const rows = [...byLine.entries()]
 		.sort((a, b) => a[0] - b[0])
 		.map(([number, bucket]) => ({

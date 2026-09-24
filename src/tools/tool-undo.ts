@@ -22,7 +22,6 @@ import { lineHashes } from "../hashline/hash.js";
 import { changedRange } from "../hashline/anchor-pipeline.js";
 import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
 import { recordServedTruncated } from "../domain/session/session-view.js";
-import { seedAnchors } from "../hashline/session-anchors.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
 import {
 	computeHunkDiffs,
@@ -267,9 +266,8 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				// Re-seed the session anchor state with the restored content's
 				// original anchors: undo.hashes were allocated for exactly these
 				// lines, and the revert diff just served them as `fresh`. Without
-				// this seed the next anchorsFor recomputed from scratch and the
-				// advertised anchors became lies (the V1 dual-source bug).
-				seedAnchors(absolutePath, undo.content, undo.hashes);
+				// LAZY (#169): no explicit seed needed — the sparse state detects the
+				// content change on the next access and allocates fresh anchors.
 			} catch (error) {
 				console.error(
 					"Failed to restore hash store snapshot after undo:",

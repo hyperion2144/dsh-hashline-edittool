@@ -32,6 +32,7 @@ import {
 import {
 	registerAnchorPersistence,
 	type PersistedAnchorState,
+	type PersistedAnchorLine,
 } from "../../hashline/session-anchors.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
@@ -107,10 +108,13 @@ interface Prepared {
 	servedDeletePath: (...params: SqlParams) => void;
 	servedWipe: (...params: SqlParams) => void;
 	servedPruneOlderThan: (...params: SqlParams) => void;
-	anchorGet: (...params: SqlParams) => Record<string, unknown> | undefined;
-	anchorProbe: (...params: SqlParams) => Record<string, unknown> | undefined;
-	anchorUpsert: (...params: SqlParams) => void;
-	anchorDelete: (...params: SqlParams) => void;
+	anchorMetaGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	anchorMetaUpsert: (...params: SqlParams) => void;
+	anchorMetaDelete: (...params: SqlParams) => void;
+	anchorLinesAll: (...params: SqlParams) => Record<string, unknown>[];
+	anchorLineGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	anchorLineUpsert: (...params: SqlParams) => void;
+	anchorLinesDeletePath: (...params: SqlParams) => void;
 	anchorPruneOlderThan: (...params: SqlParams) => void;
 }
 
@@ -335,15 +339,64 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		db.exec("DROP TABLE undo_legacy");
 	}
 	db.exec(
-		"CREATE TABLE IF NOT EXISTS anchor_state (" +
+		"CREATE TABLE IF NOT EXISTS anchor_meta (" +
 			"path TEXT PRIMARY KEY, " +
 			"checksum TEXT NOT NULL, " +
 			"line_count INTEGER NOT NULL, " +
-			"anchors TEXT NOT NULL, " +
-			"line_keys TEXT NOT NULL, " +
 			"updated_at INTEGER NOT NULL" +
-			")",
+		")",
 	);
+	db.exec(
+		"CREATE TABLE IF NOT EXISTS anchor_lines (" +
+			"path TEXT NOT NULL, " +
+			"line INTEGER NOT NULL, " +
+			"anchor TEXT NOT NULL, " +
+			"content_key INTEGER NOT NULL, " +
+			"updated_at INTEGER NOT NULL, " +
+			"PRIMARY KEY (path, line)" +
+		")",
+	);
+	db.exec(
+		"CREATE INDEX IF NOT EXISTS anchor_lines_by_anchor ON anchor_lines (path, anchor)",
+	);
+	// Migration for a store written before the sparse anchor model (#169): the
+	// legacy DENSE anchor_state table (one row per path, anchors/line_keys as
+	// JSON arrays) expands 1:1 into anchor_meta + anchor_lines — every anchor
+	// the file has already given out survives verbatim, none is re-minted. A
+	// corrupt legacy row is skipped, never fatal. Runs BEFORE the version
+	// check so a version wipe still wins.
+	const legacyAnchorColumns = db.prepare("PRAGMA table_info(anchor_state)").all() as {
+		name: string;
+	}[];
+	if (legacyAnchorColumns.length > 0 && legacyAnchorColumns.some((c) => c.name === "anchors")) {
+		const legacyRows = db
+			.prepare("SELECT path, checksum, line_count, anchors, line_keys FROM anchor_state")
+			.all() as Record<string, unknown>[];
+		const now = Date.now();
+		const metaUpsert = db.prepare(
+			"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?) " +
+				"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, updated_at = excluded.updated_at",
+		);
+		const lineInsert = db.prepare(
+			"INSERT OR REPLACE INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		for (const row of legacyRows) {
+			try {
+				const anchors = JSON.parse(row.anchors as string) as unknown;
+				const lineKeys = JSON.parse(row.line_keys as string) as unknown;
+				if (!Array.isArray(anchors) || !Array.isArray(lineKeys)) continue;
+				metaUpsert.run(String(row.path), String(row.checksum), Number(row.line_count), now);
+				for (let i = 0; i < anchors.length && i < lineKeys.length; i++) {
+					const anchor = anchors[i];
+					if (typeof anchor !== "string" || anchor === "") continue; // never-served lines carry no anchor
+					lineInsert.run(String(row.path), i + 1, anchor, Number(lineKeys[i]), now);
+				}
+			} catch {
+				// A corrupt legacy row does not block the migration of the rest.
+			}
+		}
+		db.exec("DROP TABLE anchor_state");
+	}
 	const versionRow = db
 		.prepare("SELECT value FROM meta WHERE key = 'version'")
 		.get() as { value?: string } | undefined;
@@ -353,7 +406,8 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	if (versionChanged) {
 		db.exec("DELETE FROM snapshots");
 		db.exec("DELETE FROM undo");
-		db.exec("DELETE FROM anchor_state");
+		db.exec("DELETE FROM anchor_meta");
+		db.exec("DELETE FROM anchor_lines");
 	}
 	const servedColumns = db.prepare("PRAGMA table_info(served)").all() as {
 		name: string;
@@ -382,7 +436,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?",
 	);
 	const allStmt = db.prepare(
-		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_state",
+		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta"
 	);
 	const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
 	const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
@@ -433,16 +487,27 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	const servedPruneOlderThanStmt = db.prepare(
 		"DELETE FROM served WHERE updated_at < ?",
 	);
-	const anchorGetStmt = db.prepare(
-		"SELECT checksum, anchors, line_keys FROM anchor_state WHERE path = ?",
+	const anchorMetaGetStmt = db.prepare(
+		"SELECT checksum, line_count FROM anchor_meta WHERE path = ?",
 	);
-	const anchorProbeStmt = db.prepare("SELECT checksum FROM anchor_state WHERE path = ?");
-	const anchorUpsertStmt = db.prepare(
-		"INSERT INTO anchor_state (path, checksum, line_count, anchors, line_keys, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
-			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, anchors = excluded.anchors, line_keys = excluded.line_keys, updated_at = excluded.updated_at",
+	const anchorMetaUpsertStmt = db.prepare(
+		"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?) " +
+			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, updated_at = excluded.updated_at",
 	);
-	const anchorDeleteStmt = db.prepare("DELETE FROM anchor_state WHERE path = ?");
-	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_state WHERE updated_at < ?");
+	const anchorLinesAllStmt = db.prepare(
+		"SELECT line, anchor, content_key FROM anchor_lines WHERE path = ? ORDER BY line",
+	);
+	const anchorLineGetStmt = db.prepare(
+		"SELECT anchor, content_key FROM anchor_lines WHERE path = ? AND line = ?",
+	);
+	const anchorLineUpsertStmt = db.prepare(
+		"INSERT INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?) " +
+			"ON CONFLICT(path, line) DO UPDATE SET anchor = excluded.anchor, content_key = excluded.content_key, updated_at = excluded.updated_at",
+	);
+	const anchorLinesDeletePathStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ?");
+	const anchorMetaDeleteStmt = db.prepare("DELETE FROM anchor_meta WHERE path = ?");
+	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_meta WHERE updated_at < ?");
+	const anchorLinesPruneOlderThanStmt = db.prepare("DELETE FROM anchor_lines WHERE updated_at < ?");
 	const stmts: Prepared = {
 		get: (...params) =>
 			getStmt.get(...params) as Record<string, unknown> | undefined,
@@ -527,23 +592,36 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				servedPruneOlderThanStmt.run(...params);
 			});
 		},
-		anchorGet: (...params) =>
-			anchorGetStmt.get(...params) as Record<string, unknown> | undefined,
-		anchorProbe: (...params) =>
-			anchorProbeStmt.get(...params) as Record<string, unknown> | undefined,
-		anchorUpsert: (...params) => {
+		anchorMetaGet: (...params) =>
+			anchorMetaGetStmt.get(...params) as Record<string, unknown> | undefined,
+		anchorMetaUpsert: (...params) => {
 			withBusyRetry(() => {
-				anchorUpsertStmt.run(...params);
+				anchorMetaUpsertStmt.run(...params);
 			});
 		},
-		anchorDelete: (...params) => {
+		anchorLinesAll: (...params) =>
+			anchorLinesAllStmt.all(...params) as Record<string, unknown>[],
+		anchorLineGet: (...params) =>
+			anchorLineGetStmt.get(...params) as Record<string, unknown> | undefined,
+		anchorLineUpsert: (...params) => {
 			withBusyRetry(() => {
-				anchorDeleteStmt.run(...params);
+				anchorLineUpsertStmt.run(...params);
+			});
+		},
+		anchorLinesDeletePath: (...params) => {
+			withBusyRetry(() => {
+				anchorLinesDeletePathStmt.run(...params);
+			});
+		},
+		anchorMetaDelete: (...params) => {
+			withBusyRetry(() => {
+				anchorMetaDeleteStmt.run(...params);
 			});
 		},
 		anchorPruneOlderThan: (...params) => {
 			withBusyRetry(() => {
 				anchorPruneOlderThanStmt.run(...params);
+				anchorLinesPruneOlderThanStmt.run(...params);
 			});
 		},
 	};
@@ -721,7 +799,8 @@ function makeDomainStore(stmts: Prepared): HashStore {
 					stmts.deleteOne(path);
 					stmts.undoDelete(path);
 					stmts.servedDeletePath(path);
-					stmts.anchorDelete(path);
+					stmts.anchorMetaDelete(path);
+					stmts.anchorLinesDeletePath(path);
 				}
 			});
 		},
@@ -1002,42 +1081,56 @@ registerAnchorPersistence({
 	probe(path) {
 		const entry = currentStore();
 		if (!entry) return undefined;
-		const row = entry.stmts.anchorProbe(path);
+		const row = entry.stmts.anchorMetaGet(path);
 		return row ? (row.checksum as string) : undefined;
 	},
 	get(path): PersistedAnchorState | undefined {
 		const entry = currentStore();
 		if (!entry) return undefined;
-		const row = entry.stmts.anchorGet(path);
-		if (!row) return undefined;
-		try {
-			const anchors = JSON.parse(row.anchors as string) as unknown;
-			const lineKeys = JSON.parse(row.line_keys as string) as unknown;
-			if (!isValidHashList(anchors) || !isValidLineKeyList(lineKeys)) {
-				// Same corruption contract as every other row family: unparseable or
-				// wrong-typed rows heal by delete. A length DRIFT between anchors and
-				// line_keys is NOT corrupt — it is the partial-write shape
-				// anchorsFor heals positionally (keep survivors, allocate gaps).
-				entry.stmts.anchorDelete(path);
+		const meta = entry.stmts.anchorMetaGet(path);
+		if (!meta) return undefined;
+		// Sparse rows: only the lines a tool has SERVED carry an anchor. The
+		// caller materializes the dense view (placeholders for never-served
+		// lines) — the persisted truth stays O(served lines) (#169 redesign).
+		const rows = entry.stmts.anchorLinesAll(path);
+		const lines: PersistedAnchorLine[] = [];
+		for (const row of rows) {
+			const line = row.line as number;
+			const anchor = row.anchor as string;
+			const contentKey = row.content_key as number;
+			if (!Number.isInteger(line) || line < 1 ||
+				!isValidHashList([anchor]) || !Number.isInteger(contentKey) || contentKey < 0) {
+				// Same corruption contract as every other row family: heal by delete.
+				entry.stmts.anchorMetaDelete(path);
+				entry.stmts.anchorLinesDeletePath(path);
 				return undefined;
 			}
-			return { checksum: row.checksum as string, anchors, lineKeys };
-		} catch {
-			entry.stmts.anchorDelete(path);
-			return undefined;
+			lines.push({ line, anchor, contentKey });
 		}
+		return { checksum: meta.checksum as string, lineCount: meta.line_count as number, lines };
 	},
 	put(path, state) {
 		const entry = currentStore();
 		if (!entry) return; // no store yet: memory-only; flushed on the next wired call
-		entry.stmts.anchorUpsert(
-			path,
-			state.checksum,
-			state.anchors.length,
-			JSON.stringify(state.anchors),
-			JSON.stringify(state.lineKeys),
-			Date.now(),
-		);
+		withTransaction(entry.db, () => {
+			entry.stmts.anchorMetaUpsert(path, state.checksum, state.lineCount, Date.now());
+			entry.stmts.anchorLinesDeletePath(path);
+			for (const line of state.lines) {
+				entry.stmts.anchorLineUpsert(
+					path, line.line, line.anchor, line.contentKey, Date.now(),
+				);
+			}
+		});
+	},
+	putLines(path, lines) {
+		const entry = currentStore();
+		if (!entry || lines.length === 0) return;
+		for (const line of lines) {
+			withBusyRetry(() => {
+				entry.stmts.anchorLineUpsert(
+					path, line.line, line.anchor, line.contentKey, Date.now(),
+				);
+			});
+		}
 	},
 });
-

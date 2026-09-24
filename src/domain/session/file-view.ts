@@ -23,7 +23,7 @@ import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "../../infra/constants.js";
-import { lineHashes, fmtRegion, hashSep } from "../../hashline/index.js";
+import { lineHashes, allocateForLines, fmtRegion, hashSep } from "../../hashline/index.js";
 import { fmtMarker, hashlineHeader, canon, contentChecksum } from "../../hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "../../infra/utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "../../render/edit-diff.js";
@@ -377,11 +377,13 @@ export async function normFromText(input: {
   const { bom, text: rawContent } = stripBOM(input.rawText);
   const originalEnding = detectEnding(rawContent);
   const normalized = toLF(rawContent);
-  const fileHashes = await lineHashes(
-    normalized,
-    absolutePath,
-    input.store,
-    input.noPersist !== true,
+  // LAZY (#169): the read serve point allocates for the lines it renders.
+  // The sparse state only tracks served lines, so allocate for ALL lines of
+  // the file that read is about to show.
+  const lineCount = splitLinesForCounting(normalized).length;
+  const fileHashes = allocateForLines(
+	absolutePath, normalized,
+	Array.from({ length: lineCount }, (_, i) => i + 1),
   );
   return {
     absolutePath,

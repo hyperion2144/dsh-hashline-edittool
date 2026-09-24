@@ -21,7 +21,7 @@ import { isAstEnabled, isAstLanguageEnabled } from "../config.js";
 import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure } from "../hashline/hash-assign.js";
 // tools emit the SAME `files` shape precisely so one cap governs both.
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
@@ -268,7 +268,9 @@ export function buildAstGrepTool(io: FileIO) {
 			// here rather than in the line reader.
 			if (args.pat === undefined || args.pat === "") {
 				const lines = splitLines(text);
-				const hashes = anchorsFor(absolutePath, text);
+				// LAZY (#169): the view first; the allocation happens only AFTER the
+				// gate — a refused file allocates nothing at all.
+				let hashes = anchorsFor(absolutePath, text);
 				const tooBig = summaryGate({ totalLines: lines.length, byteLength: text.length });
 				if (tooBig !== undefined) {
 					// A file the outline gate refuses is not an error: say which rule it hit
@@ -287,6 +289,12 @@ export function buildAstGrepTool(io: FileIO) {
 							: `${args.path}: no outline — ${tooBig}. Read it in windows instead, or use \`ast_grep\` with a pattern to find something specific.`
 					};
 				}
+				// Not refused: the outline answers a whole-file question — allocate
+				// for every line the file has.
+				hashes = allocateForLines(
+					absolutePath, text,
+					Array.from({ length: lines.length }, (_, i) => i + 1),
+				);
 				let spans;
 				try {
 					spans = await getAstClient().summarySpans({
@@ -409,6 +417,20 @@ export function buildAstGrepTool(io: FileIO) {
 			// a match can be handed straight to `edit`.
 			const lines = splitLines(text);
 			const anchors = anchorsFor(absolutePath, text);
+			// LAZY (#169): allocate for exactly the rows this call serves — one row
+			// per line any match touches. Everything else keeps its state (or stays
+			// unallocated until something serves it).
+			const servedLineNos = [...new Set(
+				matches.flatMap((match) => {
+					const rows: number[] = [];
+					for (let line = match.startLine; line <= match.endLine; line++) rows.push(line);
+					return rows;
+				}),
+			)].sort((a, b) => a - b);
+			const allocatedAnchors = allocateForLines(absolutePath, text, servedLineNos);
+			for (let k = 0; k < servedLineNos.length; k++) {
+				anchors[servedLineNos[k]! - 1] = allocatedAnchors[k]!;
+			}
 			const width = anchors.reduce((w, a) => Math.max(w, a.length), 0);
 			// THE CARD'S ROWS, built from the SAME `lines` / `anchors` the model text
 			// uses. A card is a projection of facts, never a re-parse of the rendered

@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { GREP_MAX_FILE_BYTES } from "../../src/infra/constants.js";
+import { GREP_MAX_FILE_BYTES, GREP_MAX_TOTAL_BYTES } from "../../src/infra/constants.js";
 import { getText, setupIntegrationTest, withTempDir } from "../support/fixtures.js";
 
 type GrepTool = {
@@ -24,13 +24,14 @@ type GrepTool = {
 };
 
 describe("grep memory budget — oversized files (issue #167)", () => {
-	it("skips a file past the per-file ceiling and still answers for the rest", async () => {
+	it("SEARCHES a file past the old per-file ceiling — sparse lazy anchors (#169)", async () => {
 		await withTempDir("grep-budget-", async (cwd) => {
 			const harness = setupIntegrationTest(cwd);
 			await writeFile(join(cwd, "normal.txt"), "needle in a normal file\n");
-			// One byte past the ceiling: the file must never be read.
+			// Past the OLD per-file ceiling: with lazy anchors a big file costs only
+			// its RETURNED rows, so the hard skip is gone and the file IS searched.
 			const huge = join(cwd, "huge.log");
-			await writeFile(huge, "needle\n");
+			await writeFile(huge, "needle at the head\n");
 			await truncate(huge, GREP_MAX_FILE_BYTES + 1);
 
 			const res = await (harness.getTool("grep") as unknown as GrepTool).execute("g", {
@@ -39,22 +40,27 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 			});
 			const out = getText(res);
 
-			// The readable file is still searched and served.
+			// Both files are searched: the big one is no longer skipped.
 			expect(out).toContain("normal.txt");
 			expect(out).toContain("needle in a normal file");
-			// The oversized one is not read, and the caller is told why.
-			expect(out).not.toContain("huge.log" + ":");
 			expect(out).toContain("huge.log");
-			expect(out).toContain("[grep budget]");
+			expect(out).toContain("needle at the head");
+			// No skip notice: nothing was refused.
+			expect(out).not.toContain("[grep budget]");
 		});
 	});
 
-	it("reports a search with NO readable hits as budget-limited, not as empty", async () => {
+	it("stops at the TOTAL budget with an honest notice, not a lying empty", async () => {
 		await withTempDir("grep-budget-only-", async (cwd) => {
 			const harness = setupIntegrationTest(cwd);
-			const huge = join(cwd, "only.log");
-			await writeFile(huge, "needle\n");
-			await truncate(huge, GREP_MAX_FILE_BYTES + 1);
+			// The TOTAL budget is the remaining ceiling: a tree whose sum exceeds
+			// it stops exhausted, and the notice says so.
+			await writeFile(join(cwd, "a.log"), "needle one\n");
+			for (let i = 0; i < 3; i++) {
+				const huge = join(cwd, `fill-${i}.log`);
+				await writeFile(huge, "filler\n");
+				await truncate(huge, Math.ceil(GREP_MAX_TOTAL_BYTES / 2));
+			}
 
 			const res = await (harness.getTool("grep") as unknown as GrepTool).execute("g", {
 				path: ".",
@@ -62,9 +68,8 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 			});
 			const out = getText(res);
 
-			// "No matches" would be a lie: the only candidate was never searched.
 			expect(out).toContain("[grep budget]");
-			expect(out).toContain("only.log");
+			expect(out).toContain("total read budget");
 		});
 	});
 

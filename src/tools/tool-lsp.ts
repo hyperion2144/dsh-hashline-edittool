@@ -29,7 +29,7 @@ import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
@@ -388,6 +388,12 @@ export function buildLspTool(io: FileIO) {
 					// would be the card parsing a string this same function just built.
 					bySeverity.set(line, [...(bySeverity.get(line) ?? []), code]);
 				}
+				// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
+				const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
+				const diagAllocated = allocateForLines(absolutePath, text, diagLineNos);
+				for (let k = 0; k < diagLineNos.length; k++) {
+					diagAnchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
+				}
 				const diagRows = [...byLine.entries()]
 					.sort((a, b) => a[0] - b[0])
 					.map(([line, messages]) => ({
@@ -494,6 +500,16 @@ export function buildLspTool(io: FileIO) {
 					});
 				}
 				hashlines.sort((a, b) => a.number - b.number);
+				// LAZY (#169): allocate for exactly the symbol lines this call serves —
+				// the serve below publishes these anchors, and an unallocated symbol
+				// row would be dropped from the serve (and be uneditable).
+				const symbolLineNos = [...seenLines].sort((a, b) => a - b);
+				const symbolAllocated = allocateForLines(absolutePath, text, symbolLineNos);
+				for (let k = 0; k < symbolLineNos.length; k++) {
+					const anchor = symbolAllocated[k]!;
+					const row = hashlines.find((r) => r.number === symbolLineNos[k]);
+					if (row) row.hash = anchor;
+				}
 				// The symbol rows are SERVED and OBSERVED exactly like a read's: an
 				// anchor the card shows is an anchor the next edit may use.
 				// Same scope-aware primitive as the diagnostics branch above.

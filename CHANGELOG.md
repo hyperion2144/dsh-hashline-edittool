@@ -25,6 +25,15 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Changed
 
+- **锚点稀疏化重设计（PR #169 评审定案，ADR-0009）**：锚点只分配给**模型看过的行**，唯一性由**持久化的已分配集合**保证，不再依赖整文件预分配。核心变更：
+  - **稀疏状态**：每个路径的锚点状态是 `行 → (anchor, contentKey)` 的稀疏映射，持久化在 sqlite 新行族 `anchor_meta`（path/checksum/line_count）+ `anchor_lines`（path/line/anchor/content_key，`(path, anchor)` 索引保证唯一性检查）；旧稠密 `anchor_state` 行族在开库时 **1:1 展开**迁移后删除，已分配锚点一个不丢、不重铸。
+  - **惰性分配**：首次访问不再 `assignAnchors` 整文件分配——未服务行没有锚点（视图里是空串占位、不持久化）。每个工具在 serve 点为**恰好要渲染的行**分配：read 分配窗口行、grep 分配命中+上下文行、lsp 分配符号/诊断行、ast_grep/ast_edit 分配匹配行、edit 为 hunk 新行分配。大文件的锚点内存从 O(文件行数) 降到 O(返回行数)。
+  - **hunk 感知的编辑后变换**（#151 语义在稀疏模型下的等价实现）：hunk 外的服务行按累积位移平移（锚点不变）；hunk 内内容存活的行经 `alignPreserved` 配对保锚（#122 的“不在 diff 里”不变量）；被替换的释放；hunk 新行由响应 serve 点新鲜分配。`runFileEdits` 对每次编辑和整批各调一次 `updateAnchorsAfterEdit`——稠密模型是纯重建故双调无害，稀疏模型有状态，故检测到状态已推进到 newContent 时早退，避免双重位移。
+  - **外部变化走有界 LCS 重排**：无 hunk 结构时（磁盘被外部改写），已服务行按 contentKey 配对到新位置，内容消失的释放；只对已服务行做，未服务行无成本。
+  - **BOM/CRLF 规范化保留**：稀疏模型的全部公共入口（`anchorsFor`/`allocateForLines`/`updateAnchorsAfterEdit`/`ensureState`）先规范化内容，raw io.readText（grep/lsp/ast）与 read 的规范化文本产生同一状态（ADR-0008 行空间契约不变）。
+  - **grep 按大小硬跳过移除**：`GREP_MAX_FILE_BYTES` 的单文件硬跳过取消（惰性锚点后大文件只花返回行的成本，大文件照搜）；`GREP_MAX_TOTAL_BYTES`（64 MiB）总预算与 model 文本上限保留为内存护栏，触顶停扫并如实提示。
+  - **per-content 探针游标保留**：连续同内容行的分配探针连续推进（与 `assignAnchors` 同设计），长重复行段不退化为 O(k²) 探测、不触探针上限。
+  - 受影响测试同步重写：`anchor-state-persistence`（稀疏行族、部分服务状态合法性、undo 免 seed 自校正、行级剪枝/TTL）、`alloc`/`anchor-lifecycle-invariants`（serve 语义）、`issue-151-undo-stack`（迁移展开断言）、`issue-167-grep-budget`（大文件照搜 + 总预算停扫）。
 - **大纲门槛 100 → 20 行（#151/P7）**：`AST_SUMMARY_MIN_TOTAL_LINES` 降到 20。这道门槛原本的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已随重构删除，唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）；`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件。效果：31 行的双函数文件现在给出真实大纲（两处折叠区间、行仍可编辑），不到 20 行仍报 `no outline — too-few-lines`。
 - **重型测试文件不再与并行池互抢（#162）**：跑 2s–17s 的 5 个文件拆到独立项目、串行执行并各给 30s 预算；**全局 `testTimeout` 保持默认**（抬高全局会把真实挂死一起掩盖），断言一条未删。
 

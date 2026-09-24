@@ -108,26 +108,39 @@ describe("#151 P5 — the undo stack survives old stores", () => {
 		});
 	});
 
-	it("leaves the anchor_state row family alone during the migration", async () => {
+	it("the legacy dense anchor_state rows expand 1:1 into the sparse model", async () => {
 		await withTempDir("undo-migration-anchors-", async () => {
 			writeLegacyStore();
 			await loadHashStore();
-			// While the store is open, the anchors the row describes are served
-			// VERBATIM — the migration did not re-anchor the file.
+			// While the store is open, the anchors the legacy row described are
+			// served VERBATIM — the migration did not re-anchor the file.
 			expect(anchorsFor("/keep.ts", KEPT_CONTENT)).toEqual(KEPT_ANCHORS);
 			shutdownHashStore();
 
 			const db = new DatabaseSync(hashStorePath(), { defensive: false } as never);
 			try {
-				const row = db
-					.prepare("SELECT checksum, anchors FROM anchor_state WHERE path = ?")
-					.get("/keep.ts") as { checksum?: string; anchors?: string } | undefined;
-				expect(row?.checksum).toBe(contentChecksum(KEPT_CONTENT));
-				expect(row?.anchors).toBe(JSON.stringify(KEPT_ANCHORS));
+				// The legacy DENSE table is GONE — expanded into the sparse rows.
+				const meta = db
+					.prepare("SELECT checksum, line_count FROM anchor_meta WHERE path = ?")
+					.get("/keep.ts") as { checksum?: string; line_count?: number } | undefined;
+				expect(meta?.checksum).toBe(contentChecksum(KEPT_CONTENT));
+				expect(meta?.line_count).toBe(KEPT_ANCHORS.length);
+				const rows = db
+					.prepare("SELECT line, anchor, content_key FROM anchor_lines WHERE path = ? ORDER BY line")
+					.all("/keep.ts") as Array<{ line: number; anchor: string; content_key: number }>;
+				expect(rows).toHaveLength(KEPT_ANCHORS.length);
+				for (let i = 0; i < KEPT_ANCHORS.length; i++) {
+					expect(rows[i]!.line).toBe(i + 1);
+					expect(rows[i]!.anchor).toBe(KEPT_ANCHORS[i]);
+					expect(rows[i]!.content_key).toBe(contentKey(KEPT_CONTENT.split("\n")[i]!));
+				}
+				const legacyLeft = db
+					.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'anchor_state'")
+					.get() as { n: number };
+				expect(legacyLeft.n).toBe(0); // the legacy table is dropped after expanding
 			} finally {
 				db.close();
 			}
-			// ...and the row itself is still there, byte for byte.
 		});
 	});
 

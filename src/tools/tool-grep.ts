@@ -30,7 +30,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey, recordServed } from "../domain/session/session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
-import { GREP_MAX_FILE_BYTES, GREP_MAX_TOTAL_BYTES, GREP_MODEL_TEXT_MAX_BYTES } from "../infra/constants.js";
+import { GREP_MAX_TOTAL_BYTES, GREP_MODEL_TEXT_MAX_BYTES } from "../infra/constants.js";
 import { capModelText, makeReadBudget, type BudgetUsage, type SkipReason } from "../infra/read-budget.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { withWorkspace } from "../domain/session/session-view.js";
@@ -110,7 +110,7 @@ function buildBudgetNotice(
 	const more = parts.length > 5 ? `, and ${parts.length - 5} more` : "";
 	const head = usage.exhausted
 		? `${skipped.length} file(s) were not searched: the scan stopped at its ${formatSize(GREP_MAX_TOTAL_BYTES)} total read budget, with ${skippedByBudget} file(s) past the cut.`
-		: `${skipped.length} file(s) were not searched: each is larger than the ${formatSize(GREP_MAX_FILE_BYTES)} per-file limit.`;
+		: `${skipped.length} file(s) were not searched (unreadable).`;
 	return `[grep budget] ${head} Not searched: ${shown}${more}.`;
 }
 
@@ -428,7 +428,10 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 				// serve record, so without a ceiling a large tree grew the host heap
 				// until the process died and the desktop app restarted it.
 				const budget = makeReadBudget({
-					maxFileBytes: GREP_MAX_FILE_BYTES,
+					// #169 sparse lazy anchors: a big file costs only its RETURNED rows,
+					// so the per-file hard skip is gone — large files are searched. The
+					// TOTAL budget stays as the scan's memory ceiling (issue #167).
+					maxFileBytes: 0, // 0 = unlimited per file
 					maxTotalBytes: GREP_MAX_TOTAL_BYTES,
 				});
 				const skipped: Array<{ path: string; reason: SkipReason; bytes: number }> = [];

@@ -1,6 +1,6 @@
 # ADR-0009 — Sparse lazy anchors: allocate only for model-visible lines
 
-> **Status**: Accepted (maintainer direction on PR #169 review, 2026-09-23). Implementation tracked in the follow-up issue; PR #169 ships the interim budget/gates.
+> **Status**: Implemented (maintainer direction on PR #169 review, 2026-09-23; landed in PR #169 the same day — sparse rows, lazy allocation, the per-file grep skip removed, dense rows migrating 1:1).
 
 ## Problem Statement
 
@@ -67,12 +67,8 @@ allocated-anchor set, not by whole-file pre-allocation.**
 
 ## Alternatives Considered
 
-- **Subset allocation against a throwaway used-set** (hash only the returned
-  lines): anchors disagree with the full-file allocation for duplicate
-  content — the model's anchor resolves to a DIFFERENT line at edit time.
-  Rejected.
-- **Raise/parametrize the size gates** (#162's interim fix, shipped in PR
-  #169): keeps large files unsearchable. Interim only.
+- **Subset allocation against a throwaway used-set** (hash only the returned lines): anchors disagree with the full-file allocation for duplicate content — the model's anchor resolves to a DIFFERENT line at edit time. Rejected.
+- **Raise/parametrize the size gates** (#162's interim fix, shipped in PR #169's first pass): keeps large files unsearchable. Superseded within the same PR by this ADR's implementation.
 - **Keep the dense model and stream the file** (no anchor arrays at all):
   rows would carry line numbers without anchors, so nothing is editable
   until a read — strictly worse than the sparse model, which keeps served

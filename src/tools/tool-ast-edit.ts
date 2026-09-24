@@ -20,7 +20,7 @@ import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import { runFileEdits, type PreparedItem } from "../domain/edit/edit-engine.js";
 import { execCwd, execSessionKey, withWorkspace } from "../domain/session/session-view.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "../render/edit-card.js";
 import { lineHashesPure } from "../hashline/hash-assign.js";
@@ -268,6 +268,19 @@ async function runAstEdit(
 	// `read` uses — so what is edited is what a read would have shown.
 	const anchors = anchorsFor(absolutePath, text);
 	const sourceLines = splitLines(text);
+	// LAZY (#169): allocate for exactly the matched lines this tool is about
+	// to serve and edit — the same rule the serve loop below states.
+	const servedLineNos = [...new Set(
+		matches.flatMap((match) => {
+			const rows: number[] = [];
+			for (let line = match.startLine; line <= match.endLine; line++) rows.push(line);
+			return rows;
+		}),
+	)].sort((a, b) => a - b);
+	const allocatedAnchors = allocateForLines(absolutePath, text, servedLineNos);
+	for (let k = 0; k < servedLineNos.length; k++) {
+		anchors[servedLineNos[k]! - 1] = allocatedAnchors[k]!;
+	}
 	const sessionKey = execSessionKey(exec);
 	// SERVE what this tool is about to edit, exactly as `read` serves what it
 	// returns. Without this the engine's served-state check rejects every edit:

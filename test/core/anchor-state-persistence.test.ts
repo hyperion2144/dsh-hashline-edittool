@@ -29,7 +29,7 @@ import { join } from "node:path";
 
 import {
 	anchorsFor,
-	seedAnchors,
+	allocateForLines,
 	updateAnchorsAfterEdit,
 	ANCHOR_CACHE_LIMIT,
 } from "../../src/hashline/session-anchors.js";
@@ -93,7 +93,15 @@ function sqlitePath(home: string): string {
 	return join(configHome(home), "hash-store.sqlite");
 }
 
-/** Simulate ANOTHER process writing the anchor state row directly. */
+/** Serve every line — the read path's allocation step (LAZY #169). */
+function serveAll(path: string, content: string): string[] {
+	return allocateForLines(
+		path, content,
+		Array.from({ length: splitLines(content).length }, (_, i) => i + 1),
+	);
+}
+
+/** Simulate ANOTHER process writing the sparse anchor rows directly. */
 function plantAnchorState(
 	home: string,
 	path: string,
@@ -102,18 +110,25 @@ function plantAnchorState(
 	lineKeys: number[],
 ): void {
 	const db = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
+	const now = Date.now();
 	db.prepare(
-		"INSERT INTO anchor_state (path, checksum, line_count, anchors, line_keys, updated_at) " +
-			"VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, " +
-			"line_count = excluded.line_count, anchors = excluded.anchors, line_keys = excluded.line_keys, " +
-			"updated_at = excluded.updated_at",
-	).run(path, checksum, lineKeys.length, JSON.stringify(anchors), JSON.stringify(lineKeys), Date.now());
+		"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?) " +
+			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, updated_at = excluded.updated_at"
+	).run(path, checksum, lineKeys.length, now);
+	db.prepare("DELETE FROM anchor_lines WHERE path = ?").run(path);
+	const insert = db.prepare(
+		"INSERT INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)",
+	);
+	for (let i = 0; i < anchors.length && i < lineKeys.length; i++) {
+		if (anchors[i] === "" || anchors[i] === undefined) continue; // sparse: only allocated lines
+		insert.run(path, i + 1, anchors[i], lineKeys[i], now);
+	}
 	db.close();
 }
 
 function countAnchorRows(home: string, path: string): number {
 	const db = new DatabaseSync(sqlitePath(home), { defensive: false } as any);
-	const row = db.prepare("SELECT COUNT(*) AS n FROM anchor_state WHERE path = ?").get(path) as {
+	const row = db.prepare("SELECT COUNT(*) AS n FROM anchor_lines WHERE path = ?").get(path) as {
 		n: number;
 	};
 	db.close();
@@ -124,7 +139,7 @@ describe("anchor state persistence (#136)", () => {
 	it("eviction falls back to the persisted state — unchanged lines keep their anchors", async () => {
 		await loadHashStore();
 		const p = "/proj/evict.ts";
-		const a0 = anchorsFor(p, C0);
+		const a0 = serveAll(p, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: p,
 			oldContent: C0,
@@ -142,7 +157,7 @@ describe("anchor state persistence (#136)", () => {
 	it("a store reopen (process restart) recovers anchors from sqlite", async () => {
 		const p = "/proj/restart.ts";
 		await loadHashStore();
-		const a0 = anchorsFor(p, C0);
+		const a0 = serveAll(p, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: p,
 			oldContent: C0,
@@ -159,7 +174,7 @@ describe("anchor state persistence (#136)", () => {
 	it("external change after eviction inherits by diff against the persisted state", async () => {
 		const p = "/proj/external.ts";
 		await loadHashStore();
-		const a0 = anchorsFor(p, C0);
+		const a0 = serveAll(p, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: p,
 			oldContent: C0,
@@ -180,7 +195,7 @@ describe("anchor state persistence (#136)", () => {
 	it("a state allocated before the store opened is flushed once the store exists", async () => {
 		const q = "/proj/late-open.ts";
 		// No store open in this workspace yet: first serve is memory-only.
-		const b0 = anchorsFor(q, C0);
+		const b0 = serveAll(q, C0);
 		const b1 = updateAnchorsAfterEdit({
 			path: q,
 			oldContent: C0,
@@ -197,12 +212,12 @@ describe("anchor state persistence (#136)", () => {
 	it("a concurrent writer's persisted state invalidates this process's cache", async () => {
 		const r = "/proj/shared.ts";
 		await loadHashStore();
-		anchorsFor(r, C0);
+		const a0r = serveAll(r, C0);
 		updateAnchorsAfterEdit({
 			path: r,
 			oldContent: C0,
 			newContent: C1,
-			oldAnchors: anchorsFor(r, C0),
+			oldAnchors: a0r,
 			hunks: [hunkLine5()],
 		});
 		// Another process moves the shared state to C2 with its own allocation:
@@ -217,11 +232,12 @@ describe("anchor state persistence (#136)", () => {
 		expect(anchorsFor(r, C2)).toEqual(foreignAnchors);
 	});
 
-	it("a poisoned stored state heals positionally instead of recomputing", async () => {
-		const s = "/proj/poisoned.ts";
+	it("a partially-served state is legal — survivors keep their anchors, gaps stay unallocated", async () => {
+		const s = "/proj/partial.ts";
 		await loadHashStore();
-		const p0 = anchorsFor(s, C0);
-		// Partial write: the anchors column lost its tail.
+		const p0 = serveAll(s, C0);
+		// Simulate a state where only lines 1..4 were ever served (the sparse
+		// analog of the old partial-write shape — legal now, not corruption):
 		plantAnchorState(
 			tmpHome,
 			s,
@@ -229,14 +245,12 @@ describe("anchor state persistence (#136)", () => {
 			p0.slice(0, 4),
 			splitLines(C0).map(contentKey),
 		);
-		floodCache("/flood-poison");
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		const healed = anchorsFor(s, C0);
-		const healedLoud = errSpy.mock.calls.length > 0;
-		errSpy.mockRestore();
-		expect(healed.length).toBe(splitLines(C0).length);
-		expect(healed.slice(0, 4)).toEqual(p0.slice(0, 4)); // what survived is kept
-		expect(healedLoud).toBe(true); // loud, never silent
+		floodCache("/flood-partial");
+		const view = anchorsFor(s, C0);
+		expect(view.slice(0, 4)).toEqual(p0.slice(0, 4)); // survivors keep theirs
+		expect(view.slice(4).every((a) => a === "")).toBe(true); // gaps unallocated
+		const served = serveAll(s, C0);
+		expect(served.slice(0, 4)).toEqual(p0.slice(0, 4)); // still stable after serving
 	});
 
 	it("a persisted state with duplicate anchors is healed, never trusted", async () => {
@@ -245,7 +259,7 @@ describe("anchor state persistence (#136)", () => {
 		// not handed to the served layer where duplicates become E_SERVED_DUP noise.
 		const s = "/proj/dup-state.ts";
 		await loadHashStore();
-		const p0 = anchorsFor(s, C0);
+		const p0 = serveAll(s, C0);
 		// Plant a row whose anchors repeat p0[0] at position 2:
 		plantAnchorState(
 			tmpHome,
@@ -256,42 +270,41 @@ describe("anchor state persistence (#136)", () => {
 		);
 		floodCache("/flood-dup");
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		const healed = anchorsFor(s, C0);
+		const healed = serveAll(s, C0);
 		const healedLoud = errSpy.mock.calls.length > 0;
 		errSpy.mockRestore();
-		expect(new Set(healed).size).toBe(healed.length); // unique again
-		expect(healed[0]).toBe(p0[0]); // first occurrence keeps its line
-		expect(healed[1]).toBe(p0[1]);
-		expect(healed[2]).not.toBe(p0[0]); // the duplicate was re-allocated
+		expect(new Set(healed).size).toBe(healed.length); // unique again (wiped + fresh)
 		expect(healedLoud).toBe(true);
 	});
 
-	it("seedAnchors refuses a duplicate-anchor array without polluting the state", async () => {
-		const t = "/proj/undo-seed-dup.ts";
+	it("undo needs no seed — the lazy state self-corrects on the reverted content", async () => {
+		const t = "/proj/undo-lazy.ts";
 		await loadHashStore();
-		const seeded = assignAnchors(splitLines(C0));
-		const dirty = [seeded[0]!, seeded[0]!, ...seeded.slice(2)];
-		expect(seedAnchors(t, C0, dirty)).toBe(false); // gate refuses
-		// The state stays unseeded: the next anchorsFor is a normal first serve,
-		// unique and unpolluted by the rejected array.
-		const fresh = anchorsFor(t, C0);
-		expect(new Set(fresh).size).toBe(fresh.length);
+		const a0 = serveAll(t, C0);
+		const a1 = updateAnchorsAfterEdit({
+			path: t,
+			oldContent: C0,
+			newContent: C1,
+			oldAnchors: a0,
+			hunks: [hunkLine5()],
+		});
+		expect(a1[4]).not.toBe(a0[4]); // the edited line re-anchored
+		// The revert: the file goes back to C0. No seed — the next serve realigns
+		// against the reverted content and hands back stable anchors.
+		floodCache("/flood-undo");
+		const a2 = serveAll(t, C0);
+		for (let i = 0; i < a2.length; i++) {
+			if (i === 4) continue;
+			expect(a2[i]).toBe(a0[i]); // unchanged lines keep their anchors
+		}
+		expect(a2[4]).not.toBe(a1[4]); // the reverted line is not the edit's anchor
 	});
 
-	it("seedAnchors persists — an undo re-seed survives eviction", async () => {
-		const t = "/proj/undo-seed.ts";
-		await loadHashStore();
-		const seeded = assignAnchors(splitLines(C0));
-		expect(seedAnchors(t, C0, seeded)).toBe(true);
-		floodCache("/flood-seed");
-		expect(anchorsFor(t, C0)).toEqual(seeded);
-	});
-
-	it("anchor_state rows are pruned when the file no longer exists", async () => {
+	it("anchor rows are pruned when the file no longer exists", async () => {
 		const gone = "/gone/no-such-file.ts";
 		await loadHashStore();
-		anchorsFor(gone, C0);
-		expect(countAnchorRows(tmpHome, gone)).toBe(1);
+		serveAll(gone, C0);
+		expect(countAnchorRows(tmpHome, gone)).toBe(splitLines(C0).length); // one row per SERVED line
 		const store = await loadHashStore();
 		await store.pruneMissing();
 		expect(countAnchorRows(tmpHome, gone)).toBe(0);
@@ -301,13 +314,17 @@ describe("anchor state persistence (#136)", () => {
 		const old = "/proj/ttl-old.ts";
 		const fresh = "/proj/ttl-fresh.ts";
 		await loadHashStore();
-		anchorsFor(old, C0);
-		anchorsFor(fresh, C0);
+		serveAll(old, C0);
+		serveAll(fresh, C0);
 		// Age one row past the TTL directly, then reopen (the sweep runs on open).
 		shutdownHashStore();
 		{
 			const db = new DatabaseSync(sqlitePath(tmpHome), { defensive: false } as any);
-			db.prepare("UPDATE anchor_state SET updated_at = ? WHERE path = ?").run(
+			db.prepare("UPDATE anchor_meta SET updated_at = ? WHERE path = ?").run(
+				Date.now() - 31 * 24 * 60 * 60 * 1000,
+				old,
+			);
+			db.prepare("UPDATE anchor_lines SET updated_at = ? WHERE path = ?").run(
 				Date.now() - 31 * 24 * 60 * 60 * 1000,
 				old,
 			);
@@ -315,6 +332,6 @@ describe("anchor state persistence (#136)", () => {
 		}
 		await loadHashStore();
 		expect(countAnchorRows(tmpHome, old)).toBe(0);
-		expect(countAnchorRows(tmpHome, fresh)).toBe(1);
+		expect(countAnchorRows(tmpHome, fresh)).toBe(splitLines(C0).length);
 	});
 });
