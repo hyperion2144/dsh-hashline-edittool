@@ -32,8 +32,13 @@ import type { ClientCtx } from "./types.js";
 /** Locale namespace of the conversation seat the shipped tool views use. */
 const CONVERSATION_NS = "conversation";
 
-/** Required services: the slot registry is the only hard dependency left —
- * 0.1.7 took the settings scope service away (forms arrive as slot props). */
+/**
+ * Required services of the BUNDLE ROOT: the slot registry only.
+ *
+ * The settings domain is reached by the settings-card SUB-plugin, which
+ * declares `configForms` itself — a deployment without the settings provider
+ * must not park the whole bundle (every tool row with it).
+ */
 export const inject = ["slots"];
 
 /**
@@ -41,8 +46,10 @@ export const inject = ["slots"];
  * 0.1.7 addresses settings by the profile ENTRY id (= the patch row id = the
  * package name), not by a registered namespace: the host half exports
  * HASHLINE_ENTRY_ID with this exact value.
+ *
+ * It is `BUNDLE_PACKAGE_NAME` below — one constant, used as the slot key,
+ * the `configForms.get` argument, and the `whileServed` namespace.
  */
-
 /** Registers the hashline read conversation row (priority -1 takeover). */
 const readToolview = {
 	name: "hashline-read-toolview",
