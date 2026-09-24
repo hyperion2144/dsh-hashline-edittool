@@ -56,6 +56,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 ### Added
 
 - **CI 增加 Windows job（#162）**：矩阵此前只有 `ubuntu-latest`，上面那一类回归只能靠人肉在 Windows 上跑才会发现。新 job 以 `engines` 下限 Node 22 跑 typecheck + 全套测试（版本矩阵与构建仍由 POSIX 侧承担）。
+- **锚点库有界化（#172/#180，ADR-0010）**：库曾无界膨胀到 **2.17 GB / 1049 万行 / 34,664 path**。现在三口径预算（**5,000 路径 / 30 万行 / 64 MiB**，任一超限即淘汰，字节按 **`(page_count − freelist_count) × page_size`** 算——物理页数永远回不到预算内）、两层淘汰（`undo` 单路径 2 MiB 上限 + 整路径 LRU、多删 10% 防抖）、TTL 7 天、**4× 淘汰 / 16× 秒级重建**（复用 quarantine 改名 + 24h 节流）、关库 `VACUUM`/WAL checkpoint + `pending_vacuum` 硬崩兜底。
+- **冷开修复（#178/#180）**：打开库时**不再无条件跑 `PRAGMA quick_check`**——2 GB / 890 万行实测冷开 **1,674 ms（其中校验 1,345 ms）**，修正为“仅在 `clean_shutdown` 标记缺失（上次非正常退出）时校验”，维护索引挪到预算闸门**之后**建，打开决策记入 `meta.last_open_integrity_check`。验收：预算内的库**第二次冷开 ≤ 50 ms**；超预算的库首次打开自愈、下次收敛（均有新进程回归测试）。
+- **表示变更（#176/#180）**：`undo` 的 `resultContent` 换为 **checksum**（最大文本项减半，旧行仍按文本校验）；`served` 从 JSON 数组换为**排序 + delta varint + base64**（实测 2,000 锚点体积 **< JSON 的一半**，且解码不再走 JSON.parse）——`served` **不设上限**，因为它是“这行内容被给模型看过”的防伪造凭证，丢一条就剥夺编辑权；旧格式懒迁移，三种历史形状仍可读。
+- **大文件内存与对齐（#181/#182，ADR-0011）**：`alignPreserved` 不再分配完整 `8(m+1)(n+1)` DP 表——**公共前后缀剥离** → 动态阈值 `min(5e7, heap/32)` → 超阈值走**分块对齐**；返空时给模型一句可行动白话（不加新错误码、不打断编辑）。实测保留率：1% 改动 ≥99%、整段平移 100%；**50k×50k 在 256 MB 堆下不再 SIGABRT**（受限堆子进程回归）。
+- **存储预算成为设置项（#179）**：`store.max_bytes_mb`（8–2048）/ `max_paths`（100–100000）/ `max_lines`（1万–1000万），越界由 schema 与 `applyEffective` 双层**报错并命名字段**（不静默回落），未设置=常量默认；客户端新增“存储”页签 + 恢复默认。改值在**下一次扫描**生效。
 
 
 ## [0.9.1] - 2026-09-23
