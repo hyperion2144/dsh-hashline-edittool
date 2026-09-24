@@ -49,6 +49,7 @@ import {
 	type PersistedAnchorLine,
 } from "../../hashline/session-anchors.js";
 import { storeBudgetLimits } from "./store-budget.js";
+import { decodeServedAnchors, encodeServedAnchors } from "./served-codec.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
 /** The legacy JSON snapshot shape (pre-sqlite stores). */
@@ -243,7 +244,13 @@ export interface HashStore {
 	/** The reported-drift hash set for a session+path (lenient parse, never deletes). */
 	getServedReported(sessionKey: string, path: string): Set<string>;
 	/** Persist the hashes JSON column for a session+path. */
-	upsertServed(sessionKey: string, path: string, hashesJson: string): void;
+	/**
+	 * Persist the served set for a session+path. Callers pass the anchors; the
+	 * on-disk encoding (#176, packed deltas) is the store's business — passing a
+	 * pre-serialized string here would silently encode its CHARACTERS, because a
+	 * string is iterable.
+	 */
+	upsertServed(sessionKey: string, path: string, anchors: readonly string[]): void;
 	/** Persist the reported-drift JSON column for a session+path (inserting a fresh empty hashes row). */
 	upsertServedReported(sessionKey: string, path: string, reportedJson: string): void;
 	clearServedReported(sessionKey: string, path: string): void;
@@ -1135,28 +1142,16 @@ function makeDomainStore(
 		getServed(sessionKey, path) {
 			const row = stmts.servedGet(sessionKey, path);
 			if (!row) return new Set();
-			try {
-				const parsed = JSON.parse(row.hashes as string) as unknown;
-				// New format: string[] (array of anchor strings)
-				if (Array.isArray(parsed) && parsed.every((e) => typeof e === "string" && hashRe().test(e))) {
-					return new Set(parsed as string[]);
-				}
-				// Legacy v2 envelope: { v: 2, a: anchors, k: contentKeys }
-				if (
-					parsed !== null && typeof parsed === "object" &&
-					(parsed as { v?: unknown }).v === 2 && Array.isArray((parsed as { a?: unknown }).a)
-				) {
-					const anchors = (parsed as { a: unknown[] }).a;
-					if (isValidServedList(anchors)) return new Set(anchors.filter((a): a is string => a !== null));
-				}
-				// Legacy format: (string | null)[]
-				if (isValidServedList(parsed)) return new Set(parsed.filter((a): a is string => a !== null));
-				stmts.servedDelete(sessionKey, path);
-				return new Set();
-			} catch {
+			// The codec owns every shape this has ever been stored in (#176): the
+			// packed form this build writes and the three legacy JSON shapes. An
+			// unreadable payload heals the same way malformed JSON always did —
+			// the row is dropped and the session re-serves what it needs.
+			const decoded = decodeServedAnchors(row.hashes as string);
+			if (decoded === undefined) {
 				stmts.servedDelete(sessionKey, path);
 				return new Set();
 			}
+			return decoded;
 		},
 		getServedReported(sessionKey, path) {
 			const row = stmts.servedGet(sessionKey, path);
@@ -1175,8 +1170,10 @@ function makeDomainStore(
 				return new Set();
 			}
 		},
-		upsertServed(sessionKey, path, hashesJson) {
-			stmts.servedUpsert(sessionKey, path, hashesJson, Date.now());
+		upsertServed(sessionKey, path, anchors) {
+			// Encode here, in one place (#176): callers hand over the set they have
+			// and never see the on-disk shape.
+			stmts.servedUpsert(sessionKey, path, encodeServedAnchors(anchors), Date.now());
 			maybeSweepAfterWrite();
 		},
 		upsertServedReported(sessionKey, path, reportedJson) {
