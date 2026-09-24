@@ -8,7 +8,8 @@
  * @module dsh-hashline-edittool/undo-edit
  */
 
-import type { LineEnding } from '../../render/edit-diff.js'
+import { restoreEndings, type LineEnding } from '../../render/edit-diff.js'
+import { contentChecksum } from '../../hashline/hash-assign.js'
 import { loadHashStore, type UndoRecord } from '../session/hash-store.js'
 
 export interface UndoEntry {
@@ -17,6 +18,12 @@ export interface UndoEntry {
 	originalEnding: LineEnding
 	hashes: string[]
 	resultContent: string
+	/**
+	 * Checksum of `bom + restoreEndings(resultContent, originalEnding)` (#176).
+	 * Present on rows an older build did not write; undefined means "verify by
+	 * text", which is how legacy entries keep working.
+	 */
+	resultChecksum?: string
 }
 
 /**
@@ -37,7 +44,14 @@ export async function saveUndo(
 			bom: entry.bom,
 			ending: entry.originalEnding,
 			hashes: entry.hashes,
-			resultContent: entry.resultContent,
+			// The undo stale check compares the CURRENT file against what this edit
+			// produced. Keeping that second body in full was the largest text payload
+			// in the store (#176), so store its checksum instead — taken over the
+			// exact raw form the comparison builds (`bom + restoreEndings(result,
+			// ending)`), and leave `resultContent` empty. The column stays for rows an
+			// older build wrote, which the compare still handles by text.
+			resultContent: '',
+			resultChecksum: contentChecksum(entry.bom + restoreEndings(entry.resultContent, entry.originalEnding)),
 		})
 	} catch (error) {
 		console.error('Failed to persist undo entry:', error)
@@ -104,6 +118,7 @@ export async function getUndo(path: string): Promise<UndoEntry | undefined> {
 			originalEnding,
 			hashes: record.hashes,
 			resultContent: record.resultContent,
+			resultChecksum: record.resultChecksum,
 		}
 	} catch (error) {
 		console.error('Failed to load undo entry:', error)

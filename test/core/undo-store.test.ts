@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { saveUndo, getUndo, clearUndo } from "../../src/domain/edit/undo-edit.js";
+import { contentChecksum } from "../../src/hashline/hash-assign.js";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import * as hashStoreModule from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
@@ -24,7 +25,10 @@ describe("undo-store", () => {
 		expect(entry!.bom).toBe("");
 		expect(entry!.originalEnding).toBe("\n");
 		expect(entry!.hashes).toEqual(["abc", "def"]);
-		expect(entry!.resultContent).toBe("hello\nworld!");
+		// #176: the post-edit body is NOT stored any more — its checksum is, taken
+		// over the same raw form the undo stale check rebuilds.
+		expect(entry!.resultContent).toBe("");
+		expect(entry!.resultChecksum).toBe(contentChecksum("hello\nworld!"));
 	});
 
 	it("returns undefined for a path with no undo history", async () => {
@@ -103,7 +107,9 @@ describe("undo-store", () => {
 		expect(entry!.bom).toBe("\uFEFF");
 		expect(entry!.originalEnding).toBe("\r");
 		expect(entry!.hashes).toEqual(["abc", "def"]);
-		expect(entry!.resultContent).toBe("new");
+		expect(entry!.resultContent).toBe("");
+		// bom + CR-ending restoration, exactly as the stale check compares it.
+		expect(entry!.resultChecksum).toBe(contentChecksum("\uFEFFnew"));
 	});
 
 	it("saveUndo reports failure when the hash store cannot be opened", async () => {
@@ -166,7 +172,12 @@ describe("undo-store — raw entries", () => {
 			bom: "\uFEFF",
 			ending: "\r\n",
 			hashes: ["abc", "def"],
+			// This test drives the RAW port: `pushUndo` persists what it is given and
+			// decides nothing. The representation policy (body vs checksum, #176)
+			// lives one layer up in `saveUndo` — which is also why a row in the old
+			// shape remains writable and readable.
 			resultContent: "new",
+			resultChecksum: "",
 		});
 	});
 

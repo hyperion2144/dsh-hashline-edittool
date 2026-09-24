@@ -102,6 +102,13 @@ export interface UndoRecord {
 	ending: string;
 	hashes: string[];
 	resultContent: string;
+	/**
+	 * Content checksum of the POST-edit body (#176), replacing the second full
+	 * copy the stack used to hold. The stale check compares this against the
+	 * current file; legacy rows leave it undefined and are verified by their
+	 * stored `resultContent` text instead.
+	 */
+	resultChecksum?: string;
 }
 
 /** Compact store metrics used by sweep and the open-path budget check. */
@@ -457,6 +464,17 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		);
 		db.exec("DROP TABLE undo_legacy");
 	}
+	// `result_checksum` (#176): new rows store a checksum of the post-edit body
+	// instead of a second full copy, which halves the biggest text payload in the
+	// store. The column is ADDED rather than rebuilt — legacy rows keep working
+	// (an empty checksum sends the stale check down the text path), and the stack
+	// survives the upgrade in place, exactly as the depth migration does.
+	//
+	// This runs for EVERY store, including one just written by the current build
+	// (where the column already exists and the check is a single PRAGMA read).
+	if (undoColumns.length > 0 && !undoColumns.some((column) => column.name === "result_checksum")) {
+		db.exec("ALTER TABLE undo ADD COLUMN result_checksum TEXT");
+	}
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS anchor_meta (" +
 			"path TEXT PRIMARY KEY, " +
@@ -573,13 +591,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	// (path, depth) primary key mid-statement (`UNIQUE constraint failed`),
 	// because SQLite checks the constraint row by row.
 	const undoPushStmt = db.prepare(
-		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) " +
-			"VALUES (?, COALESCE((SELECT MAX(depth) FROM undo WHERE path = ?), -1) + 1, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, result_checksum, updated_at) " +
+			"VALUES (?, COALESCE((SELECT MAX(depth) FROM undo WHERE path = ?), -1) + 1, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const undoMaxStmt = db.prepare("SELECT MAX(depth) AS max FROM undo WHERE path = ?");
 	const undoPruneStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth < ?");
 	const undoGetStmt = db.prepare(
-		"SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ? ORDER BY depth DESC LIMIT 1",
+		"SELECT content, bom, ending, hashes, result_content, result_checksum FROM undo WHERE path = ? ORDER BY depth DESC LIMIT 1",
 	);
 	const undoPopStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth = ?");
 	const undoDepthStmt = db.prepare("SELECT COUNT(*) AS n FROM undo WHERE path = ?");
@@ -1078,6 +1096,10 @@ function makeDomainStore(
 					ending: row.ending as string,
 					hashes: parsed as string[],
 					resultContent: row.result_content as string,
+					// New rows carry a checksum instead of the post-edit body (#176);
+					// legacy rows have an empty string here and are still verified by
+					// their stored text.
+					resultChecksum: (row.result_checksum as string | null) ?? undefined,
 				};
 			} catch {
 				stmts.undoDelete(path);
@@ -1092,6 +1114,7 @@ function makeDomainStore(
 				entry.ending,
 				JSON.stringify(entry.hashes),
 				entry.resultContent,
+				entry.resultChecksum ?? "",
 				Date.now(),
 			);
 			maybeSweepAfterWrite();
