@@ -28,7 +28,19 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
-const COLD_OPEN_BUDGET_MS = 50;
+/**
+ * The steady-state cold-open ceiling.
+ *
+ * 50 ms is the measured budget on the development platform for a store whose
+ * maintenance indexes are already built. Windows CI needs a scaled ceiling:
+ * the SAME work (an 8 ms open on macOS) measured 125 ms there — NTFS plus the
+ * runner's antivirus make small-file SQLite opens an order of magnitude
+ * slower. Scaling the number keeps the test honest about what it measures
+ * ("no full-database pass"), while the machine-independent guarantee lives in
+ * the `meta.last_open_integrity_check` test below: that one asserts the check
+ * was SKIPPED, and cannot be satisfied by a fast machine.
+ */
+const COLD_OPEN_BUDGET_MS = process.platform === "win32" ? 400 : 50;
 const REPO = process.cwd();
 const BUILT = join(REPO, "lib", "domain", "session", "hash-store.js");
 const RUNNER = join(REPO, ".tmp", "dsh-cold-open-runner.mjs");
