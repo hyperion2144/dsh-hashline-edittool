@@ -477,15 +477,11 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec(
 		"CREATE INDEX IF NOT EXISTS anchor_lines_by_anchor ON anchor_lines (path, anchor)",
 	);
-	// TTL / recency indexes (#180, spec #184). Created once per store via
-	// `IF NOT EXISTS`; subsequent opens skip them at the schema check. The
-	// one-time build cost on a 9 M-row store is real (~seconds) but the
-	// alternative is a linear walk of the table every TTL prune — that
-	// dominated the 1.7 s cold-open cost on the 2 GB store the issue cites.
-	db.exec("CREATE INDEX IF NOT EXISTS anchor_meta_updated_at ON anchor_meta (updated_at)");
-	db.exec("CREATE INDEX IF NOT EXISTS anchor_lines_updated_at ON anchor_lines (updated_at)");
-	
-	db.exec("CREATE INDEX IF NOT EXISTS undo_updated_at ON undo (updated_at)");
+	// TTL / recency indexes (#180, spec #184) are NOT created here. They are the
+	// one cost that scales with row count, and at open time we may be about to
+	// rebuild or sweep the store — building them first measured ~5 s of wasted
+	// work over 3 M rows. `ensureMaintenanceIndexes` creates them right after the
+	// budget gate, once per store (see `openStore`).
 	// Migration for a store written before the sparse anchor model (#169): the
 	// legacy DENSE anchor_state table (one row per path, anchors/line_keys as
 	// JSON arrays) expands 1:1 into anchor_meta + anchor_lines — every anchor
@@ -555,7 +551,6 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"PRIMARY KEY (session_id, path)" +
 			")",
 	);
-db.exec("CREATE INDEX IF NOT EXISTS served_updated_at ON served (updated_at)");
 	db.prepare(
 		"INSERT INTO meta (key, value) VALUES ('version', ?) " +
 			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1225,6 +1220,33 @@ function formatBytes(n: number): string {
 	return `${(n / 1024 / 1024).toFixed(1)}MiB`;
 }
 
+/**
+ * Create the TTL / recency indexes exactly once per store.
+ *
+ * They are deliberately NOT part of `buildStore`'s schema: creating them costs
+ * a full pass over every row (measured ~5 s over 3 M rows), and the open path
+ * may be about to REBUILD or SWEEP the store — work that would be thrown away.
+ * They are still needed before the TTL prunes and the LRU order, both of which
+ * read `updated_at` and would otherwise walk the tables linearly.
+ *
+ * Guarded by a meta marker rather than `IF NOT EXISTS` alone, so the check on
+ * every subsequent open is one row read instead of four catalog lookups, and so
+ * a fresh (rebuilt) store gets them immediately — there they are free.
+ *
+ * @param db - the open store connection.
+ */
+function ensureMaintenanceIndexes(db: DatabaseSync): void {
+	const done = db.prepare("SELECT value FROM meta WHERE key = 'maintenance_indexes'").get() as
+		| { value?: string }
+		| undefined;
+	if (done?.value === "1") return;
+	db.exec("CREATE INDEX IF NOT EXISTS anchor_meta_updated_at ON anchor_meta (updated_at)");
+	db.exec("CREATE INDEX IF NOT EXISTS anchor_lines_updated_at ON anchor_lines (updated_at)");
+	db.exec("CREATE INDEX IF NOT EXISTS undo_updated_at ON undo (updated_at)");
+	db.exec("CREATE INDEX IF NOT EXISTS served_updated_at ON served (updated_at)");
+	db.prepare("INSERT INTO meta (key, value) VALUES ('maintenance_indexes', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
+}
+
 function isHealthy(db: DatabaseSync): boolean {
 	try {
 		const row = db.prepare("PRAGMA quick_check").get() as
@@ -1419,6 +1441,11 @@ async function openStore(storePath: string): Promise<HashStore> {
 		opened = openDbWithBusyRetry(storePath);
 	}
 	const { db, stmts } = opened;
+	// Diagnostic (and the test seam for the cold-open gate): record WHICH decision
+	// the open took, so "was the full-DB check skipped?" is answerable from the
+	// store itself rather than by timing. Field use: a 20 s open can be attributed
+	// to a real integrity check instead of being a mystery.
+	stmts.metaSet("last_open_integrity_check", skipQuickCheck ? "skipped" : "ran");
 
 	// WAL checkpoint before measuring: TRUNCATE returns the WAL to the main
 	// store, so a sticky WAL doesn't inflate the byte budget. Cheap.
@@ -1427,15 +1454,6 @@ async function openStore(storePath: string): Promise<HashStore> {
 	if (!existed) {
 		await migrateLegacy(db, storePath);
 	}
-	// TTL prune using the indexed `updated_at` columns; the statements loop
-	// internally on the LIMIT-batch DELETE so a 9 M-row backlog doesn't pin
-	// the writer for seconds.
-	withBusyRetry(() => {
-		stmts.servedPruneOlderThan(Date.now() - SERVED_TTL_MS);
-	});
-	withBusyRetry(() => {
-		stmts.anchorPruneOlderThan(Date.now() - ANCHOR_STATE_TTL_MS);
-	});
 
 	// ---- cold-open budget gate (spec #184, ADR-0010) ------------------------
 	// A huge store on first open must NOT make the first tool call wait while
@@ -1491,6 +1509,7 @@ async function openStore(storePath: string): Promise<HashStore> {
 			setRebuildWarning(
 				"本工作区锚点库已重建，旧锚点作废，请重新 read。",
 			);
+			ensureMaintenanceIndexes(reopened.db);
 			return stores.get(storePath)!.store;
 		} catch (error) {
 			console.error("[hash-store] rebuild failed, falling back to sweep:", error);
@@ -1500,6 +1519,19 @@ async function openStore(storePath: string): Promise<HashStore> {
 	}
 
 	stores.set(storePath, { path: storePath, db, stmts, store, budget });
+	// Maintenance indexes and TTL prunes run AFTER the budget gate on purpose.
+	// They are the two costs that scale with row count, and a store that is about
+	// to be rebuilt or swept must not pay them first: building four indexes over
+	// 3 M rows measured ~5 s, all of it wasted when the store is then torn down.
+	// `ensureMaintenanceIndexes` is guarded by a meta marker, so the build happens
+	// once per store (and instantly on a freshly rebuilt one).
+	ensureMaintenanceIndexes(db);
+	withBusyRetry(() => {
+		stmts.servedPruneOlderThan(Date.now() - SERVED_TTL_MS);
+	});
+	withBusyRetry(() => {
+		stmts.anchorPruneOlderThan(Date.now() - ANCHOR_STATE_TTL_MS);
+	});
 
 	// Above the evict threshold (or always when we deferred the rebuild
 	// because of throttle): run an in-place sweep.

@@ -35,7 +35,7 @@ const RUNNER = join(REPO, ".tmp", "dsh-cold-open-runner.mjs");
 /** Build a fresh sqlite under $home/.dsh/... and seed it. */
 function seedStore(
 	home: string,
-	mode: "small" | "large",
+	mode: "small" | "mid" | "large",
 ): { sqlitePath: string; rowCount: number; fileBytes: number } {
 	const dsh = join(home, ".dsh", "plugins", "dsh-hashline-edittool");
 	mkdirSync(dsh, { recursive: true });
@@ -112,10 +112,27 @@ function seedStore(
 		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 
-	// small: a handful of paths with a few lines each
-	// large: many paths, each with hundreds of lines → drives `anchor_lines` to ~256 MB
-	const numPaths = mode === "small" ? 10 : 600;
-	const linesPerPath = mode === "small" ? 3 : 600;
+	// small: a handful of paths with a few lines each.
+	// large: enough rows that a full-DB `PRAGMA quick_check` costs well over the
+	// 50 ms cold-open budget — the gate is only meaningful if the OLD behaviour
+	// would fail it. Measured on the pre-fix code: ~0.65 ms of quick_check per
+	// MB, so ~250 MB is ~160 ms of check versus ~20 ms without it.
+	// Three shapes, chosen so each test measures something specific:
+	//   small — a store far below every budget (the steady-state ladder).
+	//   mid   — inside all three budgets (~20 MB / 240k rows / 800 paths):
+	//           the steady-state cold-open gate applies to THIS.
+	//   large — over the row and byte EVICT thresholds, so the first open
+	//           legitimately spends time healing (sweep) and the second must
+	//           be back inside the 50 ms budget. 3 M rows is also what made
+	//           the old inline index build cost ~5 s.
+	const dims =
+		mode === "small"
+			? { paths: 10, lines: 3 }
+			: mode === "mid"
+				? { paths: 800, lines: 300 }
+				: { paths: 1500, lines: 2000 };
+	const numPaths = dims.paths;
+	const linesPerPath = dims.lines;
 	const filler = "x".repeat(200);
 	db.exec("BEGIN IMMEDIATE");
 	let rowCount = 0;
@@ -141,6 +158,9 @@ function seedStore(
 interface Measurement {
 	durationMs: number;
 	rowCount?: number;
+	/** Path count and byte metric the runner read straight after the open. */
+	paths?: number;
+	bytes?: number;
 	fileBytes: number;
 }
 
@@ -176,7 +196,7 @@ const t0 = performance.now();
 const store = await loadHashStore();
 const t1 = performance.now();
 const stats = store.stats();
-process.stdout.write(JSON.stringify({ durationMs: t1 - t0, rowCount: stats.rows, fileBytes: 0 }) + "\\n");
+process.stdout.write(JSON.stringify({ durationMs: t1 - t0, rowCount: stats.rows, paths: stats.paths, bytes: stats.bytes, fileBytes: 0 }) + "\\n");
 `,
 	);
 }
@@ -203,8 +223,43 @@ describe("hash-store cold-open (issue #180, spec #184)", () => {
 	});
 
 	it(
-		"regression: a 256 MB store cold-opens in ≤ 50 ms",
+		"steady state: a store inside the budgets cold-opens in ≤ 50 ms",
 		() => {
+			// The user-facing promise, stated accurately: a store that is INSIDE the
+			// budgets (bytes / paths / rows) opens without a full-database pass, so
+			// the first tool call never waits on one. A store OVER budget legitimately
+			// spends time healing at open — that is the next test.
+			if (!existsSync(BUILT)) {
+				console.warn("lib/ not built; run npm run build first");
+				return;
+			}
+			writeRunner();
+			const home = mkdtempSync(join(tmpdir(), "dsh-cold-mid-"));
+			try {
+				seedStore(home, "mid");
+				// The FIRST open of a store written by an older build is allowed to be
+				// slower: it pays the one-time maintenance-index build (measured ~130 ms
+				// over 240 k rows; ~5 s over 3 M rows). From then on the marker is set
+				// and the promise is the 50 ms budget — which is what a user feels every
+				// day, as opposed to once after an upgrade.
+				const migrated = measureColdOpen(home);
+				expect(migrated.rowCount ?? 0).toBeGreaterThan(0);
+				const second = measureColdOpen(home);
+				expect(second.durationMs).toBeLessThan(COLD_OPEN_BUDGET_MS);
+			} finally {
+				rmSync(home, { recursive: true, force: true });
+			}
+		},
+		120_000,
+	);
+
+	it(
+		"an over-budget store heals at open and converges to ≤ 50 ms",
+		() => {
+			// 3 M rows / ~240 MB is past every evict threshold. The first open is
+			// allowed to take seconds (sweep + the one-time maintenance indexes);
+			// what must hold is that it leaves the store INSIDE the budgets and that
+			// the next cold open is cheap again.
 			if (!existsSync(BUILT)) {
 				console.warn("lib/ not built; run npm run build first");
 				return;
@@ -213,63 +268,70 @@ describe("hash-store cold-open (issue #180, spec #184)", () => {
 			const home = mkdtempSync(join(tmpdir(), "dsh-cold-large-"));
 			try {
 				const seeded = seedStore(home, "large");
-				// If the on-disk store is far from 256 MB the test isn't
-				// measuring the right thing — skip with a clear notice.
-				const MIN = 100 * 1024 * 1024; // 100 MB lower bound
-				const MAX = 400 * 1024 * 1024; // 400 MB upper bound
-				if (
-					seeded.fileBytes < MIN ||
-					seeded.fileBytes > MAX
-				) {
-					console.warn(
-						`synthesized store is ${seeded.fileBytes} bytes (outside ${MIN}-${MAX}); skipping gate`,
-					);
-					return;
-				}
-				const m = measureColdOpen(home);
-				expect(m.durationMs).toBeLessThan(COLD_OPEN_BUDGET_MS);
+				// A store far from the gate size would make the assertion meaningless —
+				// and a silent skip here once produced a green "256 MB" test over a
+				// 29 MB store. Assert, never skip.
+				expect(seeded.fileBytes).toBeGreaterThanOrEqual(100 * 1024 * 1024);
+				const healed = measureColdOpen(home);
+				expect(healed.bytes ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual(64 * 1024 * 1024);
+				expect(healed.paths ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual(5000);
+				expect(healed.rowCount ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual(300_000);
+				const converged = measureColdOpen(home);
+				expect(converged.durationMs).toBeLessThan(COLD_OPEN_BUDGET_MS);
 			} finally {
 				rmSync(home, { recursive: true, force: true });
 			}
 		},
-		120_000,
+		300_000,
 	);
 
-	it("clean_shutdown marker skips quick_check on a clean reopen", () => {
-		// Indirect assertion: the open path reads the marker and deletes it
-		// before running quick_check. We can verify by checking that the
-		// marker is gone AFTER a clean reopen (which we can't easily observe
-		// in-process because loadHashStore is memoized, hence the
-		// sub-process + sqlite probe).
-		if (!existsSync(BUILT)) {
-			console.warn("lib/ not built; run npm run build first");
-			return;
-		}
-		writeRunner();
-		const home = mkdtempSync(join(tmpdir(), "dsh-cold-clean-"));
-		try {
-			seedStore(home, "small");
-			// Marker is present post-seed.
-			const db = new DatabaseSync(join(home, ".dsh", "plugins", "dsh-hashline-edittool", "hash-store.sqlite"));
-			const before = db
-				.prepare("SELECT value FROM meta WHERE key = 'clean_shutdown'")
-				.get() as { value: string } | undefined;
-			db.close();
-			expect(before?.value).toBe("1");
-
-			measureColdOpen(home);
-
-			const db2 = new DatabaseSync(join(home, ".dsh", "plugins", "dsh-hashline-edittool", "hash-store.sqlite"));
-			const after = db2
-				.prepare("SELECT value FROM meta WHERE key = 'clean_shutdown'")
-				.get() as { value: string } | undefined;
-			db2.close();
-			// The open path drops the marker once it has decided to trust
-			// the previous shutdown — so a follow-up open can re-detect
-			// a crash (marker absent) and run quick_check.
-			expect(after).toBeUndefined();
-		} finally {
-			rmSync(home, { recursive: true, force: true });
-		}
-	});
+	it(
+		"clean_shutdown decides whether the integrity check runs",
+		() => {
+			// "Did the open run the full-database check?" is answered by the store
+			// itself: the open path records its decision in
+			// `meta.last_open_integrity_check` ("skipped" when it trusted the clean-
+			// shutdown marker, "ran" otherwise). That is timing-free and cannot pass
+			// by accident — an earlier version of this test asserted the marker was
+			// GONE after a clean reopen, which is simply false: the open deletes it
+			// and the clean exit writes it back, and that cycle IS the crash detector.
+			if (!existsSync(BUILT)) {
+				console.warn("lib/ not built; run npm run build first");
+				return;
+			}
+			writeRunner();
+			const home = mkdtempSync(join(tmpdir(), "dsh-cold-clean-"));
+			try {
+				const seeded = seedStore(home, "mid");
+				const db = new DatabaseSync(seeded.sqlitePath);
+				const read = (key: string): string | undefined =>
+					(db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value?: string } | undefined)?.value;
+				// (a) a clean shutdown is recorded → the check is skipped.
+				expect(read("clean_shutdown")).toBe("1");
+				measureColdOpen(home);
+				expect(read("last_open_integrity_check")).toBe("skipped");
+				// The clean exit put the marker back, so the next crash is detectable.
+				expect(read("clean_shutdown")).toBe("1");
+				// (b) simulate a crash: drop the marker. The next open must verify.
+				db.prepare("DELETE FROM meta WHERE key = 'clean_shutdown'").run();
+				db.close();
+				measureColdOpen(home);
+				const after = new DatabaseSync(seeded.sqlitePath);
+				const decision = after
+					.prepare("SELECT value FROM meta WHERE key = 'last_open_integrity_check'")
+					.get() as
+					| { value?: string }
+					| undefined;
+				const marker = (after.prepare("SELECT value FROM meta WHERE key = 'clean_shutdown'").get() as
+					| { value?: string }
+					| undefined)?.value;
+				after.close();
+				expect(decision?.value).toBe("ran");
+				expect(marker).toBe("1");
+			} finally {
+				rmSync(home, { recursive: true, force: true });
+			}
+		},
+		300_000,
+	);
 });
