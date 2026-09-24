@@ -21,7 +21,7 @@
  * 恢复默认 button relies on that, and the per-field case in `store` is still
  * preserved (only the WHOLE subtree drop is gone).
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	applyEffective,
 	HashlineSettingsSchema,
@@ -29,6 +29,7 @@ import {
 	resolveSettings,
 	type StoreBudgetWarn,
 } from "../../src/config.js";
+import { resetStoreBudgetLimits, storeBudgetLimits } from "../../src/domain/session/store-budget.js";
 
 function isValidationError(error: unknown): boolean {
 	// schemastery tags its errors with a hidden symbol; importing the class
@@ -344,4 +345,52 @@ describe("applyEffective — the second line of defence for #179 / #180", () => 
 		);
 		expect(messages).toEqual([]);
 	});
+
+describe("the settings actually drive the store budgets (#179 → #180)", () => {
+	// The gap this closes: before this wiring, the three fields were validated
+	// and then ignored — the card wrote them, the warning named them, and the
+	// sweep still used the constants. These tests pin the seam end to end.
+	afterEach(() => {
+		// Module-level state: without this, one test's published limits leak
+		// into every later sweep in the same worker.
+		resetStoreBudgetLimits();
+	});
+
+	it("publishes the configured limits", () => {
+		resetStoreBudgetLimits();
+		expect(storeBudgetLimits()).toEqual({
+			bytes: 64 * 1024 * 1024,
+			paths: 5000,
+			rows: 300_000,
+		});
+		applyEffective({ store: { max_bytes_mb: 8, max_paths: 100, max_lines: 10_000 } });
+		expect(storeBudgetLimits()).toEqual({ bytes: 8 * 1024 * 1024, paths: 100, rows: 10_000 });
+	});
+
+	it("keeps the constant for a field that is absent or out of range", () => {
+		resetStoreBudgetLimits();
+		applyEffective({ store: { max_bytes_mb: 8 } });
+		expect(storeBudgetLimits().bytes).toBe(8 * 1024 * 1024);
+		// Absent fields and out-of-range fields both mean "use the constant".
+		expect(storeBudgetLimits().paths).toBe(5000);
+		expect(storeBudgetLimits().rows).toBe(300_000);
+		applyEffective({ store: { max_bytes_mb: 7, max_paths: 99, max_lines: 10_000_001 } });
+		expect(storeBudgetLimits()).toEqual({
+			bytes: 64 * 1024 * 1024,
+			paths: 5000,
+			rows: 300_000,
+		});
+	});
+
+	it("an apply with no store subtree resets to the constants", () => {
+		applyEffective({ store: { max_bytes_mb: 8, max_paths: 100, max_lines: 10_000 } });
+		expect(storeBudgetLimits().bytes).toBe(8 * 1024 * 1024);
+		applyEffective({ separator: "|" });
+		expect(storeBudgetLimits()).toEqual({
+			bytes: 64 * 1024 * 1024,
+			paths: 5000,
+			rows: 300_000,
+		});
+	});
+});
 });

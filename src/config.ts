@@ -27,6 +27,7 @@ import z from "@deepseek-ai/schemastery";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
 import { rebuildEditSurfaces } from "./domain/edit/edit-rebuild.js";
 import { getAstClient } from "./ast/client.js";
+import { setStoreBudgetLimits } from "./domain/session/store-budget.js";
 import {
 	HASH_STORE_MAX_BYTES,
 	HASH_STORE_MAX_PATHS,
@@ -339,6 +340,25 @@ export function applyEffective(
 				}
 			}
 		}
+	}
+	//
+	// Publish the EFFECTIVE limits to the store (#179: the settings must actually
+	// drive the sweep, not just be validated). 
+	// The same helper does the range check, so an out-of-range value falls back to
+	// its constant here exactly as the warning above describes — and an ABSENT
+	// value does too, which is how "unset = use the host-side constant" is
+	// spelled. A change lands on the store's next sweep, never synchronously.
+	//
+	{
+		const store = settings?.store;
+		const byteLimit = checkStoreBudget("max_bytes_mb", store?.max_bytes_mb);
+		const pathLimit = checkStoreBudget("max_paths", store?.max_paths);
+		const rowLimit = checkStoreBudget("max_lines", store?.max_lines);
+		setStoreBudgetLimits({
+			bytes: byteLimit.kind === "valid" ? byteLimit.value * 1024 * 1024 : undefined,
+			paths: pathLimit.kind === "valid" ? pathLimit.value : undefined,
+			rows: rowLimit.kind === "valid" ? rowLimit.value : undefined,
+		});
 	}
 const sep =
 		typeof settings?.separator === "string" && settings.separator.length > 0

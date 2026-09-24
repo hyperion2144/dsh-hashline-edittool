@@ -142,10 +142,17 @@ function ensureState(path: string, rawContent: string): SparseState {
 	// position; content that vanished releases its anchor for reuse.
 	if (cached.checksum !== checksum || cached.lineCount !== lineCount) {
 		const ordered = [...cached.entries].sort((a, b) => a[0] - b[0]);
-		const paired = alignPreserved(
+		const aligned = alignPreservedBounded(
 			ordered.map(([, e]) => e.contentKey),
 			currentLines.map(contentKey),
 		);
+		// A whole-file realign is the one call that can degrade (#182): the DP is
+		// bounded, and past the bound a low-similarity rewrite returns an empty
+		// mapping — every anchor this session holds for the file is gone. Record
+		// it so the next tool result can say so instead of leaving the model with
+		// anchors that silently stopped existing.
+		if (aligned.degraded) noteAlignmentDegraded(path);
+		const paired = aligned.pairs;
 		const realigned = new Map<number, AnchorEntry>();
 		for (const [newIdx, oldIdx] of paired) {
 			realigned.set(newIdx + 1, ordered[oldIdx]![1]);
@@ -382,7 +389,11 @@ export function updateAnchorsAfterEdit(args: {
 	for (const h of ordered) {
 		const oldSeg = oldLines.slice(h.oldStart1 - 1, Math.min(h.oldEnd1, oldLines.length));
 		const newSeg = newLines.slice(h.finalStart1 - 1, Math.min(h.finalEnd1, newLines.length));
-		const preserved = alignPreserved(oldSeg, newSeg);
+		const hunkAligned = alignPreservedBounded(oldSeg, newSeg);
+		// The hunk path can degrade too (a hunk is usually small, but a whole-file
+		// rewrite arrives as one huge hunk). Same one-shot notice as the realign.
+		if (hunkAligned.degraded) noteAlignmentDegraded(args.path);
+		const preserved = hunkAligned.pairs;
 		const survivingOld = new Set(preserved.values());
 		// release the replaced (non-surviving) in-hunk entries: they simply do
 		// not carry over into `shifted`
@@ -421,6 +432,45 @@ export function updateAnchorsAfterEdit(args: {
 	return anchorsFor(args.path, newContent);
 }
 
+/**
+ * Alignment-degradation notices, one per path, drained by the tool layer.
+ *
+ * A degraded realign (#182) returns an empty mapping: every anchor the model
+ * holds for that file stops existing. Shipping that silently is the failure
+ * this registry exists to prevent — the model would keep editing with anchors
+ * that are simply gone. The tool layer drains the notice into its warnings
+ * (model-visible, one line, no new error code), and draining CLEARS it so the
+ * same degradation is not repeated at every later call.
+ */
+const alignmentNotices = new Map<string, string>();
+
+/** What the model is told when an alignment degraded and dropped its anchors. */
+export const ALIGNMENT_DEGRADED_NOTICE =
+  "\u8be5\u6587\u4ef6\u6539\u52a8\u8fc7\u5927\uff0c\u65e7\u951a\u70b9\u5df2\u4f5c\u5e9f\uff1b\u8bf7\u91cd\u65b0 read \u8be5\u6587\u4ef6\u83b7\u53d6\u65b0\u951a\u70b9\u3002";
+
+/**
+ * Record that a file's realign degraded. Idempotent per path until drained.
+ * @param path - the absolute path whose anchors were invalidated.
+ */
+export function noteAlignmentDegraded(path: string): void {
+  alignmentNotices.set(path, ALIGNMENT_DEGRADED_NOTICE);
+}
+
+/**
+ * Take (and clear) the pending degradation notice for a path — if any.
+ * @param path - the absolute path about to be rendered in a tool result.
+ * @returns the one-line notice, or undefined when nothing degraded.
+ */
+export function takeAlignmentNotice(path: string): string | undefined {
+  const notice = alignmentNotices.get(path);
+  if (notice !== undefined) alignmentNotices.delete(path);
+  return notice;
+}
+
+/** Test seam: forget every pending notice (suites must not leak into each other). */
+export function resetAlignmentNotices(): void {
+  alignmentNotices.clear();
+}
 /**
  * Signature-compatible wrapper around the bounded aligner (ADR-0011).
  *

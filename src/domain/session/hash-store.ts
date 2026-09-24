@@ -48,6 +48,7 @@ import {
 	type PersistedAnchorState,
 	type PersistedAnchorLine,
 } from "../../hashline/session-anchors.js";
+import { storeBudgetLimits } from "./store-budget.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
 /** The legacy JSON snapshot shape (pre-sqlite stores). */
@@ -1465,21 +1466,20 @@ async function openStore(storePath: string): Promise<HashStore> {
 		paths: stmts.anchorPathCount(),
 		rows: stmts.anchorRowCount(),
 	};
-	const evictThreshold = HASH_STORE_MAX_BYTES * HASH_STORE_EVICT_RATIO;
-	const rebuildThreshold = HASH_STORE_MAX_BYTES * HASH_STORE_REBUILD_RATIO;
+	// Limits come from the settings layer when it has published any (#179), and
+	// from the constants otherwise — `storeBudgetLimits()` is the single seam.
+	const limits = storeBudgetLimits();
+	const evictThreshold = limits.bytes * HASH_STORE_EVICT_RATIO;
+	const rebuildThreshold = limits.bytes * HASH_STORE_REBUILD_RATIO;
 	const needsRebuild =
 		initialStats.bytes >= rebuildThreshold ||
-		initialStats.paths >= HASH_STORE_MAX_PATHS * HASH_STORE_REBUILD_RATIO ||
-		initialStats.rows >= HASH_STORE_MAX_ROWS * HASH_STORE_REBUILD_RATIO;
+		initialStats.paths >= limits.paths * HASH_STORE_REBUILD_RATIO ||
+		initialStats.rows >= limits.rows * HASH_STORE_REBUILD_RATIO;
 	const { lastAt: lastRebuildAt, now: nowMs } = readRebuildThrottle(stmts);
 	const throttled = nowMs - lastRebuildAt < HASH_STORE_REBUILD_THROTTLE_MS;
 
 	const budget: SweepBudget = { writeCounter: 0 };
-	const store = makeDomainStore(stmts, budget, {
-		bytes: HASH_STORE_MAX_BYTES,
-		paths: HASH_STORE_MAX_PATHS,
-		rows: HASH_STORE_MAX_ROWS,
-	});
+	const store = makeDomainStore(stmts, budget, limits);
 
 	if (needsRebuild && !throttled) {
 		const before = initialStats;
@@ -1493,11 +1493,7 @@ async function openStore(storePath: string): Promise<HashStore> {
 				path: storePath,
 				db: reopened.db,
 				stmts: reopened.stmts,
-				store: makeDomainStore(reopened.stmts, budget, {
-					bytes: HASH_STORE_MAX_BYTES,
-					paths: HASH_STORE_MAX_PATHS,
-					rows: HASH_STORE_MAX_ROWS,
-				}),
+				store: makeDomainStore(reopened.stmts, budget, limits),
 				budget,
 			});
 			reopened.stmts.metaSet("last_rebuild_at", String(Date.now()));
@@ -1537,8 +1533,8 @@ async function openStore(storePath: string): Promise<HashStore> {
 	// because of throttle): run an in-place sweep.
 	const overEvict =
 		initialStats.bytes >= evictThreshold ||
-		initialStats.paths >= HASH_STORE_MAX_PATHS * HASH_STORE_EVICT_RATIO ||
-		initialStats.rows >= HASH_STORE_MAX_ROWS * HASH_STORE_EVICT_RATIO;
+		initialStats.paths >= limits.paths * HASH_STORE_EVICT_RATIO ||
+		initialStats.rows >= limits.rows * HASH_STORE_EVICT_RATIO;
 	if (overEvict) {
 		const report = store.sweep();
 		if (report.evictedPaths > 0) {

@@ -51,9 +51,12 @@ export const DEFAULT_MAX_DP_ENTRIES = 50_000_000;
  */
 let cachedEffective: number | undefined;
 let loggedEffective: number | undefined;
+/** Test-only pin; `undefined` keeps the heap-derived default. */
+let testBudget: number | undefined;
 
 export function effectiveDpBudget(override?: number): number {
 	if (override !== undefined) return override;
+	if (testBudget !== undefined) return testBudget;
 	if (cachedEffective !== undefined) return cachedEffective;
 	const heapLimit = getHeapStatistics().heap_size_limit;
 	cachedEffective = Math.min(DEFAULT_MAX_DP_ENTRIES, Math.floor(heapLimit / 32));
@@ -71,8 +74,20 @@ export function effectiveDpBudget(override?: number): number {
 
 /** Test seam: forget the cached budget. Production code never needs this. */
 export function resetEffectiveDpBudgetForTests(): void {
+	testBudget = undefined;
 	cachedEffective = undefined;
 	loggedEffective = undefined;
+}
+
+/**
+ * Pin the effective budget for tests (undefined = back to the heap-derived
+ * default). Production call sites pass no `AlignOptions`, so without this an
+ * integration test could never reach the degraded path.
+ * @param value - the DP-entry budget to pin, or undefined to clear it.
+ */
+export function setEffectiveDpBudgetForTests(value?: number): void {
+	testBudget = value;
+	cachedEffective = undefined;
 }
 
 // ---------------------------------------------------------------------------

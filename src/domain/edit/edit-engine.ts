@@ -53,7 +53,7 @@ import {
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
 import { findSnapshotPathsByHashes } from "../session/hash-store.js";
-import { updateAnchorsAfterEdit, allocateForLines, type EditHunk } from "../../hashline/session-anchors.js";
+import { updateAnchorsAfterEdit, allocateForLines, takeAlignmentNotice, type EditHunk } from "../../hashline/session-anchors.js";
 import { contextLinesCfg } from "../../hashline/hash-assign.js";
 import { saveUndo } from "./undo-edit.js";
 import {
@@ -707,6 +707,15 @@ export async function applyOne(
 			hunk,
 		],
 	});
+	// The realign inside `updateAnchorsAfterEdit` may have degraded (#182): past
+	// the bounded-DP threshold a low-similarity rewrite drops every anchor this
+	// session held for the file. Draining the notice here is what turns that
+	// silent loss into one model-visible line (no new error code, edit still
+	// applies). Draining CLEARS it, so it is not repeated on every later edit.
+	{
+		const notice = takeAlignmentNotice(input.absolutePath);
+		if (notice !== undefined) input.warnings.push(notice);
+	}
 
 	return {
 		result,
