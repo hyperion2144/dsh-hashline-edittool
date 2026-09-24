@@ -143,7 +143,10 @@ function seedStore(
 			? { paths: 10, lines: 3 }
 			: mode === "mid"
 				? { paths: 800, lines: 300 }
-				: { paths: 1500, lines: 2000 };
+				// 1.5 M rows: over the evict threshold (4 x 300 k) so the open heals,
+				// but half the old 3 M shape — which took > 30 s to seed and heal on a
+				// Windows runner and tripped the spawn timeout rather than an assert.
+				: { paths: 1000, lines: 1500 };
 	const numPaths = dims.paths;
 	const linesPerPath = dims.lines;
 	const filler = "x".repeat(200);
@@ -184,7 +187,7 @@ function measureColdOpen(home: string): Measurement {
 	const result = spawnSync(
 		process.execPath,
 		[RUNNER],
-		{ encoding: "utf-8", timeout: 30_000, env: { ...process.env, HOME: home, DSH_HOME: join(home, ".dsh") } },
+		{ encoding: "utf-8", timeout: 180_000, env: { ...process.env, HOME: home, DSH_HOME: join(home, ".dsh") } },
 	);
 	if (result.error) throw result.error;
 	if (result.status !== 0) {
