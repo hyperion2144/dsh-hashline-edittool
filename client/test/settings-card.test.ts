@@ -1,17 +1,60 @@
 /**
  * The settings card's registration-free seam: which view the manager page's
- * props select, and the summary one-liner.
+ * props select, the summary one-liner, and the controller face the card
+ * drives at bundle level (#171).
  *
  * The JSX wiring (summary → one line, page → the form) and the slot
- * registration (name `plugins.bundle.config`, key `dsh-hashline-edittool`)
- * are component/build concerns — the registration is pinned by
- * `scripts/verify-bundle.mjs` against the exact shipped artifact, the same
- * split the tool rows made: text-deciding logic here, visuals real-machine.
+ * registration (name `plugins.bundle.config`, key `dsh-hashline-edittool`,
+ * inject `["slots", "configForms"]`) are component/build concerns — the
+ * registration is pinned by `scripts/verify-bundle.mjs` against the exact
+ * shipped artifact, the same split the tool rows made: text-deciding logic
+ * here, visuals real-machine.
  *
  * @module dsh-hashline-edittool/client/test/settings-card
  */
-import { describe, expect, it } from "vitest";
-import { buildFieldOp, requestedView, settingsSummaryText } from "../src/client/settings-model.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+	buildFieldOp,
+	controllerSnapshot,
+	formFace,
+	NOT_READY_SNAPSHOT,
+	requestedView,
+	settingsSummaryText,
+} from "../src/client/settings-model.js";
+import type { ConfigForm, ConfigFormSnapshot } from "../src/client/types.js";
+
+function fakeForm(snapshot: ConfigFormSnapshot): ConfigForm & { listeners: Array<() => void>; mutateCalls: unknown[][] } {
+	const listeners: Array<() => void> = [];
+	const mutateCalls: unknown[][] = [];
+	return {
+		getSnapshot: () => snapshot,
+		subscribe: (listener) => {
+			listeners.push(listener);
+			return () => {
+				const at = listeners.indexOf(listener);
+				if (at >= 0) listeners.splice(at, 1);
+			};
+		},
+		set: async () => true,
+		unset: async () => true,
+		mutate: async (ops, revision) => {
+			mutateCalls.push([ops, revision]);
+			return true;
+		},
+		listeners,
+		mutateCalls,
+	};
+}
+
+const READY: ConfigFormSnapshot = {
+	status: "ready",
+	value: { separator: "|" },
+	base: {},
+	user: {},
+	revision: 7,
+	writable: true,
+	mode: "host",
+};
 
 describe("requestedView — the manager page's view prop", () => {
 	it("hands the page form to an absent prop (defensive default)", () => {
@@ -57,5 +100,47 @@ describe("buildFieldOp — the write path's set-vs-clear boundary (#158)", () =>
 			path: ["context_lines"],
 			value: 0,
 		});
+	});
+});
+
+describe("the controller face (#171) — the card's own settings source", () => {
+	it("reads through to the form's snapshot", () => {
+		const form = fakeForm(READY);
+		expect(formFace(form).getSnapshot()).toBe(READY);
+	});
+
+	it("forwards subscriptions and their disposers", () => {
+		const form = fakeForm(READY);
+		const face = formFace(form);
+		const listener = vi.fn();
+		const off = face.subscribe(listener);
+		expect(form.listeners).toHaveLength(1);
+		form.listeners[0]!();
+		expect(listener).toHaveBeenCalledTimes(1);
+		off();
+		expect(form.listeners).toHaveLength(0);
+	});
+
+	it("writes the built path-op through mutate, revision and all", async () => {
+		const form = fakeForm(READY);
+		const face = formFace(form);
+		await expect(face.mutate([buildFieldOp("separator", "|")], 7)).resolves.toBe(true);
+		expect(form.mutateCalls).toEqual([[
+			[{ op: "set", path: ["separator"], value: "|" }],
+			7,
+		]]);
+	});
+
+	it("renders the not-ready snapshot when the slot injected no controller", () => {
+		// The bundle page hands `{ view }` and no form; a deployment that never
+		// served the namespace must degrade to the gate, not crash.
+		expect(controllerSnapshot(undefined)).toBe(NOT_READY_SNAPSHOT);
+		expect(NOT_READY_SNAPSHOT.status).toBe("unavailable");
+		expect(NOT_READY_SNAPSHOT.writable).toBe(false);
+	});
+
+	it("renders the controller's own snapshot once it is injected", () => {
+		const face = formFace(fakeForm(READY));
+		expect(controllerSnapshot(face)).toBe(READY);
 	});
 });

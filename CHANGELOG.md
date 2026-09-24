@@ -43,6 +43,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
     - **新增验收测试**（`visible-rows-acceptance.test.ts` + heavy 侧的 `visible-rows-ast.test.ts`）：把评审实测表的每一行钉成断言——3000 行文件上 read 窗口只持久化 10 行、grep 只持久化命中行、edit/undo 只持久化窗口并永不等于整文件、ast_grep 持久化行数恰等于命中数。
 - **大纲门槛 100 → 20 行（#151/P7）**：`AST_SUMMARY_MIN_TOTAL_LINES` 降到 20。这道门槛原本的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已随重构删除，唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）；`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件。效果：31 行的双函数文件现在给出真实大纲（两处折叠区间、行仍可编辑），不到 20 行仍报 `no outline — too-few-lines`。
 - **重型测试文件不再与并行池互抢（#162）**：跑 2s–17s 的 5 个文件拆到独立项目、串行执行并各给 30s 预算；**全局 `testTimeout` 保持默认**（抬高全局会把真实挂死一起掩盖），断言一条未删。
+- **设置卡回到插件第一层（#171）**：设置卡曾注在行级 `plugins.row.config`（`<包名>#<行 id>`），要点开插件后**再点行上的「配置」**才能看到表单；而当初迁到行级的理由（“bundle 级不传 `form`”）其实不成立——真正的缺陷是卡片**独占依赖页面传的 `form`**。现在：
+  - 注册回到 `plugins.bundle.config`，key = 宿主插件 **entry id**（即包名 `dsh-hashline-edittool`）：打开插件即可见配置。`whileServed([entryId], …)` 把注册限定在 Host 真的服务该 namespace 时，未组合 provider 的部署不会留下死卡片。
+  - 卡片**自建 controller**：从 0.1.7 的 `configForms` 服务取该 entry 的 form（`configForms.get(entryId)`，与行页面 `form` 同源），经 slot 注册的 `inject` 作为 props 交付，并用 `useSyncExternalStore` 订阅（bundle 页没有 owner 帮我们重渲染）。不再有“设置尚未就绪”陷阱。
+  - `verify-bundle.mjs` 同步钉住新槽位/key 与 inject 面（`["slots", "configForms"]`）；新增 controller 面的单测（快照直通、订阅与解绑、mutate 带上 revision、无 controller 时退化为 not-ready 门）。
 
 ### Added
 
