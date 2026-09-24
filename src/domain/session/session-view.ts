@@ -69,7 +69,7 @@ export function execSessionKey(exec: ToolExecution): string {
 export { configDir, hashStorePath, resolveTarget };
 
 // --- hash-store re-export (persistence note) ---
-export { loadHashStore, shutdownHashStore, withStore } from "./hash-store.js";
+export { loadHashStore, shutdownHashStore, withStore, takeRebuildWarning } from "./hash-store.js";
 export type { HashStore } from "./hash-store.js";
 
 // --- served state (owned here) ---

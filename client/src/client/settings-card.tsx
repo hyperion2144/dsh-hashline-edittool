@@ -36,7 +36,17 @@ import { useCallback, useEffect, useMemo, useReducer, useState, useSyncExternalS
 import { Button, Pill, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ConfigFormSnapshot } from "./types.js";
-import { buildFieldOp, controllerSnapshot, requestedView, settingsSummaryText, type SettingsCardView, type SettingsControllerFace } from "./settings-model.js";
+import {
+	STORE_BUDGET_SPECS,
+	buildFieldOp,
+	controllerSnapshot,
+	requestedView,
+	settingsSummaryText,
+	validateStoreBudgetDraft,
+	type SettingsCardView,
+	type SettingsControllerFace,
+	type StoreBudgetSpec,
+} from "./settings-model.js";
 /** Props the slot hands the card: OUR controller plus the view it asks for. */
 export interface SettingsCardProps {
 	/**
@@ -315,6 +325,49 @@ function hasExplicitMaster(snapshot: ConfigFormSnapshot): boolean {
 	const ast = (user as { ast?: unknown }).ast;
 	return typeof ast === "object" && ast !== null && (ast as { enabled?: unknown }).enabled !== undefined;
 }
+/**
+ * The three bounded-store budgets (#179 / #180), each expressed as either
+ * an explicit override or `undefined` (unset = the host-side constant).
+ *
+ * `undefined` is what the schema uses to mean "fall back to default" — the
+ * card's inputs then show the default as a placeholder rather than as a real
+ * value, and the written config never carries a number the user did not pick.
+ */
+function readStore(snapshot: ConfigFormSnapshot): {
+	maxBytesMb: number | undefined;
+	maxPaths: number | undefined;
+	maxLines: number | undefined;
+} {
+	const value = snapshot.value ?? {};
+	const store = (value as { store?: unknown }).store;
+	if (typeof store !== "object" || store === null) {
+		return { maxBytesMb: undefined, maxPaths: undefined, maxLines: undefined };
+	}
+	const s = store as { max_bytes_mb?: unknown; max_paths?: unknown; max_lines?: unknown };
+	return {
+		maxBytesMb: typeof s.max_bytes_mb === "number" ? s.max_bytes_mb : undefined,
+		maxPaths: typeof s.max_paths === "number" ? s.max_paths : undefined,
+		maxLines: typeof s.max_lines === "number" ? s.max_lines : undefined,
+	};
+}
+
+/**
+ * Whether the user layer names ANY store-budget field. Presence, not value:
+ * the 恢复默认 button only earns its place when something has been touched,
+ * mirroring how the AST master switch handles its own reset.
+ */
+function hasAnyStoreField(snapshot: ConfigFormSnapshot): boolean {
+	const user = snapshot.user;
+	if (typeof user !== "object" || user === null) return false;
+	const store = (user as { store?: unknown }).store;
+	if (typeof store !== "object" || store === null) return false;
+	const s = store as { max_bytes_mb?: unknown; max_paths?: unknown; max_lines?: unknown };
+	return (
+		s.max_bytes_mb !== undefined ||
+		s.max_paths !== undefined ||
+		s.max_lines !== undefined
+	);
+}
 
 
 /** What the catalog fetch produced — including WHY, when it produced nothing. */
@@ -547,6 +600,8 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	const lsp = useLspStatus();
 	const namedServers = readLspServers(snapshot);
 	const autoDiag = readAutoDiagnostics(snapshot);
+	const store = readStore(snapshot);
+	const storeOverridden = hasAnyStoreField(snapshot);
 	const updates = useUpdates();
 	const [serverLang, setServerLang] = useState("");
 	const [serverCommand, setServerCommand] = useState("");
@@ -561,7 +616,17 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	/** Same draft-on-blur treatment for the numeric field. */
 	const [contextDraft, setContextDraft] = useState(String(core.contextLines));
 	/** Which of the card's two sections is showing. */
-	const [tab, setTab] = useState<"core" | "ast" | "lsp">("core");
+	const [tab, setTab] = useState<"core" | "ast" | "lsp" | "store">("core");
+	/** Same draft-on-blur treatment for the store-budget fields (#179). */
+// Per-input error state (#179 / #180 — first line of defence). The card
+	// shows one Chinese sentence below each input when the draft is out of
+	// range or non-numeric; `undefined` means "no error, write as normal".
+	const [bytesError, setBytesError] = useState<string | undefined>(undefined);
+	const [pathsError, setPathsError] = useState<string | undefined>(undefined);
+	const [linesError, setLinesError] = useState<string | undefined>(undefined);
+	const [bytesDraft, setBytesDraft] = useState(store.maxBytesMb === undefined ? "" : String(store.maxBytesMb));
+	const [pathsDraft, setPathsDraft] = useState(store.maxPaths === undefined ? "" : String(store.maxPaths));
+	const [linesDraft, setLinesDraft] = useState(store.maxLines === undefined ? "" : String(store.maxLines));
 	const [query, setQuery] = useState("");
 	const [busy, setBusy] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
@@ -643,7 +708,10 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	 * field, no value CLEARS it (the field re-inherits the composition
 	 * base) — the same "empty means revert" the card's drafts already use.
 	 */
-	const writeField = async (field: string, ...value: readonly unknown[]): Promise<void> => {
+	const writeField = async (
+		field: string | readonly string[],
+		...value: readonly unknown[]
+	): Promise<void> => {
 		if (controller === undefined) return;
 		// mutate resolves `false` on refusal (revision conflict, rejected
 		// validation) rather than throwing — surface it so the control shows
@@ -752,6 +820,15 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					onClick={() => setTab("lsp")}
 				>
 					语言服务器
+				</button>
+<button
+					type="button"
+					role="tab"
+					aria-selected={tab === "store"}
+					className={`dshl-mgr-tab${tab === "store" ? " dshl-mgr-tab--active" : ""}`}
+					onClick={() => setTab("store")}
+				>
+					存储
 				</button>
 			</div>
 			{/*
@@ -1119,6 +1196,127 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					指定
 				</Button>
 			</div>
+				</>
+			) : null}
+{tab === "store" ? (
+				<>
+					<h4 className="dshl-mgr-section">锚点存储预算</h4>
+					<p className="dshl-mgr-hint">
+						三个上限分别挡不同的失控形状：字节挡大文件，路径数挡整树扫描，行数挡"几个大文件被多次读取"。
+						未设置时使用代码内的常量默认；改小会在下一次扫描时真的淘汰（模型手里的锚点可能失效）。
+					</p>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">整库字节预算</span>
+						<input
+							className="dshl-mgr-search"
+							style={{ maxWidth: "10ch" }}
+							type="number"
+							min={8}
+							max={2048}
+							step={1}
+							placeholder="64（默认）"
+							value={bytesDraft}
+							disabled={!writable}
+							onChange={(event) => setBytesDraft(event.target.value)}
+onBlur={() => {
+								const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[0], bytesDraft);
+								if (result.kind === "error") {
+									setBytesError(result.message);
+									return;
+								}
+								setBytesError(undefined);
+								void write("store.bytes", () =>
+									result.kind === "valid"
+										? writeField(STORE_BUDGET_SPECS[0].path, result.value)
+										: writeField(STORE_BUDGET_SPECS[0].path),
+								);
+							}}
+						/>{bytesError === undefined ? null : <span className="dshl-mgr-error">{bytesError}</span>}
+						<span className="dshl-mgr-hint">MiB，8–2048；默认 64。</span>
+					</div>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">路径数上限</span>
+						<input
+							className="dshl-mgr-search"
+							style={{ maxWidth: "10ch" }}
+							type="number"
+							min={100}
+							max={100000}
+							step={1}
+							placeholder="5000（默认）"
+							value={pathsDraft}
+							disabled={!writable}
+							onChange={(event) => setPathsDraft(event.target.value)}
+onBlur={() => {
+								const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[1], pathsDraft);
+								if (result.kind === "error") {
+									setPathsError(result.message);
+									return;
+								}
+								setPathsError(undefined);
+								void write("store.paths", () =>
+									result.kind === "valid"
+										? writeField(STORE_BUDGET_SPECS[1].path, result.value)
+										: writeField(STORE_BUDGET_SPECS[1].path),
+								);
+							}}
+						/>{pathsError === undefined ? null : <span className="dshl-mgr-error">{pathsError}</span>}
+						<span className="dshl-mgr-hint">个，100–100000；默认 5000。</span>
+					</div>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">anchor_lines 行数上限</span>
+						<input
+							className="dshl-mgr-search"
+							style={{ maxWidth: "12ch" }}
+							type="number"
+							min={10000}
+							max={10000000}
+							step={1}
+							placeholder="300000（默认）"
+							value={linesDraft}
+							disabled={!writable}
+							onChange={(event) => setLinesDraft(event.target.value)}
+onBlur={() => {
+								const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[2], linesDraft);
+								if (result.kind === "error") {
+									setLinesError(result.message);
+									return;
+								}
+								setLinesError(undefined);
+								void write("store.lines", () =>
+									result.kind === "valid"
+										? writeField(STORE_BUDGET_SPECS[2].path, result.value)
+										: writeField(STORE_BUDGET_SPECS[2].path),
+								);
+							}}
+						/>{linesError === undefined ? null : <span className="dshl-mgr-error">{linesError}</span>}
+						<span className="dshl-mgr-hint">行，10000–10000000；默认 300000。</span>
+					</div>
+					{storeOverridden ? (
+						<div className="dshl-mgr-master">
+							<span className="dshl-mgr-label">恢复默认</span>
+							<span className="dshl-mgr-grow" />
+							<Button
+								size="sm"
+								disabled={!writable}
+								onClick={() =>
+									void write("store.reset", async () => {
+										if (controller === undefined) return;
+										const accepted = await controller.mutate([
+											buildFieldOp(["store", "max_bytes_mb"]),
+											buildFieldOp(["store", "max_paths"]),
+											buildFieldOp(["store", "max_lines"]),
+										]);
+										if (accepted !== true) {
+											throw new Error("写入被拒绝：配置已在他处修改（revision 冲突）或校验未通过，请重试。");
+										}
+									})
+								}
+							>
+								恢复默认
+							</Button>
+						</div>
+					) : null}
 				</>
 			) : null}
 		</>

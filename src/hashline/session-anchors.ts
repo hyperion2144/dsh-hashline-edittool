@@ -22,7 +22,7 @@
 import { splitLines } from "../infra/utils.js";
 import { allocateAnchor, contentKey } from "./alloc.js";
 import { contentChecksum } from "./hash-assign.js";
-
+import { alignPreservedBounded } from "./align-bounded.js";
 // ---- types -----------------------------------------------------------------
 
 export interface EditHunk {
@@ -422,39 +422,21 @@ export function updateAnchorsAfterEdit(args: {
 }
 
 /**
- * Pair old lines to new lines by content (LCS, latest-first) — the EXTERNAL
- * change path's alignment (no hunk structure exists there). A pure insert
- * or delete has nothing to pair on one side; the walk is skipped.
+ * Signature-compatible wrapper around the bounded aligner (ADR-0011).
+ *
+ * The original call sites — `ensureState`'s whole-file realign and the hunk
+ * survivor pairing in `updateAnchorsAfterEdit` — iterate the returned Map
+ * and don't care about the degradation channel. They keep the same
+ * signature; the bounded aligner lives in `./align-bounded.ts` and is the
+ * exported test seam (see its module header for the memory bound formula).
+ *
+ * Degradation is logged once per process via the bounded module's own
+ * one-shot `[alignPreserved]` log line — that is sufficient today; if a
+ * caller later needs the boolean, expose `alignPreservedBounded` directly.
  */
 function alignPreserved(
 	oldSeg: readonly unknown[],
 	newSeg: readonly unknown[],
 ): Map<number, number> {
-	const m = oldSeg.length;
-	const n = newSeg.length;
-	if (m === 0 || n === 0) return new Map();
-	const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
-	for (let i = 1; i <= m; i++) {
-		for (let j = 1; j <= n; j++) {
-			dp[i]![j] =
-				oldSeg[i - 1] === newSeg[j - 1]
-					? dp[i - 1]![j - 1]! + 1
-					: Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
-		}
-	}
-	const pairs = new Map<number, number>();
-	let i = m;
-	let j = n;
-	while (i > 0 && j > 0) {
-		if (oldSeg[i - 1] === newSeg[j - 1]) {
-			pairs.set(j - 1, i - 1);
-			i -= 1;
-			j -= 1;
-		} else if (dp[i - 1]![j]! >= dp[i]![j - 1]!) {
-			i -= 1;
-		} else {
-			j -= 1;
-		}
-	}
-	return pairs;
+	return alignPreservedBounded(oldSeg, newSeg).pairs;
 }
