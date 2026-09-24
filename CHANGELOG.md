@@ -47,6 +47,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
   - 注册回到 `plugins.bundle.config`，key = 宿主插件 **entry id**（即包名 `dsh-hashline-edittool`）：打开插件即可见配置。`whileServed([entryId], …)` 把注册限定在 Host 真的服务该 namespace 时，未组合 provider 的部署不会留下死卡片。
   - 卡片**自建 controller**：从 0.1.7 的 `configForms` 服务取该 entry 的 form（`configForms.get(entryId)`，与行页面 `form` 同源），经 slot 注册的 `inject` 作为 props 交付，并用 `useSyncExternalStore` 订阅（bundle 页没有 owner 帮我们重渲染）。不再有“设置尚未就绪”陷阱。
   - `verify-bundle.mjs` 同步钉住新槽位/key 与 inject 面（`["slots", "configForms"]`）；新增 controller 面的单测（快照直通、订阅与解绑、mutate 带上 revision、无 controller 时退化为 not-ready 门）。
+- **稀疏锚点实机复测的三个缺口（#171 探针）**：重启 DSH 后按“锚点个数”逐工具复测，修掉三处：
+  - **read 持久化 0 行**：锚点端口只向**已打开的库**写入（`currentStore()` 从不自己开库），而 `readAndServe` 的顺序是先渲染（分配锚点）后 `recordServed`（那时才开库）——于是 read 渲染出的锚点从未落盘，重启即丢。现在 `readView` 在分配前先开工作区库；同类“首次调用即分配”的缺口一并补上：grep / edit / undo / write 在各自 body 开头 `openWorkspaceStore(cwd)`（新原语），`allocateInWorkspace` 自身也先开库，覆盖 ast_grep / lsp。
+  - **ast_grep 可见但不可编辑**：match 分支只分配了锚点、**漏调 `serveRowsInWorkspace`**，于是返回的行带锚点却不在 served 集，edit 一律 `[E_RANGE_UNSERVED]`。现在 match 分支像 outline 分支与 read 一样提交 served 行。
+  - **edit / undo 的 served 比 anchor_lines 多 1**：served 是只增集合，而编辑会**释放**被替换行的旧锚点——死锚点留在镜像里造成长期 +1。新增 `reconcileServed(sessionKey, path, content)`：每次编辑/撤销后按 live 集回收镜像，使 served == anchor_lines（实测 read/edit/undo 三步均为 10/10）。
+  - 验收测试随之收紧：不再手动开库（由工具自己开，测试才真正钉住修复），并新增 parity 用例（read → edit → undo 全程 served == anchor_lines）与 ast_grep served 用例（其锚点能直接起始一次编辑）。
 
 ### Added
 

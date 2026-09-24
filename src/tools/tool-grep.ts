@@ -28,7 +28,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey, recordServed } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, recordServed, openWorkspaceStore } from "../domain/session/session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
 import { GREP_MAX_TOTAL_BYTES, GREP_MODEL_TEXT_MAX_BYTES } from "../infra/constants.js";
 import { capModelText, makeReadBudget, type BudgetUsage, type SkipReason } from "../infra/read-budget.js";
@@ -369,6 +369,11 @@ export function buildGrepTool(io: FileIO) {
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
 				const cwd = execCwd(exec);
+				// The scan allocates anchors for the rows it serves, and the anchor
+				// port writes only to an OPEN store — open this workspace's first, or
+				// a grep that is the session's first tool call renders anchors that
+				// were never persisted (#171 probe).
+				await openWorkspaceStore(cwd);
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 

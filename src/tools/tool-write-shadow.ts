@@ -28,7 +28,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
@@ -180,6 +180,9 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
 				const cwd = execCwd(exec);
+				// The write renders its diff and serves the written rows; the anchor
+				// port writes only to an OPEN store (#171 probe).
+				await openWorkspaceStore(cwd);
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 				const rawPath = (args as { file_path?: unknown }).file_path;

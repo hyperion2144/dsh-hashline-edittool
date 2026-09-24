@@ -34,7 +34,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../../infra/fs-bridge.js";
 import { withWorkspace, workspaceCwd } from "../../infra/workspace.js";
 import { hashRe, canon, contentChecksum } from "../../hashline/hash-assign.js";
-import { allocateForLines } from "../../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../../hashline/session-anchors.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 // The row shape and the row renderer both come from the resolve engine.
@@ -204,10 +204,17 @@ export async function serveRowsInWorkspace(opts: {
 
 /**
  * Allocate anchors for the rows a tool is about to serve, INSIDE the workspace
- * scope. The anchor store is per-project, and a tool without its own
- * `withWorkspace` body (`ast_grep`, `lsp`) would otherwise write the SHARED
- * `$DSH_HOME` store — where nothing reads it (the same trap
- * {@link serveRowsInWorkspace} exists for on the served side).
+ * scope and with the workspace store OPEN.
+ *
+ * Two traps this closes, both found by a live probe (#171):
+ *  - the anchor store is per-project, and a tool without its own
+ *    `withWorkspace` body (`ast_grep`, `lsp`) writes the SHARED `$DSH_HOME`
+ *    store — where nothing reads it (the same trap
+ *    {@link serveRowsInWorkspace} closes on the served side);
+ *  - the anchor port writes ONLY to an already-open store (`currentStore()`
+ *    never opens one), so an allocation that runs before anything opened this
+ *    workspace's store is dropped — the rows render with anchors that were
+ *    never persisted, and a restart loses them.
  *
  * @param cwd - the workspace root for this execution.
  * @param absolutePath - the file the rows belong to.
@@ -221,7 +228,64 @@ export async function allocateInWorkspace(
   content: string,
   lines: number[],
 ): Promise<string[]> {
-  return withWorkspace(cwd, async () => allocateForLines(absolutePath, content, lines));
+  return withWorkspace(cwd, async () => {
+    await loadHashStore(cwd);
+    return allocateForLines(absolutePath, content, lines);
+  });
+}
+
+/**
+ * Open this workspace's store before a tool serves or allocates rows.
+ *
+ * The anchor port and the served mirror both write ONLY to an already-open
+ * store (`currentStore()` never opens one), so a tool whose FIRST action
+ * allocates — a read, grep, edit or undo before anything else in the session
+ * touched this workspace — must open it first, or the rows it renders carry
+ * anchors that were never persisted (#171 probe: `read` persisted 0 rows).
+ *
+ * Scope-aware, so the opened store is the one the workspace's writes resolve
+ * to; idempotent, so calling it from several seams costs nothing.
+ *
+ * @param cwd - the workspace root for this execution.
+ */
+export async function openWorkspaceStore(cwd: string): Promise<void> {
+  await withWorkspace(cwd, async () => {
+    await loadHashStore(cwd);
+  });
+}
+
+/**
+ * Drop served anchors that are no longer LIVE for this path.
+ *
+ * The served mirror is a growing SET of anchors the model has seen, but an
+ * edit RELEASES the anchors of the lines it replaced — and a released anchor
+ * lingering in the mirror is what made the served set one entry larger than
+ * `anchor_lines` after every edit and undo (#171 probe). A dead anchor is
+ * unusable anyway (an edit with it fails as stale), so the mirror is
+ * reconciled to the live set: served == persisted == visible.
+ *
+ * @param sessionKey - the session whose mirror to prune.
+ * @param path - the absolute path the anchors belong to.
+ * @param content - the path's CURRENT text (the live state's source).
+ */
+export async function reconcileServed(
+  sessionKey: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  const live = new Set(anchorsFor(path, content).filter((anchor) => anchor !== ""));
+  const store = await loadHashStore();
+  withStore(() => {
+    const current = store.getServed(sessionKey, path);
+    let removed = false;
+    for (const anchor of [...current]) {
+      if (!live.has(anchor)) {
+        current.delete(anchor);
+        removed = true;
+      }
+    }
+    if (removed) store.upsertServed(sessionKey, path, JSON.stringify([...current]));
+  });
 }
 
 export async function recordServedTruncated(sessionKey: string, path: string, rows: ServedEntry[], _lineCount: number, _clearFrom = 0): Promise<void> {

@@ -8,7 +8,6 @@ import { describe, it, expect, beforeAll, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { loadHashStore } from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
 import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/fixtures.js";
 
@@ -31,6 +30,16 @@ function countRows(cwd: string, path: string): number {
 	}
 }
 
+/** The session's served mirror size — anchors the model has been shown. */
+function countServed(cwd: string, path: string): number {
+	const db = new DatabaseSync(hashStorePath(cwd), { defensive: false } as never);
+	try {
+		const rows = db.prepare("SELECT hashes FROM served WHERE path = ?").all(path) as Array<{ hashes: string }>;
+		return rows.reduce((n, row) => n + (JSON.parse(row.hashes) as unknown[]).length, 0);
+	} finally {
+		db.close();
+	}
+}
 /** 3000 lines: repeated `}` runs + blanks + unique markers — the churn shape. */
 function bigContent(): string {
 	const lines: string[] = [];
@@ -47,10 +56,11 @@ async function makeCase(name: string): Promise<{ cwd: string; p: string; harness
 	await mkdir(cwd, { recursive: true });
 	const p = join(cwd, "big.ts");
 	await writeFile(p, bigContent());
-	// The real runtime opens the workspace's store at session start; the anchor
-	// adapter only ever writes to an ALREADY-OPEN store. Open it for the case
-	// cwd so the measurement mirrors production.
-	await loadHashStore(cwd);
+	// NO manual store open here: the tools must open the workspace store
+	// THEMSELVES before they allocate anchors — a read/grep/edit that is the
+	// session's first tool call used to render anchors that never persisted
+	// (the #171 live probe measured `read` at 0 rows). This test therefore
+	// proves the fix, not the harness.
 	return { cwd, p, harness: setupIntegrationTest(cwd) };
 }
 
@@ -122,5 +132,25 @@ describe("per-tool persisted rows == model-visible rows (PR #169 review table)",
 		expect(rows.length).toBeGreaterThan(0);
 		expect(countRows(cwd, p)).toBeGreaterThanOrEqual(rows.length);
 		expect(countRows(cwd, p)).toBeLessThan(3000); // never the whole file
+	});
+
+	it("served mirror == anchor_lines through read → edit → undo (#171 parity)", async () => {
+		const { cwd, p, harness } = await makeCase("parity-case");
+		const readText = getText(await harness.readTool.execute("read", { path: "big.ts", limit: 10 }));
+		// The read's rows are persisted AND served — the store is opened by the
+		// tool itself (a first-action read used to persist 0 anchors).
+		expect(countRows(cwd, p)).toBe(10);
+		expect(countServed(cwd, p)).toBe(countRows(cwd, p));
+		const anchor7 = /^\s*([A-Za-z0-9]{2,8}):7[:|]/m.exec(readText)?.[1];
+		expect(anchor7).toBeDefined();
+		await harness.editTool.execute("edit", {
+			path: "big.ts",
+			edits: [{ op: "replace", anchor_start: anchor7, anchor_end: anchor7, lines: ["const mark7 = 7; // edited"] }],
+		});
+		// The edit RELEASES the replaced line's anchor; the mirror is reconciled
+		// to the live set, so the two stay equal instead of served ⊃ live.
+		expect(countServed(cwd, p)).toBe(countRows(cwd, p));
+		await harness.getTool("undo_last_edit").execute("u", { path: "big.ts" });
+		expect(countServed(cwd, p)).toBe(countRows(cwd, p));
 	});
 });

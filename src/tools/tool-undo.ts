@@ -21,7 +21,7 @@ import { contentChecksum, contextLinesCfg } from "../hashline/hash-assign.js";
 import { lineHashes } from "../hashline/hash.js";
 import { changedRange } from "../hashline/anchor-pipeline.js";
 import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
-import { recordServedTruncated } from "../domain/session/session-view.js";
+import { recordServedTruncated, reconcileServed } from "../domain/session/session-view.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
 import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import {
@@ -31,7 +31,7 @@ import {
 	type FileDiff,
 } from "../render/edit-card.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
@@ -139,6 +139,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
 			const cwd = execCwd(exec);
+			// The revert allocates anchors for the restored content's diff window,
+			// and the anchor port writes only to an OPEN store (#171 probe).
+			await openWorkspaceStore(cwd);
 			const sessionKey = execSessionKey(exec);
 			const signal = exec.signal;
 
@@ -330,6 +333,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 						splitLines(undo.content).length,
 						restoredRange?.firstChangedLine ?? 0,
 					);
+				// The revert released whatever the undone edit had made live; drop
+				// those from the mirror so served == anchor_lines (#171).
+				await reconcileServed(sessionKey, absolutePath, undo.content);
 				} catch (error) {
 					// issue #136: the revert itself succeeded; a lost served mirror must
 					// still reach the model or the next edit rejects with "never served".

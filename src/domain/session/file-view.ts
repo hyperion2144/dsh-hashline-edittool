@@ -31,6 +31,7 @@ import { resolveTarget, toCwd } from "../../infra/paths.js";
 import type { FileIO } from "../../infra/fs-bridge.js";
 import type { ServedRow } from "../../hashline/anchor-pipeline.js";
 import type { HashStore } from "./hash-store.js";
+import { loadHashStore } from "./hash-store.js";
 
 export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024;
@@ -689,6 +690,11 @@ export async function readView(
 ): Promise<FileView> {
   const { signal } = opts;
   const absolutePath = await io.resolve(path, cwd, signal);
+  // LAZY (#169): the renderer below allocates anchors for the rows it serves,
+  // and the anchor port writes ONLY to an already-open store — so open this
+  // workspace's store first. Without this a read that is the session's first
+  // tool call renders anchors that were never persisted (#171 probe).
+  await loadHashStore(cwd);
   const rawText = await io.readText(absolutePath, signal);
   const { normalized, fileHashes, hadUtf8DecodeErrors, bom, originalEnding } =
     await normFromText({

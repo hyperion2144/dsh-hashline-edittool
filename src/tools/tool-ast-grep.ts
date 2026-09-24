@@ -579,6 +579,18 @@ export function buildAstGrepTool(io: FileIO) {
 				: [`${args.path} — ${counted} for \`${args.pat}\``, ...rows.flatMap((row) => [...row.rows, ...row.captures.map((c) => `  ${c}`), ""])]
 						.join("\n")
 						.trimEnd();
+			// SERVE what this call found, exactly as the outline branch and `read`
+			// do: an anchor the model can see but the served mirror never heard of
+			// is an anchor `edit` rejects with [E_RANGE_UNSERVED] (#171 probe).
+			await serveRowsInWorkspace({
+				sessionKey: execSessionKey(exec),
+				cwd,
+				absolutePath,
+				rows: cardRows.map((row) => ({ position: row.number - 1, anchor: row.hash })),
+				lineCount: lines.length,
+				exec,
+				io,
+			});
 			return {
 				path: args.path,
 				pat: args.pat,

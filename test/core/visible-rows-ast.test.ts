@@ -9,13 +9,14 @@
  * HEAVY project: the parse worker needs the longer startup budget.
  */
 import { describe, it, expect, beforeAll, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getWritableTempRoot, makeExec } from "../support/fixtures.js";
 import { loadHashStore } from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
 import { buildAstGrepTool } from "../../src/tools/tool-ast-grep.js";
+import { buildAstEditTool } from "../../src/tools/tool-ast-edit.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { applyEffective } from "../../src/config.js";
 import { setAstClient, type WorkerLike } from "../../src/ast/client.js";
@@ -88,5 +89,38 @@ describe("ast_grep / lsp persisted rows == model-visible rows (#169)", () => {
 		const persisted = countRows(cwd);
 		expect(persisted).toBe(servedRows); // persisted == served == visible, exactly
 		expect(persisted).toBeLessThan(500); // and the 500-line file was NOT allocated whole
+	});
+
+	it("ast_grep's anchors are SERVED too — they start an edit, not E_RANGE_UNSERVED", async () => {
+		const cwd = join(tmpHome, "ast-served-case");
+		await mkdir(cwd, { recursive: true });
+		const file = join(cwd, "many.ts");
+		await writeFile(file, bigSources());
+		await loadHashStore(cwd);
+		const grep = buildAstGrepTool(localIO());
+		const found = (await grep.execute(
+			{ path: file, pat: "const $NAME = f($$$ARGS);" },
+			makeExec(cwd, "s")({}),
+		)) as { modelText?: string };
+		// The FIRST matched row's anchor, taken from the model text the way the
+		// model would read it.
+		const anchor = /^\s*([A-Za-z0-9]{2,8}):(\d+)[:|]/m.exec(found.modelText ?? "");
+		expect(anchor).not.toBeNull();
+		const [, anchorText, lineText] = anchor!;
+		const line = Number(lineText);
+		// Persisting an anchor is only half the contract (#171 probe: ast_grep
+		// persisted but every edit came back E_RANGE_UNSERVED) — the shown rows
+		// must also be in the served mirror, or they are anchors nobody can use.
+		const { FsSandboxController } = await import("../../src/infra/sandbox.js");
+		const sandbox = new FsSandboxController({ fs: { sandboxMode: undefined }, get: () => undefined } as never);
+		const edit = buildAstEditTool(localIO(), sandbox);
+		const applied = (await edit.execute(
+			{ path: file, pat: `const a${line - 1} = f($$$ARGS);`, out: `const a${line - 1} = g($$$ARGS);` },
+			makeExec(cwd, "s")({}),
+		)) as { ok?: boolean; message?: string };
+		expect(applied.message ?? "").not.toContain("E_RANGE_UNSERVED");
+		expect(applied.ok).toBe(true);
+		expect(await readFile(file, "utf8")).toContain("= g(");
+		expect(anchorText.length).toBeGreaterThan(0);
 	});
 });

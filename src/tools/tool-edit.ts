@@ -56,7 +56,7 @@ import {
 	trackNoopPayload,
 } from "../domain/edit/noop-guard.js";
 import { commit, resolveMissingPath, snapshotIdFor } from "../domain/edit/mutation.js";
-import { recordServedAfterEdit } from "../domain/session/session-view.js";
+import { recordServedAfterEdit, reconcileServed } from "../domain/session/session-view.js";
 import { editDescription } from "../domain/edit/prompts.js";
 import type { JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
@@ -66,7 +66,7 @@ import {
 	type FileDiff,
 } from "../render/edit-card.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { genDiff } from "../render/edit-diff.js";
@@ -417,6 +417,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
 				const cwd = execCwd(exec);
+				// The engine allocates anchors for the edit's diff window (and the
+				// undo snapshot carries them); the anchor port writes only to an OPEN
+				// store, and an edit can be the session's first tool call (#171 probe).
+				await openWorkspaceStore(cwd);
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 
@@ -752,6 +756,9 @@ async function applyFileResultTo(
 				ctx.absolutePath,
 				file.servedRows,
 			);
+			// The edit RELEASED the anchors of the lines it replaced; drop them from
+			// the served mirror so served == anchor_lines, not served ⊃ live (#171).
+			await reconcileServed(ctx.sessionKey, ctx.absolutePath, file.result);
 		} catch (error) {
 			// issue #136: the write itself succeeded; a lost served mirror must
 			// still reach the model, or the next edit rejects with "never served"
