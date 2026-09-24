@@ -4,6 +4,60 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`op:"ins"` 锚点漂移（#151/P1）**：`ins` 曾展开为「把锚点行替换为 `[锚点行, ...新行]`」的单行 replace，而 hunk 对齐的 LCS 走「末尾匹配优先」——对 replace 正确（它保留的是收尾行），对 ins 错误。当插入行与锚点行内容相同（在下一条 `}` 下面插入一条 `}`，最常见的形状），旧锚点被配给了**新插入的那行**，锚点行反而重新分配：模型缓存 `MC` 后再编辑，静默落到 div 的闭合括号上，无报错也无警告。现在 `ins` 的 hunk 是空 old 区间（锚点行在 hunk 之外，verbatim 保留），`del` 本就是空 new 区间，`alignPreserved` 任一侧为空即返回空配对——ins/del 不再走 LCS，只有 `replace`/`sed` 会对齐。单条路径、批量路径与 `mutation.ts` 遗留的 `execPipeline` 三处 hunk 计算同步修正，并在三处都补了 del 的纯删除语义。新增 `test/core/issue-151-ins-anchor.test.ts`（11 例：重复内容、块内/块首重复、已编辑文件、批内 ins、文件末尾 ins、del 释放与边界）。
+- **单行编辑的重复告警与重复计数（#151/P2、#151/P3）**：单行 replace 的两个 bound 是同一个引用（`anchor_end` 折叠自 `anchor_start`），却被当成两次独立声明——行提示不符时打印两遍 `[E_LINE_HINT]`，锚点失效时报 `2 stale anchors … "UU", "UU"`（实际只有 1 个）。`pinBounds` 对同一 bound 只 pin 一次；`fmtMismatchWithServes` 的 `notFound` 按锚点去重（重复项中带行提示的那条胜出——行提示决定 echo 居中在哪一行）。
+- **drift 提示把历史死锚点报成「漂移」（#151/P4）**：`scanDrift` 现在只把「本次编辑前仍有效」的锚点交给 `computeDrift`。会话的 served 集合是累积的，里面还留着更早编辑（或外部改写）释放掉的锚点；之前每次后续编辑都会报 `N anchor(s) outside the edited range drifted`，而实际上没有任何锚点移动——模型白读一遍。措辞同步改成 `are no longer valid`，不再说 drifted；真正被本次编辑在区间外释放掉的锚点仍会报（新增 `scanDrift` 两例钉住两侧）。
+- **`undo_last_edit` 只能回退一层（#151/P5）**：`undo` 行族原本 `path` 主键、一行一条，而撤销本身又清空记录，因此最多回退一步。现改为按 path 的有界栈（`UNDO_STACK_DEPTH = 10`），`depth` 是追加计数（最高 depth = 最新，避免重编号撞主键）；成功回退消费栈顶而非清空历史，响应里给出剩余可回退步数。旧库**原地升级**：旧行成为栈顶，刻意**不** bump `HASH_STORE_VERSION`——那会连 `anchor_state` 一起清掉，让会话已服务过的锚点全部失效。新增 `test/core/issue-151-undo-stack.test.ts`（迁移、anchor_state 不受影响、损坏行清栈、连续两次撤销）。
+- **`ast_grep` 把覆盖行数报成匹配数（#151/P6）**：`22 match(es)` 里的 22 是被匹配覆盖的**行数**，结构匹配只有 2 个。文本通道现在报 `2 match(es) covering 12 line(s)`（每个匹配恰好一行时保留短形式），JSON 通道同时给出 `matchCount` 与 `total`（`total` 仍是卡片用的行数，卡片「N of M matches」的算法不变）。
+- **`lsp request` 丢弃 `textDocument`（#151/P8）**：带 `payload` 时默认参数被整体替换，`{position}` 这类 payload 到服务器手里就没有 `textDocument`（`Cannot read properties of undefined (reading 'uri')`）。现在按需合并：payload 没有 `textDocument` 时补齐，有但缺 `uri` 时补 `uri`，显式给出的文档/uri 原样保留，非对象 payload 原样透传。
+- **`grep` 扫大内容造成宿主进程 OOM（#167）**：grep 过去把整棵树的文件**逐个读成完整字符串**再处理，而这条路径上一个尺寸闸门都没有——`read` 有 `MAX_BYTES`（100 MiB）兜底，grep 从未接上（`tool-grep.ts` 不引用该常量，`gatherFiles` 也无文件数/总字节预算）；命中上限只置 `truncated` 标志位、不 `break`，遍历照走到底。于是「读入体积」随命中文件数线性增长、无上限，宿主堆被吃光后进程被 OOM 杀掉、由桌面端拉起——表现为「grep 大内容时概率性崩溃重启」。现在单次 grep 跑在显式内存预算下（新增 `src/infra/read-budget.ts`，纯函数、可单测）：**读前先 `stat`**，单个文件超过 `GREP_MAX_FILE_BYTES`（4 MiB）一律**不读**；全次扫描总量上限 `GREP_MAX_TOTAL_BYTES`（64 MiB），触顶即**停扫**而非继续空转；stat 与实际读入不一致时按真实字节数重新入账，否则文件在 stat 与 read 之间变化就会让上限泄漏；model 侧文本另有 `GREP_MODEL_TEXT_MAX_BYTES`（1 MiB）上限，与卡片 meta 的 64 KiB 预算对齐（此前只有卡片侧有保护）。被跳过的文件绝不静默——`[grep budget]` 提示同时进 model 文本与 `truncated`，否则「被截断的部分结果」会被读成完整答案。新增 `test/core/grep-read-budget.test.ts`（13 例：两侧边界、release 钳位、默认值真为上限、surrogate 不截半）与 `test/core/issue-167-grep-budget.test.ts`（3 例：超限文件跳过但同目录正常文件照常命中、无可用命中时不得报成「无匹配」、普通树不出提示）。
+- **Windows（D: 盘）上根套件的 18 项失败（#162）**：逐条定位后绝大多数是**测试侧与平台假设**，但新增的 Windows CI job 上线后又逼出**一个真产品 bug**（见下）：
+  - **产品**：`matchInclude` 只按 `/` 切 basename，而 Windows 上 `relative()` 给的是反斜杠；`minimatch` 又是 POSIX 语义（`\` 在那里是转义），于是 `include: "*.ts"` 在 Windows 上**静默匹配不到根目录以下的任何文件**。现在先把相对路径归一成 `/` 再切/再匹配（`src/infra/file-scan.ts`），并新增单测钉住 Windows 形状的相对路径。
+  - 模式匹配测试用 `URL.pathname` 解析 wasm 核心路径：Windows 下盘符前会留前导 `/`（`/D:/…`），wasm 文件层再按当前盘解析就成了 `D:\D:\…`，核心加载失败、该文件 7 例整体 skip。改用产品自身 worker 与同族测试都在用的 `fileURLToPath`。
+  - 6 个测试文件把 `DSH_HOME` stub 成空串、指望回落 `$HOME/.dsh`；该回落走 `os.homedir()`，Windows 下读 USERPROFILE——于是直接按路径开库的用例报 `unable to open database file`，同文件其余用例则读写开发者**真实** `~/.dsh`（正是全局 setup 要堵的漏）。现一律显式指向 `<temp home>/.dsh`。
+  - `~` 展开断言改用与实现同源的 home（环境变量优先），并补一条「无环境 home 时回落 `os.homedir()`」；`DSH_HOME` 用例改喂平台合法绝对根（`/custom/dsh` 在 Windows 是当前盘相对）；两处 grep 输出断言不再写死 `/`。
+  - 两个 Windows argv 用例显式钉住 `ComSpec`（原先读机器上的 `%ComSpec%`，Windows 是绝对路径），并补一条「环境指定的解释器优先」用例。
+  - 顺手改正一条失真的测试名：它声称 `grep` JSON 源码 bug（`matches dict values come back undefined`），而该断言本机通过，Windows 上真正倒在上一行的分隔符断言。
+  - **Windows CI 上线后追加的 7 项**（GitHub runner 的环境差异：`D:\a\…` cwd + `C:\Users\runneradmin` home + 8.3 短名）：`tool-lsp`/`issue-147` 的假服务器用 `file://${FILE}` 拼 uri，而产品用 `pathToFileURL`——Windows 下 `file:///tmp/…` 与 `file:///D:/tmp/…` 不同，3 个诊断用例静默「没有诊断」；改用同一个 `pathToFileURL`。`fs-write` 的 `resolveTarget` 两例把 `tmpdir()`（runner 上是 `RUNNER~1` 短名）与 `realpath`（长名）对比，改用 canonical 的 fixture 根。
+
+
+### Changed
+
+- **锚点稀疏化重设计（PR #169 评审定案，ADR-0009）**：锚点只分配给**模型看过的行**，唯一性由**持久化的已分配集合**保证，不再依赖整文件预分配。核心变更：
+  - **稀疏状态**：每个路径的锚点状态是 `行 → (anchor, contentKey)` 的稀疏映射，持久化在 sqlite 新行族 `anchor_meta`（path/checksum/line_count）+ `anchor_lines`（path/line/anchor/content_key，`(path, anchor)` 索引保证唯一性检查）；旧稠密 `anchor_state` 行族在开库时 **1:1 展开**迁移后删除，已分配锚点一个不丢、不重铸。
+  - **惰性分配**：首次访问不再 `assignAnchors` 整文件分配——未服务行没有锚点（视图里是空串占位、不持久化）。每个工具在 serve 点为**恰好要渲染的行**分配：read 分配窗口行、grep 分配命中+上下文行、lsp 分配符号/诊断行、ast_grep/ast_edit 分配匹配行、edit 为 hunk 新行分配。大文件的锚点内存从 O(文件行数) 降到 O(返回行数)。
+  - **hunk 感知的编辑后变换**（#151 语义在稀疏模型下的等价实现）：hunk 外的服务行按累积位移平移（锚点不变）；hunk 内内容存活的行经 `alignPreserved` 配对保锚（#122 的“不在 diff 里”不变量）；被替换的释放；hunk 新行由响应 serve 点新鲜分配。`runFileEdits` 对每次编辑和整批各调一次 `updateAnchorsAfterEdit`——稠密模型是纯重建故双调无害，稀疏模型有状态，故检测到状态已推进到 newContent 时早退，避免双重位移。
+  - **外部变化走有界 LCS 重排**：无 hunk 结构时（磁盘被外部改写），已服务行按 contentKey 配对到新位置，内容消失的释放；只对已服务行做，未服务行无成本。
+  - **BOM/CRLF 规范化保留**：稀疏模型的全部公共入口（`anchorsFor`/`allocateForLines`/`updateAnchorsAfterEdit`/`ensureState`）先规范化内容，raw io.readText（grep/lsp/ast）与 read 的规范化文本产生同一状态（ADR-0008 行空间契约不变）。
+  - **grep 按大小硬跳过移除**：`GREP_MAX_FILE_BYTES` 的单文件硬跳过取消（惰性锚点后大文件只花返回行的成本，大文件照搜）；`GREP_MAX_TOTAL_BYTES`（64 MiB）总预算与 model 文本上限保留为内存护栏，触顶停扫并如实提示。
+  - **per-content 探针游标保留**：连续同内容行的分配探针连续推进（与 `assignAnchors` 同设计），长重复行段不退化为 O(k²) 探测、不触探针上限。
+  - 受影响测试同步重写：`anchor-state-persistence`（稀疏行族、部分服务状态合法性、undo 免 seed 自校正、行级剪枝/TTL）、`alloc`/`anchor-lifecycle-invariants`（serve 语义）、`issue-151-undo-stack`（迁移展开断言）、`issue-167-grep-budget`（大文件照搜 + 总预算停扫）。
+  - **工具层完成迁移（评审实测表逐项钉住）**：上一轮只建了 `allocateForLines` 基础设施，read/grep/edit/undo 仍走全量兼容 shim（`lineHashes`），ast/lsp 则用纯函数分配、锚点根本不落库。现在：
+    - **read**：`normFile` 只物化视图；窗口渲染器为 `[startLine..endIdx]` 精确分配，并把**已 patch 的数组随渲染结果返回**（工具层的 `read-card` 会用它重建 model 文本——它拿到的是另一份视图，这是“分配了却渲染成空锚点”的真因）。
+    - **grep**：`grepFileContent` 在算出命中+上下文行集后精确分配（`context: 0` 时持久化行数 == 命中数）。
+    - **edit / undo**：`buildServedRowsFromDiff` 与撤消流程改为“先写盘→按恢复/新内容的 diff 窗口精确分配→用 live 锚点渲染 `+` 侧”，窗口按 `max(2, context_lines)` 对齐实际渲染行；undo 的 `-` 侧保持纯视图（已释放的锚点不再伪造）。
+    - **ast_grep / lsp**：分配改走新的 scope-aware 原语 `allocateInWorkspace`——这两个工具没有 `withWorkspace` 主体，裸分配会写进**共享** `$DSH_HOME` 库（served 侧早就有同因的 `serveRowsInWorkspace` 注释），实测 ast_grep 持久化行数因此从 0 变为“恰好命中行数”。
+    - **行校验器接受 `""` 占位**：惰性模型会把带空占位的稠密数组交给存储层（undo/snapshot 行族），`isValidHashList` 原本把 `""` 判为损坏行而丢弃整条记录（表现为“历史凭空消失”）。
+    - **新增验收测试**（`visible-rows-acceptance.test.ts` + heavy 侧的 `visible-rows-ast.test.ts`）：把评审实测表的每一行钉成断言——3000 行文件上 read 窗口只持久化 10 行、grep 只持久化命中行、edit/undo 只持久化窗口并永不等于整文件、ast_grep 持久化行数恰等于命中数。
+- **大纲门槛 100 → 20 行（#151/P7）**：`AST_SUMMARY_MIN_TOTAL_LINES` 降到 20。这道门槛原本的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已随重构删除，唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）；`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件。效果：31 行的双函数文件现在给出真实大纲（两处折叠区间、行仍可编辑），不到 20 行仍报 `no outline — too-few-lines`。
+- **重型测试文件不再与并行池互抢（#162）**：跑 2s–17s 的 5 个文件拆到独立项目、串行执行并各给 30s 预算；**全局 `testTimeout` 保持默认**（抬高全局会把真实挂死一起掩盖），断言一条未删。
+- **设置卡回到插件第一层（#171）**：设置卡曾注在行级 `plugins.row.config`（`<包名>#<行 id>`），要点开插件后**再点行上的「配置」**才能看到表单；而当初迁到行级的理由（“bundle 级不传 `form`”）其实不成立——真正的缺陷是卡片**独占依赖页面传的 `form`**。现在：
+  - 注册回到 `plugins.bundle.config`，key = 宿主插件 **entry id**（即包名 `dsh-hashline-edittool`）：打开插件即可见配置。`whileServed([entryId], …)` 把注册限定在 Host 真的服务该 namespace 时，未组合 provider 的部署不会留下死卡片。
+  - 卡片**自建 controller**：从 0.1.7 的 `configForms` 服务取该 entry 的 form（`configForms.get(entryId)`，与行页面 `form` 同源），经 slot 注册的 `inject` 作为 props 交付，并用 `useSyncExternalStore` 订阅（bundle 页没有 owner 帮我们重渲染）。不再有“设置尚未就绪”陷阱。
+  - `verify-bundle.mjs` 同步钉住新槽位/key 与 inject 面（`["slots", "configForms"]`）；新增 controller 面的单测（快照直通、订阅与解绑、mutate 带上 revision、无 controller 时退化为 not-ready 门）。
+- **稀疏锚点实机复测的三个缺口（#171 探针）**：重启 DSH 后按“锚点个数”逐工具复测，修掉三处：
+  - **read 持久化 0 行**：锚点端口只向**已打开的库**写入（`currentStore()` 从不自己开库），而 `readAndServe` 的顺序是先渲染（分配锚点）后 `recordServed`（那时才开库）——于是 read 渲染出的锚点从未落盘，重启即丢。现在 `readView` 在分配前先开工作区库；同类“首次调用即分配”的缺口一并补上：grep / edit / undo / write 在各自 body 开头 `openWorkspaceStore(cwd)`（新原语），`allocateInWorkspace` 自身也先开库，覆盖 ast_grep / lsp。
+  - **ast_grep 可见但不可编辑**：match 分支只分配了锚点、**漏调 `serveRowsInWorkspace`**，于是返回的行带锚点却不在 served 集，edit 一律 `[E_RANGE_UNSERVED]`。现在 match 分支像 outline 分支与 read 一样提交 served 行。
+  - **edit / undo 的 served 比 anchor_lines 多 1**：served 是只增集合，而编辑会**释放**被替换行的旧锚点——死锚点留在镜像里造成长期 +1。新增 `reconcileServed(sessionKey, path, content)`：每次编辑/撤销后按 live 集回收镜像，使 served == anchor_lines（实测 read/edit/undo 三步均为 10/10）。
+  - 验收测试随之收紧：不再手动开库（由工具自己开，测试才真正钉住修复），并新增 parity 用例（read → edit → undo 全程 served == anchor_lines）与 ast_grep served 用例（其锚点能直接起始一次编辑）。
+
+### Added
+
+- **CI 增加 Windows job（#162）**：矩阵此前只有 `ubuntu-latest`，上面那一类回归只能靠人肉在 Windows 上跑才会发现。新 job 以 `engines` 下限 Node 22 跑 typecheck + 全套测试（版本矩阵与构建仍由 POSIX 侧承担）。
+
+
 ## [0.9.1] - 2026-09-23
 
 ### Fixed

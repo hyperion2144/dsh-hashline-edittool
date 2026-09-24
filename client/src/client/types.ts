@@ -244,8 +244,26 @@ export interface ToolRowModel {
 export interface ClientCtx {
 	plugin(pluginObject: { name: string; inject: string[]; apply: (ctx: ClientCtx) => void }): void;
 	slots: {
-		inject(key: string, create: () => () => void): void;
+		inject(key: string, create: () => (() => void) | void): () => void;
 		register(options: Record<string, unknown>, component: unknown): () => void;
+	};
+	/** Cordis effect: runs the callback, owns its disposer on unload. */
+	effect(callback: () => void | (() => void)): () => void;
+	/**
+	 * The settings domain's shared forms (0.1.7 `configForms`, transcribed from
+	 * the shipped `dsh-client-ui-settings` declaration): `get(entryId)` is the
+	 * per-ENTRY form, and `whileServed` keeps a registration alive only while
+	 * the Host serves one of the given namespaces.
+	 *
+	 * This — not a page prop — is how a bundle-level card sources its own
+	 * controller (#171): the bundle page hands `{ view }` and no form.
+	 */
+	configForms: {
+		get(entryId: string): ConfigForm;
+		whileServed(
+			namespaces: readonly string[],
+			register: (served: ReadonlySet<string>) => () => void,
+		): () => void;
 	};
 }
 

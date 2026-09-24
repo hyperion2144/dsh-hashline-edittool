@@ -193,7 +193,7 @@ describe("served state — session wipe keeps snapshots and undo", () => {
 			await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
 			await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
 			store.upsertSnapshot("/a.ts", contentChecksum("a\n"), 1, ["abc"]);
-			store.upsertUndo("/u.ts", {
+			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",
@@ -289,7 +289,7 @@ describe("served state — schema versioning", () => {
 			const store = await loadHashStore();
 			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "XYZ" }]);
 			store.upsertSnapshot("/p.ts", contentChecksum("x\n"), 1, ["XYZ"]);
-			store.upsertUndo("/u.ts", {
+			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",
@@ -376,14 +376,14 @@ describe("served state — pruneMissing", () => {
 			await recordServed("sessionA", "/gone.ts", [{ position: 0, anchor: "GON" }]);
 			store.upsertSnapshot(existing, contentChecksum("keep\n"), 1, ["KEP"]);
 			store.upsertSnapshot("/gone.ts", contentChecksum("gone\n"), 1, ["GON"]);
-			store.upsertUndo(existing, {
+			store.pushUndo(existing, {
 				content: "old",
 				bom: "",
 				ending: "\n",
 				hashes: ["KEP"],
 				resultContent: "new",
 			});
-			store.upsertUndo("/gone.ts", {
+			store.pushUndo("/gone.ts", {
 				content: "old",
 				bom: "",
 				ending: "\n",
@@ -536,9 +536,10 @@ async function withTempHome(
 	);
 	vi.stubEnv("HOME", tmpHome);
 	vi.stubEnv("USERPROFILE", tmpHome);
-	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
-	// homedir()/.dsh, matching sqlitePath(home) below (home/.dsh/...).
-	vi.stubEnv("DSH_HOME", "");
+	// Point the harness home at the TEMP home explicitly — see the note in
+	// snapshot-store.test.ts: an EMPTY stub leans on `homedir()/.dsh`, which is
+	// a different directory on Windows (`os.homedir()` reads USERPROFILE).
+	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
 	vi.stubEnv("XDG_CONFIG_HOME", "");
 	try {
 		await run(tmpHome);

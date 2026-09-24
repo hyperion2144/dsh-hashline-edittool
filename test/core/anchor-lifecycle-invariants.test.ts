@@ -11,7 +11,16 @@
  * @module dsh-hashline-edittool/anchor-lifecycle-invariants
  */
 import { describe, expect, it } from "vitest";
-import { anchorsFor } from "../../src/hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../../src/hashline/session-anchors.js";
+import { splitLines } from "../../src/infra/utils.js";
+
+/** Serve every line — the read path's allocation step (LAZY #169). */
+function serveAll(path: string, content: string): string[] {
+	return allocateForLines(
+		path, content,
+		Array.from({ length: splitLines(content).length }, (_, i) => i + 1),
+	);
+}
 import { applyEdit, type HEdit } from "../../src/hashline/anchor-pipeline.js";
 import {
 } from "../../src/domain/session/session-view.js";
@@ -25,8 +34,8 @@ describe("invariant 2 — rewrite inherits, unchanged lines keep anchors", () =>
 		const before = ["alpha", "beta", "gamma", "delta"].join("\n");
 		const after = ["alpha", "BETA", "gamma", "delta"].join("\n");
 
-		const a1 = anchorsFor(path, before);
-		const a2 = anchorsFor(path, after);
+		const a1 = serveAll(path, before);
+		const a2 = serveAll(path, after);
 
 		expect(a2[0]).toBe(a1[0]); // alpha unchanged → anchor kept
 		expect(a2[2]).toBe(a1[2]); // gamma unchanged → anchor kept
@@ -39,8 +48,8 @@ describe("invariant 2 — rewrite inherits, unchanged lines keep anchors", () =>
 		const before = ["def a():", "    pass", "", "", "def b():"].join("\n");
 		const after = ["def a():", "    return 1", "", "", "def b():"].join("\n");
 
-		const a1 = anchorsFor(path, before);
-		const a2 = anchorsFor(path, after);
+		const a1 = serveAll(path, before);
+		const a2 = serveAll(path, after);
 
 		expect(a2[2]).toBe(a1[2]); // blank line 3 — same content, same anchor
 		expect(a2[3]).toBe(a1[3]); // blank line 4 — same content, same anchor
@@ -51,7 +60,7 @@ describe("invariant 2 — rewrite inherits, unchanged lines keep anchors", () =>
 		const path = freshPath();
 		const clean = "export const a = 1;\nexport const b = 2;\n";
 		const raw = `\uFEFFexport const a = 1;\r\nexport const b = 2;\r\n`;
-		expect(anchorsFor(path, raw)).toEqual(anchorsFor(path, clean));
+		expect(serveAll(path, raw)).toEqual(serveAll(path, clean));
 	});
 });
 
@@ -59,7 +68,7 @@ describe("invariant 3 — exclusivity", () => {
 	it("anchorsFor output never contains duplicate anchors", () => {
 		const path = freshPath();
 		const lines = ["x", "", "", "y", "", "z", ""].join("\n");
-		const anchors = anchorsFor(path, lines);
+		const anchors = serveAll(path, lines);
 		expect(new Set(anchors).size).toBe(anchors.length);
 	});
 

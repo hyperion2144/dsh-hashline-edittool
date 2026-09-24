@@ -158,9 +158,10 @@ async function withTempHome(run: () => Promise<void>): Promise<void> {
 	);
 	vi.stubEnv("HOME", tmpHome);
 	vi.stubEnv("USERPROFILE", tmpHome);
-	// Empty DSH_HOME = "unset" for resolveDshHome — the store resolves to
-	// homedir()/.dsh, matching sqlitePath in this file.
-	vi.stubEnv("DSH_HOME", "");
+	// Point the harness home at the TEMP home explicitly — see the note in
+	// snapshot-store.test.ts: an EMPTY stub leans on `homedir()/.dsh`, which is
+	// a different directory on Windows (`os.homedir()` reads USERPROFILE).
+	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
 	vi.stubEnv("XDG_CONFIG_HOME", "");
 	try {
 		await run();

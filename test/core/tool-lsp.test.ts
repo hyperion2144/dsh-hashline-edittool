@@ -14,8 +14,17 @@ import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildLspTool } from "../../src/tools/tool-lsp.js";
 import { E_LSP_NO_SERVER } from "../../src/tools/tool-lsp.js";
+import { pathToFileURL } from "node:url";
 
 const FILE = "/tmp/lsp-tool-probe/a.ts";
+/**
+ * The uri the tool derives for {@link FILE}.
+ *
+ * `pathToFileURL`, not string concatenation: on Windows the tool asks for
+ * `file:///D:/tmp/…` while `` file://${FILE} `` says `file:///tmp/…`, and the
+ * fake server's pushed map is keyed by the tool's own spelling.
+ */
+const FILE_URI = pathToFileURL(FILE).href;
 
 /** What a fake server will answer, per method. */
 interface Fake {
@@ -25,16 +34,32 @@ interface Fake {
 	readonly ready?: boolean;
 }
 
+/**
+ * Every request the fake server received, oldest first.
+ *
+ * The ANSWER only proves a call arrived; what it carried — the params the tool
+ * built — is what a payload test has to assert.
+ */
+let requested: Array<{ method: string; params: unknown }> = [];
+
 function install(fake: Fake) {
+	requested = [];
 	const pushed = new Map<string, readonly unknown[]>();
 	let revision = 0;
-	const uri = `file://${FILE}`;
+	// The PRODUCT derives the document uri with `pathToFileURL`; the fake server
+	// must key its pushes the same way, or on Windows the tool asks for
+	// `file:///D:/tmp/…` while the map holds `file:///tmp/…` — three diagnostics
+	// cases silently "found nothing" for that reason.
+	const uri = FILE_URI;
 	const session = {
 		get diagnosticsRevision() {
 			return revision;
 		},
 		getDiagnostics: (u: string) => pushed.get(u),
-		request: async (method: string) => fake.answers?.[method],
+		request: async (method: string, params: unknown) => {
+			requested.push({ method, params });
+			return fake.answers?.[method];
+		},
 	};
 	setLspManager({
 		waitForSession: async () => (fake.ready === false ? undefined : (session as never)),
@@ -262,5 +287,41 @@ describe("lsp — request", () => {
 		install({ answers: { "textDocument/definition": [{ uri: "file:///x" }] } });
 		const value = await run({ operation: "request", query: "textDocument/definition" });
 		expect(value.raw).toContain("file:///x");
+	});
+
+	it("merges the document into a payload that does not carry one (#151/P8)", async () => {
+		// `payload` is the method's PARAMS, not a replacement for the document. A
+		// `textDocument/definition` payload carrying only a `position` used to
+		// reach the server with no `textDocument` at all, and the server answered
+		// `Cannot read properties of undefined (reading 'uri')`.
+		install({ answers: { "textDocument/definition": [{ uri: "file:///x" }] } });
+		await run({ operation: "request", query: "textDocument/definition", payload: JSON.stringify({ position: { line: 0, character: 0 } }) });
+		expect(requested).toHaveLength(1);
+		expect(requested[0]!.params).toEqual({
+			position: { line: 0, character: 0 },
+			textDocument: { uri: FILE_URI },
+		});
+
+		// A payload that NAMES a document keeps it — including a uri the caller
+		// chose, and extra fields the server's method needs.
+		await run({
+			operation: "request",
+			query: "textDocument/definition",
+			payload: JSON.stringify({ textDocument: { uri: "file:///other.ts" }, position: { line: 3, character: 1 } }),
+		});
+		expect(requested[1]!.params).toEqual({
+			textDocument: { uri: "file:///other.ts" },
+			position: { line: 3, character: 1 },
+		});
+
+		// And a payload that has a document but no uri gets one filled in.
+		await run({
+			operation: "request",
+			query: "textDocument/definition",
+			payload: JSON.stringify({ textDocument: { languageId: "typescript" } }),
+		});
+		expect(requested[2]!.params).toEqual({
+			textDocument: { languageId: "typescript", uri: FILE_URI },
+		});
 	});
 });

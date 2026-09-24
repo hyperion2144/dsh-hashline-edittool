@@ -207,6 +207,39 @@ function assertAligned(
 	}
 }
 
+/**
+ * Report ONE entry per anchor.
+ *
+ * A single-line edit hands the same anchor twice (both bounds are the same
+ * reference), which made a genuinely single stale anchor read as
+ * `2 stale anchors … \"UU\", \"UU\"` (#151/P3) and double-counted the
+ * "cannot be located" echo note. When the duplicates disagree, the entry that
+ * HAS a line hint wins: the hint is what centers the echo, and dropping it
+ * would turn a locatable report into an unlocatable one.
+ *
+ * Anchors that are not strings (a legacy `{ line, hash }` ref) are left alone —
+ * they cannot be compared by value, and collapsing them would hide a real
+ * second bound.
+ */
+function dedupeByAnchor(mismatches: HMismatch[]): HMismatch[] {
+	const at = new Map<string, number>();
+	const out: HMismatch[] = [];
+	for (const m of mismatches) {
+		const anchor = m.ref.anchor;
+		if (typeof anchor !== "string" || anchor === "") {
+			out.push(m);
+			continue;
+		}
+		const seen = at.get(anchor);
+		if (seen === undefined) {
+			at.set(anchor, out.length);
+			out.push(m);
+			continue;
+		}
+		if (out[seen]!.ref.line === undefined && m.ref.line !== undefined) out[seen] = m;
+	}
+	return out;
+}
 function fmtMismatchWithServes(
 	mismatches: HMismatch[],
 	fileLines: string[],
@@ -234,7 +267,9 @@ function fmtMismatchWithServes(
 			contentKey: contentChecksum(canon(line)),
 		});
 	};
-	const notFound = mismatches.filter((m) => m.kind === "not_found");
+	const notFound = dedupeByAnchor(
+		mismatches.filter((m) => m.kind === "not_found"),
+	);
 
 	// Two DIFFERENT failures land here, and lumping them together is what made
 	// the echo useless for the second: a STALE anchor (was valid, lines moved)

@@ -32,16 +32,21 @@
  *
  * @module dsh-hashline-edittool-client/settings-card
  */
-import { useCallback, useEffect, useMemo, useReducer, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState, useSyncExternalStore, type ReactElement } from "react";
 import { Button, Pill, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ConfigFormSnapshot, ConfigPageForm } from "./types.js";
-import { buildFieldOp, requestedView, settingsSummaryText, type SettingsCardView } from "./settings-model.js";
-
-/** Props the slot hands the card: the page's form plus the view it asks for. */
+import type { ConfigFormSnapshot } from "./types.js";
+import { buildFieldOp, controllerSnapshot, requestedView, settingsSummaryText, type SettingsCardView, type SettingsControllerFace } from "./settings-model.js";
+/** Props the slot hands the card: OUR controller plus the view it asks for. */
 export interface SettingsCardProps {
-	/** The plugins page's form (0.1.7); absent means the page gave us none. */
-	readonly form?: ConfigPageForm;
+	/**
+	 * The settings controller injected by the slot registration (#171).
+	 *
+	 * The bundle page hands `{ view }` and no form, so the card brings its
+	 * own — built from the `configForms` service in the registration — and
+	 * subscribes to it here because no page owner re-renders us.
+	 */
+	readonly controller?: SettingsControllerFace;
 	/** Absent means the page view — the full form is the safe default. */
 	readonly view?: SettingsCardView;
 }
@@ -495,36 +500,46 @@ function LanguageRowItem(props: {
  * for. No hooks live here on purpose — the summary must stay a one-liner
  * without dragging the form's catalog fetches into the page's first paint.
  *
- * @param props - the page's form and the requested view.
+ * @param props - our injected controller and the requested view.
  */
 export function HashlineSettingsCard(props: SettingsCardProps): ReactElement {
 	if (requestedView(props.view) === "summary") {
 		return <>{settingsSummaryText()}</>;
 	}
-	return <HashlineSettingsPageView form={props.form} />;
+	return <HashlineSettingsPageView controller={props.controller} />;
+}
+
+/**
+ * Subscribe to the controller's snapshot.
+ *
+ * The page used to re-render us when the form moved; at bundle level nobody
+ * does, so the card follows the controller itself. `getSnapshot` returns a
+ * stable reference until the next change (the shipped controller documents
+ * that), which is what `useSyncExternalStore` requires.
+ *
+ * @param controller - the injected face, when the slot handed one.
+ * @returns the live snapshot, or the not-ready shape.
+ */
+function useControllerSnapshot(controller: SettingsControllerFace | undefined): ConfigFormSnapshot {
+	const subscribe = useCallback(
+		(listener: () => void) => controller?.subscribe(listener) ?? (() => undefined),
+		[controller],
+	);
+	const getSnapshot = useCallback(() => controllerSnapshot(controller), [controller]);
+	return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 /**
  * The page view: the whole form, no card chrome of its own — the bundle page
  * draws the title, the icon and the crumb.
  *
- * @param props - the page's form.
+ * @param props - the injected controller.
  */
-function HashlineSettingsPageView({ form }: { readonly form?: ConfigPageForm }): ReactElement {
+function HashlineSettingsPageView({ controller }: { readonly controller?: SettingsControllerFace }): ReactElement {
 	ensureManagerStyles();
-	// 0.1.7: the page hands the form in as PROPS — re-rendering when the state
-	// moves is the page owner's job, so no subscription hook lives here. A
-	// page that passes no form degrades through the same not-ready gate below.
-	const snapshot: ConfigFormSnapshot =
-		form?.state ?? {
-			status: "unavailable",
-			value: undefined,
-			base: undefined,
-			user: undefined,
-			revision: undefined,
-			writable: false,
-			mode: "host",
-		};
+	// Our own controller (#171): subscribed above, written through below.
+	// A deployment that injected none degrades through the not-ready gate.
+	const snapshot = useControllerSnapshot(controller);
 	const ast = readAst(snapshot);
 	const core = readCore(snapshot);
 	const overridden = hasExplicitMaster(snapshot);
@@ -624,16 +639,16 @@ function HashlineSettingsPageView({ form }: { readonly form?: ConfigPageForm }):
 	}, []);
 
 	/**
-	 * Queue one field edit through the page form's mutate: a VALUE sets the
+	 * Queue one field edit through the controller's mutate: a VALUE sets the
 	 * field, no value CLEARS it (the field re-inherits the composition
 	 * base) — the same "empty means revert" the card's drafts already use.
 	 */
 	const writeField = async (field: string, ...value: readonly unknown[]): Promise<void> => {
-		if (form === undefined) return;
+		if (controller === undefined) return;
 		// mutate resolves `false` on refusal (revision conflict, rejected
 		// validation) rather than throwing — surface it so the control shows
 		// WHY nothing wrote instead of silently looking dead.
-		const accepted = await form.mutate([buildFieldOp(field, value[0])]);
+		const accepted = await controller.mutate([buildFieldOp(field, value[0])]);
 		if (accepted !== true) {
 			throw new Error("写入被拒绝：配置已在他处修改（revision 冲突）或校验未通过，请重试。");
 		}

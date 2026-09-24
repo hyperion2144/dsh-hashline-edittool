@@ -21,13 +21,13 @@ import { isAstEnabled, isAstLanguageEnabled } from "../config.js";
 import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure } from "../hashline/hash-assign.js";
 // tools emit the SAME `files` shape precisely so one cap governs both.
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
 import { getEffectiveConfig, isJsonOutput } from "../config.js";
 import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
 import { splitLines } from "../infra/utils.js";
@@ -268,7 +268,9 @@ export function buildAstGrepTool(io: FileIO) {
 			// here rather than in the line reader.
 			if (args.pat === undefined || args.pat === "") {
 				const lines = splitLines(text);
-				const hashes = anchorsFor(absolutePath, text);
+				// LAZY (#169): the view first; the allocation happens only AFTER the
+				// gate — a refused file allocates nothing at all.
+				let hashes = anchorsFor(absolutePath, text);
 				const tooBig = summaryGate({ totalLines: lines.length, byteLength: text.length });
 				if (tooBig !== undefined) {
 					// A file the outline gate refuses is not an error: say which rule it hit
@@ -287,6 +289,12 @@ export function buildAstGrepTool(io: FileIO) {
 							: `${args.path}: no outline — ${tooBig}. Read it in windows instead, or use \`ast_grep\` with a pattern to find something specific.`
 					};
 				}
+				// Not refused: the outline answers a whole-file question — allocate
+				// for every line the file has.
+				hashes = await allocateInWorkspace(
+					cwd, absolutePath, text,
+					Array.from({ length: lines.length }, (_, i) => i + 1),
+				);
 				let spans;
 				try {
 					spans = await getAstClient().summarySpans({
@@ -409,6 +417,20 @@ export function buildAstGrepTool(io: FileIO) {
 			// a match can be handed straight to `edit`.
 			const lines = splitLines(text);
 			const anchors = anchorsFor(absolutePath, text);
+			// LAZY (#169): allocate for exactly the rows this call serves — one row
+			// per line any match touches. Everything else keeps its state (or stays
+			// unallocated until something serves it).
+			const servedLineNos = [...new Set(
+				matches.flatMap((match) => {
+					const rows: number[] = [];
+					for (let line = match.startLine; line <= match.endLine; line++) rows.push(line);
+					return rows;
+				}),
+			)].sort((a, b) => a - b);
+			const allocatedAnchors = await allocateInWorkspace(cwd, absolutePath, text, servedLineNos);
+			for (let k = 0; k < servedLineNos.length; k++) {
+				anchors[servedLineNos[k]! - 1] = allocatedAnchors[k]!;
+			}
 			const width = anchors.reduce((w, a) => Math.max(w, a.length), 0);
 			// THE CARD'S ROWS, built from the SAME `lines` / `anchors` the model text
 			// uses. A card is a projection of facts, never a re-parse of the rendered
@@ -530,11 +552,22 @@ export function buildAstGrepTool(io: FileIO) {
 			// mode renders the matched rows with their `<anchor>:<line>` markers
 			// (editable exactly as a read's are), the JSON mode keys the same rows by
 			// that same marker. Nothing is re-parsed and the two cannot drift.
+			// `total` is the card's count — the matched LINES, which is what the card
+			// lists. The MODEL text has to say both, because a pattern that matches
+			// multi-line nodes reports far fewer structural matches than lines, and
+			// "22 match(es)" for 2 function matches is simply false (#151/P6).
 			const total = cardRows.length;
+			const matchCount = matches.length;
+			const counted =
+				matchCount === total
+					? `${matchCount} match(es)`
+					: `${matchCount} match(es) covering ${total} line(s)`;
 			const modelText = isJsonOutput()
 				? JSON.stringify({
 						path: args.path,
 						pattern: args.pat,
+						// Both counts, named: `total` stays the card's line count.
+						matchCount,
 						total,
 						matches: rows.map((row, index) => ({
 							startLine: row.startLine,
@@ -543,9 +576,21 @@ export function buildAstGrepTool(io: FileIO) {
 							rows: dicts[index] ?? {},
 						})),
 					})
-				: [`${args.path} — ${total} match(es) for \`${args.pat}\``, ...rows.flatMap((row) => [...row.rows, ...row.captures.map((c) => `  ${c}`), ""])]
+				: [`${args.path} — ${counted} for \`${args.pat}\``, ...rows.flatMap((row) => [...row.rows, ...row.captures.map((c) => `  ${c}`), ""])]
 						.join("\n")
 						.trimEnd();
+			// SERVE what this call found, exactly as the outline branch and `read`
+			// do: an anchor the model can see but the served mirror never heard of
+			// is an anchor `edit` rejects with [E_RANGE_UNSERVED] (#171 probe).
+			await serveRowsInWorkspace({
+				sessionKey: execSessionKey(exec),
+				cwd,
+				absolutePath,
+				rows: cardRows.map((row) => ({ position: row.number - 1, anchor: row.hash })),
+				lineCount: lines.length,
+				exec,
+				io,
+			});
 			return {
 				path: args.path,
 				pat: args.pat,

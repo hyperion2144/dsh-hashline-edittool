@@ -34,6 +34,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../../infra/fs-bridge.js";
 import { withWorkspace, workspaceCwd } from "../../infra/workspace.js";
 import { hashRe, canon, contentChecksum } from "../../hashline/hash-assign.js";
+import { anchorsFor, allocateForLines } from "../../hashline/session-anchors.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 // The row shape and the row renderer both come from the resolve engine.
@@ -201,6 +202,92 @@ export async function serveRowsInWorkspace(opts: {
   await opts.io.emitObserved(opts.absolutePath, opts.exec, opts.exec.signal);
 }
 
+/**
+ * Allocate anchors for the rows a tool is about to serve, INSIDE the workspace
+ * scope and with the workspace store OPEN.
+ *
+ * Two traps this closes, both found by a live probe (#171):
+ *  - the anchor store is per-project, and a tool without its own
+ *    `withWorkspace` body (`ast_grep`, `lsp`) writes the SHARED `$DSH_HOME`
+ *    store — where nothing reads it (the same trap
+ *    {@link serveRowsInWorkspace} closes on the served side);
+ *  - the anchor port writes ONLY to an already-open store (`currentStore()`
+ *    never opens one), so an allocation that runs before anything opened this
+ *    workspace's store is dropped — the rows render with anchors that were
+ *    never persisted, and a restart loses them.
+ *
+ * @param cwd - the workspace root for this execution.
+ * @param absolutePath - the file the rows belong to.
+ * @param content - the file's current normalized text.
+ * @param lines - the 1-based lines the tool is about to render.
+ * @returns the allocated anchors, aligned with `lines`.
+ */
+export async function allocateInWorkspace(
+  cwd: string,
+  absolutePath: string,
+  content: string,
+  lines: number[],
+): Promise<string[]> {
+  return withWorkspace(cwd, async () => {
+    await loadHashStore(cwd);
+    return allocateForLines(absolutePath, content, lines);
+  });
+}
+
+/**
+ * Open this workspace's store before a tool serves or allocates rows.
+ *
+ * The anchor port and the served mirror both write ONLY to an already-open
+ * store (`currentStore()` never opens one), so a tool whose FIRST action
+ * allocates — a read, grep, edit or undo before anything else in the session
+ * touched this workspace — must open it first, or the rows it renders carry
+ * anchors that were never persisted (#171 probe: `read` persisted 0 rows).
+ *
+ * Scope-aware, so the opened store is the one the workspace's writes resolve
+ * to; idempotent, so calling it from several seams costs nothing.
+ *
+ * @param cwd - the workspace root for this execution.
+ */
+export async function openWorkspaceStore(cwd: string): Promise<void> {
+  await withWorkspace(cwd, async () => {
+    await loadHashStore(cwd);
+  });
+}
+
+/**
+ * Drop served anchors that are no longer LIVE for this path.
+ *
+ * The served mirror is a growing SET of anchors the model has seen, but an
+ * edit RELEASES the anchors of the lines it replaced — and a released anchor
+ * lingering in the mirror is what made the served set one entry larger than
+ * `anchor_lines` after every edit and undo (#171 probe). A dead anchor is
+ * unusable anyway (an edit with it fails as stale), so the mirror is
+ * reconciled to the live set: served == persisted == visible.
+ *
+ * @param sessionKey - the session whose mirror to prune.
+ * @param path - the absolute path the anchors belong to.
+ * @param content - the path's CURRENT text (the live state's source).
+ */
+export async function reconcileServed(
+  sessionKey: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  const live = new Set(anchorsFor(path, content).filter((anchor) => anchor !== ""));
+  const store = await loadHashStore();
+  withStore(() => {
+    const current = store.getServed(sessionKey, path);
+    let removed = false;
+    for (const anchor of [...current]) {
+      if (!live.has(anchor)) {
+        current.delete(anchor);
+        removed = true;
+      }
+    }
+    if (removed) store.upsertServed(sessionKey, path, JSON.stringify([...current]));
+  });
+}
+
 export async function recordServedTruncated(sessionKey: string, path: string, rows: ServedEntry[], _lineCount: number, _clearFrom = 0): Promise<void> {
   if (rows.length === 0) return;
   const store = await loadHashStore();
@@ -285,6 +372,16 @@ export interface DriftNoticeResult {
   allAlreadyReported: boolean;
 }
 
+/**
+ * Which of `served` no longer name a line in the result — excluding the edit's
+ * own range, whose lines were meant to change.
+ *
+ * The CALLER decides what to offer as `served`. A session's served set is an
+ * accumulator of everything the model was ever shown, so `scanDrift` narrows it
+ * to the anchors that were live immediately before the edit: what this function
+ * reports is then what the EDIT invalidated, not the session's whole stale
+ * history (#151/P4).
+ */
 export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | undefined {
   const { served, resultHashes, range, originalHashes, reported } = input;
   const resultHashSet = new Set(resultHashes);
@@ -303,7 +400,7 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
   const countLabel = `${total} anchor(s)`;
   if (!anyNotReported) {
     return {
-      text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range drifted and were already reported — call read to refresh.`,
+      text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range are no longer valid and were already reported — call read to refresh.`,
       rows: [],
       total,
       allAlreadyReported: true,
@@ -311,7 +408,7 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
   }
   const rows: DriftRow[] = driftedAnchors.map((anchor) => ({ anchor, drifted: true }));
   return {
-    text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range drifted — call read to refresh.`,
+    text: `${DRIFT_NOTICE_HEADING} ${countLabel} outside the edited range are no longer valid — call read to refresh.`,
     rows,
     total,
     allAlreadyReported: false,
@@ -320,7 +417,24 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
 
 export async function scanDrift(input: { sessionKey: string; served: Set<string>; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; originalHashes: string[]; path: string; io?: FileIO; exec?: ToolExecution }): Promise<string | undefined> {
   const reported = await driftReported(input.sessionKey, input.path);
-  const result = computeDrift({ ...input, reported });
+  // Narrowing `served` is THIS layer's job, not `computeDrift`'s: what the
+  // model was served is a session fact, and the session is what accumulates it
+  // (#151/P4). `computeDrift` stays the pure walk it always was — "which of
+  // these anchors no longer name a line" — so its contract (and its own tests)
+  // do not change under a caller that offers it a different set.
+  //
+  // Only an anchor LIVE immediately before this edit can have been invalidated
+  // BY it. The accumulated set still holds the ones an earlier edit (or an
+  // external rewrite) already released; re-reporting those on every later edit
+  // claimed that anchors had drifted when nothing had moved, and bought the
+  // model a pointless re-read. What survives is the real signal: an anchor
+  // that was valid, sits outside the edited range, and is gone after the edit
+  // — which a healthy incremental update never does, so the notice now says
+  // something whenever it appears.
+  const liveBefore = new Set(input.originalHashes);
+  const served = new Set<string>();
+  for (const anchor of input.served) if (liveBefore.has(anchor)) served.add(anchor);
+  const result = computeDrift({ ...input, served, reported });
   if (!result || result.allAlreadyReported) return result?.text;
   let servedNote = "";
   try {

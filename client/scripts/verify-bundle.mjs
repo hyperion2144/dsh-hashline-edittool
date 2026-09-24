@@ -72,6 +72,33 @@ const ctx = {
 		this.plugins.push(pluginObject);
 		pluginObject.apply(this); // cordis mounts sub-plugins: apply runs immediately
 	},
+	// Cordis effect: run the callback and keep its disposer (the shipped face).
+	effect(callback) {
+		const disposer = callback();
+		return typeof disposer === "function" ? disposer : () => {};
+	},
+	// The settings domain's shared forms, stubbed to the two calls the card
+	// makes: `whileServed` (register once the namespace is served) and `get`
+	// (the per-ENTRY form the card drives as its own controller).
+	configForms: {
+		served: new Set(["dsh-hashline-edittool"]),
+		formCalls: [],
+		get(entryId) {
+			this.formCalls.push(entryId);
+			return {
+				getSnapshot: () => ({ status: "ready", value: {}, base: {}, user: {}, revision: 1, writable: true, mode: "host" }),
+				subscribe: () => () => {},
+				set: async () => true,
+				unset: async () => true,
+				mutate: async () => true,
+			};
+		},
+		whileServed(namespaces, register) {
+			const served = namespaces.filter((ns) => this.served.has(ns));
+			if (served.length === 0) return () => {};
+			return register(new Set(served)) ?? (() => {});
+		},
+	},
 	slots: {
 		injectCalls: [],
 		registeredEntries: [],
@@ -117,26 +144,26 @@ if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 for (const entry of ctx.slots.registeredEntries) {
 	if (entry && typeof entry === "object" && typeof entry.component !== "function") throw new Error("component is not a function");
 }
-// The settings card registers on the plugin manager's ROW-config slot: the
-// 0.1.7 row page is the one that hands `{ view, form }` — the bundle-level
-// `plugins.bundle.config` renders with view only, so a registration there
-// is exactly the “设置尚未就绪” trap. The row key is `<package name>#<row
-// id>`, and the row id doubles as the settings entry id.
+// The settings card registers on the plugin manager's BUNDLE-config slot
+// (#171): the page rendered for the plugin ITSELF, so opening the plugin shows
+// the configuration — the second layer's row page is no longer involved.
+// The key is the Host plugin ENTRY id, which is the bundle's package name.
 const settingsCards = ctx.slots.registeredEntries
-	.filter((entry) => entry?.options?.name === "plugins.row.config")
+	.filter((entry) => entry?.options?.name === "plugins.bundle.config")
 	.map((entry) => `${entry.options.key}`);
-if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool#dsh-hashline-edittool"])) {
+if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool"])) {
 	throw new Error(`unexpected settings card registration: ${settingsCards.join(", ")}`);
 }
-if (ctx.slots.injectCalls.filter((key) => key === "plugins.row.config").length !== 1) {
-	throw new Error("expected the settings card to inject the plugins.row.config declaration");
+if (ctx.slots.injectCalls.filter((key) => key === "plugins.bundle.config").length !== 1) {
+	throw new Error("expected the settings card to inject the plugins.bundle.config declaration");
 }
-// 0.1.7: the settings form arrives as OWNER PROPS from the plugins page —
-// the card requests NO settings service. The old `settingsScope` is gone
-// from the client composition, so injecting it would keep the card (and,
-// through the shared root inject, every row) from loading at all.
+// The bundle page hands `{ view }` and NO form, so the card drives its OWN
+// controller: the settings domain's `configForms` service (the same source the
+// row page's form is built from). `settingsScope` does not exist in the 0.1.7
+// composition — injecting it would keep the card, and every row with it, from
+// loading at all.
 const settingsCardPlugin = ctx.plugins.find((p) => p.name === "hashline-settings-card");
-if (JSON.stringify(settingsCardPlugin?.inject) !== JSON.stringify(["slots"])) {
+if (JSON.stringify(settingsCardPlugin?.inject) !== JSON.stringify(["slots", "configForms"])) {
 	throw new Error(`settings card injects unavailable services: ${settingsCardPlugin?.inject?.join(", ")}`);
 }
 // EIGHT, not seven: the AST sub-plugin loops over its THREE keys and each

@@ -53,7 +53,8 @@ import {
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
 import { findSnapshotPathsByHashes } from "../session/hash-store.js";
-import { updateAnchorsAfterEdit } from "../../hashline/session-anchors.js";
+import { updateAnchorsAfterEdit, allocateForLines, type EditHunk } from "../../hashline/session-anchors.js";
+import { contextLinesCfg } from "../../hashline/hash-assign.js";
 import { saveUndo } from "./undo-edit.js";
 import {
 	clearNoopLoop,
@@ -100,8 +101,18 @@ function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
 	return { anchor: bound.anchor, line: idx >= 0 ? idx + 1 : bound.line };
 }
 
-/** Returns the pinned edit plus a warning list for hints that
- *  disagreed with the resolved position (#59/#66: mismatch is informational). */
+/**
+ * Pin both anchor bounds to their authoritative line, and warn when a supplied
+ * `<line>:<anchor>` hint disagreed (#59/#66: the mismatch is informational, the
+ * anchor wins).
+ *
+ * A single-line edit offers the SAME bound twice (`anchor_end` folds to
+ * `anchor_start`), so it is pinned ONCE: pinning it twice emitted the
+ * `[E_LINE_HINT]` warning twice (#151/P2) and, on a stale anchor, reported the
+ * same anchor twice in the `[E_STALE]` list (#151/P3). Two bounds that differ
+ * in either field are still pinned independently — a caller who wrote two
+ * different hints made two different claims.
+ */
 function pinBounds(
 	edit: HEdit,
 	fileAnchors: string[],
@@ -116,14 +127,17 @@ function pinBounds(
 			bound.line !== pinned.line
 		) {
 			warnings.push(
-				`[E_LINE_HINT] line hint ${bound.line} does not match anchor ${bound.anchor} (resolved to line ${pinned.line}); anchor is authoritative, edit proceeds.`,
+				`[E_LINE_HINT] line hint ${bound.line} does not match anchor ${bound.anchor} (resolved to line ${pinned.line}); anchor is authoritative, edit proceeds.`
 			);
 		}
 		return pinned;
 	};
+	const [start, end] = edit.hash_bounds;
+	const pinnedStart = pin(start);
+	const sameBound = start.anchor === end.anchor && start.line === end.line;
 	return {
 		content_lines: edit.content_lines,
-		hash_bounds: [pin(edit.hash_bounds[0]), pin(edit.hash_bounds[1])],
+		hash_bounds: [pinnedStart, sameBound ? pinnedStart : pin(end)],
 	};
 }
 
@@ -199,6 +213,61 @@ export interface HunkShift {
 	finalStartLine: number;
 	/** 1-indexed last line of this hunk's replacement in the FINAL file. */
 	finalEndLine: number;
+	/**
+	 * `op: "ins"` — a PURE insertion. Its anchor line is not part of the hunk
+	 * (see {@link EditHunk}), so the anchor update must exclude it: the line
+	 * keeps its anchor and only the inserted rows allocate fresh ones.
+	 */
+	isIns?: boolean;
+}
+
+/**
+ * The anchor-update hunk for one edit (#151).
+ *
+ * The one place the engine's two coordinate systems meet the op, and so the
+ * one place the `ins` rule lives — every caller states its range and this
+ * function states what the anchor update must see:
+ *
+ * - `ins` contributes an EMPTY old range. Its anchor line sits OUTSIDE the
+ *   hunk, so the line is not touched and keeps its anchor verbatim while every
+ *   inserted row allocates a fresh one. It used to be modelled as a one-line
+ *   REPLACE whose replacement repeats the anchor line — which is what
+ *   `resolveIns` produces for the TEXT — and the aligner, walking from the end,
+ *   paired the anchor with an inserted row of the same content instead, moving
+ *   the anchor off the line the model holds, with no error.
+ * - `del` needs no case: it replaces its range with nothing, so the aligner's
+ *   new segment is already empty and nothing is inherited.
+ * - everything else covers its whole old range, and alignment decides which
+ *   pairs survive.
+ *
+ * @param args.isIns - true for `op: "ins"`.
+ * @param args.oldStart1 - 1-indexed first line of the edit in the ORIGINAL
+ *   file; for `ins`, the anchor line (the LAST line before the insertion).
+ * @param args.oldEnd1 - 1-indexed last line of the edit in the ORIGINAL file.
+ * @param args.finalStart1 - 1-indexed first line of the replacement in the FINAL file.
+ * @param args.finalEnd1 - 1-indexed last line of the replacement in the FINAL file.
+ */
+export function toAnchorHunk(args: {
+	isIns?: boolean;
+	oldStart1: number;
+	oldEnd1: number;
+	finalStart1: number;
+	finalEnd1: number;
+}): EditHunk {
+	if (args.isIns !== true) {
+		return {
+			oldStart1: args.oldStart1,
+			oldEnd1: args.oldEnd1,
+			finalStart1: args.finalStart1,
+			finalEnd1: args.finalEnd1,
+		};
+	}
+	return {
+		oldStart1: args.oldStart1 + 1,
+		oldEnd1: args.oldStart1, // empty range: pure insertion
+		finalStart1: args.finalStart1 + 1,
+		finalEnd1: args.finalEnd1,
+	};
 }
 
 export interface FileEditResult {
@@ -620,18 +689,22 @@ export async function applyOne(
 	const removedCount = anchorResult.range.endLine - anchorResult.range.startLine + 1;
 	const addedCount =
 		splitLines(result).length - splitLines(input.content).length + removedCount;
+	// One hunk, and the `ins` shape lives in `toAnchorHunk` so this path, the
+	// batch path and the legacy pipeline cannot disagree about it (#151).
+	const hunk = toAnchorHunk({
+		isIns: input.op === "ins",
+		oldStart1: anchorResult.range.startLine,
+		oldEnd1: anchorResult.range.endLine,
+		finalStart1: anchorResult.range.startLine,
+		finalEnd1: anchorResult.range.startLine + addedCount - 1,
+	});
 	const resultHashes = updateAnchorsAfterEdit({
 		path: input.absolutePath,
 		oldContent: input.content,
 		newContent: result,
 		oldAnchors: input.hashes,
 		hunks: [
-			{
-				oldStart1: anchorResult.range.startLine,
-				oldEnd1: anchorResult.range.endLine,
-				finalStart1: anchorResult.range.startLine,
-				finalEnd1: anchorResult.range.startLine + addedCount - 1,
-			},
+			hunk,
 		],
 	});
 
@@ -1007,7 +1080,7 @@ const ordered = [...resolvedEdits].sort(
 				lineNumbers: opts.lineNumbers,
 				countHashes: originalHashes,
 				persist: false,
-				edit,
+			edit,
 			},
 			async (error) => {
 				if (
@@ -1118,6 +1191,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			originalEndLine: edit.hash_bounds[1].line!,
 			finalStartLine: fp.finalStart,
 			finalEndLine: fp.finalEnd,
+			isIns: item.op === "ins",
 		});
 		lastApplied = {
 			content: currentContent,
@@ -1139,12 +1213,17 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			oldContent: originalNormalized,
 			newContent: result,
 			oldAnchors: originalHashes,
-			hunks: hunkShifts.map((s) => ({
-				oldStart1: s.originalStartLine,
-				oldEnd1: s.originalEndLine,
-				finalStart1: s.finalStartLine,
-				finalEnd1: s.finalEndLine,
-			})),
+			// The batch's hunks are already in original + final coordinates; the op is
+			// what `toAnchorHunk` turns into the anchor update's shape (#151).
+			hunks: hunkShifts.map((s) =>
+				toAnchorHunk({
+					isIns: s.isIns === true,
+					oldStart1: s.originalStartLine,
+					oldEnd1: s.originalEndLine,
+					finalStart1: s.finalStartLine,
+					finalEnd1: s.finalEndLine,
+				}),
+			),
 		});
 	}
 
@@ -1215,6 +1294,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			originalNormalized,
 			result,
 			resultHashes,
+			absolutePath,
 		) : [],
 		...(unionFirstChangedLine !== undefined ? { firstChangedLine: unionFirstChangedLine } : {}),
 		...(unionLastChangedLine !== undefined ? { lastChangedLine: unionLastChangedLine } : {}),
@@ -1231,7 +1311,12 @@ function buildServedRowsFromDiff(
 	before: string,
 	after: string,
 	resultHashes: string[],
+	absolutePath: string,
 ): { position: number; anchor: string }[] {
+	// The window pads by the CONFIGURED diff context (≥2): the response's
+	// genDiff renders with contextLinesCfg(), and a served set narrower than
+	// the rendered rows would leave context rows uneditable.
+	const ctxPad = Math.max(2, contextLinesCfg());
 	const rows: { position: number; anchor: string }[] = [];
 	const seen = new Set<number>();
 	const resultLines = splitLines(after);
@@ -1261,8 +1346,18 @@ function buildServedRowsFromDiff(
 		) k++;
 		return Math.max(firstDiff, resultLines.length - 1 - k);
 	})();
-	for (let p = Math.max(0, firstDiff - 2); p <= Math.min(resultHashes.length - 1, lastDiff + 2); p++) {
+	for (let p = Math.max(0, firstDiff - ctxPad); p <= Math.min(resultHashes.length - 1, lastDiff + ctxPad); p++) {
 		push(p);
+	}
+	// LAZY (#169): allocate for EXACTLY these rows — the response's diff
+	// window is what the model sees. persisted == served == visible.
+	if (rows.length > 0) {
+		const servedLineNos = rows.map((r) => r.position + 1);
+		const allocated = allocateForLines(absolutePath, after, servedLineNos);
+		for (let k = 0; k < servedLineNos.length; k++) {
+			resultHashes[servedLineNos[k]! - 1] = allocated[k]!;
+			rows[k] = { position: servedLineNos[k]! - 1, anchor: allocated[k]! };
+		}
 	}
 	return rows;
 }

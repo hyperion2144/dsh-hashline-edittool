@@ -26,13 +26,19 @@ import {
 	HashlineWriteRow,
 } from "./tool-row.js";
 import { HashlineSettingsCard } from "./settings-card.js";
+import { formFace } from "./settings-model.js";
 import type { ClientCtx } from "./types.js";
 
 /** Locale namespace of the conversation seat the shipped tool views use. */
 const CONVERSATION_NS = "conversation";
 
-/** Required services: the slot registry is the only hard dependency left —
- * 0.1.7 took the settings scope service away (forms arrive as slot props). */
+/**
+ * Required services of the BUNDLE ROOT: the slot registry only.
+ *
+ * The settings domain is reached by the settings-card SUB-plugin, which
+ * declares `configForms` itself — a deployment without the settings provider
+ * must not park the whole bundle (every tool row with it).
+ */
 export const inject = ["slots"];
 
 /**
@@ -40,8 +46,10 @@ export const inject = ["slots"];
  * 0.1.7 addresses settings by the profile ENTRY id (= the patch row id = the
  * package name), not by a registered namespace: the host half exports
  * HASHLINE_ENTRY_ID with this exact value.
+ *
+ * It is `BUNDLE_PACKAGE_NAME` below — one constant, used as the slot key,
+ * the `configForms.get` argument, and the `whileServed` namespace.
  */
-
 /** Registers the hashline read conversation row (priority -1 takeover). */
 const readToolview = {
 	name: "hashline-read-toolview",
@@ -156,36 +164,50 @@ const astToolviews = {
 };
 
 /**
- * The plugin-configuration card.
+ * The plugin-configuration card, at BUNDLE level (#171).
  *
- * The plugins page renders one ROW's configuration on the row's own page
- * through the keyed `plugins.row.config` slot — keyed `<package name>#<row
- * id>`, and the row's id doubles as the settings entry id. The 0.1.7 row page
- * hands each entry `{ view, form }` as OWNER PROPS (the bundle-level
- * `plugins.bundle.config` slot renders with NO form — registering there is
- * exactly the "设置尚未就绪" trap this card once fell into), so the card
- * reads and writes ONLY through `form` (snapshot state + path-op mutate);
- * it must not add its own `settings.describe` reader, because the client's
- * cold-boot read budget stays pinned by a platform test.
+ * It registers on `plugins.bundle.config` keyed by the package name, which is
+ * the page rendered for the plugin ITSELF — clicking the plugin in the manager
+ * shows the configuration, with no trip through the row's own page.
+ *
+ * The bundle page hands owner props of `{ view }` and NO `form` (only the row
+ * page hands one). So the card drives its OWN controller: the `configForms`
+ * service's per-ENTRY form — the same source the row page's `form` is built
+ * from (`configForms.get(entryId)`, per the shipped settings declaration) —
+ * subscribed here because no page owner re-renders us. The old page-prop form
+ * is gone, and with it the "设置尚未就绪" trap that pushed this card to the
+ * second layer.
+ *
+ * `whileServed` keeps the registration alive only while the Host serves this
+ * entry's namespace, so a deployment that never composed the provider shows no
+ * trace of the card instead of a dead one.
  */
 
-/** The host plugin's package name — also its row id, and with it the row key. */
+/** The host plugin's package name — its settings ENTRY id and the slot key. */
 const BUNDLE_PACKAGE_NAME = "dsh-hashline-edittool";
 
 const settingsCard = {
 	name: "hashline-settings-card",
-	inject: ["slots"],
+	inject: ["slots", "configForms"],
 	apply(ctx: ClientCtx) {
-		ctx.slots.inject("plugins.row.config", () =>
-			ctx.slots.register(
-				{
-					name: "plugins.row.config",
-					// `<package name>#<row id>`: the ROOT package declares the host
-					// plugin's row, and the row id doubles as the settings entry id.
-					key: `${BUNDLE_PACKAGE_NAME}#${BUNDLE_PACKAGE_NAME}`,
-					locale: CONVERSATION_NS,
-				},
-				HashlineSettingsCard,
+		const forms = ctx.configForms;
+		ctx.effect(() =>
+			forms.whileServed([BUNDLE_PACKAGE_NAME], () =>
+				ctx.slots.inject("plugins.bundle.config", () =>
+					ctx.slots.register(
+						{
+							name: "plugins.bundle.config",
+							// Keyed by the package name: the page renders this form on the
+							// bundle's own page, between its description and its rows.
+							key: BUNDLE_PACKAGE_NAME,
+							locale: CONVERSATION_NS,
+							// Our own controller, handed in as slot-injected props: the card
+							// subscribes to it and writes through it.
+							inject: () => ({ controller: formFace(forms.get(BUNDLE_PACKAGE_NAME)) }),
+						},
+						HashlineSettingsCard,
+					),
+				),
 			),
 		);
 	},

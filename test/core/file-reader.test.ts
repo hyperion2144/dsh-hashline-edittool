@@ -10,9 +10,10 @@ describe("readNormFile", () => {
 			expect(result.normalized).toBe("hello\nworld");
 			expect(result.bom).toBe("");
 			expect(result.originalEnding).toBe("\n");
+			// LAZY (#169): normFile returns the VIEW — one slot per line, "" until a
+			// tool serves that line. Allocation happens at the serve point.
 			expect(result.fileHashes).toHaveLength(2);
-			expect(result.fileHashes[0]).toMatch(/^[A-Za-z0-9]{2,8}$/);
-			expect(result.fileHashes[1]).toMatch(/^[A-Za-z0-9]{2,8}$/);
+			expect(result.fileHashes).toEqual(["", ""]);
 			expect(result.hadUtf8DecodeErrors).toBe(false);
 		});
 	});
@@ -62,13 +63,18 @@ describe("readNormFile", () => {
 		).rejects.toThrow("File not found");
 	});
 
-	it("computes correct hashes for the normalized content", async () => {
-		await withTempFile("data.txt", "aaa\nbbb\nccc", async ({ cwd }) => {
+	it("serving the window yields distinct anchors for the normalized content", async () => {
+		await withTempFile("data.txt", "aaa\nbbb\nccc", async ({ cwd, path }) => {
 			const result = await readNormFile("data.txt", cwd);
 			expect(result.fileHashes).toHaveLength(3);
-
-			expect(result.fileHashes[0]).not.toBe(result.fileHashes[1]);
-			expect(result.fileHashes[1]).not.toBe(result.fileHashes[2]);
+			// The view is unallocated; the SERVE point mints the anchors (#169).
+			const { allocateForLines } = await import("../../src/hashline/session-anchors.js");
+			const served = allocateForLines(result.absolutePath, result.normalized, [1, 2, 3]);
+			expect(served).toHaveLength(3);
+			for (const anchor of served) expect(anchor).toMatch(/^[A-Za-z0-9]{2,8}$/);
+			expect(served[0]).not.toBe(served[1]);
+			expect(served[1]).not.toBe(served[2]);
+			expect(path).toMatch(/data\.txt$/);
 		});
 	});
 

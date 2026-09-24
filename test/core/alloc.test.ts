@@ -230,6 +230,63 @@ describe("issue #122 — a surviving line keeps its anchor inside the hunk", () 
 		expect(next[3]).toBe(oldAnchors[4]); // outside the hunk: untouched
 		expect(new Set(next).size).toBe(next.length); // still all distinct
 	});
+
+	/**
+	 * The `ins` shape (#151): the anchor line stays OUTSIDE the hunk, so the
+	 * hunk's old range is EMPTY. A pure insertion has nothing to align against —
+	 * the anchor line keeps its anchor even when an inserted line repeats its
+	 * content, and every inserted line allocates fresh.
+	 *
+	 * This is the case trailing-match-wins got WRONG: a one-line replace whose
+	 * replacement repeats the anchor line (what `resolveIns` builds for the
+	 * TEXT) paired the anchor with the last identical line, moving it off the
+	 * line the model still holds.
+	 */
+	it("an empty old range is a pure insertion: the anchor line keeps its anchor", () => {
+		const old = ["head", "  }", "tail"];
+		const oldAnchors = assignAnchors(old);
+		const next = updateAnchorsAfterEdit({
+			path: "t-ins.txt",
+			oldContent: old.join("\n"),
+			newContent: ["head", "  }", "", "  body();", "  }", "tail"].join("\n"),
+			oldAnchors,
+			// The gap sits AFTER old line 2 (= the anchor line) and the inserted
+			// rows occupy new lines 3..5.
+			hunks: [{ oldStart1: 3, oldEnd1: 2, finalStart1: 3, finalEnd1: 5 }],
+		});
+
+		expect(next[1]).toBe(oldAnchors[1]); // the anchor line, verbatim
+		expect(next[0]).toBe(oldAnchors[0]); // untouched neighbours too
+		expect(next[5]).toBe(oldAnchors[2]);
+		expect(next[2]).not.toBe(oldAnchors[1]); // inserted blank row
+		expect(next[4]).not.toBe(oldAnchors[1]); // inserted `  }` — same text
+		expect(next[4]).not.toBe(oldAnchors[0]);
+		expect(new Set(next).size).toBe(next.length); // still all distinct
+	});
+
+	/**
+	 * The mirror case: `del` produces an EMPTY new segment, so alignment is
+	 * skipped the same way. The deleted line's anchor is released — it must not
+	 * be inherited by a survivor that happens to carry the same text.
+	 */
+	it("an empty new range is a pure delete: the deleted anchor is released", () => {
+		const old = ["a", "dup", "dup", "b"];
+		const oldAnchors = assignAnchors(old);
+		const next = updateAnchorsAfterEdit({
+			path: "t-del.txt",
+			oldContent: old.join("\n"),
+			newContent: ["a", "dup", "b"].join("\n"),
+			oldAnchors,
+			// Line 3 is gone and nothing replaces it (`finalEnd1 < finalStart1`).
+			hunks: [{ oldStart1: 3, oldEnd1: 3, finalStart1: 3, finalEnd1: 2 }],
+		});
+
+		expect(next).toHaveLength(3);
+		expect(next[1]).toBe(oldAnchors[1]); // the surviving `dup` keeps its OWN
+		expect(next).not.toContain(oldAnchors[2]); // the deleted line's anchor is gone
+		expect(next[2]).toBe(oldAnchors[3]);
+		expect(new Set(next).size).toBe(3);
+	});
 });
 
 describe("issue #122 — the invariant is 'not in the diff', not 'outside the hunk'", () => {

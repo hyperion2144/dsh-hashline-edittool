@@ -20,10 +20,10 @@ import { upsertSnapshotFor } from "../domain/session/hash-store.js";
 import { contentChecksum, contextLinesCfg } from "../hashline/hash-assign.js";
 import { lineHashes } from "../hashline/hash.js";
 import { changedRange } from "../hashline/anchor-pipeline.js";
-import { getUndo, clearUndo } from "../domain/edit/undo-edit.js";
-import { recordServedTruncated } from "../domain/session/session-view.js";
-import { seedAnchors } from "../hashline/session-anchors.js";
+import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
+import { recordServedTruncated, reconcileServed } from "../domain/session/session-view.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
@@ -31,7 +31,7 @@ import {
 	type FileDiff,
 } from "../render/edit-card.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
@@ -139,6 +139,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
 			const cwd = execCwd(exec);
+			// The revert allocates anchors for the restored content's diff window,
+			// and the anchor port writes only to an OPEN store (#171 probe).
+			await openWorkspaceStore(cwd);
 			const sessionKey = execSessionKey(exec);
 			const signal = exec.signal;
 
@@ -198,7 +201,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			const { text: currentStripped } = stripBOM(currentRaw);
 			const currentNormalized = toLF(currentStripped);
-			const currentHashes = await lineHashes(currentNormalized, absolutePath);
+			// LAZY (#169): the `-` side is a pure VIEW — removal rows are historical,
+			// nothing is allocated for them.
+			const currentHashes = anchorsFor(absolutePath, currentNormalized);
 			const diffResult = genDiff(
 				undo.content,
 				currentNormalized,
@@ -209,18 +214,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			);
 			const linesAddedByEdit = cntDiff(diffResult.diff, "+");
 			const linesRemovedByEdit = cntDiff(diffResult.diff, "-");
-			const undoDiffResult = genDiff(
-				currentNormalized,
-				undo.content,
-				// The CONFIGURED context, like the sibling diff above: a hardcoded 1 here
-				// made the revert's diff — model text AND card rows — ignore
-				// `context_lines`.
-				contextLinesCfg(),
-				undo.hashes,
-				currentHashes,
-				lineNumbers,
-			);
-			const undoDiff = undoDiffResult.diff;
+			// The revert's diff is rendered AFTER the write (see below): its `+`
+			// rows must carry the anchors the RESTORED content actually has now,
+			// not the historical undo.hashes — advertised anchors may never be
+			// lies (persisted == served == visible, #169).
 			const restoredRange = changedRange(currentNormalized, undo.content);
 			// #131: baseline BEFORE the revert, so the wait measures pushes
 			// against a pre-write baseline.
@@ -237,6 +234,37 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				throw sandbox.mapError(error, sandboxPolicy);
 			}
 			notifyDocumentWritten(absolutePath, undo.bom + restoreEndings(undo.content, undo.originalEnding));
+			// LAZY (#169): the restored content is live — realign the sparse state
+			// against it, allocate EXACTLY the revert diff's window rows, and render
+			// the `+` side with those anchors.
+			const dryWindow = genDiff(
+				currentNormalized,
+				undo.content,
+				contextLinesCfg(),
+				undefined,
+				undefined,
+				lineNumbers,
+			);
+			const restoredHashes = anchorsFor(absolutePath, undo.content);
+			const windowLineNos = [
+				...new Set(dryWindow.servedRows.map((r) => r.position + 1)),
+			].sort((a, b) => a - b);
+			const windowAllocated = allocateForLines(absolutePath, undo.content, windowLineNos);
+			for (let wi = 0; wi < windowLineNos.length; wi++) {
+				restoredHashes[windowLineNos[wi]! - 1] = windowAllocated[wi]!;
+			}
+			const undoDiffResult = genDiff(
+				currentNormalized,
+				undo.content,
+				// The CONFIGURED context, like the sibling diff above: a hardcoded 1 here
+				// made the revert's diff — model text AND card rows — ignore
+				// `context_lines`.
+				contextLinesCfg(),
+				restoredHashes,
+				currentHashes,
+				lineNumbers,
+			);
+			const undoDiff = undoDiffResult.diff;
 			// #131: the revert is a real write, so it reports like one — inline
 			// inside the window, else the bounded async wait. OUTSIDE the write
 			// try on purpose: delivery never throws, and a diagnostics problem
@@ -267,9 +295,8 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				// Re-seed the session anchor state with the restored content's
 				// original anchors: undo.hashes were allocated for exactly these
 				// lines, and the revert diff just served them as `fresh`. Without
-				// this seed the next anchorsFor recomputed from scratch and the
-				// advertised anchors became lies (the V1 dual-source bug).
-				seedAnchors(absolutePath, undo.content, undo.hashes);
+				// LAZY (#169): no explicit seed needed — the sparse state detects the
+				// content change on the next access and allocates fresh anchors.
 			} catch (error) {
 				console.error(
 					"Failed to restore hash store snapshot after undo:",
@@ -277,7 +304,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				);
 			}
 
-			await clearUndo(absolutePath);
+			// CONSUME the entry, do not wipe the history: the entry below it is the
+			// next edit to revert, which is what makes this a stack (#151/P5).
+			await popUndo(absolutePath);
+			const remaining = await undoDepth(absolutePath);
 
 			const parts: string[] = [`Undone last edit on ${path}.`];
 			if (linesAddedByEdit > 0 || linesRemovedByEdit > 0) {
@@ -288,6 +318,11 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			parts.push(
 				"File reverted to previous state. The revert diff\u2019s `+` rows (restored lines) carry fresh anchors for follow-up edits; `-` rows are the removed lines — their anchors are dead.",
 			);
+			if (remaining > 0) {
+				parts.push(
+					`${remaining} earlier edit(s) on this file can still be undone with another undo_last_edit call.`
+				);
+			}
 
 			if (undoDiffResult.servedRows.length > 0) {
 				try {
@@ -298,6 +333,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 						splitLines(undo.content).length,
 						restoredRange?.firstChangedLine ?? 0,
 					);
+				// The revert released whatever the undone edit had made live; drop
+				// those from the mirror so served == anchor_lines (#171).
+				await reconcileServed(sessionKey, absolutePath, undo.content);
 				} catch (error) {
 					// issue #136: the revert itself succeeded; a lost served mirror must
 					// still reach the model or the next edit rejects with "never served".

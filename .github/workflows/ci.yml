@@ -2,8 +2,10 @@ name: CI
 
 # Verify main pushes and every pull request: typecheck, tests, build —
 # for the main package AND the companion client package (client/, the dsh web
-# UI plugin; issue #71). Releases are handled by release.yml (tag pushes, or
-# manual dispatch).
+# UI plugin; issue #71). One Windows job runs the suite too, because a cluster
+# of path and home-directory assumptions in the tests only ever failed there
+# (#162) and a POSIX-only matrix cannot see it. Releases are handled by
+# release.yml (tag pushes, or manual dispatch).
 
 on:
   push:
@@ -34,6 +36,24 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  verify-windows:
+    # The suite is the point: the plugin's Windows-only launch path (cmd.exe
+    # wrapping) and every path/home assumption in the test tree are exercised
+    # nowhere else. One Node version (the `engines` floor) keeps it cheap —
+    # the POSIX job is the one that carries the version matrix.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
 
   verify-client:
     runs-on: ubuntu-latest

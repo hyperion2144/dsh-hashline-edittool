@@ -128,20 +128,57 @@ describe("serverArgv", () => {
 		args: ["--stdio"],
 	} as unknown as DiscoveredServer;
 
+	/**
+	 * Run `body` with `ComSpec` pinned to `value`, restoring the previous one.
+	 *
+	 * `serverArgv` takes the interpreter from the ENVIRONMENT (it is a parameter
+	 * of the translation, with `cmd.exe` as the last-resort default). A case that
+	 * expects the bare name must pin it: on a Windows box `ComSpec` is an
+	 * absolute path, so the expectation failed there on code that was right.
+	 */
+	function withComspec(value: string, body: () => void): void {
+		const previous = process.env.ComSpec;
+		process.env.ComSpec = value;
+		try {
+			body();
+		} finally {
+			if (previous === undefined) delete process.env.ComSpec;
+			else process.env.ComSpec = previous;
+		}
+	}
+
 	it("launches a stdio-default server with no extra flag, on every platform", () => {
 		expect(serverArgv(bare, "darwin")).toEqual(["rust-analyzer"]);
-		expect(serverArgv(bare, "win32")).toEqual(["cmd.exe", "/d", "/s", "/c", "rust-analyzer"]);
+		withComspec("cmd.exe", () => {
+			expect(serverArgv(bare, "win32")).toEqual(["cmd.exe", "/d", "/s", "/c", "rust-analyzer"]);
+		});
 	});
 
 	it("carries a server's own flag through, on every platform", () => {
 		expect(serverArgv(flagged, "darwin")).toEqual(["typescript-language-server", "--stdio"]);
-		expect(serverArgv(flagged, "win32")).toEqual([
-			"cmd.exe",
-			"/d",
-			"/s",
-			"/c",
-			"typescript-language-server",
-			"--stdio",
-		]);
+		withComspec("cmd.exe", () => {
+			expect(serverArgv(flagged, "win32")).toEqual([
+				"cmd.exe",
+				"/d",
+				"/s",
+				"/c",
+				"typescript-language-server",
+				"--stdio",
+			]);
+		});
+	});
+
+	it("launches through the interpreter the environment names", () => {
+		// The other half of the contract: the environment's choice WINS over the
+		// `cmd.exe` default, which is why the cases above have to pin it.
+		withComspec("C:\\WINDOWS\\system32\\cmd.exe", () => {
+			expect(serverArgv(bare, "win32")).toEqual([
+				"C:\\WINDOWS\\system32\\cmd.exe",
+				"/d",
+				"/s",
+				"/c",
+				"rust-analyzer",
+			]);
+		});
 	});
 });

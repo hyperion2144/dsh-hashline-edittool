@@ -4,6 +4,7 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Language, Parser } from "web-tree-sitter";
 import { compilePattern, matchPattern, registerPatternLanguage } from "../../src/ast/pattern.js";
 
@@ -14,7 +15,12 @@ const WASM = {
 
 beforeAll(async () => {
 	const core = new URL(import.meta.resolve("web-tree-sitter")).href;
-	await Parser.init({ locateFile: (f: string) => new URL(`./${f}`, core).pathname });
+	// `fileURLToPath`, NOT `URL.pathname`: on Windows the pathname keeps a
+	// leading slash before the drive (`/D:/…/web-tree-sitter.wasm`), which the
+	// wasm loader's filesystem layer resolves against the current drive and
+	// looks for `D:\D:\…`. The plugin's own worker and the sibling ast test
+	// already convert through this helper — this caller was the odd one out.
+	await Parser.init({ locateFile: (f: string) => fileURLToPath(new URL(`./${f}`, core)) });
 	for (const [id, path] of Object.entries(WASM)) {
 		registerPatternLanguage(id, await Language.load(readFileSync(path)));
 	}

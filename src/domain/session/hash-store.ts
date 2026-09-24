@@ -27,10 +27,12 @@ import {
 	HASH_STORE_BUSY_TIMEOUT,
 	SERVED_TTL_MS,
 	ANCHOR_STATE_TTL_MS,
+	UNDO_STACK_DEPTH,
 } from "../../infra/constants.js";
 import {
 	registerAnchorPersistence,
 	type PersistedAnchorState,
+	type PersistedAnchorLine,
 } from "../../hashline/session-anchors.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
@@ -43,6 +45,10 @@ export interface LegacySnapshot {
 export function isValidHashList(value: unknown): value is string[] {
 	if (!Array.isArray(value)) return false;
 	for (const hash of value) {
+		// "" is the LAZY model's never-served placeholder (#169): a dense array
+		// the engine hands the store may legitimately carry it, and a row that
+		// does is NOT corrupt.
+		if (hash === "") continue;
 		if (typeof hash !== "string" || !hashRe().test(hash)) return false;
 	}
 	return true;
@@ -93,8 +99,10 @@ interface Prepared {
 	allHashes: (...params: SqlParams) => Record<string, unknown>[];
 	deleteOne: (...params: SqlParams) => void;
 	upsert: (...params: SqlParams) => void;
-	undoUpsert: (...params: SqlParams) => void;
+	undoPush: (...params: SqlParams) => void;
+	undoPop: (...params: SqlParams) => void;
 	undoGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	undoDepth: (...params: SqlParams) => number;
 	undoDelete: (...params: SqlParams) => void;
 	servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	servedUpsert: (...params: SqlParams) => void;
@@ -104,10 +112,13 @@ interface Prepared {
 	servedDeletePath: (...params: SqlParams) => void;
 	servedWipe: (...params: SqlParams) => void;
 	servedPruneOlderThan: (...params: SqlParams) => void;
-	anchorGet: (...params: SqlParams) => Record<string, unknown> | undefined;
-	anchorProbe: (...params: SqlParams) => Record<string, unknown> | undefined;
-	anchorUpsert: (...params: SqlParams) => void;
-	anchorDelete: (...params: SqlParams) => void;
+	anchorMetaGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	anchorMetaUpsert: (...params: SqlParams) => void;
+	anchorMetaDelete: (...params: SqlParams) => void;
+	anchorLinesAll: (...params: SqlParams) => Record<string, unknown>[];
+	anchorLineGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	anchorLineUpsert: (...params: SqlParams) => void;
+	anchorLinesDeletePath: (...params: SqlParams) => void;
 	anchorPruneOlderThan: (...params: SqlParams) => void;
 }
 
@@ -139,11 +150,17 @@ export interface HashStore {
 	/** Paths whose stored snapshot hashes contain every given anchor. */
 	findSnapshotPaths(hashes: string[]): string[];
 
-	// ---- undo entries (one per path) ----------------------------------------
-	/** The undo row for a path, healing a corrupt row (parse → validate → delete). */
+	// ---- undo entries (a bounded stack per path, newest first) --------------
+	/** The NEWEST undo row for a path, healing a corrupt row (parse → validate → clear). */
 	getUndo(path: string): UndoRecord | undefined;
-	upsertUndo(path: string, entry: UndoRecord): void;
+	/** Push an entry as the newest; the oldest past {@link UNDO_STACK_DEPTH} is dropped. */
+	pushUndo(path: string, entry: UndoRecord): void;
+	/** Drop the newest entry — the one below it is the next undo. */
+	popUndo(path: string): void;
+	/** Drop the path's whole history (an external write invalidated the chain). */
 	deleteUndo(path: string): void;
+	/** How many edits on this path can still be undone. */
+	undoDepth(path: string): number;
 
 	// ---- served rows (what the model has seen, per session+path) ------------
 	/** The served anchors set for a session+path, healing a corrupt row; empty when nothing was served. */
@@ -243,6 +260,52 @@ function openDb(storePath: string): { db: DatabaseSync; stmts: Prepared } {
 	}
 }
 
+/**
+ * The undo row family: a bounded STACK per path, NEWEST at the HIGHEST
+ * `depth`. Depths are an APPEND counter (never renumbered — renumbering
+ * collides with the primary key mid-statement), so `MAX(depth)` is the undo a
+ * call reverts and the deepest rows past the bound are the ones dropped.
+ *
+ * It used to hold one row per path (`path` the primary key), which capped the
+ * history at a single level — the write that consumed an undo also wiped it
+ * (#151/P5).
+ */
+const UNDO_TABLE_DDL =
+	"CREATE TABLE IF NOT EXISTS undo (" +
+	"path TEXT NOT NULL, " +
+	"depth INTEGER NOT NULL, " +
+	"content TEXT NOT NULL, " +
+	"bom TEXT NOT NULL, " +
+	"ending TEXT NOT NULL, " +
+	"hashes TEXT NOT NULL, " +
+	"result_content TEXT NOT NULL, " +
+	"updated_at INTEGER NOT NULL, " +
+	"PRIMARY KEY (path, depth)" +
+	")";
+
+/**
+ * Run one statement group inside a single transaction, retrying the WHOLE group
+ * on a busy lock (a rolled-back transaction is safe to replay). A failure inside
+ * rolls back, so a multi-statement move is never half-applied.
+ */
+function withTransaction(db: DatabaseSync, fn: () => void): void {
+	withBusyRetry(() => {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			fn();
+			db.exec("COMMIT");
+		} catch (error) {
+			try {
+				db.exec("ROLLBACK");
+			} catch {
+				// Already unwound (the failure WAS the commit): the original error is
+				// the one worth reporting.
+			}
+			throw error;
+		}
+	});
+}
+
 function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec("PRAGMA synchronous = NORMAL");
@@ -261,27 +324,83 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"value TEXT NOT NULL" +
 			")",
 	);
+	db.exec(UNDO_TABLE_DDL);
+	// Migration for a store written before #151/P5: the table exists in its old
+	// single-row shape. Rebuild it IN PLACE rather than bumping
+	// HASH_STORE_VERSION — a version change wipes anchor_state as well, and every
+	// anchor the session served would go stale. The existing entry becomes the
+	// stack's top, so an in-flight undo survives the upgrade.
+	const undoColumns = db.prepare("PRAGMA table_info(undo)").all() as {
+		name: string;
+	}[];
+	if (undoColumns.length > 0 && !undoColumns.some((column) => column.name === "depth")) {
+		db.exec("ALTER TABLE undo RENAME TO undo_legacy");
+		db.exec(UNDO_TABLE_DDL);
+		db.exec(
+			"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) " +
+				"SELECT path, 0, content, bom, ending, hashes, result_content, updated_at FROM undo_legacy",
+		);
+		db.exec("DROP TABLE undo_legacy");
+	}
 	db.exec(
-		"CREATE TABLE IF NOT EXISTS undo (" +
-			"path TEXT PRIMARY KEY, " +
-			"content TEXT NOT NULL, " +
-			"bom TEXT NOT NULL, " +
-			"ending TEXT NOT NULL, " +
-			"hashes TEXT NOT NULL, " +
-			"result_content TEXT NOT NULL, " +
-			"updated_at INTEGER NOT NULL" +
-			")",
-	);
-	db.exec(
-		"CREATE TABLE IF NOT EXISTS anchor_state (" +
+		"CREATE TABLE IF NOT EXISTS anchor_meta (" +
 			"path TEXT PRIMARY KEY, " +
 			"checksum TEXT NOT NULL, " +
 			"line_count INTEGER NOT NULL, " +
-			"anchors TEXT NOT NULL, " +
-			"line_keys TEXT NOT NULL, " +
 			"updated_at INTEGER NOT NULL" +
-			")",
+		")",
 	);
+	db.exec(
+		"CREATE TABLE IF NOT EXISTS anchor_lines (" +
+			"path TEXT NOT NULL, " +
+			"line INTEGER NOT NULL, " +
+			"anchor TEXT NOT NULL, " +
+			"content_key INTEGER NOT NULL, " +
+			"updated_at INTEGER NOT NULL, " +
+			"PRIMARY KEY (path, line)" +
+		")",
+	);
+	db.exec(
+		"CREATE INDEX IF NOT EXISTS anchor_lines_by_anchor ON anchor_lines (path, anchor)",
+	);
+	// Migration for a store written before the sparse anchor model (#169): the
+	// legacy DENSE anchor_state table (one row per path, anchors/line_keys as
+	// JSON arrays) expands 1:1 into anchor_meta + anchor_lines — every anchor
+	// the file has already given out survives verbatim, none is re-minted. A
+	// corrupt legacy row is skipped, never fatal. Runs BEFORE the version
+	// check so a version wipe still wins.
+	const legacyAnchorColumns = db.prepare("PRAGMA table_info(anchor_state)").all() as {
+		name: string;
+	}[];
+	if (legacyAnchorColumns.length > 0 && legacyAnchorColumns.some((c) => c.name === "anchors")) {
+		const legacyRows = db
+			.prepare("SELECT path, checksum, line_count, anchors, line_keys FROM anchor_state")
+			.all() as Record<string, unknown>[];
+		const now = Date.now();
+		const metaUpsert = db.prepare(
+			"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?) " +
+				"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, updated_at = excluded.updated_at",
+		);
+		const lineInsert = db.prepare(
+			"INSERT OR REPLACE INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		for (const row of legacyRows) {
+			try {
+				const anchors = JSON.parse(row.anchors as string) as unknown;
+				const lineKeys = JSON.parse(row.line_keys as string) as unknown;
+				if (!Array.isArray(anchors) || !Array.isArray(lineKeys)) continue;
+				metaUpsert.run(String(row.path), String(row.checksum), Number(row.line_count), now);
+				for (let i = 0; i < anchors.length && i < lineKeys.length; i++) {
+					const anchor = anchors[i];
+					if (typeof anchor !== "string" || anchor === "") continue; // never-served lines carry no anchor
+					lineInsert.run(String(row.path), i + 1, anchor, Number(lineKeys[i]), now);
+				}
+			} catch {
+				// A corrupt legacy row does not block the migration of the rest.
+			}
+		}
+		db.exec("DROP TABLE anchor_state");
+	}
 	const versionRow = db
 		.prepare("SELECT value FROM meta WHERE key = 'version'")
 		.get() as { value?: string } | undefined;
@@ -291,7 +410,8 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	if (versionChanged) {
 		db.exec("DELETE FROM snapshots");
 		db.exec("DELETE FROM undo");
-		db.exec("DELETE FROM anchor_state");
+		db.exec("DELETE FROM anchor_meta");
+		db.exec("DELETE FROM anchor_lines");
 	}
 	const servedColumns = db.prepare("PRAGMA table_info(served)").all() as {
 		name: string;
@@ -320,7 +440,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?",
 	);
 	const allStmt = db.prepare(
-		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_state",
+		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta"
 	);
 	const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
 	const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
@@ -328,14 +448,27 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"INSERT INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?) " +
 			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at",
 	);
-	const undoUpsertStmt = db.prepare(
-		"INSERT INTO undo (path, content, bom, ending, hashes, result_content, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-			"ON CONFLICT(path) DO UPDATE SET content = excluded.content, bom = excluded.bom, ending = excluded.ending, hashes = excluded.hashes, result_content = excluded.result_content, updated_at = excluded.updated_at",
+	// The newest entry is the one with the HIGHEST depth. `depth` is an append
+	// counter, never renumbered: renumbering on push/pop collided with the
+	// (path, depth) primary key mid-statement (`UNIQUE constraint failed`),
+	// because SQLite checks the constraint row by row.
+	const undoPushStmt = db.prepare(
+		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) " +
+			"VALUES (?, COALESCE((SELECT MAX(depth) FROM undo WHERE path = ?), -1) + 1, ?, ?, ?, ?, ?, ?)",
 	);
+	const undoMaxStmt = db.prepare("SELECT MAX(depth) AS max FROM undo WHERE path = ?");
+	const undoPruneStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth < ?");
 	const undoGetStmt = db.prepare(
-		"SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ?",
+		"SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ? ORDER BY depth DESC LIMIT 1",
 	);
+	const undoPopStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth = ?");
+	const undoDepthStmt = db.prepare("SELECT COUNT(*) AS n FROM undo WHERE path = ?");
 	const undoDelStmt = db.prepare("DELETE FROM undo WHERE path = ?");
+	/** The highest depth stored for a path (the newest undo), or undefined. */
+	const topDepth = (path: string | number): number | undefined => {
+		const row = undoMaxStmt.get(path) as { max?: number | null } | undefined;
+		return row?.max === null || row?.max === undefined ? undefined : Number(row.max);
+	};
 	const servedGetStmt = db.prepare(
 		"SELECT hashes, reported FROM served WHERE session_id = ? AND path = ?",
 	);
@@ -358,16 +491,27 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	const servedPruneOlderThanStmt = db.prepare(
 		"DELETE FROM served WHERE updated_at < ?",
 	);
-	const anchorGetStmt = db.prepare(
-		"SELECT checksum, anchors, line_keys FROM anchor_state WHERE path = ?",
+	const anchorMetaGetStmt = db.prepare(
+		"SELECT checksum, line_count FROM anchor_meta WHERE path = ?",
 	);
-	const anchorProbeStmt = db.prepare("SELECT checksum FROM anchor_state WHERE path = ?");
-	const anchorUpsertStmt = db.prepare(
-		"INSERT INTO anchor_state (path, checksum, line_count, anchors, line_keys, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
-			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, anchors = excluded.anchors, line_keys = excluded.line_keys, updated_at = excluded.updated_at",
+	const anchorMetaUpsertStmt = db.prepare(
+		"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?) " +
+			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, updated_at = excluded.updated_at",
 	);
-	const anchorDeleteStmt = db.prepare("DELETE FROM anchor_state WHERE path = ?");
-	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_state WHERE updated_at < ?");
+	const anchorLinesAllStmt = db.prepare(
+		"SELECT line, anchor, content_key FROM anchor_lines WHERE path = ? ORDER BY line",
+	);
+	const anchorLineGetStmt = db.prepare(
+		"SELECT anchor, content_key FROM anchor_lines WHERE path = ? AND line = ?",
+	);
+	const anchorLineUpsertStmt = db.prepare(
+		"INSERT INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?) " +
+			"ON CONFLICT(path, line) DO UPDATE SET anchor = excluded.anchor, content_key = excluded.content_key, updated_at = excluded.updated_at",
+	);
+	const anchorLinesDeletePathStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ?");
+	const anchorMetaDeleteStmt = db.prepare("DELETE FROM anchor_meta WHERE path = ?");
+	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_meta WHERE updated_at < ?");
+	const anchorLinesPruneOlderThanStmt = db.prepare("DELETE FROM anchor_lines WHERE updated_at < ?");
 	const stmts: Prepared = {
 		get: (...params) =>
 			getStmt.get(...params) as Record<string, unknown> | undefined,
@@ -385,13 +529,31 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				upsertStmt.run(...params);
 			});
 		},
-		undoUpsert: (...params) => {
-			withBusyRetry(() => {
-				undoUpsertStmt.run(...params);
+		undoPush: (...params) => {
+			// `params` = [path, content, bom, ending, hashesJson, resultContent, updatedAt];
+			// the path appears TWICE in the INSERT — once for the row, once for the
+			// MAX(depth) that numbers it. Insert and prune are ONE move: a crash between
+			// them would leave the stack one deeper than advertised.
+			withTransaction(db, () => {
+				undoPushStmt.run(params[0], ...params);
+				const top = topDepth(params[0]) ?? 0;
+				undoPruneStmt.run(params[0], top - UNDO_STACK_DEPTH + 1);
+			});
+		},
+		undoPop: (...params) => {
+			// Read the top depth FIRST, then delete exactly that row: a
+			// `depth = (SELECT MAX(depth) …)` in the DELETE re-evaluates as rows go
+			// and would walk the whole stack out.
+			withTransaction(db, () => {
+				const top = topDepth(params[0]);
+				if (top === undefined) return;
+				undoPopStmt.run(params[0], top);
 			});
 		},
 		undoGet: (...params) =>
 			undoGetStmt.get(...params) as Record<string, unknown> | undefined,
+		undoDepth: (...params) =>
+			((undoDepthStmt.get(...params) as { n?: number } | undefined)?.n ?? 0),
 		undoDelete: (...params) => {
 			withBusyRetry(() => {
 				undoDelStmt.run(...params);
@@ -434,23 +596,36 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				servedPruneOlderThanStmt.run(...params);
 			});
 		},
-		anchorGet: (...params) =>
-			anchorGetStmt.get(...params) as Record<string, unknown> | undefined,
-		anchorProbe: (...params) =>
-			anchorProbeStmt.get(...params) as Record<string, unknown> | undefined,
-		anchorUpsert: (...params) => {
+		anchorMetaGet: (...params) =>
+			anchorMetaGetStmt.get(...params) as Record<string, unknown> | undefined,
+		anchorMetaUpsert: (...params) => {
 			withBusyRetry(() => {
-				anchorUpsertStmt.run(...params);
+				anchorMetaUpsertStmt.run(...params);
 			});
 		},
-		anchorDelete: (...params) => {
+		anchorLinesAll: (...params) =>
+			anchorLinesAllStmt.all(...params) as Record<string, unknown>[],
+		anchorLineGet: (...params) =>
+			anchorLineGetStmt.get(...params) as Record<string, unknown> | undefined,
+		anchorLineUpsert: (...params) => {
 			withBusyRetry(() => {
-				anchorDeleteStmt.run(...params);
+				anchorLineUpsertStmt.run(...params);
+			});
+		},
+		anchorLinesDeletePath: (...params) => {
+			withBusyRetry(() => {
+				anchorLinesDeletePathStmt.run(...params);
+			});
+		},
+		anchorMetaDelete: (...params) => {
+			withBusyRetry(() => {
+				anchorMetaDeleteStmt.run(...params);
 			});
 		},
 		anchorPruneOlderThan: (...params) => {
 			withBusyRetry(() => {
 				anchorPruneOlderThanStmt.run(...params);
+				anchorLinesPruneOlderThanStmt.run(...params);
 			});
 		},
 	};
@@ -516,6 +691,8 @@ function makeDomainStore(stmts: Prepared): HashStore {
 			try {
 				const parsed = JSON.parse(row.hashes as string);
 				if (!isValidHashList(parsed)) {
+					// A corrupt TOP breaks the chain: every entry below it describes a state
+					// this one was supposed to lead to, so the whole stack goes.
 					stmts.undoDelete(path);
 					return undefined;
 				}
@@ -531,8 +708,8 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				return undefined;
 			}
 		},
-		upsertUndo(path, entry) {
-			stmts.undoUpsert(
+		pushUndo(path, entry) {
+			stmts.undoPush(
 				path,
 				entry.content,
 				entry.bom,
@@ -542,8 +719,14 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				Date.now(),
 			);
 		},
+		popUndo(path) {
+			stmts.undoPop(path);
+		},
 		deleteUndo(path) {
 			stmts.undoDelete(path);
+		},
+		undoDepth(path) {
+			return stmts.undoDepth(path);
 		},
 
 		getServed(sessionKey, path) {
@@ -620,7 +803,8 @@ function makeDomainStore(stmts: Prepared): HashStore {
 					stmts.deleteOne(path);
 					stmts.undoDelete(path);
 					stmts.servedDeletePath(path);
-					stmts.anchorDelete(path);
+					stmts.anchorMetaDelete(path);
+					stmts.anchorLinesDeletePath(path);
 				}
 			});
 		},
@@ -901,42 +1085,56 @@ registerAnchorPersistence({
 	probe(path) {
 		const entry = currentStore();
 		if (!entry) return undefined;
-		const row = entry.stmts.anchorProbe(path);
+		const row = entry.stmts.anchorMetaGet(path);
 		return row ? (row.checksum as string) : undefined;
 	},
 	get(path): PersistedAnchorState | undefined {
 		const entry = currentStore();
 		if (!entry) return undefined;
-		const row = entry.stmts.anchorGet(path);
-		if (!row) return undefined;
-		try {
-			const anchors = JSON.parse(row.anchors as string) as unknown;
-			const lineKeys = JSON.parse(row.line_keys as string) as unknown;
-			if (!isValidHashList(anchors) || !isValidLineKeyList(lineKeys)) {
-				// Same corruption contract as every other row family: unparseable or
-				// wrong-typed rows heal by delete. A length DRIFT between anchors and
-				// line_keys is NOT corrupt — it is the partial-write shape
-				// anchorsFor heals positionally (keep survivors, allocate gaps).
-				entry.stmts.anchorDelete(path);
+		const meta = entry.stmts.anchorMetaGet(path);
+		if (!meta) return undefined;
+		// Sparse rows: only the lines a tool has SERVED carry an anchor. The
+		// caller materializes the dense view (placeholders for never-served
+		// lines) — the persisted truth stays O(served lines) (#169 redesign).
+		const rows = entry.stmts.anchorLinesAll(path);
+		const lines: PersistedAnchorLine[] = [];
+		for (const row of rows) {
+			const line = row.line as number;
+			const anchor = row.anchor as string;
+			const contentKey = row.content_key as number;
+			if (!Number.isInteger(line) || line < 1 ||
+				!isValidHashList([anchor]) || !Number.isInteger(contentKey) || contentKey < 0) {
+				// Same corruption contract as every other row family: heal by delete.
+				entry.stmts.anchorMetaDelete(path);
+				entry.stmts.anchorLinesDeletePath(path);
 				return undefined;
 			}
-			return { checksum: row.checksum as string, anchors, lineKeys };
-		} catch {
-			entry.stmts.anchorDelete(path);
-			return undefined;
+			lines.push({ line, anchor, contentKey });
 		}
+		return { checksum: meta.checksum as string, lineCount: meta.line_count as number, lines };
 	},
 	put(path, state) {
 		const entry = currentStore();
 		if (!entry) return; // no store yet: memory-only; flushed on the next wired call
-		entry.stmts.anchorUpsert(
-			path,
-			state.checksum,
-			state.anchors.length,
-			JSON.stringify(state.anchors),
-			JSON.stringify(state.lineKeys),
-			Date.now(),
-		);
+		withTransaction(entry.db, () => {
+			entry.stmts.anchorMetaUpsert(path, state.checksum, state.lineCount, Date.now());
+			entry.stmts.anchorLinesDeletePath(path);
+			for (const line of state.lines) {
+				entry.stmts.anchorLineUpsert(
+					path, line.line, line.anchor, line.contentKey, Date.now(),
+				);
+			}
+		});
+	},
+	putLines(path, lines) {
+		const entry = currentStore();
+		if (!entry || lines.length === 0) return;
+		for (const line of lines) {
+			withBusyRetry(() => {
+				entry.stmts.anchorLineUpsert(
+					path, line.line, line.anchor, line.contentKey, Date.now(),
+				);
+			});
+		}
 	},
 });
-

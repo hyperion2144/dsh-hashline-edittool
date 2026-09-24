@@ -25,7 +25,7 @@ import { toLF } from "../render/edit-diff.js";
 // The SAME anchor assigner `read` uses, so a row the card shows carries the
 // marker an `edit` accepts — otherwise the card would be decorative.
 import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashline/hash-assign.js";
-import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
@@ -107,6 +107,29 @@ function lspDescription(): string {
 		"",
 		"This REFUSES rather than returning nothing when no server can be started, and says why: \"no server\" and \"no symbols\" are different facts.",
 	].join("\n");
+}
+
+/**
+ * Add the document a request is about, unless the caller already named one.
+ *
+ * `payload` is optional PARAMS, not a replacement for the document: a
+ * `textDocument/definition` payload carrying only a `position` used to reach
+ * the server without its `textDocument`, and the server answered `Cannot read
+ * properties of undefined (reading 'uri')` (#151/P8). An explicit
+ * `textDocument` — or an explicit `uri` inside one — is left exactly as the
+ * caller wrote it; a non-object payload is returned untouched, for the server
+ * (or the protocol layer) to reject in its own words.
+ */
+function withDocument(params: unknown, uri: string): unknown {
+	if (params === null || typeof params !== "object" || Array.isArray(params)) return params;
+	const record = params as Record<string, unknown>;
+	const textDocument = record.textDocument;
+	if (textDocument === undefined) return { ...record, textDocument: { uri } };
+	if (textDocument !== null && typeof textDocument === "object" && !Array.isArray(textDocument)) {
+		const doc = textDocument as Record<string, unknown>;
+		if (doc.uri === undefined) return { ...record, textDocument: { ...doc, uri } };
+	}
+	return record;
 }
 
 /**
@@ -365,6 +388,12 @@ export function buildLspTool(io: FileIO) {
 					// would be the card parsing a string this same function just built.
 					bySeverity.set(line, [...(bySeverity.get(line) ?? []), code]);
 				}
+				// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
+				const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
+				const diagAllocated = await allocateInWorkspace(cwd, absolutePath, text, diagLineNos);
+				for (let k = 0; k < diagLineNos.length; k++) {
+					diagAnchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
+				}
 				const diagRows = [...byLine.entries()]
 					.sort((a, b) => a[0] - b[0])
 					.map(([line, messages]) => ({
@@ -448,7 +477,7 @@ export function buildLspTool(io: FileIO) {
 						{ textDocument: { uri }, range, context: { diagnostics: [] } }
 					: args.payload === undefined
 						? { textDocument: { uri } }
-						: (JSON.parse(args.payload) as unknown);
+						: withDocument(JSON.parse(args.payload), uri);
 			const answer = await session.request(method, params);
 
 			if (args.operation === "symbols") {
@@ -471,6 +500,16 @@ export function buildLspTool(io: FileIO) {
 					});
 				}
 				hashlines.sort((a, b) => a.number - b.number);
+				// LAZY (#169): allocate for exactly the symbol lines this call serves —
+				// the serve below publishes these anchors, and an unallocated symbol
+				// row would be dropped from the serve (and be uneditable).
+				const symbolLineNos = [...seenLines].sort((a, b) => a - b);
+				const symbolAllocated = await allocateInWorkspace(cwd, absolutePath, text, symbolLineNos);
+				for (let k = 0; k < symbolLineNos.length; k++) {
+					const anchor = symbolAllocated[k]!;
+					const row = hashlines.find((r) => r.number === symbolLineNos[k]);
+					if (row) row.hash = anchor;
+				}
 				// The symbol rows are SERVED and OBSERVED exactly like a read's: an
 				// anchor the card shows is an anchor the next edit may use.
 				// Same scope-aware primitive as the diagnostics branch above.

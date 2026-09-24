@@ -4,6 +4,7 @@ import { saveUndo, getUndo, clearUndo } from "../../src/domain/edit/undo-edit.js
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import * as hashStoreModule from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
+import { UNDO_STACK_DEPTH } from "../../src/infra/constants.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -30,7 +31,7 @@ describe("undo-store", () => {
 		expect(await getUndo("/nonexistent.ts")).toBeUndefined();
 	});
 
-	it("overwrites previous entry for the same path", async () => {
+	it("the NEWEST entry wins — a push, not an overwrite", async () => {
 		await saveUndo(home.testPath, {
 			content: "first",
 			bom: "",
@@ -152,7 +153,7 @@ describe("undo-store", () => {
 describe("undo-store — raw entries", () => {
 	it("round-trips an undo entry", async () => {
 		const store = await loadHashStore();
-		store.upsertUndo("/a.ts", {
+		store.pushUndo("/a.ts", {
 			content: "old",
 			bom: "\uFEFF",
 			ending: "\r\n",
@@ -174,16 +175,16 @@ describe("undo-store — raw entries", () => {
 		expect(store.getUndo("/missing.ts")).toBeUndefined();
 	});
 
-	it("overwrites the previous entry for the same path", async () => {
+	it("the NEWEST entry wins — a push, not an overwrite", async () => {
 		const store = await loadHashStore();
-		store.upsertUndo("/a.ts", {
+		store.pushUndo("/a.ts", {
 			content: "first",
 			bom: "",
 			ending: "\n",
 			hashes: ["aB3"],
 			resultContent: "first!",
 		});
-		store.upsertUndo("/a.ts", {
+		store.pushUndo("/a.ts", {
 			content: "second",
 			bom: "",
 			ending: "\r",
@@ -198,7 +199,7 @@ describe("undo-store — raw entries", () => {
 
 	it("deletes an undo entry", async () => {
 		const store = await loadHashStore();
-		store.upsertUndo("/a.ts", {
+		store.pushUndo("/a.ts", {
 			content: "old",
 			bom: "",
 			ending: "\n",
@@ -211,7 +212,7 @@ describe("undo-store — raw entries", () => {
 
 	it("treats a row with unparseable hashes as a miss", async () => {
 		const store = await loadHashStore();
-		store.upsertUndo("/a.ts", {
+		store.pushUndo("/a.ts", {
 			content: "old",
 			bom: "",
 			ending: "\n",
@@ -237,7 +238,7 @@ describe("undo-store — raw entries", () => {
 
 	it("treats a row with malformed hash strings as a miss", async () => {
 		const store = await loadHashStore();
-		store.upsertUndo("/a.ts", {
+		store.pushUndo("/a.ts", {
 			content: "old",
 			bom: "",
 			ending: "\n",
@@ -259,5 +260,66 @@ describe("undo-store — raw entries", () => {
 			.get("/a.ts") as { n: number };
 		check.close();
 		expect(remaining.n).toBe(0);
+	});
+
+	it("walks back through the stack, newest first", async () => {
+		const store = await loadHashStore();
+		for (const name of ["first", "second", "third"]) {
+			store.pushUndo("/stack.ts", {
+				content: name,
+				bom: "",
+				ending: "\n",
+				hashes: ["xY7"],
+				resultContent: `${name}!`
+			});
+		}
+		expect(store.undoDepth("/stack.ts")).toBe(3);
+		expect(store.getUndo("/stack.ts")!.content).toBe("third");
+		store.popUndo("/stack.ts");
+		expect(store.getUndo("/stack.ts")!.content).toBe("second");
+		store.popUndo("/stack.ts");
+		expect(store.getUndo("/stack.ts")!.content).toBe("first");
+		store.popUndo("/stack.ts");
+		expect(store.getUndo("/stack.ts")).toBeUndefined();
+		expect(store.undoDepth("/stack.ts")).toBe(0);
+	});
+
+	it("bounds the stack at UNDO_STACK_DEPTH, dropping the OLDEST entry", async () => {
+		const store = await loadHashStore();
+		for (let i = 0; i < UNDO_STACK_DEPTH + 3; i++) {
+			store.pushUndo("/bounded.ts", {
+				content: `v${i}`,
+				bom: "",
+				ending: "\n",
+				hashes: ["xY7"],
+				resultContent: `v${i}!`
+			});
+		}
+		expect(store.undoDepth("/bounded.ts")).toBe(UNDO_STACK_DEPTH);
+		const seen: string[] = [];
+		for (let i = 0; i < UNDO_STACK_DEPTH; i++) {
+			seen.push(store.getUndo("/bounded.ts")!.content);
+			store.popUndo("/bounded.ts");
+		}
+		// Newest first, and the three oldest never made it.
+		expect(seen[0]).toBe(`v${UNDO_STACK_DEPTH + 2}`);
+		expect(seen[UNDO_STACK_DEPTH - 1]).toBe("v3");
+		expect(store.getUndo("/bounded.ts")).toBeUndefined();
+	});
+
+	it("deleteUndo drops the whole stack, not just the top", async () => {
+		const store = await loadHashStore();
+		for (const name of ["a", "b"]) {
+			store.pushUndo("/clear.ts", {
+				content: name,
+				bom: "",
+				ending: "\n",
+				hashes: ["xY7"],
+				resultContent: `${name}!`
+			});
+		}
+		store.deleteUndo("/clear.ts");
+		expect(store.getUndo("/clear.ts")).toBeUndefined();
+		expect(store.undoDepth("/clear.ts")).toBe(0);
 	});
 });
