@@ -49,6 +49,60 @@ export const SERVED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * persisted state and re-anchors on its next true first serve. */
 export const ANCHOR_STATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SERVED_ECHO_CAP = 150;
+
+// ── anchor-store budgets (#180, spec #184, ADR-0010) ─────────────────────────
+
+/**
+ * Main-store byte budget, measured as `(page_count − freelist_count) ×
+ * page_size`. NOT `page_count × page_size`: DELETE only moves pages to the
+ * freelist, so a physical page count could never be brought back under budget
+ * and the sweep would delete the same paths forever. 64 MiB is ~34× smaller
+ * than the 2.17 GB store measured on this repository, and far above normal
+ * single-workspace use (a full 2000-path session stays under 3 MB).
+ */
+export const HASH_STORE_MAX_BYTES = 64 * 1024 * 1024;
+/**
+ * Path-count budget. Measured cost is ≈1.1 KB of pages per touched path
+ * (three row families + indexes + a write transaction each), so this is the
+ * bound that catches "scanned the whole monorepo" growth.
+ */
+export const HASH_STORE_MAX_PATHS = 5000;
+/**
+ * `anchor_lines` row budget: catches "a few very large files served many
+ * lines each" (the real store held 10.49 M rows).
+ */
+export const HASH_STORE_MAX_ROWS = 300_000;
+/**
+ * Cleanup runs at open and every this many writes; over-budget writes sweep
+ * immediately. No timers: DSH is event-driven.
+ */
+export const HASH_STORE_SWEEP_WRITES = 200;
+/** Evict this many times over budget (evict, then re-measure). */
+export const HASH_STORE_EVICT_RATIO = 4;
+/**
+ * Above this many times over budget, rebuilding the store (rename aside,
+ * fresh empty file) beats evicting: it is seconds-free, needs no second copy
+ * of the file on disk, and is what the user did by hand.
+ */
+export const HASH_STORE_REBUILD_RATIO = 16;
+/**
+ * Rebuild throttle. A workspace that legitimately needs more than the rebuild
+ * threshold must not lose every anchor on each launch.
+ */
+export const HASH_STORE_REBUILD_THROTTLE_MS = 24 * 60 * 60 * 1000;
+/**
+ * Per-path `undo` budget (#176). Each layer stores a full copy of the file
+ * body, so an unbounded stack on one large file is the biggest single text
+ * payload in the store; the newest layers are kept, and never fewer than one.
+ */
+export const UNDO_MAX_PATH_BYTES = 2 * 1024 * 1024;
+/**
+ * Cold-open budget (acceptance, #178): first open in a NEW process must stay
+ * under this regardless of store size, which is why the open path no longer
+ * runs `PRAGMA quick_check` on every start (it was 1.3 s of a 1.7 s cold open
+ * on a 2 GB store).
+ */
+export const HASH_STORE_COLD_OPEN_BUDGET_MS = 50;
 export const NOOP_LOOP_THRESHOLD = 3;
 export const NEW_CONTENT_NOT_STRING_MSG =
 	`[E_BAD_SHAPE] "replacement_text" must be a string with \\n line separators, not an array.` +

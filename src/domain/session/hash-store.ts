@@ -28,6 +28,14 @@ import {
 	SERVED_TTL_MS,
 	ANCHOR_STATE_TTL_MS,
 	UNDO_STACK_DEPTH,
+	HASH_STORE_MAX_BYTES,
+	HASH_STORE_MAX_PATHS,
+	HASH_STORE_MAX_ROWS,
+	HASH_STORE_SWEEP_WRITES,
+	HASH_STORE_EVICT_RATIO,
+	HASH_STORE_REBUILD_RATIO,
+	HASH_STORE_REBUILD_THROTTLE_MS,
+	UNDO_MAX_PATH_BYTES,
 } from "../../infra/constants.js";
 import {
 	registerAnchorPersistence,
@@ -120,6 +128,18 @@ interface Prepared {
 	anchorLineUpsert: (...params: SqlParams) => void;
 	anchorLinesDeletePath: (...params: SqlParams) => void;
 	anchorPruneOlderThan: (...params: SqlParams) => void;
+	// ---- budget / maintenance (#180) ----
+	storeBytes: () => number;
+	anchorRowCount: () => number;
+	anchorPathCount: () => number;
+	pathRecency: () => Record<string, unknown>[];
+	undoBudget: (...params: SqlParams) => Record<string, unknown> | undefined;
+	undoDepths: (...params: SqlParams) => Record<string, unknown>[];
+	metaGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	metaSet: (...params: SqlParams) => void;
+	metaDelete: (...params: SqlParams) => void;
+	orphanAnchorLines: () => void;
+	vacuum: () => void;
 }
 
 /**
@@ -512,6 +532,43 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	const anchorMetaDeleteStmt = db.prepare("DELETE FROM anchor_meta WHERE path = ?");
 	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_meta WHERE updated_at < ?");
 	const anchorLinesPruneOlderThanStmt = db.prepare("DELETE FROM anchor_lines WHERE updated_at < ?");
+	// ---- budget / maintenance (#180, spec #184) ----
+	// `(page_count - freelist_count) * page_size` is the budget metric: DELETE
+	// only moves pages to the freelist, so a physical page count could never be
+	// brought back under budget and the sweep would delete the same paths
+	// forever — freelist_count makes "rows deleted" visible immediately.
+	const storeBytesStmt = db.prepare(
+		"SELECT (page_count - freelist_count) * page_size AS bytes " +
+			"FROM pragma_page_count(), pragma_page_size(), pragma_freelist_count()",
+	);
+	const anchorRowCountStmt = db.prepare("SELECT COUNT(*) AS n FROM anchor_lines");
+	const anchorPathCountStmt = db.prepare("SELECT COUNT(*) AS n FROM anchor_meta");
+	// One row per path, oldest first: the LRU order across every row family that
+	// outlives a session (served is per-session, but still ages the path).
+	const pathRecencyStmt = db.prepare(
+		"SELECT path, MAX(ts) AS ts FROM (" +
+			"SELECT path, updated_at AS ts FROM anchor_meta " +
+			"UNION ALL SELECT path, updated_at FROM undo " +
+			"UNION ALL SELECT path, updated_at FROM snapshots " +
+			"UNION ALL SELECT path, updated_at FROM served) " +
+			"GROUP BY path ORDER BY ts ASC",
+	);
+	const undoBudgetStmt = db.prepare(
+		"SELECT COALESCE(SUM(LENGTH(content) + LENGTH(result_content) + LENGTH(hashes)), 0) AS bytes, " +
+			"COUNT(*) AS n FROM undo WHERE path = ?",
+	);
+	const undoDepthsStmt = db.prepare("SELECT depth FROM undo WHERE path = ? ORDER BY depth ASC");
+	const metaGetStmt = db.prepare("SELECT value FROM meta WHERE key = ?");
+	const metaSetStmt = db.prepare(
+		"INSERT INTO meta (key, value) VALUES (?, ?) " +
+			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+	);
+	const metaDeleteStmt = db.prepare("DELETE FROM meta WHERE key = ?");
+	// Anchor lines whose meta row is gone (a TTL prune that caught only one side,
+	// or a crashed writer): unreachable state that still costs pages.
+	const orphanAnchorLinesStmt = db.prepare(
+		"DELETE FROM anchor_lines WHERE path NOT IN (SELECT path FROM anchor_meta)",
+	);
 	const stmts: Prepared = {
 		get: (...params) =>
 			getStmt.get(...params) as Record<string, unknown> | undefined,
@@ -627,6 +684,36 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				anchorPruneOlderThanStmt.run(...params);
 				anchorLinesPruneOlderThanStmt.run(...params);
 			});
+		},
+		// ---- budget / maintenance (#180) ----
+		storeBytes: () =>
+			Number((storeBytesStmt.get() as { bytes?: number } | undefined)?.bytes ?? 0),
+		anchorRowCount: () =>
+			Number((anchorRowCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
+		anchorPathCount: () =>
+			Number((anchorPathCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
+		pathRecency: () => pathRecencyStmt.all() as Record<string, unknown>[],
+		undoBudget: (...params) =>
+			undoBudgetStmt.get(...params) as Record<string, unknown> | undefined,
+		undoDepths: (...params) => undoDepthsStmt.all(...params) as Record<string, unknown>[],
+		metaGet: (...params) => metaGetStmt.get(...params) as Record<string, unknown> | undefined,
+		metaSet: (...params) => {
+			withBusyRetry(() => {
+				metaSetStmt.run(...params);
+			});
+		},
+		metaDelete: (...params) => {
+			withBusyRetry(() => {
+				metaDeleteStmt.run(...params);
+			});
+		},
+		orphanAnchorLines: () => {
+			withBusyRetry(() => {
+				orphanAnchorLinesStmt.run();
+			});
+		},
+		vacuum: () => {
+			db.exec("VACUUM");
 		},
 	};
 	return { db, stmts };
