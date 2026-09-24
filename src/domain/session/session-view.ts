@@ -34,6 +34,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../../infra/fs-bridge.js";
 import { withWorkspace, workspaceCwd } from "../../infra/workspace.js";
 import { hashRe, canon, contentChecksum } from "../../hashline/hash-assign.js";
+import { allocateForLines } from "../../hashline/session-anchors.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 // The row shape and the row renderer both come from the resolve engine.
@@ -199,6 +200,28 @@ export async function serveRowsInWorkspace(opts: {
   // a served row the policy does not know about is an anchor the model
   // cannot write with.
   await opts.io.emitObserved(opts.absolutePath, opts.exec, opts.exec.signal);
+}
+
+/**
+ * Allocate anchors for the rows a tool is about to serve, INSIDE the workspace
+ * scope. The anchor store is per-project, and a tool without its own
+ * `withWorkspace` body (`ast_grep`, `lsp`) would otherwise write the SHARED
+ * `$DSH_HOME` store — where nothing reads it (the same trap
+ * {@link serveRowsInWorkspace} exists for on the served side).
+ *
+ * @param cwd - the workspace root for this execution.
+ * @param absolutePath - the file the rows belong to.
+ * @param content - the file's current normalized text.
+ * @param lines - the 1-based lines the tool is about to render.
+ * @returns the allocated anchors, aligned with `lines`.
+ */
+export async function allocateInWorkspace(
+  cwd: string,
+  absolutePath: string,
+  content: string,
+  lines: number[],
+): Promise<string[]> {
+  return withWorkspace(cwd, async () => allocateForLines(absolutePath, content, lines));
 }
 
 export async function recordServedTruncated(sessionKey: string, path: string, rows: ServedEntry[], _lineCount: number, _clearFrom = 0): Promise<void> {

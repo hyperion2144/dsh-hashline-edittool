@@ -25,11 +25,11 @@ import { toLF } from "../render/edit-diff.js";
 // The SAME anchor assigner `read` uses, so a row the card shows carries the
 // marker an `edit` accepts — otherwise the card would be decorative.
 import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashline/hash-assign.js";
-import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
+import { anchorsFor } from "../hashline/session-anchors.js";
 import { diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
@@ -390,7 +390,7 @@ export function buildLspTool(io: FileIO) {
 				}
 				// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
 				const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
-				const diagAllocated = allocateForLines(absolutePath, text, diagLineNos);
+				const diagAllocated = await allocateInWorkspace(cwd, absolutePath, text, diagLineNos);
 				for (let k = 0; k < diagLineNos.length; k++) {
 					diagAnchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
 				}
@@ -504,7 +504,7 @@ export function buildLspTool(io: FileIO) {
 				// the serve below publishes these anchors, and an unallocated symbol
 				// row would be dropped from the serve (and be uneditable).
 				const symbolLineNos = [...seenLines].sort((a, b) => a - b);
-				const symbolAllocated = allocateForLines(absolutePath, text, symbolLineNos);
+				const symbolAllocated = await allocateInWorkspace(cwd, absolutePath, text, symbolLineNos);
 				for (let k = 0; k < symbolLineNos.length; k++) {
 					const anchor = symbolAllocated[k]!;
 					const row = hashlines.find((r) => r.number === symbolLineNos[k]);

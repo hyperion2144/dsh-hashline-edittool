@@ -23,6 +23,7 @@ import { changedRange } from "../hashline/anchor-pipeline.js";
 import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
 import { recordServedTruncated } from "../domain/session/session-view.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
@@ -197,7 +198,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			const { text: currentStripped } = stripBOM(currentRaw);
 			const currentNormalized = toLF(currentStripped);
-			const currentHashes = await lineHashes(currentNormalized, absolutePath);
+			// LAZY (#169): the `-` side is a pure VIEW — removal rows are historical,
+			// nothing is allocated for them.
+			const currentHashes = anchorsFor(absolutePath, currentNormalized);
 			const diffResult = genDiff(
 				undo.content,
 				currentNormalized,
@@ -208,18 +211,10 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			);
 			const linesAddedByEdit = cntDiff(diffResult.diff, "+");
 			const linesRemovedByEdit = cntDiff(diffResult.diff, "-");
-			const undoDiffResult = genDiff(
-				currentNormalized,
-				undo.content,
-				// The CONFIGURED context, like the sibling diff above: a hardcoded 1 here
-				// made the revert's diff — model text AND card rows — ignore
-				// `context_lines`.
-				contextLinesCfg(),
-				undo.hashes,
-				currentHashes,
-				lineNumbers,
-			);
-			const undoDiff = undoDiffResult.diff;
+			// The revert's diff is rendered AFTER the write (see below): its `+`
+			// rows must carry the anchors the RESTORED content actually has now,
+			// not the historical undo.hashes — advertised anchors may never be
+			// lies (persisted == served == visible, #169).
 			const restoredRange = changedRange(currentNormalized, undo.content);
 			// #131: baseline BEFORE the revert, so the wait measures pushes
 			// against a pre-write baseline.
@@ -236,6 +231,37 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				throw sandbox.mapError(error, sandboxPolicy);
 			}
 			notifyDocumentWritten(absolutePath, undo.bom + restoreEndings(undo.content, undo.originalEnding));
+			// LAZY (#169): the restored content is live — realign the sparse state
+			// against it, allocate EXACTLY the revert diff's window rows, and render
+			// the `+` side with those anchors.
+			const dryWindow = genDiff(
+				currentNormalized,
+				undo.content,
+				contextLinesCfg(),
+				undefined,
+				undefined,
+				lineNumbers,
+			);
+			const restoredHashes = anchorsFor(absolutePath, undo.content);
+			const windowLineNos = [
+				...new Set(dryWindow.servedRows.map((r) => r.position + 1)),
+			].sort((a, b) => a - b);
+			const windowAllocated = allocateForLines(absolutePath, undo.content, windowLineNos);
+			for (let wi = 0; wi < windowLineNos.length; wi++) {
+				restoredHashes[windowLineNos[wi]! - 1] = windowAllocated[wi]!;
+			}
+			const undoDiffResult = genDiff(
+				currentNormalized,
+				undo.content,
+				// The CONFIGURED context, like the sibling diff above: a hardcoded 1 here
+				// made the revert's diff — model text AND card rows — ignore
+				// `context_lines`.
+				contextLinesCfg(),
+				restoredHashes,
+				currentHashes,
+				lineNumbers,
+			);
+			const undoDiff = undoDiffResult.diff;
 			// #131: the revert is a real write, so it reports like one — inline
 			// inside the window, else the bounded async wait. OUTSIDE the write
 			// try on purpose: delivery never throws, and a diagnostics problem

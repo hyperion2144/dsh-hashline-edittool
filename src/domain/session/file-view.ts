@@ -23,7 +23,7 @@ import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "../../infra/constants.js";
-import { lineHashes, allocateForLines, fmtRegion, hashSep } from "../../hashline/index.js";
+import { anchorsFor, allocateForLines, fmtRegion, hashSep } from "../../hashline/index.js";
 import { fmtMarker, hashlineHeader, canon, contentChecksum } from "../../hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "../../infra/utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "../../render/edit-diff.js";
@@ -377,14 +377,9 @@ export async function normFromText(input: {
   const { bom, text: rawContent } = stripBOM(input.rawText);
   const originalEnding = detectEnding(rawContent);
   const normalized = toLF(rawContent);
-  // LAZY (#169): the read serve point allocates for the lines it renders.
-  // The sparse state only tracks served lines, so allocate for ALL lines of
-  // the file that read is about to show.
-  const lineCount = splitLinesForCounting(normalized).length;
-  const fileHashes = allocateForLines(
-	absolutePath, normalized,
-	Array.from({ length: lineCount }, (_, i) => i + 1),
-  );
+  // LAZY (#169): the VIEW only — allocation happens in the window renderer
+  // for EXACTLY the rows the model sees (persisted == served == visible).
+  const fileHashes = anchorsFor(absolutePath, normalized);
   return {
     absolutePath,
     normalized,
@@ -487,29 +482,37 @@ export async function fmtReadPreview(
   truncation?: TruncationResult;
   nextOffset?: number;
   served: ServedRow[];
+  /** The window's anchors, patched in place (#169) — callers rebuild rows from it. */
+  hashes: string[];
 }> {
   const allLines = visLines(text);
   const totalLines = allLines.length;
   const startLine = normPosInt(options.offset, 'offset') ?? 1;
   if (totalLines === 0) {
     if (startLine === 1) {
-const allHashes =
-        precomputedHashes ??
-        (await (path ? lineHashes(text, path) : lineHashes(text)));
-      const emptyLineHash = allHashes[0]!;
+      const allHashes = precomputedHashes ?? (path ? anchorsFor(path, text) : []);
+      // LAZY (#169): the one visible row of an empty file IS the serve.
+      let emptyLineHash = allHashes[0] ?? "";
+      if (path) {
+        const [allocated] = allocateForLines(path, text, [1]);
+        if (allocated !== undefined && allocated !== "") emptyLineHash = allocated;
+      }
       return {
 		text: `${hashlineHeader(false)}\n${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
+		hashes: allHashes,
 		served: [{ position: 0, anchor: emptyLineHash, contentKey: contentChecksum(canon("")) }],
-	};
-	}
-return {
+      };
+    }
+    return {
       text: `Offset ${startLine} is beyond end of file (0 lines total). The file is empty. Use edit to insert content.`,
+      hashes: [],
       served: [],
     };
   }
   if (startLine > totalLines) {
     return {
       text: `Offset ${startLine} is beyond end of file (${totalLines} lines total). Use offset=1 to read from the start, or offset=${totalLines} to read the last line.`,
+      hashes: [],
       served: [],
     };
   }
@@ -518,9 +521,19 @@ return {
     ? Math.min(startLine - 1 + limit, totalLines)
     : totalLines;
   const selected = allLines.slice(startLine - 1, endIdx);
-  const allHashes =
-    precomputedHashes ??
-    (await (path ? lineHashes(text, path) : lineHashes(text)));
+  const allHashes = precomputedHashes ?? (path ? anchorsFor(path, text) : []);
+  // LAZY (#169): allocate for EXACTLY the window rows this read serves —
+  // persisted rows == served rows == visible rows, never the whole file.
+	if (path && precomputedHashes === undefined) {
+		const windowLines = Array.from(
+			{ length: endIdx - startLine + 1 },
+			(_, i) => startLine + i,
+		);
+		const allocated = allocateForLines(path, text, windowLines);
+		for (let i = 0; i < allocated.length; i++) {
+			allHashes[startLine - 1 + i] = allocated[i]!;
+		}
+	}
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
 		const formatted = `${hashlineHeader(options.lineNumbers !== false)}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers !== false })}`;
   const maxBytes = maxLineBytes;
@@ -584,6 +597,7 @@ return {
       text: preview,
       truncation: skippedTruncation.truncated ? skippedTruncation : undefined,
       ...(nextOffset !== undefined ? { nextOffset } : {}),
+      hashes: allHashes,
       served,
     };
   }
@@ -620,6 +634,9 @@ return {
     text: preview,
     truncation: truncation.truncated ? truncation : undefined,
     ...(nextOffset !== undefined ? { nextOffset } : {}),
+    // LAZY (#169): the PATCHED array — the presentation layer rebuilds the
+    // model text from it, so it must carry the window's real anchors.
+    hashes: allHashes,
     served,
   };
 }
@@ -680,15 +697,17 @@ export async function readView(
       displayPath: path,
       signal,
     });
-  const r = await fmtReadPreview(
-    normalized,
-		{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false }, // issue #66/B5: was dropped — lineNumbers never reached the renderer
-		fileHashes,
+	const r = await fmtReadPreview(
+		normalized,
+			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false }, // issue #66/B5: was dropped — lineNumbers never reached the renderer
+		undefined, // LAZY (#169): the renderer fetches the view and allocates the window itself; a provided precomputed array means REAL hashes (write shadow) and is never re-allocated
 		absolutePath,
-  );
+	);
   return {
     text: r.text,
-    hashes: fileHashes,
+    // LAZY (#169): the PATCHED window anchors — the tool layer rebuilds the model
+    // text from this array, so it must be the one allocation wrote into.
+    hashes: r.hashes,
     served: r.served,
     absolutePath,
     truncation: r.truncation,

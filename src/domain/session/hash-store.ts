@@ -45,6 +45,10 @@ export interface LegacySnapshot {
 export function isValidHashList(value: unknown): value is string[] {
 	if (!Array.isArray(value)) return false;
 	for (const hash of value) {
+		// "" is the LAZY model's never-served placeholder (#169): a dense array
+		// the engine hands the store may legitimately carry it, and a row that
+		// does is NOT corrupt.
+		if (hash === "") continue;
 		if (typeof hash !== "string" || !hashRe().test(hash)) return false;
 	}
 	return true;

@@ -362,6 +362,8 @@ function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): 
 	if (byLine.size === 0) return undefined;
 	// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
 	const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
+	// (The callers are the write/edit tool bodies, which are already inside a
+	// `withWorkspace` scope — so this plain allocation lands in the right store.)
 	const diagAllocated = allocateForLines(input.absolutePath, input.text, diagLineNos);
 	for (let k = 0; k < diagLineNos.length; k++) {
 		anchors[diagLineNos[k]! - 1] = diagAllocated[k]!;

@@ -53,7 +53,8 @@ import {
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
 import { findSnapshotPathsByHashes } from "../session/hash-store.js";
-import { updateAnchorsAfterEdit, type EditHunk } from "../../hashline/session-anchors.js";
+import { updateAnchorsAfterEdit, allocateForLines, type EditHunk } from "../../hashline/session-anchors.js";
+import { contextLinesCfg } from "../../hashline/hash-assign.js";
 import { saveUndo } from "./undo-edit.js";
 import {
 	clearNoopLoop,
@@ -1079,7 +1080,7 @@ const ordered = [...resolvedEdits].sort(
 				lineNumbers: opts.lineNumbers,
 				countHashes: originalHashes,
 				persist: false,
-				edit,
+			edit,
 			},
 			async (error) => {
 				if (
@@ -1293,6 +1294,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			originalNormalized,
 			result,
 			resultHashes,
+			absolutePath,
 		) : [],
 		...(unionFirstChangedLine !== undefined ? { firstChangedLine: unionFirstChangedLine } : {}),
 		...(unionLastChangedLine !== undefined ? { lastChangedLine: unionLastChangedLine } : {}),
@@ -1309,7 +1311,12 @@ function buildServedRowsFromDiff(
 	before: string,
 	after: string,
 	resultHashes: string[],
+	absolutePath: string,
 ): { position: number; anchor: string }[] {
+	// The window pads by the CONFIGURED diff context (≥2): the response's
+	// genDiff renders with contextLinesCfg(), and a served set narrower than
+	// the rendered rows would leave context rows uneditable.
+	const ctxPad = Math.max(2, contextLinesCfg());
 	const rows: { position: number; anchor: string }[] = [];
 	const seen = new Set<number>();
 	const resultLines = splitLines(after);
@@ -1339,8 +1346,18 @@ function buildServedRowsFromDiff(
 		) k++;
 		return Math.max(firstDiff, resultLines.length - 1 - k);
 	})();
-	for (let p = Math.max(0, firstDiff - 2); p <= Math.min(resultHashes.length - 1, lastDiff + 2); p++) {
+	for (let p = Math.max(0, firstDiff - ctxPad); p <= Math.min(resultHashes.length - 1, lastDiff + ctxPad); p++) {
 		push(p);
+	}
+	// LAZY (#169): allocate for EXACTLY these rows — the response's diff
+	// window is what the model sees. persisted == served == visible.
+	if (rows.length > 0) {
+		const servedLineNos = rows.map((r) => r.position + 1);
+		const allocated = allocateForLines(absolutePath, after, servedLineNos);
+		for (let k = 0; k < servedLineNos.length; k++) {
+			resultHashes[servedLineNos[k]! - 1] = allocated[k]!;
+			rows[k] = { position: servedLineNos[k]! - 1, anchor: allocated[k]! };
+		}
 	}
 	return rows;
 }

@@ -27,7 +27,7 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure 
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
 import { getEffectiveConfig, isJsonOutput } from "../config.js";
 import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { serveRowsInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
 import { splitLines } from "../infra/utils.js";
@@ -291,8 +291,8 @@ export function buildAstGrepTool(io: FileIO) {
 				}
 				// Not refused: the outline answers a whole-file question — allocate
 				// for every line the file has.
-				hashes = allocateForLines(
-					absolutePath, text,
+				hashes = await allocateInWorkspace(
+					cwd, absolutePath, text,
 					Array.from({ length: lines.length }, (_, i) => i + 1),
 				);
 				let spans;
@@ -427,7 +427,7 @@ export function buildAstGrepTool(io: FileIO) {
 					return rows;
 				}),
 			)].sort((a, b) => a - b);
-			const allocatedAnchors = allocateForLines(absolutePath, text, servedLineNos);
+			const allocatedAnchors = await allocateInWorkspace(cwd, absolutePath, text, servedLineNos);
 			for (let k = 0; k < servedLineNos.length; k++) {
 				anchors[servedLineNos[k]! - 1] = allocatedAnchors[k]!;
 			}

@@ -32,6 +32,7 @@ import { execCwd, execSessionKey, recordServed } from "../domain/session/session
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
 import { GREP_MAX_TOTAL_BYTES, GREP_MODEL_TEXT_MAX_BYTES } from "../infra/constants.js";
 import { capModelText, makeReadBudget, type BudgetUsage, type SkipReason } from "../infra/read-budget.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { lineHashes } from "../hashline/index.js";
@@ -161,6 +162,14 @@ export async function grepFileContent(
 	// One row list drives BOTH the model text and the card: the row identity,
 	// the match flag and the highlight spans can never drift apart.
 	const matchSet = new Set(matchPositions);
+	// LAZY (#169): allocate for EXACTLY the rows this section serves — the
+	// matches and their context. persisted == served == visible, never the
+	// whole file.
+	const servedLineNos = [...contextSet].sort((a, b) => a - b).map((p) => p + 1);
+	const allocated = allocateForLines(path, content, servedLineNos);
+	for (let k = 0; k < servedLineNos.length; k++) {
+		hashes[servedLineNos[k]! - 1] = allocated[k]!;
+	}
 	const rows = [...contextSet]
 		.sort((a, b) => a - b)
 		.map((position) => ({
@@ -481,7 +490,9 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 							continue;
 						}
 					}
-					const hashes = await lineHashes(text, file);
+				// LAZY (#169): the VIEW only — grepFileContent allocates for exactly the
+				// rows it serves (persisted == served == visible).
+				const hashes = anchorsFor(file, text);
 					const section = await grepFileContent(file, text, hashes, params.pattern, opts);
 					if (!section) continue;
 					// Truncation = the per-file cap was hit.

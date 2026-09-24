@@ -15,6 +15,7 @@ const HEAVY_TEST_FILES = [
 	"test/core/issue-147-line-space.test.ts",
 	"test/core/anchor-state-persistence.test.ts",
 	"test/core/tool-ast.test.ts",
+	"test/core/visible-rows-ast.test.ts",
 ];
 
 export default defineConfig({

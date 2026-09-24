@@ -35,6 +35,7 @@ import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
 import { genDiff } from "../render/edit-diff.js";
 import { lineHashes } from "../hashline/index.js";
+import { anchorsFor } from "../hashline/session-anchors.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf } from "../infra/utils.js";
 import { isJsonOutput } from "../config.js";
@@ -220,8 +221,10 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// reflect the disk state chronologically, or the post-write
 				// serve overwrites it and the diff's `-` markers describe
 				// a version nothing serves (the store-poisoning bug).
+				// LAZY (#169): the `-` side is a pure VIEW — removal rows are historical
+				// and nothing is allocated for them.
 				const beforeHashes =
-					before === null ? undefined : await lineHashes(before, absolute);
+					before === null ? undefined : anchorsFor(absolute, before);
 				abortIf(signal);
 				// #131: baseline BEFORE the sync; then tell the language server — the
 				// one `write` path never did, so its diagnostics (and the manual

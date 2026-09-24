@@ -34,6 +34,13 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
   - **grep 按大小硬跳过移除**：`GREP_MAX_FILE_BYTES` 的单文件硬跳过取消（惰性锚点后大文件只花返回行的成本，大文件照搜）；`GREP_MAX_TOTAL_BYTES`（64 MiB）总预算与 model 文本上限保留为内存护栏，触顶停扫并如实提示。
   - **per-content 探针游标保留**：连续同内容行的分配探针连续推进（与 `assignAnchors` 同设计），长重复行段不退化为 O(k²) 探测、不触探针上限。
   - 受影响测试同步重写：`anchor-state-persistence`（稀疏行族、部分服务状态合法性、undo 免 seed 自校正、行级剪枝/TTL）、`alloc`/`anchor-lifecycle-invariants`（serve 语义）、`issue-151-undo-stack`（迁移展开断言）、`issue-167-grep-budget`（大文件照搜 + 总预算停扫）。
+  - **工具层完成迁移（评审实测表逐项钉住）**：上一轮只建了 `allocateForLines` 基础设施，read/grep/edit/undo 仍走全量兼容 shim（`lineHashes`），ast/lsp 则用纯函数分配、锚点根本不落库。现在：
+    - **read**：`normFile` 只物化视图；窗口渲染器为 `[startLine..endIdx]` 精确分配，并把**已 patch 的数组随渲染结果返回**（工具层的 `read-card` 会用它重建 model 文本——它拿到的是另一份视图，这是“分配了却渲染成空锚点”的真因）。
+    - **grep**：`grepFileContent` 在算出命中+上下文行集后精确分配（`context: 0` 时持久化行数 == 命中数）。
+    - **edit / undo**：`buildServedRowsFromDiff` 与撤消流程改为“先写盘→按恢复/新内容的 diff 窗口精确分配→用 live 锚点渲染 `+` 侧”，窗口按 `max(2, context_lines)` 对齐实际渲染行；undo 的 `-` 侧保持纯视图（已释放的锚点不再伪造）。
+    - **ast_grep / lsp**：分配改走新的 scope-aware 原语 `allocateInWorkspace`——这两个工具没有 `withWorkspace` 主体，裸分配会写进**共享** `$DSH_HOME` 库（served 侧早就有同因的 `serveRowsInWorkspace` 注释），实测 ast_grep 持久化行数因此从 0 变为“恰好命中行数”。
+    - **行校验器接受 `""` 占位**：惰性模型会把带空占位的稠密数组交给存储层（undo/snapshot 行族），`isValidHashList` 原本把 `""` 判为损坏行而丢弃整条记录（表现为“历史凭空消失”）。
+    - **新增验收测试**（`visible-rows-acceptance.test.ts` + heavy 侧的 `visible-rows-ast.test.ts`）：把评审实测表的每一行钉成断言——3000 行文件上 read 窗口只持久化 10 行、grep 只持久化命中行、edit/undo 只持久化窗口并永不等于整文件、ast_grep 持久化行数恰等于命中数。
 - **大纲门槛 100 → 20 行（#151/P7）**：`AST_SUMMARY_MIN_TOTAL_LINES` 降到 20。这道门槛原本的理由是 `read {summary: true}` 会用大纲替换正文，而该能力已随重构删除，唯一调用方变成显式要求「看形状」的 `ast_grep`（不带 `pat`）；`summaryIsWorthIt` 的收缩比仍会拒绝「折了不值得」的文件。效果：31 行的双函数文件现在给出真实大纲（两处折叠区间、行仍可编辑），不到 20 行仍报 `no outline — too-few-lines`。
 - **重型测试文件不再与并行池互抢（#162）**：跑 2s–17s 的 5 个文件拆到独立项目、串行执行并各给 30s 预算；**全局 `testTimeout` 保持默认**（抬高全局会把真实挂死一起掩盖），断言一条未删。
 
