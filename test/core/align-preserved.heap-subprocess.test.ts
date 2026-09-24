@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const RUNNER = join(process.cwd(), "lib", "hashline", "align-bounded.js");
 
@@ -28,7 +29,9 @@ const N = 50_000;
 // Script body the subprocess runs. Uses ESM dynamic import so it works
 // regardless of whether the runner file is CJS or ESM.
 const SCRIPT = `
-const mod = await import(${JSON.stringify(RUNNER)});
+// A file:// URL, not a bare path: Windows rejects an absolute path as an ESM
+// specifier (ERR_UNSUPPORTED_ESM_URL_SCHEME, protocol 'd:').
+const mod = await import(${JSON.stringify(pathToFileURL(RUNNER).href)});
 const N = ${N};
 const oldKeys = new Array(N);
 const newKeys = new Array(N);

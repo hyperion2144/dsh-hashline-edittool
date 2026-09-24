@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const COLD_OPEN_BUDGET_MS = 50;
@@ -191,7 +192,9 @@ function writeRunner(): void {
 		RUNNER,
 		`import { performance } from "node:perf_hooks";
 const started = performance.now();
-const { loadHashStore } = await import(${JSON.stringify(BUILT)});
+// A file:// URL, not a bare path: on Windows an absolute path is not a valid
+// ESM specifier (ERR_UNSUPPORTED_ESM_URL_SCHEME, protocol 'd:').
+const { loadHashStore } = await import(${JSON.stringify(pathToFileURL(BUILT).href)});
 const t0 = performance.now();
 const store = await loadHashStore();
 const t1 = performance.now();
