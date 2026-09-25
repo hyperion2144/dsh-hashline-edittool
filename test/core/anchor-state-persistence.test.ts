@@ -253,10 +253,14 @@ describe("anchor state persistence (#136)", () => {
 		expect(served.slice(0, 4)).toEqual(p0.slice(0, 4)); // still stable after serving
 	});
 
-	it("a persisted state with duplicate anchors is healed, never trusted", async () => {
+	it("a persisted state with duplicate anchors keeps every row except the duplicate", async () => {
 		// The allocator invariant holds at every write; a row that violates it
 		// (external corruption / legacy dirt) must be repaired at the entry gate,
 		// not handed to the served layer where duplicates become E_SERVED_DUP noise.
+		//
+		// The repair is LOCAL: dropping the file's whole state would turn one bad
+		// row into `[E_STALE]` for every anchor the session legitimately holds —
+		// reported from a live session as "an anchor I just read no longer exists".
 		const s = "/proj/dup-state.ts";
 		await loadHashStore();
 		const p0 = serveAll(s, C0);
@@ -270,11 +274,22 @@ describe("anchor state persistence (#136)", () => {
 		);
 		floodCache("/flood-dup");
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		const healed = serveAll(s, C0);
+		const view = anchorsFor(s, C0);
 		const healedLoud = errSpy.mock.calls.length > 0;
+		const message = String(errSpy.mock.calls[0]?.[0] ?? "");
 		errSpy.mockRestore();
-		expect(new Set(healed).size).toBe(healed.length); // unique again (wiped + fresh)
+		// Unique again — and, crucially, the SURVIVORS are the very anchors the
+		// session already holds: line 2 keeps p0[1] instead of being re-minted,
+		// and the duplicate at line 3 is the only casualty.
+		expect(new Set(view).size).toBe(view.length);
+		expect(view[0]).toBe(p0[0]);
+		expect(view[1]).toBe(p0[1]);
+		expect(view.slice(3)).toEqual(p0.slice(3));
 		expect(healedLoud).toBe(true);
+		expect(message).toContain("dropped 1 duplicate row");
+		// The repaired projection is what the next process loads.
+		floodCache("/flood-dup-again");
+		expect(anchorsFor(s, C0)[1]).toBe(p0[1]);
 	});
 
 	it("undo needs no seed — the lazy state self-corrects on the reverted content", async () => {

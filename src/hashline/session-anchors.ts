@@ -110,23 +110,28 @@ function ensureState(path: string, rawContent: string): SparseState {
 		const disk = persistence.get(path);
 		if (disk) {
 			// THE allocator invariant, enforced at the state-entry gate: one
-			// anchor names at most ONE line — a persisted row set that repeats
-			// an anchor is upstream corruption. Heal loudly by refusing the rows
-			// (wipe + fresh start), never trust them.
+			// anchor names at most ONE line — a persisted row set that repeats an
+			// anchor is upstream corruption. Heal it by dropping ONLY the later
+			// duplicates and repairing the projection, never by discarding the
+			// file's whole state: a wholesale wipe turns one bad row into
+			// `[E_STALE]` for every anchor the session legitimately holds (reported
+			// from a live session as "an anchor I just read no longer exists"),
+			// which is a far worse failure than losing one duplicated line's anchor.
+			// First occurrence wins: rows are keyed by line, so the keeper is
+			// deterministic.
 			const seen = new Set<string>();
-			for (const line of disk.lines) {
-				if (seen.has(line.anchor)) {
-					console.error(
-						`[E_ANCHOR_STATE_DUP] ${path}: persisted anchor rows repeat an anchor — healing by re-seeding fresh.`,
-					);
-					persistence.put(path, { checksum: disk.checksum, lineCount: disk.lineCount, lines: [] });
-					cached = { checksum, lineCount, entries: new Map() };
-					setCached(path, cached);
-					return cached;
-				}
+			const kept = disk.lines.filter((line) => {
+				if (seen.has(line.anchor)) return false;
 				seen.add(line.anchor);
+				return true;
+			});
+			if (kept.length !== disk.lines.length) {
+				console.error(
+					`[E_ANCHOR_STATE_DUP] ${path}: persisted anchor rows repeat an anchor — dropped ${disk.lines.length - kept.length} duplicate row(s), kept the rest.`,
+				);
+				persistence.put(path, { checksum: disk.checksum, lineCount: disk.lineCount, lines: kept });
 			}
-			cached = { checksum: disk.checksum, lineCount: disk.lineCount, entries: new Map(disk.lines.map((l) => [l.line, { anchor: l.anchor, contentKey: l.contentKey }])) };
+			cached = { checksum: disk.checksum, lineCount: disk.lineCount, entries: new Map(kept.map((l) => [l.line, { anchor: l.anchor, contentKey: l.contentKey }])) };
 			setCached(path, cached);
 		}
 	}
