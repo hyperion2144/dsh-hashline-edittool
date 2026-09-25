@@ -27,7 +27,12 @@ import z from "@deepseek-ai/schemastery";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
 import { rebuildEditSurfaces } from "./domain/edit/edit-rebuild.js";
 import { getAstClient } from "./ast/client.js";
-
+import { setStoreBudgetLimits } from "./domain/session/store-budget.js";
+import {
+	HASH_STORE_MAX_BYTES,
+	HASH_STORE_MAX_PATHS,
+	HASH_STORE_MAX_ROWS,
+} from "./infra/constants.js";
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
 /**
@@ -65,7 +70,7 @@ export interface HashlineSettings {
 	 * status surface, so a typo stays visible and fixable instead of silently
 	 * dropping the language back to a heuristic scan.
 	 */
-	lsp?: {
+lsp?: {
 		servers?: Record<string, string | undefined>;
 		/**
 		 * Automatic diagnostics after a write (issue #131). When true (default),
@@ -76,6 +81,25 @@ export interface HashlineSettings {
 		 * fails because of diagnostics — this switch only governs the delivery.
 		 */
 		auto_diagnostics?: boolean;
+	};
+	/**
+	 * Bounded-anchor-store budgets exposed by issue #179 / #180.
+	 *
+	 * Unset on a per-field basis falls back to the host-side constants
+	 * (`src/infra/constants.ts`); the schema does NOT bake defaults in, because
+	 * the card's "恢复默认" semantics are an unset op, not a write op. The
+	 * three fields are tuned to different runaway shapes — bytes catch large
+	 * files, path count catches tree-walks, row count catches "a few huge
+	 * files served many lines each" — and lowering any of them really does
+	 * evict on the next scan.
+	 */
+	store?: {
+		/** Total library byte budget, in MiB (8–2048; default 64). */
+		max_bytes_mb?: number;
+		/** Path-count ceiling, in entries (100–100000; default 5000). */
+		max_paths?: number;
+		/** `anchor_lines` row ceiling, in lines (10000–10000000; default 300000). */
+		max_lines?: number;
 	};
 }
 /** Permissive schema — unknown keys tolerated so newer versions don't break older builds. */
@@ -112,12 +136,146 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 				auto_diagnostics: z.boolean(),
 			})
 			.volatile(),
-	})
-	.loose() as unknown as z<HashlineSettings>;
-	// NOTE: the legacy `hash_length` key is accepted (loose schema) and
-	// deliberately IGNORED — v2.0 anchors are variable-length by construction
-	// (spec §7); existing settings survive without error.
+		// Bounded-store budgets (#179 / #180). `.volatile()` sits on the outermost
+		// node only — same rule the `ast` and `lsp` subtrees follow, because
+		// schemastery requires a volatile field to sit on a fixed path with no
+		// enclosing volatile. No defaults are baked in: unset means "use the
+		// host-side constant"; the card's 恢复默认 button sends an unset op, and
+		// a write here would look identical to a deliberate choice.
+		store: z
+			.object({
+				max_bytes_mb: z.number().min(8).max(2048),
+				max_paths: z.number().min(100).max(100000),
+				max_lines: z.number().min(10000).max(10000000),
+			})
+			.volatile(),
+	}) as unknown as z<HashlineSettings>;
+	//
+	// Why this root is intentionally NOT `.loose()` — and why that still keeps
+	// the legacy `hash_length` key accepted (#155 / spec §7).
+	//
+	// Verified against `@deepseek-ai/schemastery`'s `Schema.resolve`
+	// (node_modules/@deepseek-ai/schemastery/src/index.ts, the `try { ... }
+	// catch (error) { if (!schema.meta.loose) throw error; return
+	// [schema.meta.default] }` block at the bottom of `Schema.resolve`):
+	//
+	//     try {
+	//         return callback(data, schema, options, strict)
+	//     } catch (error) {
+	//         if (!schema.meta.loose) throw error
+	//         return [schema.meta.default]
+	//     }
+	//
+	// `.loose()` makes the ROOT swallow EVERY descendant throw and substitute
+	// the schema's `meta.default` (an object → `{}`). Concretely: writing
+	// `store.max_bytes_mb = 7` causes the `store` subtree to fail validation,
+	// the throw bubbles up to the root resolver, the root's loose catches it,
+	// and the entire settings object becomes `{}` — `store`, legacy keys, and
+	// all. That silent drop was issue #179's reported symptom.
+	//
+	// Two pieces of the contract that DO survive the removal:
+	//
+	//  1. The legacy `hash_length` key is accepted because the `object`
+	//     resolver merges unknown keys into the result via
+	//     `if (!strict) merge(result, data)` — this branch runs even WITHOUT
+	//     `.loose()`. An empirical probe (`{hash_length: 4}` through the same
+	//     schema shape with `.loose()` removed) returns `{hash_length: 4}`
+	//     unchanged: the unknown key reaches the output, no throw.
+	//
+	//  2. Out-of-range or wrong-type writes now THROW with a path-prefixed
+	//     `ValidationError` (`$.store.max_bytes_mb expected number >= 8 but
+	//     got 7`), which the dsh settings surface reports instead of
+	//     swallowing. This is the schema-level half of the "越界要报错"
+	//     contract.
+	//
+	// The other half — defence-in-depth in `applyEffective` — runs even if a
+	// future caller bypasses the schema, and is implemented by the
+	// `STORE_BUDGETS` / `checkStoreBudget` helpers below with an `onWarn`
+// callback that the install layer wires to `ctx.logger.warn`.
 
+/**
+ * The bounded-store budgets (#179 / #180), with the same ranges the schema
+ * enforces on the wire.
+ *
+ * Defined once so the host-side validator, the settings card's draft check,
+ * and the schema itself stay in lock-step — a divergence becomes a single
+ * edit, not three. The fallback is the host-side constant the runtime uses
+ * when no override is set; the unit is what the card and the warning render.
+ */
+export interface StoreBudgetRange {
+	/** The settings key under `settings.store.<field>`. */
+	readonly field: "max_bytes_mb" | "max_paths" | "max_lines";
+	/** The two-segment path the card's mutate op sends. */
+	readonly path: readonly ["store", "max_bytes_mb" | "max_paths" | "max_lines"];
+	/** Inclusive lower bound, matching the schema's `z.number().min(...)`. */
+	readonly min: number;
+	/** Inclusive upper bound, matching the schema's `z.number().max(...)`. */
+	readonly max: number;
+	/** The unit the card shows next to the number and the warning names. */
+	readonly unit: string;
+	/** The host-side constant this falls back to when unset (issue #180). */
+	readonly fallback: number;
+}
+
+export const STORE_BUDGETS: readonly StoreBudgetRange[] = [
+	// max_bytes_mb is the only field whose unit is NOT the same as its
+	// backing constant: HASH_STORE_MAX_BYTES is in bytes, the setting is in
+	// MiB. The arithmetic is local — done once, here — so a unit change has
+	// a single owner.
+	{ field: "max_bytes_mb", path: ["store", "max_bytes_mb"], min: 8, max: 2048, unit: "MiB", fallback: HASH_STORE_MAX_BYTES / (1024 * 1024) },
+	{ field: "max_paths", path: ["store", "max_paths"], min: 100, max: 100000, unit: "个", fallback: HASH_STORE_MAX_PATHS },
+	{ field: "max_lines", path: ["store", "max_lines"], min: 10000, max: 10000000, unit: "行", fallback: HASH_STORE_MAX_ROWS },
+];
+
+/**
+ * The outcome of validating one store-budget field.
+ *
+ * `unset` is NOT an error — it is the wire shape of "the user has not named
+ * this field", and the runtime falls back to `range.fallback` (a host-side
+ * constant, NOT a per-user value). `valid` carries the integer to use.
+ * `out_of_range` carries the bad value back so the warning can name it
+ * verbatim, including `NaN` for non-numeric input that the schema would
+ * otherwise have swallowed.
+ */
+export type StoreBudgetCheck =
+	| { readonly kind: "unset" }
+	| { readonly kind: "valid"; readonly value: number }
+	| { readonly kind: "out_of_range"; readonly received: number };
+
+/**
+ * Classify one store-budget field against its range. Pure on purpose — the
+ * card's draft check, `applyEffective`'s defence-in-depth, and the schema
+ * itself share the same predicate through this function.
+ */
+export function checkStoreBudget(
+	field: StoreBudgetRange["field"],
+	raw: unknown,
+): StoreBudgetCheck {
+	const range = STORE_BUDGETS.find((entry) => entry.field === field);
+	if (range === undefined) return { kind: "unset" };
+	if (raw === undefined) return { kind: "unset" };
+	if (typeof raw !== "number" || !Number.isInteger(raw)) {
+		// schemastery drops non-integer / non-number values via the loose
+		// root, but a direct call to `applyEffective` (or a future code path
+		// that bypasses the schema) can still surface one. Hand the warning
+		// `NaN` so the message stays type-shaped.
+		return { kind: "out_of_range", received: typeof raw === "number" ? raw : NaN };
+	}
+	if (raw < range.min || raw > range.max) {
+		return { kind: "out_of_range", received: raw };
+	}
+	return { kind: "valid", value: raw };
+}
+
+/**
+ * The warning sink for `applyEffective`. The install layer wires this to
+ * `ctx.logger.warn`; tests pass a spy to assert what would have been logged.
+ * The function shape (one string per offending field) is the contract: the
+ * message MUST name the field, the received value, the allowed range, and
+ * the constant the runtime falls back to. That minimum is what makes a
+ * silent drop loud enough to investigate.
+ */
+export type StoreBudgetWarn = (message: string) => void;
 // The read side of the settings surface lives in `infra/settings`: this module
 // validates, wires the dsh subscription, and PUSHES each applied snapshot down.
 // Keeping the snapshot here would pin `config` above every capability, and any
@@ -139,15 +297,73 @@ import {
 	type EffectiveHashlineConfig,
 } from "./infra/settings.js";
 
-/** Validate + apply a settings object onto the effective config and hash shape. */
-export function applyEffective(settings: HashlineSettings | undefined): void {
+/**
+ * Validate + apply a settings object onto the effective config and hash shape.
+ *
+ * The optional `options.onWarn` is the defence-in-depth hook for the
+ * bounded-store budgets (#179 / #180): the schema already THROWS for
+ * out-of-range values (see the comment on `HashlineSettingsSchema`), but
+ * every direct `applyEffective` call — tests, future re-entry points, or a
+ * loader that hands us a pre-validated config — still needs to NAME the bad
+ * field, the value it received, the allowed range, and the host-side constant
+ * it falls back to. The install layer wires `onWarn` to `ctx.logger.warn`;
+ * tests pass a spy to assert what would have been logged.
+ */
+export function applyEffective(
+	settings: HashlineSettings | undefined,
+	options: { readonly onWarn?: StoreBudgetWarn } = {},
+): void {
 	// Defaults come from the snapshot module, so an apply with absent fields
 	// resets to the built-in contract rather than to the previous apply.
 	const defaults = defaultEffectiveConfig();
-	const sep =
+	//
+	// Store-budget scan (#179 / #180, second line of defence).
+	//
+	// The schema's path-prefixed throw is the loud path; this loop is the
+	// quiet one. It runs on every apply regardless of how the schema
+	// behaved, so an out-of-range value that slipped past a future code path
+	// (or was hand-edited into settings.yaml and re-loaded by a path that
+	// bypassed the schema) is still named explicitly with the field, the
+	// value, the range, and the fallback constant. Unset is NOT warned —
+	// it is the legitimate "use the host-side constant" signal.
+	//
+	const onWarn = options.onWarn;
+	if (onWarn !== undefined) {
+		const store = settings?.store;
+		if (store !== undefined) {
+			for (const range of STORE_BUDGETS) {
+				const result = checkStoreBudget(range.field, store[range.field]);
+				if (result.kind === "out_of_range") {
+					onWarn(
+						`dsh-hashline-edittool: settings.store.${range.field} = ${result.received} out of range ${range.min}–${range.max} ${range.unit}; falling back to ${range.fallback} ${range.unit}`,
+					);
+				}
+			}
+		}
+	}
+	//
+	// Publish the EFFECTIVE limits to the store (#179: the settings must actually
+	// drive the sweep, not just be validated). 
+	// The same helper does the range check, so an out-of-range value falls back to
+	// its constant here exactly as the warning above describes — and an ABSENT
+	// value does too, which is how "unset = use the host-side constant" is
+	// spelled. A change lands on the store's next sweep, never synchronously.
+	//
+	{
+		const store = settings?.store;
+		const byteLimit = checkStoreBudget("max_bytes_mb", store?.max_bytes_mb);
+		const pathLimit = checkStoreBudget("max_paths", store?.max_paths);
+		const rowLimit = checkStoreBudget("max_lines", store?.max_lines);
+		setStoreBudgetLimits({
+			bytes: byteLimit.kind === "valid" ? byteLimit.value * 1024 * 1024 : undefined,
+			paths: pathLimit.kind === "valid" ? pathLimit.value : undefined,
+			rows: rowLimit.kind === "valid" ? rowLimit.value : undefined,
+		});
+	}
+const sep =
 		typeof settings?.separator === "string" && settings.separator.length > 0
 			? settings.separator
-			: defaults.separator;
+: defaults.separator;
 	const fmt =
 		settings?.output_format === "json" ? "json" : defaults.outputFormat;
 	const nctx =
@@ -214,7 +430,7 @@ export function applyEffective(settings: HashlineSettings | undefined): void {
 		// rather than at the next idle timeout. It can hold up to 2 GiB, and the
 		// user asked for it to stop. Dropping references frees nothing — only
 		// terminate does.
-		void getAstClient().dispose();
+void getAstClient().dispose();
 	}
 }
 
@@ -425,8 +641,16 @@ export function resolveSettings(config: unknown): HashlineSettings | undefined {
  * `require_line_content` surface rebuild and the AST arena release).
  */
 export function installHashlineSettings(ctx: Context, config: unknown): void {
+// Defence-in-depth for #179 / #180: every reapply runs the store-budget
+	// validator and forwards each miss to `ctx.logger.warn`, so even a value
+	// even a value that slipped past the schema (a hand-edited settings.yaml,
+	// a future write path that bypasses validation) is still NAMED with the
+	// field, the received value, the allowed range, and the constant the
+	// runtime falls back to. The schema already throws for bad values; this
+	// hook is the second line of defence.
+	const onWarn: StoreBudgetWarn = (message) => ctx.logger.warn(message);
 	const reapply = (): void => {
-		applyEffective(resolveSettings(config));
+		applyEffective(resolveSettings(config), { onWarn });
 	};
 	reapply();
 	// `settings/document-updated` is declared in @deepseek-ai/dsh-settings'

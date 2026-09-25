@@ -69,7 +69,7 @@ export function execSessionKey(exec: ToolExecution): string {
 export { configDir, hashStorePath, resolveTarget };
 
 // --- hash-store re-export (persistence note) ---
-export { loadHashStore, shutdownHashStore, withStore } from "./hash-store.js";
+export { loadHashStore, shutdownHashStore, withStore, takeRebuildWarning } from "./hash-store.js";
 export type { HashStore } from "./hash-store.js";
 
 // --- served state (owned here) ---
@@ -95,7 +95,7 @@ export async function recordServedAfterEdit(
       for (const entry of diffServedRows) {
         if (entry.anchor !== null) current.add(entry.anchor);
       }
-      store.upsertServed(sessionKey, path, JSON.stringify([...current]));
+      store.upsertServed(sessionKey, path, [...current]);
     });
   } catch (error) {
     console.error("Failed to record served rows after edit:", error);
@@ -117,7 +117,7 @@ export async function recordServed(sessionKey: string, path: string, rows: Serve
     for (const entry of rows) {
       if (entry.anchor !== null) current.add(entry.anchor);
     }
-    store.upsertServed(sessionKey, path, JSON.stringify([...current]));
+    store.upsertServed(sessionKey, path, [...current]);
   });
 }
 
@@ -284,7 +284,7 @@ export async function reconcileServed(
         removed = true;
       }
     }
-    if (removed) store.upsertServed(sessionKey, path, JSON.stringify([...current]));
+    if (removed) store.upsertServed(sessionKey, path, [...current]);
   });
 }
 
@@ -297,7 +297,7 @@ export async function recordServedTruncated(sessionKey: string, path: string, ro
     for (const entry of rows) {
       if (entry.anchor !== null) current.add(entry.anchor);
     }
-    store.upsertServed(sessionKey, path, JSON.stringify([...current]));
+    store.upsertServed(sessionKey, path, [...current]);
   });
 }
 

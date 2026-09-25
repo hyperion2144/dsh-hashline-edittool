@@ -22,7 +22,7 @@
 import { splitLines } from "../infra/utils.js";
 import { allocateAnchor, contentKey } from "./alloc.js";
 import { contentChecksum } from "./hash-assign.js";
-
+import { alignPreservedBounded } from "./align-bounded.js";
 // ---- types -----------------------------------------------------------------
 
 export interface EditHunk {
@@ -110,23 +110,28 @@ function ensureState(path: string, rawContent: string): SparseState {
 		const disk = persistence.get(path);
 		if (disk) {
 			// THE allocator invariant, enforced at the state-entry gate: one
-			// anchor names at most ONE line — a persisted row set that repeats
-			// an anchor is upstream corruption. Heal loudly by refusing the rows
-			// (wipe + fresh start), never trust them.
+			// anchor names at most ONE line — a persisted row set that repeats an
+			// anchor is upstream corruption. Heal it by dropping ONLY the later
+			// duplicates and repairing the projection, never by discarding the
+			// file's whole state: a wholesale wipe turns one bad row into
+			// `[E_STALE]` for every anchor the session legitimately holds (reported
+			// from a live session as "an anchor I just read no longer exists"),
+			// which is a far worse failure than losing one duplicated line's anchor.
+			// First occurrence wins: rows are keyed by line, so the keeper is
+			// deterministic.
 			const seen = new Set<string>();
-			for (const line of disk.lines) {
-				if (seen.has(line.anchor)) {
-					console.error(
-						`[E_ANCHOR_STATE_DUP] ${path}: persisted anchor rows repeat an anchor — healing by re-seeding fresh.`,
-					);
-					persistence.put(path, { checksum: disk.checksum, lineCount: disk.lineCount, lines: [] });
-					cached = { checksum, lineCount, entries: new Map() };
-					setCached(path, cached);
-					return cached;
-				}
+			const kept = disk.lines.filter((line) => {
+				if (seen.has(line.anchor)) return false;
 				seen.add(line.anchor);
+				return true;
+			});
+			if (kept.length !== disk.lines.length) {
+				console.error(
+					`[E_ANCHOR_STATE_DUP] ${path}: persisted anchor rows repeat an anchor — dropped ${disk.lines.length - kept.length} duplicate row(s), kept the rest.`,
+				);
+				persistence.put(path, { checksum: disk.checksum, lineCount: disk.lineCount, lines: kept });
 			}
-			cached = { checksum: disk.checksum, lineCount: disk.lineCount, entries: new Map(disk.lines.map((l) => [l.line, { anchor: l.anchor, contentKey: l.contentKey }])) };
+			cached = { checksum: disk.checksum, lineCount: disk.lineCount, entries: new Map(kept.map((l) => [l.line, { anchor: l.anchor, contentKey: l.contentKey }])) };
 			setCached(path, cached);
 		}
 	}
@@ -142,10 +147,17 @@ function ensureState(path: string, rawContent: string): SparseState {
 	// position; content that vanished releases its anchor for reuse.
 	if (cached.checksum !== checksum || cached.lineCount !== lineCount) {
 		const ordered = [...cached.entries].sort((a, b) => a[0] - b[0]);
-		const paired = alignPreserved(
+		const aligned = alignPreservedBounded(
 			ordered.map(([, e]) => e.contentKey),
 			currentLines.map(contentKey),
 		);
+		// A whole-file realign is the one call that can degrade (#182): the DP is
+		// bounded, and past the bound a low-similarity rewrite returns an empty
+		// mapping — every anchor this session holds for the file is gone. Record
+		// it so the next tool result can say so instead of leaving the model with
+		// anchors that silently stopped existing.
+		if (aligned.degraded) noteAlignmentDegraded(path);
+		const paired = aligned.pairs;
 		const realigned = new Map<number, AnchorEntry>();
 		for (const [newIdx, oldIdx] of paired) {
 			realigned.set(newIdx + 1, ordered[oldIdx]![1]);
@@ -382,7 +394,11 @@ export function updateAnchorsAfterEdit(args: {
 	for (const h of ordered) {
 		const oldSeg = oldLines.slice(h.oldStart1 - 1, Math.min(h.oldEnd1, oldLines.length));
 		const newSeg = newLines.slice(h.finalStart1 - 1, Math.min(h.finalEnd1, newLines.length));
-		const preserved = alignPreserved(oldSeg, newSeg);
+		const hunkAligned = alignPreservedBounded(oldSeg, newSeg);
+		// The hunk path can degrade too (a hunk is usually small, but a whole-file
+		// rewrite arrives as one huge hunk). Same one-shot notice as the realign.
+		if (hunkAligned.degraded) noteAlignmentDegraded(args.path);
+		const preserved = hunkAligned.pairs;
 		const survivingOld = new Set(preserved.values());
 		// release the replaced (non-surviving) in-hunk entries: they simply do
 		// not carry over into `shifted`
@@ -422,39 +438,60 @@ export function updateAnchorsAfterEdit(args: {
 }
 
 /**
- * Pair old lines to new lines by content (LCS, latest-first) — the EXTERNAL
- * change path's alignment (no hunk structure exists there). A pure insert
- * or delete has nothing to pair on one side; the walk is skipped.
+ * Alignment-degradation notices, one per path, drained by the tool layer.
+ *
+ * A degraded realign (#182) returns an empty mapping: every anchor the model
+ * holds for that file stops existing. Shipping that silently is the failure
+ * this registry exists to prevent — the model would keep editing with anchors
+ * that are simply gone. The tool layer drains the notice into its warnings
+ * (model-visible, one line, no new error code), and draining CLEARS it so the
+ * same degradation is not repeated at every later call.
+ */
+const alignmentNotices = new Map<string, string>();
+
+/** What the model is told when an alignment degraded and dropped its anchors. */
+export const ALIGNMENT_DEGRADED_NOTICE =
+  "\u8be5\u6587\u4ef6\u6539\u52a8\u8fc7\u5927\uff0c\u65e7\u951a\u70b9\u5df2\u4f5c\u5e9f\uff1b\u8bf7\u91cd\u65b0 read \u8be5\u6587\u4ef6\u83b7\u53d6\u65b0\u951a\u70b9\u3002";
+
+/**
+ * Record that a file's realign degraded. Idempotent per path until drained.
+ * @param path - the absolute path whose anchors were invalidated.
+ */
+export function noteAlignmentDegraded(path: string): void {
+  alignmentNotices.set(path, ALIGNMENT_DEGRADED_NOTICE);
+}
+
+/**
+ * Take (and clear) the pending degradation notice for a path — if any.
+ * @param path - the absolute path about to be rendered in a tool result.
+ * @returns the one-line notice, or undefined when nothing degraded.
+ */
+export function takeAlignmentNotice(path: string): string | undefined {
+  const notice = alignmentNotices.get(path);
+  if (notice !== undefined) alignmentNotices.delete(path);
+  return notice;
+}
+
+/** Test seam: forget every pending notice (suites must not leak into each other). */
+export function resetAlignmentNotices(): void {
+  alignmentNotices.clear();
+}
+/**
+ * Signature-compatible wrapper around the bounded aligner (ADR-0011).
+ *
+ * The original call sites — `ensureState`'s whole-file realign and the hunk
+ * survivor pairing in `updateAnchorsAfterEdit` — iterate the returned Map
+ * and don't care about the degradation channel. They keep the same
+ * signature; the bounded aligner lives in `./align-bounded.ts` and is the
+ * exported test seam (see its module header for the memory bound formula).
+ *
+ * Degradation is logged once per process via the bounded module's own
+ * one-shot `[alignPreserved]` log line — that is sufficient today; if a
+ * caller later needs the boolean, expose `alignPreservedBounded` directly.
  */
 function alignPreserved(
 	oldSeg: readonly unknown[],
 	newSeg: readonly unknown[],
 ): Map<number, number> {
-	const m = oldSeg.length;
-	const n = newSeg.length;
-	if (m === 0 || n === 0) return new Map();
-	const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
-	for (let i = 1; i <= m; i++) {
-		for (let j = 1; j <= n; j++) {
-			dp[i]![j] =
-				oldSeg[i - 1] === newSeg[j - 1]
-					? dp[i - 1]![j - 1]! + 1
-					: Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
-		}
-	}
-	const pairs = new Map<number, number>();
-	let i = m;
-	let j = n;
-	while (i > 0 && j > 0) {
-		if (oldSeg[i - 1] === newSeg[j - 1]) {
-			pairs.set(j - 1, i - 1);
-			i -= 1;
-			j -= 1;
-		} else if (dp[i - 1]![j]! >= dp[i]![j - 1]!) {
-			i -= 1;
-		} else {
-			j -= 1;
-		}
-	}
-	return pairs;
+	return alignPreservedBounded(oldSeg, newSeg).pairs;
 }

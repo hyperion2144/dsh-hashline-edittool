@@ -53,7 +53,7 @@ import {
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
 import { findSnapshotPathsByHashes } from "../session/hash-store.js";
-import { updateAnchorsAfterEdit, allocateForLines, type EditHunk } from "../../hashline/session-anchors.js";
+import { updateAnchorsAfterEdit, allocateForLines, takeAlignmentNotice, type EditHunk } from "../../hashline/session-anchors.js";
 import { contextLinesCfg } from "../../hashline/hash-assign.js";
 import { saveUndo } from "./undo-edit.js";
 import {
@@ -707,6 +707,15 @@ export async function applyOne(
 			hunk,
 		],
 	});
+	// The realign inside `updateAnchorsAfterEdit` may have degraded (#182): past
+	// the bounded-DP threshold a low-similarity rewrite drops every anchor this
+	// session held for the file. Draining the notice here is what turns that
+	// silent loss into one model-visible line (no new error code, edit still
+	// applies). Draining CLEARS it, so it is not repeated on every later edit.
+	{
+		const notice = takeAlignmentNotice(input.absolutePath);
+		if (notice !== undefined) input.warnings.push(notice);
+	}
 
 	return {
 		result,
@@ -799,11 +808,11 @@ const echoRows = buildRangeEcho(
 			}
 			await opts.io.emitObserved(absolutePath, opts.exec);
 			throw new Error(
-				`[E_NOOP_LOOP] identical edit (${removeFrom} → ${removeTo} in ${displayPath}) submitted ${count}×, no changes each time. Range already contains this text; resend will reject. Current range:\n${echo}`,
+				`[E_NOOP_LOOP] identical edit (${removeFrom} → ${removeTo} in ${displayPath}) submitted ${count}×, no changes each time: your replacement is BYTE-IDENTICAL to the range's current text (this tool never adds, strips or normalises whitespace). To change INDENTATION, put the exact leading whitespace you want inside \`lines\` — it is part of the text, not a formatting hint. Resend will reject. Current range:\n${echo}`,
 			);
 		}
 		if (count === 2) {
-			return `[E_NOOP_LOOP] Notice: identical edit (${removeFrom} → ${removeTo} in ${displayPath}) no-op'd twice; range already has this text. Resend will reject.`;
+			return `[E_NOOP_LOOP] Notice: identical edit (${removeFrom} → ${removeTo} in ${displayPath}) no-op'd twice — your replacement is BYTE-IDENTICAL to the range's current text, so there is nothing to write. If you meant to change the INDENTATION, include the exact leading whitespace inside \`lines\`: this tool never adds, strips or normalises it. Resend will reject.`;
 		}
 		return undefined;
 	}
@@ -827,14 +836,14 @@ const echoRows = buildRangeEcho(
 			await opts.io.emitObserved(absolutePath, opts.exec);
 		}
 		throw new Error(
-			`[E_NOOP_LOOP] edits[${index}] (${displayPath}): identical edit (${removeFrom} → ${removeTo}) submitted ${count}×, no changes each time. Range already has this text; resend will reject the batch.` +
+			`[E_NOOP_LOOP] edits[${index}] (${displayPath}): identical edit (${removeFrom} → ${removeTo}) submitted ${count}×, no changes each time — the replacement is BYTE-IDENTICAL to the range's current text (whitespace included; nothing is normalised). To change INDENTATION, put the exact leading whitespace you want inside \`lines\`. Resend will reject the batch.` +
 				(echoRows
 					? ` Current on-disk range:\n${fmtServedRows(echoRows, originalLines)}`
 					: ""),
 		);
 	}
 	if (count === 2) {
-		return `[E_NOOP_LOOP] Notice: edits[${index}] (${displayPath}) — identical edit no-op'd twice; range already has this text. Resend will reject the batch.`;
+		return `[E_NOOP_LOOP] Notice: edits[${index}] (${displayPath}) — the replacement is BYTE-IDENTICAL to the range's current text, so this edit writes nothing (same payload no-op'd twice). To change INDENTATION, include the exact leading whitespace inside \`lines\`; this tool never adds, strips or normalises it. Resend will reject the batch.`;
 	}
 	return undefined;
 }

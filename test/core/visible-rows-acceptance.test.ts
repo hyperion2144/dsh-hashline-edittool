@@ -9,6 +9,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashStorePath } from "../../src/infra/paths.js";
+import { decodeServedAnchors } from "../../src/domain/session/served-codec.js";
 import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/fixtures.js";
 
 let tmpHome: string;
@@ -35,7 +36,9 @@ function countServed(cwd: string, path: string): number {
 	const db = new DatabaseSync(hashStorePath(cwd), { defensive: false } as never);
 	try {
 		const rows = db.prepare("SELECT hashes FROM served WHERE path = ?").all(path) as Array<{ hashes: string }>;
-		return rows.reduce((n, row) => n + (JSON.parse(row.hashes) as unknown[]).length, 0);
+		// Read through the STORE's decoder (#176): the column is a packed delta
+		// payload now, and only the codec knows every shape it may hold.
+		return rows.reduce((n, row) => n + (decodeServedAnchors(row.hashes)?.size ?? 0), 0);
 	} finally {
 		db.close();
 	}

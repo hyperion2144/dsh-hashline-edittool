@@ -11,6 +11,12 @@
  * alphabet → delete the corrupt row) lives here, once, for every row family.
  * Cross-table cleanup (pruneMissing) lives here too — a sibling module never
  * reaches into another family's rows.
+ *
+ * Issue #180 (spec #184, ADR-0010): the store is now bounded and self-evicting.
+ * Three budgets — paths / rows / bytes — are enforced by `sweep`, which runs
+ * on open, every N writes, and on over-budget writes. Cold-open cost is held
+ * flat by skipping `PRAGMA quick_check` whenever the last exit was clean.
+ *
  * @module dsh-hashline-edittool/hash-store
  */
 
@@ -28,12 +34,22 @@ import {
 	SERVED_TTL_MS,
 	ANCHOR_STATE_TTL_MS,
 	UNDO_STACK_DEPTH,
+	HASH_STORE_MAX_BYTES,
+	HASH_STORE_MAX_PATHS,
+	HASH_STORE_MAX_ROWS,
+	HASH_STORE_SWEEP_WRITES,
+	HASH_STORE_EVICT_RATIO,
+	HASH_STORE_REBUILD_RATIO,
+	HASH_STORE_REBUILD_THROTTLE_MS,
+	UNDO_MAX_PATH_BYTES,
 } from "../../infra/constants.js";
 import {
 	registerAnchorPersistence,
 	type PersistedAnchorState,
 	type PersistedAnchorLine,
 } from "../../hashline/session-anchors.js";
+import { storeBudgetLimits } from "./store-budget.js";
+import { decodeServedAnchors, encodeServedAnchors } from "./served-codec.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
 /** The legacy JSON snapshot shape (pre-sqlite stores). */
@@ -87,6 +103,49 @@ export interface UndoRecord {
 	ending: string;
 	hashes: string[];
 	resultContent: string;
+	/**
+	 * Content checksum of the POST-edit body (#176), replacing the second full
+	 * copy the stack used to hold. The stale check compares this against the
+	 * current file; legacy rows leave it undefined and are verified by their
+	 * stored `resultContent` text instead.
+	 */
+	resultChecksum?: string;
+}
+
+/** Compact store metrics used by sweep and the open-path budget check. */
+export interface HashStoreStats {
+	bytes: number;
+	paths: number;
+	rows: number;
+}
+
+/** Options a caller can pass to {@link HashStore.sweep} to drive it with
+ *  smaller budgets than the production defaults — tests use this so the
+ *  eviction path can be exercised without writing 64 MiB. */
+export interface SweepOptions {
+	bytes?: number;
+	paths?: number;
+	rows?: number;
+	/** TTL for the per-path recency cutoff. Defaults to {@link SERVED_TTL_MS}. */
+	ttlMs?: number;
+	/** Per-path `undo` byte cap. Defaults to {@link UNDO_MAX_PATH_BYTES}. */
+	undoMaxBytes?: number;
+	/** Override for the clock; the sweep uses this for the TTL cutoff and
+	 *  any `updated_at` it writes when calling delete. */
+	now?: number;
+	/** Cap on the number of paths the per-path slim phase visits. Defaults to 200. */
+	slimBatch?: number;
+}
+
+/** The report returned from {@link HashStore.sweep}. */
+export interface SweepReport {
+	before: HashStoreStats;
+	after: HashStoreStats;
+	evictedPaths: number;
+	ttlDropped: number;
+	trimmedUndo: number;
+	rebuilt: boolean;
+	durationMs: number;
 }
 
 // ---- the domain interface --------------------------------------------------
@@ -104,6 +163,8 @@ interface Prepared {
 	undoGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	undoDepth: (...params: SqlParams) => number;
 	undoDelete: (...params: SqlParams) => void;
+	undoDeleteBelowDepth: (...params: SqlParams) => number;
+	undoLayerSizes: (...params: SqlParams) => Record<string, unknown>[];
 	servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	servedUpsert: (...params: SqlParams) => void;
 	servedReportedUpsert: (...params: SqlParams) => void;
@@ -111,7 +172,7 @@ interface Prepared {
 	servedDelete: (...params: SqlParams) => void;
 	servedDeletePath: (...params: SqlParams) => void;
 	servedWipe: (...params: SqlParams) => void;
-	servedPruneOlderThan: (...params: SqlParams) => void;
+	servedPruneOlderThan: (...params: SqlParams) => number;
 	anchorMetaGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	anchorMetaUpsert: (...params: SqlParams) => void;
 	anchorMetaDelete: (...params: SqlParams) => void;
@@ -119,7 +180,19 @@ interface Prepared {
 	anchorLineGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	anchorLineUpsert: (...params: SqlParams) => void;
 	anchorLinesDeletePath: (...params: SqlParams) => void;
-	anchorPruneOlderThan: (...params: SqlParams) => void;
+	anchorPruneOlderThan: (...params: SqlParams) => number;
+	// ---- budget / maintenance (#180) ----
+	storeBytes: () => number;
+	anchorRowCount: () => number;
+	anchorPathCount: () => number;
+	pathRecency: () => Record<string, unknown>[];
+	undoBudget: (...params: SqlParams) => Record<string, unknown> | undefined;
+	undoDepths: (...params: SqlParams) => Record<string, unknown>[];
+	metaGet: (...params: SqlParams) => Record<string, unknown> | undefined;
+	metaSet: (...params: SqlParams) => void;
+	metaDelete: (...params: SqlParams) => void;
+	orphanAnchorLines: () => void;
+	vacuum: () => void;
 }
 
 /**
@@ -161,6 +234,9 @@ export interface HashStore {
 	deleteUndo(path: string): void;
 	/** How many edits on this path can still be undone. */
 	undoDepth(path: string): number;
+	/** Drop oldest `undo` layers until the path's byte total is `<= maxBytes`,
+	 *  keeping AT LEAST one layer. Returns the number of layers dropped. */
+	trimUndo(path: string, maxBytes?: number): number;
 
 	// ---- served rows (what the model has seen, per session+path) ------------
 	/** The served anchors set for a session+path, healing a corrupt row; empty when nothing was served. */
@@ -168,7 +244,13 @@ export interface HashStore {
 	/** The reported-drift hash set for a session+path (lenient parse, never deletes). */
 	getServedReported(sessionKey: string, path: string): Set<string>;
 	/** Persist the hashes JSON column for a session+path. */
-	upsertServed(sessionKey: string, path: string, hashesJson: string): void;
+	/**
+	 * Persist the served set for a session+path. Callers pass the anchors; the
+	 * on-disk encoding (#176, packed deltas) is the store's business — passing a
+	 * pre-serialized string here would silently encode its CHARACTERS, because a
+	 * string is iterable.
+	 */
+	upsertServed(sessionKey: string, path: string, anchors: readonly string[]): void;
 	/** Persist the reported-drift JSON column for a session+path (inserting a fresh empty hashes row). */
 	upsertServedReported(sessionKey: string, path: string, reportedJson: string): void;
 	clearServedReported(sessionKey: string, path: string): void;
@@ -176,6 +258,21 @@ export interface HashStore {
 	deleteServedByPath(path: string): void;
 	wipeServed(sessionKey: string): void;
 	pruneServedOlderThan(ts: number): void;
+
+	// ---- meta (small key/value sidecar) ------------------------------------
+	/** Read a meta value; undefined when the key is absent. */
+	metaGet(key: string): string | undefined;
+	/** Upsert a meta value. */
+	metaSet(key: string, value: string): void;
+	/** Remove a meta key (no-op when absent). */
+	metaDelete(key: string): void;
+
+	// ---- stats / eviction --------------------------------------------------
+	/** Snapshot of the three store metrics sweep and the open-path check use. */
+	stats(): HashStoreStats;
+	/** Run the two-phase eviction: TTL prune → per-path slim → LRU. The
+	 *  returned report describes the deltas. */
+	sweep(opts?: SweepOptions): SweepReport;
 
 	// ---- maintenance ---------------------------------------------------------
 	/** Delete every row family's entries for paths that no longer exist on disk. */
@@ -239,10 +336,37 @@ function openDbWithBusyRetry(storePath: string): {
 /** One open store per store path (per workspace); parallel sessions share per-workspace dbs. */
 const stores = new Map<
 	string,
-	{ path: string; db: DatabaseSync; stmts: Prepared; store: HashStore }
+	{ path: string; db: DatabaseSync; stmts: Prepared; store: HashStore; budget: SweepBudget }
 >();
 const openings = new Map<string, Promise<HashStore>>();
 let exitHandlerRegistered = false;
+
+// ---- rebuild-warning hook (#180, spec #184, ADR-0010) ----------------------
+//
+// When the open path rebuilds the store, every anchor the model holds for
+// this workspace is invalidated. The model has to know to re-read. We expose
+// the message here so the tool layer (when ready) can prepend it to a tool
+// result's warnings channel. This module never reads the value; session-view
+// (or whoever owns the warnings channel) does.
+let pendingRebuildWarning: string | undefined;
+/** Take and clear the most recently-set rebuild message. Returns undefined
+ *  when nothing was queued since the last call. */
+export function takeRebuildWarning(): string | undefined {
+	const m = pendingRebuildWarning;
+	pendingRebuildWarning = undefined;
+	return m;
+}
+export function setRebuildWarning(message: string | undefined): void {
+	pendingRebuildWarning = message;
+}
+
+/** The shared store-wide sweep counters/limits carried alongside each open
+ *  store, so open-time sweep triggering and write-time sweep triggering share
+ *  one budget configuration. */
+interface SweepBudget {
+	/** Per-process write counter; reset on (re)open. */
+	writeCounter: number;
+}
 
 function openDb(storePath: string): { db: DatabaseSync; stmts: Prepared } {
 	const db = new DatabaseSync(storePath, {
@@ -306,6 +430,11 @@ function withTransaction(db: DatabaseSync, fn: () => void): void {
 	});
 }
 
+/** Batched DELETE for the TTL phase. Each iteration removes up to `limit`
+ *  rows matching `updated_at < cutoff`, so a huge stale backlog is paid down
+ *  one page at a time instead of holding the writer for seconds. */
+const TTL_BATCH_LIMIT = 5000;
+
 function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec("PRAGMA synchronous = NORMAL");
@@ -342,13 +471,24 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		);
 		db.exec("DROP TABLE undo_legacy");
 	}
+	// `result_checksum` (#176): new rows store a checksum of the post-edit body
+	// instead of a second full copy, which halves the biggest text payload in the
+	// store. The column is ADDED rather than rebuilt — legacy rows keep working
+	// (an empty checksum sends the stale check down the text path), and the stack
+	// survives the upgrade in place, exactly as the depth migration does.
+	//
+	// This runs for EVERY store, including one just written by the current build
+	// (where the column already exists and the check is a single PRAGMA read).
+	if (undoColumns.length > 0 && !undoColumns.some((column) => column.name === "result_checksum")) {
+		db.exec("ALTER TABLE undo ADD COLUMN result_checksum TEXT");
+	}
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS anchor_meta (" +
 			"path TEXT PRIMARY KEY, " +
 			"checksum TEXT NOT NULL, " +
 			"line_count INTEGER NOT NULL, " +
 			"updated_at INTEGER NOT NULL" +
-		")",
+			")",
 	);
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS anchor_lines (" +
@@ -358,11 +498,16 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"content_key INTEGER NOT NULL, " +
 			"updated_at INTEGER NOT NULL, " +
 			"PRIMARY KEY (path, line)" +
-		")",
+			")",
 	);
 	db.exec(
 		"CREATE INDEX IF NOT EXISTS anchor_lines_by_anchor ON anchor_lines (path, anchor)",
 	);
+	// TTL / recency indexes (#180, spec #184) are NOT created here. They are the
+	// one cost that scales with row count, and at open time we may be about to
+	// rebuild or sweep the store — building them first measured ~5 s of wasted
+	// work over 3 M rows. `ensureMaintenanceIndexes` creates them right after the
+	// budget gate, once per store (see `openStore`).
 	// Migration for a store written before the sparse anchor model (#169): the
 	// legacy DENSE anchor_state table (one row per path, anchors/line_keys as
 	// JSON arrays) expands 1:1 into anchor_meta + anchor_lines — every anchor
@@ -440,7 +585,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?",
 	);
 	const allStmt = db.prepare(
-		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta"
+		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta",
 	);
 	const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
 	const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
@@ -453,13 +598,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	// (path, depth) primary key mid-statement (`UNIQUE constraint failed`),
 	// because SQLite checks the constraint row by row.
 	const undoPushStmt = db.prepare(
-		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, updated_at) " +
-			"VALUES (?, COALESCE((SELECT MAX(depth) FROM undo WHERE path = ?), -1) + 1, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, result_checksum, updated_at) " +
+			"VALUES (?, COALESCE((SELECT MAX(depth) FROM undo WHERE path = ?), -1) + 1, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const undoMaxStmt = db.prepare("SELECT MAX(depth) AS max FROM undo WHERE path = ?");
 	const undoPruneStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth < ?");
 	const undoGetStmt = db.prepare(
-		"SELECT content, bom, ending, hashes, result_content FROM undo WHERE path = ? ORDER BY depth DESC LIMIT 1",
+		"SELECT content, bom, ending, hashes, result_content, result_checksum FROM undo WHERE path = ? ORDER BY depth DESC LIMIT 1",
 	);
 	const undoPopStmt = db.prepare("DELETE FROM undo WHERE path = ? AND depth = ?");
 	const undoDepthStmt = db.prepare("SELECT COUNT(*) AS n FROM undo WHERE path = ?");
@@ -469,6 +614,17 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		const row = undoMaxStmt.get(path) as { max?: number | null } | undefined;
 		return row?.max === null || row?.max === undefined ? undefined : Number(row.max);
 	};
+	// Per-layer sizes, ordered oldest-first. Used by trimUndo to compute
+	// how many oldest layers must go to bring the path under its byte cap.
+	const undoLayerSizesStmt = db.prepare(
+		"SELECT depth, LENGTH(content) + LENGTH(result_content) + LENGTH(hashes) AS bytes " +
+			"FROM undo WHERE path = ? ORDER BY depth ASC",
+	);
+	// Drops every undo row with depth < the cutoff, returning the row count.
+	// Cutoff is `targetDepth`: rows with depth < targetDepth are deleted.
+	const undoDeleteBelowDepthStmt = db.prepare(
+		"DELETE FROM undo WHERE path = ? AND depth < ?",
+	);
 	const servedGetStmt = db.prepare(
 		"SELECT hashes, reported FROM served WHERE session_id = ? AND path = ?",
 	);
@@ -488,8 +644,11 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	);
 	const servedDeletePathStmt = db.prepare("DELETE FROM served WHERE path = ?");
 	const servedWipeStmt = db.prepare("DELETE FROM served WHERE session_id = ?");
+	// Batched prune using the indexed `updated_at` column. A single DELETE on a
+	// 9 M-row backlog with the index is sub-second; without the index it was
+	// the dominant open-time cost. The caller loops until 0 rows remain.
 	const servedPruneOlderThanStmt = db.prepare(
-		"DELETE FROM served WHERE updated_at < ?",
+		"DELETE FROM served WHERE rowid IN (SELECT rowid FROM served WHERE updated_at < ? LIMIT " + TTL_BATCH_LIMIT + ")",
 	);
 	const anchorMetaGetStmt = db.prepare(
 		"SELECT checksum, line_count FROM anchor_meta WHERE path = ?",
@@ -510,8 +669,49 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	);
 	const anchorLinesDeletePathStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ?");
 	const anchorMetaDeleteStmt = db.prepare("DELETE FROM anchor_meta WHERE path = ?");
-	const anchorPruneOlderThanStmt = db.prepare("DELETE FROM anchor_meta WHERE updated_at < ?");
-	const anchorLinesPruneOlderThanStmt = db.prepare("DELETE FROM anchor_lines WHERE updated_at < ?");
+	const anchorPruneOlderThanStmt = db.prepare(
+		"DELETE FROM anchor_meta WHERE rowid IN (SELECT rowid FROM anchor_meta WHERE updated_at < ? LIMIT " + TTL_BATCH_LIMIT + ")",
+	);
+	const anchorLinesPruneOlderThanStmt = db.prepare(
+		"DELETE FROM anchor_lines WHERE rowid IN (SELECT rowid FROM anchor_lines WHERE updated_at < ? LIMIT " + TTL_BATCH_LIMIT + ")",
+	);
+	// ---- budget / maintenance (#180, spec #184) ----
+	// `(page_count - freelist_count) * page_size` is the budget metric: DELETE
+	// only moves pages to the freelist, so a physical page count could never be
+	// brought back under budget and the sweep would delete the same paths
+	// forever — freelist_count makes "rows deleted" visible immediately.
+	const storeBytesStmt = db.prepare(
+		"SELECT (page_count - freelist_count) * page_size AS bytes " +
+			"FROM pragma_page_count(), pragma_page_size(), pragma_freelist_count()",
+	);
+	const anchorRowCountStmt = db.prepare("SELECT COUNT(*) AS n FROM anchor_lines");
+	const anchorPathCountStmt = db.prepare("SELECT COUNT(*) AS n FROM (SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta)");
+	// One row per path, oldest first: the LRU order across every row family that
+	// outlives a session (served is per-session, but still ages the path).
+	const pathRecencyStmt = db.prepare(
+		"SELECT path, MAX(ts) AS ts FROM (" +
+			"SELECT path, updated_at AS ts FROM anchor_meta " +
+			"UNION ALL SELECT path, updated_at FROM undo " +
+			"UNION ALL SELECT path, updated_at FROM snapshots " +
+			"UNION ALL SELECT path, updated_at FROM served) " +
+			"GROUP BY path ORDER BY ts ASC",
+	);
+	const undoBudgetStmt = db.prepare(
+		"SELECT COALESCE(SUM(LENGTH(content) + LENGTH(result_content) + LENGTH(hashes)), 0) AS bytes, " +
+			"COUNT(*) AS n FROM undo WHERE path = ?",
+	);
+	const undoDepthsStmt = db.prepare("SELECT depth FROM undo WHERE path = ? ORDER BY depth ASC");
+	const metaGetStmt = db.prepare("SELECT value FROM meta WHERE key = ?");
+	const metaSetStmt = db.prepare(
+		"INSERT INTO meta (key, value) VALUES (?, ?) " +
+			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+	);
+	const metaDeleteStmt = db.prepare("DELETE FROM meta WHERE key = ?");
+	// Anchor lines whose meta row is gone (a TTL prune that caught only one side,
+	// or a crashed writer): unreachable state that still costs pages.
+	const orphanAnchorLinesStmt = db.prepare(
+		"DELETE FROM anchor_lines WHERE path NOT IN (SELECT path FROM anchor_meta)",
+	);
 	const stmts: Prepared = {
 		get: (...params) =>
 			getStmt.get(...params) as Record<string, unknown> | undefined,
@@ -559,6 +759,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				undoDelStmt.run(...params);
 			});
 		},
+		undoDeleteBelowDepth: (...params) =>
+			// `.changes` is not guaranteed by every driver or test stub (the open-error
+			// tests replace statements wholesale): a missing count reads as 0, never
+			// as a TypeError on a property of undefined.
+			Number((undoDeleteBelowDepthStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0),
+		undoLayerSizes: (...params) =>
+			undoLayerSizesStmt.all(...params) as Record<string, unknown>[],
 		servedGet: (...params) =>
 			servedGetStmt.get(...params) as Record<string, unknown> | undefined,
 		servedUpsert: (...params) => {
@@ -591,11 +798,8 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				servedWipeStmt.run(...params);
 			});
 		},
-		servedPruneOlderThan: (...params) => {
-			withBusyRetry(() => {
-				servedPruneOlderThanStmt.run(...params);
-			});
-		},
+		servedPruneOlderThan: (...params) =>
+			Number((servedPruneOlderThanStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0),
 		anchorMetaGet: (...params) =>
 			anchorMetaGetStmt.get(...params) as Record<string, unknown> | undefined,
 		anchorMetaUpsert: (...params) => {
@@ -623,18 +827,214 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			});
 		},
 		anchorPruneOlderThan: (...params) => {
+			const cutoff = params[0] as number;
+			let total = 0;
+			for (;;) {
+				const r = anchorPruneOlderThanStmt.run(cutoff);
+				const rows = (r?.changes as number | undefined) ?? 0;
+				const rowsLines = (anchorLinesPruneOlderThanStmt.run(cutoff)?.changes as number | undefined) ?? 0;
+				total += rows + rowsLines;
+				if (rows + rowsLines < TTL_BATCH_LIMIT * 2) break;
+			}
+			return total;
+		},
+		// ---- budget / maintenance (#180) ----
+		storeBytes: () =>
+			Number((storeBytesStmt.get() as { bytes?: number } | undefined)?.bytes ?? 0),
+		anchorRowCount: () =>
+			Number((anchorRowCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
+		anchorPathCount: () =>
+			Number((anchorPathCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
+		pathRecency: () => pathRecencyStmt.all() as Record<string, unknown>[],
+		undoBudget: (...params) =>
+			undoBudgetStmt.get(...params) as Record<string, unknown> | undefined,
+		undoDepths: (...params) => undoDepthsStmt.all(...params) as Record<string, unknown>[],
+		metaGet: (...params) => metaGetStmt.get(...params) as Record<string, unknown> | undefined,
+		metaSet: (...params) => {
 			withBusyRetry(() => {
-				anchorPruneOlderThanStmt.run(...params);
-				anchorLinesPruneOlderThanStmt.run(...params);
+				metaSetStmt.run(...params);
 			});
+		},
+		metaDelete: (...params) => {
+			withBusyRetry(() => {
+				metaDeleteStmt.run(...params);
+			});
+		},
+		orphanAnchorLines: () => {
+			withBusyRetry(() => {
+				orphanAnchorLinesStmt.run();
+			});
+		},
+		vacuum: () => {
+			db.exec("VACUUM");
 		},
 	};
 	return { db, stmts };
 }
 
 /** Wire the domain methods over the prepared statements. */
-function makeDomainStore(stmts: Prepared): HashStore {
-	return {
+function makeDomainStore(
+	stmts: Prepared,
+	budget: SweepBudget,
+	options: { bytes: number; paths: number; rows: number },
+): HashStore {
+	// Cheap check used by every write method. Reads three PRAGMAs; ~µs each.
+	const overBudget = (): boolean => {
+		const bytes = stmts.storeBytes();
+		if (bytes > options.bytes) return true;
+		if (stmts.anchorPathCount() > options.paths) return true;
+		if (stmts.anchorRowCount() > options.rows) return true;
+		return false;
+	};
+	let sweepScheduled = false;
+	const maybeSweepAfterWrite = () => {
+		budget.writeCounter++;
+		if (sweepScheduled) return;
+		if (budget.writeCounter % HASH_STORE_SWEEP_WRITES !== 0 && !overBudget()) return;
+		sweepScheduled = true;
+		try {
+			const report = runSweep();
+			// Logging only — the report is for callers / tests.
+			if (report.evictedPaths > 0) {
+				console.warn(
+					`[hash-store] sweep freed ${report.evictedPaths} paths ` +
+						`(${report.ttlDropped} TTL, ${report.trimmedUndo} slimmed) ` +
+						`in ${report.durationMs}ms; ` +
+						`store ${formatBytes(report.before.bytes)} → ${formatBytes(report.after.bytes)}.`,
+				);
+			}
+		} finally {
+			sweepScheduled = false;
+		}
+	};
+
+	// ---- the eviction sweep --------------------------------------------------
+	// One scan, three phases, strictly ordered:
+	//   1. TTL:        drop whole paths whose MAX(updated_at) < now - ttlMs.
+	//   2. Slim:       for the oldest 200 surviving paths, trim the per-path
+	//                  undo stack to ≤ undoMaxBytes (always keep ≥ 1 layer).
+	//   3. LRU:        while any of bytes/paths/rows exceeds its budget, drop
+	//                  the next-oldest whole path; once under budget, delete
+	//                  an extra 10% to amortise the next sweep.
+	function runSweep(opts?: SweepOptions): SweepReport {
+		const started = Date.now();
+		const limits = {
+			bytes: opts?.bytes ?? options.bytes,
+			paths: opts?.paths ?? options.paths,
+			rows: opts?.rows ?? options.rows,
+			ttlMs: opts?.ttlMs ?? SERVED_TTL_MS,
+			undoMaxBytes: opts?.undoMaxBytes ?? UNDO_MAX_PATH_BYTES,
+			now: opts?.now ?? Date.now(),
+			slimBatch: opts?.slimBatch ?? 200,
+		};
+		const before: HashStoreStats = {
+			bytes: stmts.storeBytes(),
+			paths: stmts.anchorPathCount(),
+			rows: stmts.anchorRowCount(),
+		};
+		const recency = stmts.pathRecency() as { path: string; ts: number }[];
+		const deleted = new Set<string>();
+		let evictedPaths = 0;
+		let ttlDropped = 0;
+		let trimmedUndo = 0;
+
+		const deletePathCascade = (path: string) => {
+			stmts.deleteOne(path);
+			stmts.undoDelete(path);
+			stmts.servedDeletePath(path);
+			stmts.anchorMetaDelete(path);
+			stmts.anchorLinesDeletePath(path);
+		};
+
+		// 1. TTL: drop whole paths whose recency is below the cutoff.
+		const ttlCutoff = limits.now - limits.ttlMs;
+		for (const row of recency) {
+			if (row.ts >= ttlCutoff) break;
+			deletePathCascade(row.path);
+			deleted.add(row.path);
+			evictedPaths++;
+			ttlDropped++;
+		}
+
+		// 2. Slim: undo-byte cap on the oldest surviving paths.
+		const slimCandidates = recency
+			.filter((r) => !deleted.has(r.path))
+			.slice(0, limits.slimBatch);
+		for (const row of slimCandidates) {
+			const dropped = trimUndoInternal(row.path, limits.undoMaxBytes);
+			if (dropped > 0) trimmedUndo++;
+		}
+
+		// 3. LRU: drop whole paths until every budget metric is in range,
+		// then delete an additional ~10% to amortise the next sweep.
+		const lruPool = recency.filter((r) => !deleted.has(r.path));
+		let lruDeleted = 0;
+		while (
+			lruDeleted < lruPool.length &&
+			(stmts.storeBytes() > limits.bytes ||
+				stmts.anchorPathCount() > limits.paths ||
+				stmts.anchorRowCount() > limits.rows)
+		) {
+			deletePathCascade(lruPool[lruDeleted].path);
+			deleted.add(lruPool[lruDeleted].path);
+			lruDeleted++;
+		}
+		// Multi-delete 10% once we've actually trimmed.
+		if (lruDeleted > 0) {
+			const extra = Math.ceil(lruDeleted * 0.1);
+			for (let i = 0; i < extra && lruDeleted < lruPool.length; i++) {
+				deletePathCascade(lruPool[lruDeleted].path);
+				deleted.add(lruPool[lruDeleted].path);
+				lruDeleted++;
+			}
+		}
+		evictedPaths += lruDeleted;
+
+		// Healed orphan anchor_lines cost pages but no metric; cheapest to fold in.
+		stmts.orphanAnchorLines();
+
+		const after: HashStoreStats = {
+			bytes: stmts.storeBytes(),
+			paths: stmts.anchorPathCount(),
+			rows: stmts.anchorRowCount(),
+		};
+		return {
+			before,
+			after,
+			evictedPaths,
+			ttlDropped,
+			trimmedUndo,
+			rebuilt: false,
+			durationMs: Date.now() - started,
+		};
+	}
+
+	/** Internal trim: see {@link HashStore.trimUndo}. */
+	function trimUndoInternal(path: string, maxBytes: number): number {
+		const budget = stmts.undoBudget(path) as { bytes?: number; n?: number } | undefined;
+		if (!budget) return 0;
+		const bytes = Number(budget.bytes ?? 0);
+		const n = Number(budget.n ?? 0);
+		if (bytes <= maxBytes || n <= 1) return 0;
+		const layers = stmts.undoLayerSizes(path) as { depth: number; bytes: number }[];
+		// Walk from the oldest end, dropping layers, until the path is under the
+		// cap or only one layer is left.
+		let runningBytes = bytes;
+		let keepFrom = 0;
+		for (let i = 0; i < layers.length - 1; i++) {
+			if (runningBytes <= maxBytes) break;
+			runningBytes -= Number(layers[i].bytes);
+			keepFrom = i + 1;
+		}
+		if (keepFrom === 0) return 0;
+		// Layers are ordered ASC; the cut is "drop everything strictly below
+		// the kept layer's depth".
+		const cutoffDepth = Number(layers[keepFrom].depth);
+		const removed = stmts.undoDeleteBelowDepth(path, cutoffDepth);
+		return removed;
+	}
+
+	const store: HashStore = {
 		engine: "node:sqlite",
 
 		getSnapshot(path, content, deleteCorrupt = true) {
@@ -660,6 +1060,7 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				JSON.stringify(hashes),
 				Date.now(),
 			);
+			maybeSweepAfterWrite();
 		},
 		allKnownPaths() {
 			return stmts.allPaths() as { path: string }[];
@@ -702,6 +1103,10 @@ function makeDomainStore(stmts: Prepared): HashStore {
 					ending: row.ending as string,
 					hashes: parsed as string[],
 					resultContent: row.result_content as string,
+					// New rows carry a checksum instead of the post-edit body (#176);
+					// legacy rows have an empty string here and are still verified by
+					// their stored text.
+					resultChecksum: (row.result_checksum as string | null) ?? undefined,
 				};
 			} catch {
 				stmts.undoDelete(path);
@@ -716,8 +1121,10 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				entry.ending,
 				JSON.stringify(entry.hashes),
 				entry.resultContent,
+				entry.resultChecksum ?? "",
 				Date.now(),
 			);
+			maybeSweepAfterWrite();
 		},
 		popUndo(path) {
 			stmts.undoPop(path);
@@ -728,32 +1135,23 @@ function makeDomainStore(stmts: Prepared): HashStore {
 		undoDepth(path) {
 			return stmts.undoDepth(path);
 		},
+		trimUndo(path, maxBytes = UNDO_MAX_PATH_BYTES) {
+			return trimUndoInternal(path, maxBytes);
+		},
 
 		getServed(sessionKey, path) {
 			const row = stmts.servedGet(sessionKey, path);
 			if (!row) return new Set();
-			try {
-				const parsed = JSON.parse(row.hashes as string) as unknown;
-				// New format: string[] (array of anchor strings)
-				if (Array.isArray(parsed) && parsed.every((e) => typeof e === "string" && hashRe().test(e))) {
-					return new Set(parsed as string[]);
-				}
-				// Legacy v2 envelope: { v: 2, a: anchors, k: contentKeys }
-				if (
-					parsed !== null && typeof parsed === "object" &&
-					(parsed as { v?: unknown }).v === 2 && Array.isArray((parsed as { a?: unknown }).a)
-				) {
-					const anchors = (parsed as { a: unknown[] }).a;
-					if (isValidServedList(anchors)) return new Set(anchors.filter((a): a is string => a !== null));
-				}
-				// Legacy format: (string | null)[]
-				if (isValidServedList(parsed)) return new Set(parsed.filter((a): a is string => a !== null));
-				stmts.servedDelete(sessionKey, path);
-				return new Set();
-			} catch {
+			// The codec owns every shape this has ever been stored in (#176): the
+			// packed form this build writes and the three legacy JSON shapes. An
+			// unreadable payload heals the same way malformed JSON always did —
+			// the row is dropped and the session re-serves what it needs.
+			const decoded = decodeServedAnchors(row.hashes as string);
+			if (decoded === undefined) {
 				stmts.servedDelete(sessionKey, path);
 				return new Set();
 			}
+			return decoded;
 		},
 		getServedReported(sessionKey, path) {
 			const row = stmts.servedGet(sessionKey, path);
@@ -772,8 +1170,11 @@ function makeDomainStore(stmts: Prepared): HashStore {
 				return new Set();
 			}
 		},
-		upsertServed(sessionKey, path, hashesJson) {
-			stmts.servedUpsert(sessionKey, path, hashesJson, Date.now());
+		upsertServed(sessionKey, path, anchors) {
+			// Encode here, in one place (#176): callers hand over the set they have
+			// and never see the on-disk shape.
+			stmts.servedUpsert(sessionKey, path, encodeServedAnchors(anchors), Date.now());
+			maybeSweepAfterWrite();
 		},
 		upsertServedReported(sessionKey, path, reportedJson) {
 			stmts.servedReportedUpsert(sessionKey, path, reportedJson, Date.now());
@@ -794,6 +1195,28 @@ function makeDomainStore(stmts: Prepared): HashStore {
 			stmts.servedPruneOlderThan(ts);
 		},
 
+		metaGet(key) {
+			const row = stmts.metaGet(key);
+			return row?.value as string | undefined;
+		},
+		metaSet(key, value) {
+			stmts.metaSet(key, value);
+		},
+		metaDelete(key) {
+			stmts.metaDelete(key);
+		},
+
+		stats() {
+			return {
+				bytes: stmts.storeBytes(),
+				paths: stmts.anchorPathCount(),
+				rows: stmts.anchorRowCount(),
+			};
+		},
+		sweep(opts) {
+			return runSweep(opts);
+		},
+
 		async pruneMissing() {
 			const rows = stmts.allPaths() as { path: string }[];
 			const missing = await statMissing(rows);
@@ -809,6 +1232,40 @@ function makeDomainStore(stmts: Prepared): HashStore {
 			});
 		},
 	};
+	return store;
+}
+
+function formatBytes(n: number): string {
+	if (n < 1024) return `${n}B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KiB`;
+	return `${(n / 1024 / 1024).toFixed(1)}MiB`;
+}
+
+/**
+ * Create the TTL / recency indexes exactly once per store.
+ *
+ * They are deliberately NOT part of `buildStore`'s schema: creating them costs
+ * a full pass over every row (measured ~5 s over 3 M rows), and the open path
+ * may be about to REBUILD or SWEEP the store — work that would be thrown away.
+ * They are still needed before the TTL prunes and the LRU order, both of which
+ * read `updated_at` and would otherwise walk the tables linearly.
+ *
+ * Guarded by a meta marker rather than `IF NOT EXISTS` alone, so the check on
+ * every subsequent open is one row read instead of four catalog lookups, and so
+ * a fresh (rebuilt) store gets them immediately — there they are free.
+ *
+ * @param db - the open store connection.
+ */
+function ensureMaintenanceIndexes(db: DatabaseSync): void {
+	const done = db.prepare("SELECT value FROM meta WHERE key = 'maintenance_indexes'").get() as
+		| { value?: string }
+		| undefined;
+	if (done?.value === "1") return;
+	db.exec("CREATE INDEX IF NOT EXISTS anchor_meta_updated_at ON anchor_meta (updated_at)");
+	db.exec("CREATE INDEX IF NOT EXISTS anchor_lines_updated_at ON anchor_lines (updated_at)");
+	db.exec("CREATE INDEX IF NOT EXISTS undo_updated_at ON undo (updated_at)");
+	db.exec("CREATE INDEX IF NOT EXISTS served_updated_at ON served (updated_at)");
+	db.prepare("INSERT INTO meta (key, value) VALUES ('maintenance_indexes', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
 }
 
 function isHealthy(db: DatabaseSync): boolean {
@@ -836,13 +1293,93 @@ async function quarantineStore(storePath: string): Promise<void> {
 	}
 }
 
-function shutdownDb(db: DatabaseSync): void {
+/** Maximum time a VACUUM may take at close before we give up. A VACUUM that
+ *  hangs forever is worse than one we let run on the next open. */
+const VACUUM_TIMEOUT_MS = 60_000;
+
+/** Close a store, running VACUUM if a `pending_vacuum` marker was left by a
+ *  prior sweep and writing `clean_shutdown=1` for the next open to read. */
+function shutdownDb(
+	db: DatabaseSync,
+	stmts: Prepared | undefined, storePath: string | undefined,
+): void {
 	try {
 		db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
 	} catch {
 		// best-effort checkpoint before close
 	}
+	if (stmts) {
+		try {
+			const pending = stmts.metaGet("pending_vacuum");
+			const shouldVacuum = pending !== undefined;
+			stmts.metaSet("clean_shutdown", "1");
+			if (shouldVacuum) {
+				const vacuumStart = Date.now();
+				const timer = setTimeout(() => {
+					// The VACUUM below will still run to completion (sync), but
+					// the timeout gives us a way to detect a runaway one — see
+					// the catch + abort dance in tryVacuumWithTimeout.
+				}, VACUUM_TIMEOUT_MS);
+				try {
+					if (storePath) tryVacuumWithTimeout(db, storePath, VACUUM_TIMEOUT_MS);
+					stmts.metaDelete("pending_vacuum");
+					console.warn(
+						`[hash-store] VACUUM completed in ${Date.now() - vacuumStart}ms; pending_vacuum cleared.`,
+					);
+				} catch (error) {
+					console.error(
+						"[hash-store] VACUUM failed or timed out, leaving pending_vacuum for next open:",
+						error,
+					);
+					// Leave `pending_vacuum` in place; the next open will try again.
+				} finally {
+					clearTimeout(timer);
+				}
+			}
+		} catch (error) {
+			// Persisting clean_shutdown / vacuum must never block shutdown.
+			console.error("[hash-store] shutdown bookkeeping failed:", error);
+		}
+	}
 	db.close();
+}
+
+/** Run VACUUM on a worker so the main thread stays responsive, and abort
+ *  after `timeoutMs`. On timeout the worker is detached (its VACUUM keeps
+ *  running until done but its result is ignored). The main thread never
+ *  blocks longer than `timeoutMs`. */
+function tryVacuumWithTimeout(_db: DatabaseSync, storePath: string, timeoutMs: number): void {
+	const { Worker } = require("node:worker_threads") as typeof import("node:worker_threads");
+	const worker = new Worker(
+		"const { parentPort, workerData } = require('node:worker_threads');" +
+			"const { DatabaseSync } = require('node:sqlite');" +
+			"const db = new DatabaseSync(workerData.path, { timeout: 5000 });" +
+			"try { db.exec('VACUUM'); parentPort.postMessage({ ok: true }); }" +
+			"catch (e) { parentPort.postMessage({ ok: false, error: String(e) }); }" +
+			"finally { try { db.close(); } catch {} }",
+		{ eval: true, workerData: { path: storePath } },
+	);
+	let settled = false;
+	const timer = setTimeout(() => {
+		if (settled) return;
+		settled = true;
+		worker.terminate().catch(() => undefined);
+		// Throw so the caller's catch leaves pending_vacuum in place.
+		throw new Error(`VACUUM exceeded ${timeoutMs}ms`);
+	}, timeoutMs);
+	worker.on("message", (msg: { ok: boolean; error?: string }) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		worker.terminate().catch(() => undefined);
+		if (!msg.ok) throw new Error(msg.error ?? "VACUUM worker failed");
+	});
+	worker.on("error", (err) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		throw err;
+	});
 }
 
 const STAT_BATCH = 64;
@@ -868,6 +1405,26 @@ async function statMissing(rows: { path: string }[]): Promise<string[]> {
 	return missing;
 }
 
+/** How often the open path is allowed to rebuild a single store. A workspace
+ *  that legitimately needs more than the rebuild threshold doesn't lose its
+ *  anchors on every launch. */
+function readRebuildThrottle(stmts: Prepared): { lastAt: number; now: number } {
+	const now = Date.now();
+	const row = stmts.metaGet("last_rebuild_at");
+	const lastAt = row ? Number(row.value ?? 0) : 0;
+	return { lastAt, now };
+}
+
+/** Quick WAL cleanup; runs before any budget measurement so the sticky WAL
+ *  doesn't fool the metric. Cheap: one TRUNCATE checkpoint. */
+function tryCheckpointTruncate(db: DatabaseSync): void {
+	try {
+		db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+	} catch {
+		// best-effort
+	}
+}
+
 async function openStore(storePath: string): Promise<HashStore> {
 	// Multi-store: never close another workspace's store when opening this one.
 
@@ -884,25 +1441,134 @@ async function openStore(storePath: string): Promise<HashStore> {
 		existed = false;
 		opened = openDbWithBusyRetry(storePath);
 	}
-	if (!isHealthy(opened.db)) {
-		shutdownDb(opened.db);
+	// Open-path cost control (spec #184, ADR-0010): PRAGMA quick_check scans
+	// every page. On a 2 GB store it was 80 % of the cold-open latency. We
+	// only run it when the last shutdown was NOT clean — the marker is set
+	// by `shutdownDb` and removed here once we've decided the store is
+	// trustworthy. The first-time / quarantine paths still run quick_check
+	// because there is no marker to consult.
+	let skipQuickCheck = false;
+	const cleanShutdownRow = opened.stmts.metaGet("clean_shutdown");
+	if (cleanShutdownRow !== undefined) {
+		// The marker proves the previous process exited through shutdownDb.
+		// Drop it now — a future crash will leave it absent and we'll check.
+		opened.stmts.metaDelete("clean_shutdown");
+		skipQuickCheck = true;
+	}
+	if (!skipQuickCheck && !isHealthy(opened.db)) {
+		shutdownDb(opened.db, undefined, storePath);
 		await quarantineStore(storePath);
 		existed = false;
 		opened = openDbWithBusyRetry(storePath);
 	}
 	const { db, stmts } = opened;
+	// Diagnostic (and the test seam for the cold-open gate): record WHICH decision
+	// the open took, so "was the full-DB check skipped?" is answerable from the
+	// store itself rather than by timing. Field use: a 20 s open can be attributed
+	// to a real integrity check instead of being a mystery.
+	stmts.metaSet("last_open_integrity_check", skipQuickCheck ? "skipped" : "ran");
+
+	// WAL checkpoint before measuring: TRUNCATE returns the WAL to the main
+	// store, so a sticky WAL doesn't inflate the byte budget. Cheap.
+	tryCheckpointTruncate(db);
 
 	if (!existed) {
 		await migrateLegacy(db, storePath);
 	}
+
+	// ---- cold-open budget gate (spec #184, ADR-0010) ------------------------
+	// A huge store on first open must NOT make the first tool call wait while
+	// we evict. Above the rebuild threshold we tear it down and rebuild from
+	// scratch — seconds, not the minutes a sweep over multi-million-row
+	// indexes would be. Between evict and rebuild we run the in-place sweep.
+	const initialStats = {
+		bytes: stmts.storeBytes(),
+		paths: stmts.anchorPathCount(),
+		rows: stmts.anchorRowCount(),
+	};
+	// Limits come from the settings layer when it has published any (#179), and
+	// from the constants otherwise — `storeBudgetLimits()` is the single seam.
+	const limits = storeBudgetLimits();
+	const evictThreshold = limits.bytes * HASH_STORE_EVICT_RATIO;
+	const rebuildThreshold = limits.bytes * HASH_STORE_REBUILD_RATIO;
+	const needsRebuild =
+		initialStats.bytes >= rebuildThreshold ||
+		initialStats.paths >= limits.paths * HASH_STORE_REBUILD_RATIO ||
+		initialStats.rows >= limits.rows * HASH_STORE_REBUILD_RATIO;
+	const { lastAt: lastRebuildAt, now: nowMs } = readRebuildThrottle(stmts);
+	const throttled = nowMs - lastRebuildAt < HASH_STORE_REBUILD_THROTTLE_MS;
+
+	const budget: SweepBudget = { writeCounter: 0 };
+	const store = makeDomainStore(stmts, budget, limits);
+
+	if (needsRebuild && !throttled) {
+		const before = initialStats;
+		const rebuildStart = Date.now();
+		try {
+			shutdownDb(db, stmts, storePath);
+			await quarantineStore(storePath);
+			const reopened = openDbWithBusyRetry(storePath);
+			tryCheckpointTruncate(reopened.db);
+			stores.set(storePath, {
+				path: storePath,
+				db: reopened.db,
+				stmts: reopened.stmts,
+				store: makeDomainStore(reopened.stmts, budget, limits),
+				budget,
+			});
+			reopened.stmts.metaSet("last_rebuild_at", String(Date.now()));
+			console.warn(
+				`[hash-store] rebuild complete in ${Date.now() - rebuildStart}ms; ` +
+					`freed ${formatBytes(before.bytes)} / ${before.paths} paths / ${before.rows} rows. ` +
+					"All anchors for this workspace are invalidated — re-read files before editing.",
+			);
+			setRebuildWarning(
+				"本工作区锚点库已重建，旧锚点作废，请重新 read。",
+			);
+			ensureMaintenanceIndexes(reopened.db);
+			return stores.get(storePath)!.store;
+		} catch (error) {
+			console.error("[hash-store] rebuild failed, falling back to sweep:", error);
+			setRebuildWarning(undefined);
+			// Fall through to the sweep below using the original store.
+		}
+	}
+
+	stores.set(storePath, { path: storePath, db, stmts, store, budget });
+	// Maintenance indexes and TTL prunes run AFTER the budget gate on purpose.
+	// They are the two costs that scale with row count, and a store that is about
+	// to be rebuilt or swept must not pay them first: building four indexes over
+	// 3 M rows measured ~5 s, all of it wasted when the store is then torn down.
+	// `ensureMaintenanceIndexes` is guarded by a meta marker, so the build happens
+	// once per store (and instantly on a freshly rebuilt one).
+	ensureMaintenanceIndexes(db);
 	withBusyRetry(() => {
 		stmts.servedPruneOlderThan(Date.now() - SERVED_TTL_MS);
 	});
 	withBusyRetry(() => {
 		stmts.anchorPruneOlderThan(Date.now() - ANCHOR_STATE_TTL_MS);
 	});
-	const store = makeDomainStore(stmts);
-	stores.set(storePath, { path: storePath, db, stmts, store });
+
+	// Above the evict threshold (or always when we deferred the rebuild
+	// because of throttle): run an in-place sweep.
+	const overEvict =
+		initialStats.bytes >= evictThreshold ||
+		initialStats.paths >= limits.paths * HASH_STORE_EVICT_RATIO ||
+		initialStats.rows >= limits.rows * HASH_STORE_EVICT_RATIO;
+	if (overEvict) {
+		const report = store.sweep();
+		if (report.evictedPaths > 0) {
+			console.warn(
+				`[hash-store] cold-open sweep freed ${report.evictedPaths} paths ` +
+					`(${report.ttlDropped} TTL, ${report.trimmedUndo} slimmed) ` +
+					`in ${report.durationMs}ms; ` +
+					`store ${formatBytes(report.before.bytes)} → ${formatBytes(report.after.bytes)}.` +
+					(needsRebuild && throttled
+						? " (rebuild deferred: throttle window active)"
+						: ""),
+			);
+		}
+	}
 
 	if (!exitHandlerRegistered) {
 		exitHandlerRegistered = true;
@@ -946,7 +1612,7 @@ export function loadHashStore(cwd?: string): Promise<HashStore> {
 
 /** The cached store entry for the active workspace (or the shared-home fallback), if open. */
 function currentStore():
-	| { db: DatabaseSync; stmts: Prepared; store: HashStore }
+	| { db: DatabaseSync; stmts: Prepared; store: HashStore; budget: SweepBudget }
 	| undefined {
 	const entry = stores.get(storePathFor());
 	return entry?.db.isOpen ? entry : undefined;
@@ -955,7 +1621,7 @@ function currentStore():
 /** Close every open store (process exit, HMR, tests). */
 export function shutdownHashStore(): void {
 	for (const [, entry] of stores) {
-		shutdownDb(entry.db);
+		shutdownDb(entry.db, entry.stmts, entry.path);
 	}
 	stores.clear();
 	openings.clear();
@@ -977,9 +1643,9 @@ export function withStore(fn: () => void): void {
 			} catch (e) {
 				try {
 					store.db.exec("ROLLBACK");
-			} catch {
-				// best-effort rollback; the original error propagates
-			}
+				} catch {
+					// best-effort rollback; the original error propagates
+				}
 				throw e;
 			}
 		});
@@ -1125,6 +1791,7 @@ registerAnchorPersistence({
 				);
 			}
 		});
+		entry.budget.writeCounter++;
 	},
 	putLines(path, lines) {
 		const entry = currentStore();
@@ -1136,5 +1803,6 @@ registerAnchorPersistence({
 				);
 			});
 		}
+		entry.budget.writeCounter++;
 	},
 });

@@ -183,10 +183,16 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				}
 				throw error;
 			}
-			if (
-				currentRaw !==
-				undo.bom + restoreEndings(undo.resultContent, undo.originalEnding)
-			) {
+			// Stale check (#176): a row written by this build carries a checksum of the
+			// post-edit body, so compare checksums; a legacy row carries the body, so
+			// compare text. Both answer the same question — "is the file still what my
+			// edit produced?" — and the checksum form is what let the undo stack stop
+			// storing a second full copy of every edited file.
+			const stillPostEdit =
+				undo.resultChecksum !== undefined && undo.resultChecksum !== ""
+					? contentChecksum(currentRaw) === undo.resultChecksum
+					: currentRaw === undo.bom + restoreEndings(undo.resultContent, undo.originalEnding);
+			if (!stillPostEdit) {
 				await clearUndo(absolutePath);
 				return {
 					path: absolutePath,

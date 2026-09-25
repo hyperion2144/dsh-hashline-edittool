@@ -795,7 +795,7 @@ function enforceNoopLoopSync(opts: {
 		);
 	}
 	if (opts.count === 2) {
-		return `[E_NOOP_LOOP] Notice: identical edit (${opts.removeFrom} → ${opts.removeTo} in ${opts.displayPath}) no-op'd twice; range already has this text. Resend will reject.`;
+		return `[E_NOOP_LOOP] Notice: identical edit (${opts.removeFrom} → ${opts.removeTo} in ${opts.displayPath}) no-op'd twice — your replacement is BYTE-IDENTICAL to the range's current text, so there is nothing to write. If you meant to change the INDENTATION, include the exact leading whitespace inside \`lines\`; this tool never adds, strips or normalises it. Resend will reject.`;
 	}
 	return undefined;
 }
