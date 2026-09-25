@@ -51,7 +51,7 @@ import {
 import { verifyExpectedLines, type ExpectedLines } from "./declaration.js";
 // The lifecycle gate (anchorsFor) lives here in the same package — the
 // engine's fallback with a known path flows through it (no recompute).
-import { anchorsFor } from "./session-anchors.js";
+import { anchorsFor, allocateForLines } from "./session-anchors.js";
 import { SERVED_ECHO_CAP } from "../infra/constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../infra/constants.js";
 
@@ -1059,6 +1059,25 @@ export function verifyServedRange(args: {
 			fileLines.length,
 			mismatchLine + contextLinesCfg(),
 		);
+		// Every line the echo shows MUST carry a real anchor (#187 user report:
+		// the echo rendered `:N:` with empty anchors, so the model could not
+		// retry with the fresh markers the rejection told it to reuse).
+		// Allocate the echo window now: the sparse state persists it, the
+		// servedRows below record it, and the model can immediately retry.
+		if (filePath) {
+			const echoWindow: number[] = [];
+			for (let ln = ctxFrom; ln <= ctxTo; ln++) echoWindow.push(ln);
+			if (echoWindow.length > 0) {
+				allocateForLines(filePath, fileLines.join("\n"), echoWindow);
+				// Re-materialise: the allocation minted anchors for lines whose
+				// contentKey did not match (or that were never served). The fresh
+				// view carries them; the stale local `fileAnchors` does not.
+				const fresh = anchorsFor(filePath, fileLines.join("\n"));
+				for (let ln = ctxFrom; ln <= ctxTo; ln++) {
+					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
+				}
+			}
+		}
 		const ctxEchoLines: string[] = [];
 		const ctxServedRows: ServedRow[] = [];
 		for (let ln = ctxFrom; ln <= ctxTo; ln++) {
@@ -1073,8 +1092,11 @@ export function verifyServedRange(args: {
 			});
 		}
 		const ctxEcho = `${hashlineHeader(true)}\n${ctxEchoLines.join("\n")}`;
-		const freshMarker = `${expectedAnchor}`;
-		const staleMsg = `line ${mismatchLine} was never served to the model (anchor ${expectedAnchor} not in served set)`;
+		// The retry marker is the NOW-allocated anchor at the mismatch line —
+		// the stale one (possibly empty) is what failed, not what to reuse.
+		const retryMarker = fileAnchors[firstMismatch] ?? expectedAnchor;
+		const freshMarker = `${retryMarker}`;
+		const staleMsg = `line ${mismatchLine}'s current content was not shown to you (anchor ${retryMarker} was never served). The echo below now carries real anchors for every line — reuse any of them, or read() for a full window.`;
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
