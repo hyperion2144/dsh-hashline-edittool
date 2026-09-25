@@ -6,20 +6,34 @@
  * anchor pipeline). It is not a cache, so nothing in it may be evicted: dropping
  * an entry silently revokes edit rights on a line whose content never changed.
  * What CAN change is its representation. The set used to be a JSON array, which
- * every serve re-read, re-parsed and re-wrote in full, and whose size grew with
- * the number of anchors served for a path.
+ * every serve re-read, re-parsed and re-wrote in full.
  *
- * This codec stores the same set as: a format marker, then the anchors sorted
- * numerically (Base62 read as an integer), delta-encoded, written as varints and
- * base64'd. Deltas of sorted anchors are small, so a set of N anchors costs a
+ * This codec stores the same set as: a version marker, then the anchors grouped
+ * by LENGTH and sorted numerically inside each group, deltas written as varints
+ * and base64'd. Deltas of sorted anchors are small, so a set of N anchors costs a
  * couple of bytes each instead of the ~7–10 bytes JSON spends on quoting and
  * commas, and decoding is a linear pass with no JSON parser in the middle.
+ *
+ * **The length group is not an optimisation — it is correctness.** Anchors are
+ * minted by padding to a fixed depth (`encodeAnchor` writes exactly `depth`
+ * characters, so `0h`, `00x` and `0` are ordinary anchors). The STRING is the
+ * identity and the integer is not: encoding `0h` as the number 17 decodes back as
+ * `h`, and every edit using the anchor the model was actually shown is then
+ * rejected as never served. Storing the length and re-padding on decode
+ * round-trips every anchor byte for byte.
+ *
+ * That failure is not hypothetical: the first version of this codec shipped
+ * without the group, and a live session hit it exactly — `read` returned
+ * `0h:345`, and the very next `edit` on that line was refused with "anchor 0h not
+ * in served set", while the persisted anchor state still held `0h` at line 345.
+ * The lesson is recorded here rather than in a commit message because the next
+ * person to touch this file needs to know why the length is on the wire.
  *
  * Bit-packing was considered and folded into the varint bytes: the deltas are
  * already a few bits wide, so a separate bit-stream would save a fraction of a
  * byte per anchor while making the format much harder to reason about.
  *
- * Lazy migration: {@link decodeServedAnchors} still understands every legacy
+ * Lazy migration: {@link decodeServedAnchors} still understands every legacy JSON
  * shape (the plain array, the v2 envelope, the dense `(string|null)[]`), and any
  * write replaces the row with the packed form. No migration pass runs, and a
  * store that is never written again keeps working as-is.
@@ -27,22 +41,30 @@
  */
 
 /**
- * Marks a packed payload. JSON payloads start with `[`, `{`, or a scalar, so a
- * leading `~` cannot collide with anything a previous build wrote.
+ * Marks a packed payload and names its version.
+ *
+ * `~1` is the length-grouped form. A bare `~` was the first attempt, which
+ * dropped leading zeros; it is deliberately NOT decodable — a wrong served set
+ * is worse than a missing one, because it makes anchors the model legitimately
+ * holds unusable and the rejection blames the model. Treating it as unreadable
+ * lets the caller heal the row, and the next read re-serves correctly.
  */
-const PACKED_PREFIX = "~";
-/** The anchor shape this plugin mints — 1–8 Base62 characters. */
-const anchorRe = /^[0-9A-Za-z]{1,8}$/;
+const PACKED_PREFIX = "~1";
+
+/** A payload written by the first, leading-zero-dropping version. */
+const DEFECTIVE_PREFIX = "~";
 
 /** The Base62 alphabet anchors are drawn from (matches `hash-assign`). */
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 const DIGIT = new Map<string, number>([...BASE62].map((ch, index) => [ch, index]));
 
+/** The anchor shape this plugin mints — 1–8 Base62 characters. */
+const anchorRe = /^[0-9A-Za-z]{1,8}$/;
+
 /** Read a Base62 anchor as an integer, or undefined when it is not one. */
 function anchorValue(anchor: string): number | undefined {
-	// An empty string is not an anchor: encoding it would mint the value 0 and
-	// decode as "0", inventing an anchor nobody ever served.
+	// An empty string is not an anchor: encoding it would mint the value 0.
 	if (anchor === "") return undefined;
 	let value = 0;
 	for (const ch of anchor) {
@@ -53,12 +75,17 @@ function anchorValue(anchor: string): number | undefined {
 	return value;
 }
 
-/** Write a Base62 anchor for an integer. */
-function anchorFromValue(value: number): string {
-	if (value === 0) return BASE62[0]!;
+/**
+ * Write a Base62 anchor of an exact length, zero-padded — the inverse of the
+ * padding `encodeAnchor` applies when minting.
+ * @param value - the anchor's integer value.
+ * @param length - the character count to reproduce.
+ * @returns the anchor, exactly `length` characters.
+ */
+function anchorOfLength(value: number, length: number): string {
 	let out = "";
 	let rest = value;
-	while (rest > 0) {
+	for (let i = 0; i < length; i++) {
 		out = BASE62[rest % 62]! + out;
 		rest = Math.floor(rest / 62);
 	}
@@ -106,17 +133,28 @@ function readVarint(
  * @returns the string to store in `served.hashes`.
  */
 export function encodeServedAnchors(anchors: Iterable<string>): string {
-	const values = new Set<number>();
+	// Group by length first: within a group every anchor has the same character
+	// count, so the length is written once and the values carry only their rank.
+	const byLength = new Map<number, Set<number>>();
 	for (const anchor of anchors) {
 		const value = anchorValue(anchor);
-		if (value !== undefined) values.add(value);
+		if (value === undefined) continue;
+		const group = byLength.get(anchor.length);
+		if (group === undefined) byLength.set(anchor.length, new Set([value]));
+		else group.add(value);
 	}
-	const sorted = [...values].sort((a, b) => a - b);
+	const lengths = [...byLength.keys()].sort((a, b) => a - b);
 	const bytes: number[] = [];
-	let previous = 0;
-	for (const value of sorted) {
-		writeVarint(bytes, value - previous);
-		previous = value;
+	writeVarint(bytes, lengths.length);
+	for (const length of lengths) {
+		const values = [...byLength.get(length)!].sort((a, b) => a - b);
+		writeVarint(bytes, length);
+		writeVarint(bytes, values.length);
+		let previous = 0;
+		for (const value of values) {
+			writeVarint(bytes, value - previous);
+			previous = value;
+		}
 	}
 	return PACKED_PREFIX + Buffer.from(bytes).toString("base64");
 }
@@ -133,16 +171,31 @@ export function decodeServedAnchors(raw: string): Set<string> | undefined {
 		const bytes = Buffer.from(raw.slice(PACKED_PREFIX.length), "base64");
 		const out = new Set<string>();
 		let at = 0;
-		let previous = 0;
-		while (at < bytes.length) {
-			const read = readVarint(bytes, at);
-			if (read === undefined) return undefined;
-			previous += read.value;
-			out.add(anchorFromValue(previous));
-			at = read.next;
+		const groups = readVarint(bytes, at);
+		if (groups === undefined) return undefined;
+		at = groups.next;
+		for (let group = 0; group < groups.value; group++) {
+			const length = readVarint(bytes, at);
+			if (length === undefined) return undefined;
+			at = length.next;
+			const count = readVarint(bytes, at);
+			if (count === undefined) return undefined;
+			at = count.next;
+			let previous = 0;
+			for (let i = 0; i < count.value; i++) {
+				const delta = readVarint(bytes, at);
+				if (delta === undefined) return undefined;
+				previous += delta.value;
+				at = delta.next;
+				out.add(anchorOfLength(previous, length.value));
+			}
 		}
 		return out;
 	}
+	// The first version of this codec: readable in principle, but its sets lost
+	// leading zeros, so every set it wrote is WRONG. Healing the row is the only
+	// safe answer — the session re-serves on its next read.
+	if (raw.startsWith(DEFECTIVE_PREFIX)) return undefined;
 	// Legacy shapes: a JSON array of anchor strings, the v2 envelope, or the
 	// dense `(string|null)[]` array. Kept verbatim so a store written by an
 	// older build keeps serving anchors until its next write — and validated
