@@ -9,7 +9,7 @@
  *
  * @module dsh-hashline-edittool/render/edit-card
  */
-import { structuredPatch } from "diff";
+import { diffLinesBoundedResult } from "./line-diff.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { genDiff, formatRowMarker } from "./edit-diff.js";
 
@@ -24,26 +24,68 @@ export type FileDiff = {
 
 /** One applied hunk between `before` and `after`, with `context: 3` lines on each side. */
 export function computeHunkDiffs(path: string, before: string, after: string): FileDiff[] {
-	const patch = structuredPatch("", "", before, after, undefined, undefined, { context: 3 });
-	const diffs: FileDiff[] = [];
-	for (const hunk of patch.hunks) {
-		const oldLines: string[] = [];
-		const newLines: string[] = [];
-		for (const line of hunk.lines) {
-			if (line.startsWith("\\")) continue;
-			const text = line.slice(1);
-			if (line.startsWith("-")) oldLines.push(text);
-			else if (line.startsWith("+")) newLines.push(text);
-			else {
-				oldLines.push(text);
-				newLines.push(text);
+	// Bounded Myers (#192), the same producer `genDiff` uses: jsdiff's
+	// `structuredPatch` ran another whole-file Myers with no upper bound
+	// (407 MB at 800k lines) on every edit. Hunks are grouped the way a unified
+	// diff groups them: changes separated by more than 2×context split, with up
+	// to `context` unchanged lines carried on each side.
+	const context = 3;
+	const { parts } = diffLinesBoundedResult(before, after);
+	// Each part carries its terminators; hunk text is terminator-less lines.
+	const text = (value: string): string[] => {
+		const out: string[] = [];
+		let start = 0;
+		for (let at = 0; at < value.length; at++) {
+			if (value.charCodeAt(at) === 10) {
+				out.push(value.slice(start, at));
+				start = at + 1;
 			}
 		}
+		if (start < value.length) out.push(value.slice(start));
+		return out;
+	};
+	const rows: Array<{ kind: " " | "-" | "+"; text: string }> = [];
+	for (const part of parts) {
+		const kind = part.added ? "+" : part.removed ? "-" : " ";
+		for (const line of text(part.value)) rows.push({ kind, text: line });
+	}
+	const diffs: FileDiff[] = [];
+	let i = 0;
+	while (i < rows.length) {
+		if (rows[i]!.kind === " ") {
+			i += 1;
+			continue;
+		}
+		// Walk back for leading context (at most `context` lines).
+		let start = i;
+		while (start > 0 && rows[start - 1]!.kind === " " && i - start < context) start -= 1;
+		// Absorb later changes that sit within 2×context unchanged lines.
+		let end = i;
+		for (;;) {
+			while (end < rows.length && rows[end]!.kind !== " ") end += 1;
+			let gap = end;
+			while (gap < rows.length && rows[gap]!.kind === " ") gap += 1;
+			if (gap < rows.length && gap - end <= context * 2) {
+				end = gap;
+				continue;
+			}
+			break;
+		}
+		// Trailing context.
+		let taken = 0;
+		while (end < rows.length && rows[end]!.kind === " " && taken < context) {
+			end += 1;
+			taken += 1;
+		}
+		const slice = rows.slice(start, end);
+		const oldText = slice.filter((row) => row.kind !== "+").map((row) => row.text).join("\n");
+		const newText = slice.filter((row) => row.kind !== "-").map((row) => row.text).join("\n");
 		diffs.push({
 			path,
-			oldText: oldLines.length > 0 ? oldLines.join("\n") : null,
-			newText: newLines.join("\n"),
+			oldText: oldText.length > 0 ? oldText : null,
+			newText,
 		});
+		i = end;
 	}
 	return diffs;
 }
