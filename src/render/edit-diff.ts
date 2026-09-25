@@ -1,8 +1,7 @@
 // The line diff is BOUNDED (#190): jsdiff's `diffLines` allocates ~8× the
 // file's bytes over the whole text, and `edit` renders a diff on every call.
 // `diffLinesBounded` reuses the alignment machinery #182 already hardened.
-import * as Diff from "diff";
-import { type LineDiffPart } from "./line-diff.js";
+import { diffLinesBounded, type LineDiffPart } from "./line-diff.js";
 
 /**
  * Normalise a producer's parts into the seam's shape.
@@ -118,7 +117,7 @@ export function genDiff(
 	// the shipped path. Production callers pass nothing.
 	const parts =
 		partsFor === undefined
-			? normalizeDiffParts(Diff.diffLines(oldContent, newContent))
+			? diffLinesBounded(oldContent, newContent)
 			: partsFor(oldContent, newContent);
 	const output: (DiffRow | string)[] = [];
 	const servedRows: ServedRow[] = [];
