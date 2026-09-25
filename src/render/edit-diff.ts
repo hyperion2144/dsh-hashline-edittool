@@ -1,4 +1,28 @@
-import * as Diff from "diff";
+// The line diff is BOUNDED (#190): jsdiff's `diffLines` allocates ~8× the
+// file's bytes over the whole text, and `edit` renders a diff on every call.
+// `diffLinesBounded` reuses the alignment machinery #182 already hardened.
+import { diffLinesBounded, type LineDiffPart } from "./line-diff.js";
+
+/**
+ * Normalise a producer's parts into the seam's shape.
+ *
+ * jsdiff's `Change` types `count` as optional and its flags as booleans; the
+ * bounded producer types them exactly. One place to reconcile, so the seam's
+ * contract is a single line rather than a cast at every call site.
+ *
+ * @param parts - the producer's output.
+ * @returns the same blocks with `count` always set.
+ */
+function normalizeDiffParts(
+	parts: ReadonlyArray<{ value: string; count?: number; added?: boolean; removed?: boolean }>,
+): LineDiffPart[] {
+	return parts.map((part) => ({
+		value: part.value,
+		count: part.count ?? 0,
+		...(part.added ? { added: true as const } : {}),
+		...(part.removed ? { removed: true as const } : {}),
+	}));
+}
 // All four of these are `hash-assign`'s — the hashline barrel re-exported them,
 // and going through it made this pure renderer pull the whole layer (and, via
 // the barrel's grep re-export, the whole tool layer) into the graph.
@@ -79,6 +103,7 @@ export function genDiff(
 	newContentHashes?: string[],
 	oldContentHashes?: string[],
 	lineNumbers = true,
+	partsFor?: (oldText: string, newText: string) => LineDiffPart[],
 ): {
 	diff: string;
 	rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }>;
@@ -87,7 +112,13 @@ export function genDiff(
 } {
 	const effectiveNewHashes = newContentHashes ?? lineHashesPure(newContent);
 
-	const parts = Diff.diffLines(oldContent, newContent);
+	// `partsFor` exists so the bounded producer can be checked field-for-field
+	// against jsdiff's: the reference implementation stays in the tests, not in
+	// the shipped path. Production callers pass nothing.
+	const parts =
+		partsFor === undefined
+			? diffLinesBounded(oldContent, newContent)
+			: partsFor(oldContent, newContent);
 	const output: (DiffRow | string)[] = [];
 	const servedRows: ServedRow[] = [];
 	let newLineNum = 1;
