@@ -40,6 +40,7 @@ import { hashlineHeader, contextLinesCfg } from "../hashline/hash-assign.js";
 import { fmtHashlineRow, fmtMarker, anchorWidth } from "../hashline/hash-assign.js";
 import { visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
+import { rgFilesWithMatches } from "./grep-rg.js";
 import { toLF } from "../render/edit-diff.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
@@ -424,6 +425,18 @@ export function buildGrepTool(io: FileIO) {
 				if (includeGlob !== undefined) {
 					const relOf = (p: string) => relative(root, p);
 					files = files.filter((p) => matchInclude(includeGlob!, relOf(p)));
+				}
+				// ripgrep pre-filter (#183): only files WITH a match go on to the read-
+				// and-anchor stage. The filter only NARROWS the caller's list, so
+				// include/exclude semantics are untouched; any rg failure returns
+				// undefined and the full list is kept (JS engine, as always). Fixed-
+				// string mode maps to rg's -F.
+				if (files.length > 1) {
+					const narrow = await rgFilesWithMatches(
+						opts.regex === false ? `-F${params.pattern}` : params.pattern,
+						files,
+					);
+					if (narrow !== undefined) files = narrow;
 				}
 
 				const fileSections: string[] = [];
