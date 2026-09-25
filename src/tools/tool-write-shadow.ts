@@ -28,7 +28,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, openWorkspaceStore, recordServed } from "../domain/session/session-view.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
@@ -36,7 +36,7 @@ import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../rend
 import { genDiff } from "../render/edit-diff.js";
 import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
-import { abortIf } from "../infra/utils.js";
+import { abortIf, splitLines } from "../infra/utils.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
@@ -295,6 +295,28 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					beforeHashes,
 					served !== undefined ? served.hashes : undefined,
 				).catch(() => undefined);
+
+				// The diff rows carry anchors the model can SEE; they must also be in
+				// the SERVED set, or the model's next edit with them is rejected as
+				// "never served" — the write's own output would be unusable (#187).
+				if (diffRows !== undefined && diffRows.length > 0) {
+					try {
+						await recordServed(
+							sessionKey,
+							absolute,
+							diffRows
+								.filter((row) => row.hash !== "")
+								.map((row) => ({
+									position: row.lineNumber - 1,
+									anchor: row.hash,
+								})),
+							splitLines(after).length,
+							);
+					} catch {
+						// The write already happened; a failed serve is a degraded mirror,
+						// not a failed write.
+					}
+				}
 
 				return {
 					path: rawPath,

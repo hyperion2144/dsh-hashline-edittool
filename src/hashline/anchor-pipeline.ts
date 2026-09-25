@@ -1345,6 +1345,28 @@ export function applyEdit(
 		signal,
 	);
 	if (mismatches.length || !initialResolved) {
+		// Same fix as the served-gate echo (#187): every line the mismatch echo
+		// shows to the model MUST carry a real anchor. Allocate the echo window
+		// (the mismatch lines ± context) so the markers are `<anchor>:N`, never
+		// bare `:N` — and the servedRows below are immediately usable.
+		if (filePath) {
+			const mismatchCtx = new Set<number>();
+			for (const m of mismatches) {
+				const line = m.ref?.line;
+				if (line !== undefined) {
+					for (let ln = Math.max(1, line - contextLinesCfg()); ln <= Math.min(lineIndex.fileLines.length, line + contextLinesCfg()); ln++) {
+						mismatchCtx.add(ln);
+					}
+				}
+			}
+			if (mismatchCtx.size > 0) {
+				allocateForLines(filePath, lineIndex.fileLines.join("\n"), [...mismatchCtx].sort((a, b) => a - b));
+				const fresh = anchorsFor(filePath, lineIndex.fileLines.join("\n"));
+				for (const ln of mismatchCtx) {
+					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
+				}
+			}
+		}
 		const { message, servedRows } = fmtMismatchWithServes(
 			mismatches,
 			lineIndex.fileLines,
