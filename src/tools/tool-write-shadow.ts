@@ -34,8 +34,7 @@ import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
 import { genDiff } from "../render/edit-diff.js";
-import { lineHashes } from "../hashline/index.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
+import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf } from "../infra/utils.js";
 import { isJsonOutput } from "../config.js";
@@ -333,15 +332,20 @@ async function buildDiffRows(
 ): Promise<EditDiffRow[]> {
 	// Anchor arrays flow in from the caller: `after` is the array the auto-
 	// read preview just served (same session allocator); `before` was captured
-	// chronologically pre-write. Falling back to lineHashes here would
-	// re-anchor and UPSERT a state that is not what the model was served
-	// (the store-poisoning bug) — so the fallbacks are local and last-resort.
-	const effAfter =
-		afterHashes ?? (await lineHashes(after, absolutePath));
+	// chronologically pre-write.
+	//
+	// The fallbacks used to allocate anchors for the WHOLE file (#188): on an
+	// 800k-line file that is 394 MB and ~29 s of heap churn inside one call
+	// (the dense allocator has no bound), and the work is wasted because a
+	// write's diff renders a handful of hunks. `effAfter` now starts from the
+	// SPARSE session view and allocates only the rows the diff renders.
 	const effBefore =
 		before === null || before === undefined
 			? undefined
-			: beforeHashes ?? (await lineHashes(before, absolutePath));
+			: beforeHashes ?? anchorsFor(absolutePath, before);
+	const effAfter =
+		afterHashes ??
+		(await allocateForRenderedRows(absolutePath, before ?? "", after, effBefore));
 	const { rows } = genDiff(
 		before ?? "",
 		after,
@@ -350,6 +354,53 @@ async function buildDiffRows(
 		effBefore,
 	);
 	return diffRowsFromGenDiff(rows);
+}
+
+/**
+ * Anchors for exactly the rows a write's diff renders (#188).
+ *
+ * Pass 1 runs the text diff against the SPARSE session view (cheap: 43 MB /
+ * 112 ms at 800k lines) to learn which new-side lines the diff actually
+ * renders; pass 2 allocates anchors for those lines only. The sparse view is
+ * also the CORRECT starting point: it pairs surviving content to its new
+ * position by contentKey and leaves genuinely new lines unallocated, which is
+ * exactly the set pass 2 has to fill. Allocation still goes through the same
+ * persisting entry point as before — it just allocates fewer lines.
+ *
+ * Pass 1's `servedRows` are discarded on purpose: they carry the placeholder
+ * markers of an unallocated view, and the caller records pass 2's rows.
+ *
+ * @param absolutePath - canonical path the write targets.
+ * @param before - pre-write content (`""` when the file did not exist).
+ * @param after - post-write content, already on disk.
+ * @param beforeHashes - the `-` side, when the caller captured it.
+ * @returns a per-line view whose RENDERED rows carry real anchors.
+ */
+export async function allocateForRenderedRows(
+	absolutePath: string,
+	before: string,
+	after: string,
+	beforeHashes: string[] | undefined,
+): Promise<string[]> {
+	const sparse = anchorsFor(absolutePath, after);
+	const firstPass = genDiff(before, after, contextLinesCfg(), sparse, beforeHashes);
+	// `servedRows` is the signal, not the rendered rows: it lists exactly the
+	// lines genDiff serves, and an EMPTY anchor there is precisely "this line
+	// will be shown but has no anchor yet". The rendered `anchor` field cannot
+	// be used for this — it is a formatted marker (four spaces when the hash is
+	// missing), so it is never the empty string.
+	const need = new Set<number>();
+	for (const row of firstPass.servedRows) {
+		if (row.anchor === "") need.add(row.position + 1);
+	}
+	if (need.size === 0) return sparse;
+	const lines = [...need].sort((a, b) => a - b);
+	const allocated = allocateForLines(absolutePath, after, lines);
+	const filled = [...sparse];
+	for (let i = 0; i < lines.length; i++) {
+		filled[lines[i]! - 1] = allocated[i] ?? "";
+	}
+	return filled;
 }
 
 /**
