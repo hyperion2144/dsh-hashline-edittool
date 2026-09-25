@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-25
+
 ### Fixed
 
 - **`op:"ins"` 锚点漂移（#151/P1）**：`ins` 曾展开为「把锚点行替换为 `[锚点行, ...新行]`」的单行 replace，而 hunk 对齐的 LCS 走「末尾匹配优先」——对 replace 正确（它保留的是收尾行），对 ins 错误。当插入行与锚点行内容相同（在下一条 `}` 下面插入一条 `}`，最常见的形状），旧锚点被配给了**新插入的那行**，锚点行反而重新分配：模型缓存 `MC` 后再编辑，静默落到 div 的闭合括号上，无报错也无警告。现在 `ins` 的 hunk 是空 old 区间（锚点行在 hunk 之外，verbatim 保留），`del` 本就是空 new 区间，`alignPreserved` 任一侧为空即返回空配对——ins/del 不再走 LCS，只有 `replace`/`sed` 会对齐。单条路径、批量路径与 `mutation.ts` 遗留的 `execPipeline` 三处 hunk 计算同步修正，并在三处都补了 del 的纯删除语义。新增 `test/core/issue-151-ins-anchor.test.ts`（11 例：重复内容、块内/块首重复、已编辑文件、批内 ins、文件末尾 ins、del 释放与边界）。
