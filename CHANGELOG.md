@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-09-25
+
 ## [0.9.2] - 2026-09-25
 
 ### Fixed
