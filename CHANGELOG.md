@@ -6,6 +6,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [0.9.3] - 2026-09-25
 
+- **行 diff 换成有界 Myers（#190 / #192）**：edit 路径上两处 jsdiff 全文件 diff 都换掉了：`genDiff` 的 `diffLines`（模型看到的 diff）与 `computeHunkDiffs` 的 `structuredPatch`（web 卡片的 hunk），统一走基于行哈希的有界 Myers（单遍 + trace）。20 个形状逐字段对拍全绿。实测 80 万行：行 diff 144–162 MB / ~0.42 s；hunk 407→204 MB。
+- **edit 拒绝回显每行都带真锚点（#187）**：E_RANGE_UNVERIFIED 和 E_STALE 回显中每行都分配真锚点、servedRows 记入 served，模型用回显锚点立即重试即可成功。
+- **write 的 diff rows 进入 served（#187）**：write 的 diff rows 原来带锚点但没记入 served，现通过 recordServed 记入。
+- **`@vscode/ripgrep` 声明为直接依赖（#195）**：rg 预过滤的二级解析在用户机器上三级都可能落空。声明为直接依赖后 rgPath 必然可解析；下载失败时安全回退 JS 引擎。
 ## [0.9.2] - 2026-09-25
 
 ### Fixed
