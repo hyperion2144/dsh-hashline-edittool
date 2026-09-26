@@ -29,9 +29,11 @@ mounted by a single bundle patch.
    the companion client package. CI runs the same set on Ubuntu (Node 22 + 24),
    Windows (Node 22), and the client workspace — a POSIX-only run cannot see the
    Windows path/home assumptions.
-2. **PR first.** Work on a branch, open a PR against `main`, put `Closes #NN`
-   (or `Part of #NN`) at the **end** of the body. A direct `main` push is for
-   changes too small to justify a PR. See [`.agents/skills/git-std.md`](.agents/skills/git-std.md).
+2. **PR first for code; docs go straight to `main`.** A code change lands via a
+   branch + PR against `main`, with `Closes #NN` (or `Part of #NN`) at the
+   **end** of the body. A **documentation-only** change (`.md`) is pushed
+   directly to `main` — no branch, no PR. See
+   [`.agents/skills/git-std.md`](.agents/skills/git-std.md).
 3. **Releasing is tag-first and tag-gated** — never `npm publish` before the tag
    exists, and never publish without an explicit instruction to release. Full
    procedure: [`docs/workflows/release.md`](docs/workflows/release.md).

@@ -77,3 +77,23 @@ claims in the two READMEs that current files and a live test run contradict.
   (`docs/dynamic-hashline.md`, `docs/line-hashline-spec.md`,
   `docs/edit-payload-spec.md`, `docs/web-ui-structured-views-spec.md`) already
   point at their replacements.
+
+---
+
+## 2026-09-26 — Doc-push convention recorded
+
+**Type:** process-rule correction
+**Confidence:** High
+**Evidence:** maintainer instruction, 2026-09-26
+
+`AGENTS.md` § Critical rules #2 said "PR first" and left documentation to the
+vague `git-std.md` carve-out ("changes too small to justify a PR"). The
+maintainer's standing rule is sharper:
+
+- **Code changes** → branch + PR against `main`, `Closes #NN` at the end of the body.
+- **Documentation-only changes** (`.md`) → pushed **directly to `main`** — no branch, no PR.
+- **Neither may release.** `npm publish` always waits for an explicit instruction.
+
+### Path / Affected typed relationships
+
+- `AGENTS.md` — rule 2 rewritten. No other document's reading changes.
