@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-09-26
+
 ### Fixed
 
 - **拒绝回显不再改写已分配的锚点（#187 现场故障）**：回显窗口的分配曾用**重建串** `fileLines.join("\n")`（丢了尾换行）→ `ensureState` 判 checksum 不符 → 触发一次**虚假 realign**，把已分配的有效锚点释放、给同一行重铸新锚。现场表现：`read` 给 `ai:405`，edit 被拒后回显变成 `WQ:405` 并反过来报 `ai` 是 stale。现两处回显分配都改用**文件真实内容**（`verifyServedRange` 新增 `content` 参数、由已有该参数的 `applyEdit` 传入），拿不到真实内容时**跳过分配而不是近似重建**。全 src 排查：无重建串调用点残留；四个锚点入口内部规范化，raw/规范化混用无害。
