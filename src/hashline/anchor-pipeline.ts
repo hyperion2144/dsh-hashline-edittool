@@ -996,6 +996,14 @@ export function verifyServedRange(args: {
 	fileAnchors: string[];
 	fileLines: string[];
 	filePath?: string;
+	/**
+	 * The file's REAL content. Required for the echo-window allocation: a
+	 * rebuilt `fileLines.join` string differs from the canonical content
+	 * (trailing newline), so `ensureState` realigns and rewrites anchors that
+	 * were perfectly valid — the read handed the model `ai`, the echo answered
+	 * `WQ` (#187). Without it the allocation is skipped instead.
+	 */
+	content?: string;
 }): void {
 	const {
 		served,
@@ -1006,6 +1014,7 @@ export function verifyServedRange(args: {
 		fileAnchors,
 		fileLines,
 		filePath,
+		content,
 	} = args;
 	const where = filePath ? ` in ${filePath}` : "";
 
@@ -1064,15 +1073,19 @@ export function verifyServedRange(args: {
 		// retry with the fresh markers the rejection told it to reuse).
 		// Allocate the echo window now: the sparse state persists it, the
 		// servedRows below record it, and the model can immediately retry.
-		if (filePath) {
+		//
+		// ONLY with the real content: `fileLines.join("\n")` is not the canonical
+		// string (trailing newline), so `ensureState` would see a checksum
+		// mismatch, realign, and rewrite anchors that were already valid.
+		if (filePath && content !== undefined) {
 			const echoWindow: number[] = [];
 			for (let ln = ctxFrom; ln <= ctxTo; ln++) echoWindow.push(ln);
 			if (echoWindow.length > 0) {
-				allocateForLines(filePath, fileLines.join("\n"), echoWindow);
+				allocateForLines(filePath, content, echoWindow);
 				// Re-materialise: the allocation minted anchors for lines whose
 				// contentKey did not match (or that were never served). The fresh
 				// view carries them; the stale local `fileAnchors` does not.
-				const fresh = anchorsFor(filePath, fileLines.join("\n"));
+				const fresh = anchorsFor(filePath, content);
 				for (let ln = ctxFrom; ln <= ctxTo; ln++) {
 					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
 				}
@@ -1360,8 +1373,10 @@ export function applyEdit(
 				}
 			}
 			if (mismatchCtx.size > 0) {
-				allocateForLines(filePath, lineIndex.fileLines.join("\n"), [...mismatchCtx].sort((a, b) => a - b));
-				const fresh = anchorsFor(filePath, lineIndex.fileLines.join("\n"));
+				// The REAL content parameter, never `lineIndex.fileLines.join("\n")`:
+				// a rebuilt string realigns the state and rewrites valid anchors (#187).
+				allocateForLines(filePath, content, [...mismatchCtx].sort((a, b) => a - b));
+				const fresh = anchorsFor(filePath, content);
 				for (const ln of mismatchCtx) {
 					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
 				}
@@ -1407,6 +1422,8 @@ export function applyEdit(
 			fileAnchors,
 			fileLines: lineIndex.fileLines,
 			filePath,
+			// The echo-window allocation needs the REAL content (#187).
+			content,
 		});
 	}
 
