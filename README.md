@@ -310,7 +310,7 @@ src/
 ├── ast/                  # tree-sitter worker, grammar registry
 └── guidance/             # per-preset override resolution + materialization
 client/                   # the web card plugin (same package)
-test/                     # 1,210 tests
+test/                     # 1,330 tests
 ```
 
 Dependencies point one way: `tools → domain → render/contract → hashline/infra`. Cards
@@ -320,19 +320,20 @@ for the decisions behind the contract.
 
 ## DSH Version Support
 
-Compatibility is declared through a settings-service peer dependency
-(`@deepseek-ai/dsh-settings >=0.1.2-rc.0`, enforced by npm) and verified
+Compatibility is declared through peer dependencies
+(`@deepseek-ai/schemastery >=3.18.3`, enforced by npm) and verified
 against the harness this repository is actually run on:
 
 | dsh version | plugin versions | notes |
 | --- | --- | --- |
-| **0.1.6-alpha.1** (current env) | **0.7.1+** | dual event registration (`agent/created` + legacy `agent/session-start`); `systemPrompt` resolved as a scoped service |
-| 0.1.5-rc.2 (prior env, live-verified) | 0.7.0 | unified anchor lifecycle, AST/LSP split, settings card, card gallery |
+| **0.1.7-alpha.1** (current build/test SDK line) | **0.9.x** | settings are the plugin's Profile configuration (dsh ≥ 0.1.7), hot-reloaded on the next tool call; sparse lazy anchors; bounded anchor store |
+| 0.1.6-alpha.1 (prior SDK line) | 0.7.1 – 0.8.x | dual event registration (`agent/created` + legacy `agent/session-start`); `systemPrompt` resolved as a scoped service |
+| 0.1.5-rc.2 (live-verified) | 0.7.0 | unified anchor lifecycle, AST/LSP split, settings card, card gallery |
 | ≥ 0.1.2-rc.0 | 0.6.x – 0.7.1 | self-rendered cards, per-workspace store, settings panel |
 | 0.1.2 | 0.4.x – 0.5.x | v2 dynamic anchors; dsh 0.1.2 web-card adaptation completed (#69) |
 | 0.1.2 (early) | 0.1.x – 0.3.x | legacy `line#hash` anchors, batch_edit |
 
-- Build/test SDK line: `0.1.6-alpha.1` (#134); the 0.7.0 line was verified on dsh `0.1.5-rc.2`.
+- Build/test SDK line: `0.1.7-alpha.1` (bumped in 0.9.0, #134); 0.9.x requires dsh 0.1.7 — 0.8.x stays for 0.1.6. The 0.7.0 line was verified on dsh `0.1.5-rc.2`.
 - Newer dsh 0.1.x/rc lines are expected to work; report regressions as issues.
 
 ## Development

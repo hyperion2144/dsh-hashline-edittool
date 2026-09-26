@@ -263,7 +263,7 @@ src/
 ├── ast/                  # tree-sitter worker、语法注册表
 └── guidance/             # 按 preset 的指引解析 + 物化
 client/                   # web 卡片插件（同一包）
-test/                     # 1,210 个测试
+test/                     # 1,330 个测试
 ```
 
 依赖只指向一个方向：`tools → domain → render/contract → hashline/infra`。卡片从结构化
@@ -272,18 +272,19 @@ test/                     # 1,210 个测试
 
 ## DSH 版本支持
 
-兼容性通过 settings 服务对等依赖声明（`@deepseek-ai/dsh-settings >=0.1.2-rc.0`，
+兼容性通过对等依赖声明（`@deepseek-ai/schemastery >=3.18.3`，
 npm 强制），并在本仓库实际运行的 harness 上验证：
 
 | dsh 版本 | 插件版本 | 说明 |
 | --- | --- | --- |
-| **0.1.6-alpha.1**（当前环境） | **0.7.1+** | 双事件注册（`agent/created` + 旧 `agent/session-start`）；`systemPrompt` 按作用域服务解析 |
-| 0.1.5-rc.2（前一环境，实测通过） | 0.7.0 | 统一锚点生命周期、AST/LSP 拆分、设置卡片、卡片全景图 |
+| **0.1.7-alpha.1**（当前构建/测试 SDK 基线） | **0.9.x** | 设置即插件的 Profile 配置（dsh ≥ 0.1.7），下一次工具调用即热生效；稀疏惰性锚点；有界锚点存储 |
+| 0.1.6-alpha.1（前一 SDK 基线） | 0.7.1 – 0.8.x | 双事件注册（`agent/created` + 旧 `agent/session-start`）；`systemPrompt` 按作用域服务解析 |
+| 0.1.5-rc.2（实测通过） | 0.7.0 | 统一锚点生命周期、AST/LSP 拆分、设置卡片、卡片全景图 |
 | ≥ 0.1.2-rc.0 | 0.6.x – 0.7.1 | 自渲染卡片、按工作区存储、设置面板 |
 | 0.1.2 | 0.4.x – 0.5.x | v2 动态锚点；dsh 0.1.2 web 卡片适配完成（#69） |
 | 0.1.2（早期） | 0.1.x – 0.3.x | 旧 `line#hash` 锚点、batch_edit |
 
-- 构建/测试 SDK 基线：`0.1.6-alpha.1`（#134）；0.7.0 线在 dsh `0.1.5-rc.2` 上验证。
+- 构建/测试 SDK 基线：`0.1.7-alpha.1`（0.9.0 起，#134）；0.9.x 要求 dsh 0.1.7，0.8.x 留给 0.1.6。0.7.0 线在 dsh `0.1.5-rc.2` 上验证。
 - 更新的 dsh 0.1.x/rc 线预期可用；发现回归请提 issue。
 
 ## 开发

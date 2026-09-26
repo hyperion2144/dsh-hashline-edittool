@@ -4,6 +4,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Docs
+
+- **README 版本支持表与实测数据纠正**：三处陈述已被仓库现状证伪 —— ①当前构建/测试 SDK 基线写的是 `0.1.6-alpha.1`，实际 `@deepseek-ai/dsh-*` 全部为 `0.1.7-alpha.1`（0.9.0 起仅支持 0.1.7，0.8.x 留给 0.1.6）；②兼容性仍写“由 `@deepseek-ai/dsh-settings` peer 依赖 + npm 强制”，该依赖已在 0.9.0 移除，现仅 `@deepseek-ai/schemastery >=3.18.3`；③`test/` 注为 1,210 个测试，实测 113 文件 / 1,330 例。中英两版同步修正。
+- **建立 Agent 记忆层**：新增根 `AGENTS.md`（Level 0 入口 + `l0_domains` 导航表）与 `docs/workflows/release.md`（tag-first 发布流程从 `CLAUDE.md` 迁出，单一归属）；`CLAUDE.md` 退化为指向 `AGENTS.md` 的薄指针，消除双入口；知识变更记入 `docs/CHANGELOG-MEMORY.md`。同时删去 `CLAUDE.md` 里早已移除的 `batch_edit` 工具名。
+
 ## [0.9.4] - 2026-09-26
 
 ### Fixed

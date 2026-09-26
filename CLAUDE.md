@@ -1,32 +1,16 @@
 # dsh-hashline-edittool — notes for Claude Code
 
-A DeepSeek Harness (`dsh`) plugin: hashline-anchored `read`/`edit`/`batch_edit`/`undo_last_edit` tools plus per-preset guidance overrides. TypeScript, vitest. Checks: `npm run typecheck`, `npm test`, `npm run build`.
+A DeepSeek Harness (`dsh`) plugin: hashline-anchored `read`/`edit`/`write`/`grep`/`undo_last_edit` tools, `ast_grep`/`ast_edit`/`lsp`, and per-preset guidance overrides. TypeScript, vitest.
 
-## Releasing & publishing the npm package
+## This file is a thin pointer
 
-Release is **tag-first**: the git tag creates the GitHub release, and `npm publish` is blocked until the tag exists.
+The canonical agent entry point is [`AGENTS.md`](AGENTS.md): project identity,
+critical rules, verification requirements, and the knowledge map. Read it first —
+this file exists only for Claude-specific tooling notes and must not grow a
+second copy of those rules.
 
-1. **Release (headless-safe): `npm run release -- X.Y.Z`** — bumps the version in `package.json`/`package-lock.json`, moves the CHANGELOG `[Unreleased]` section to `[X.Y.Z] - <date>`, commits `chore: release vX.Y.Z`, creates annotated tag `vX.Y.Z`, and pushes branch + tag (pushing the tag triggers the GitHub Actions release workflow). It demands a **clean working tree** (an untracked artifact at the repo root blocks it — remove or commit it first) and a version newer than the current one.
-
-2. **Publish: must run under the interactive shell.** `npm login` and `npm publish` print "Press ENTER to open in the browser…" and need a **browser 2FA/OTP step that a headless agent cannot complete** — hand that step to the user. Use `interactive_shell`:
-   - `npm login --registry https://registry.npmjs.org` — run first when the stored token is stale. The machine's `~/.npmrc` defaults to the `npmmirror.com` mirror and its npmjs token expires, producing a 401/`ENEEDAUTH` (publish then fails with a misleading `E404 … do not have permission`).
-   - `npm publish --registry https://registry.npmjs.org` — always pass the registry explicitly (the mirror is not write-accessible). The `prepublishOnly` gate re-runs typecheck + tests + `scripts/assert-tagged.mjs`, which refuses to publish until tag `vX.Y.Z` exists; `postpublish` (`scripts/tag-current.mjs`) is a harmless no-op when the tag already exists.
-   - Verify success: `npm whoami --registry https://registry.npmjs.org` returns `hyperion2144`, and `curl -s https://registry.npmjs.org/dsh-hashline-edittool` shows `"latest": "X.Y.Z"`. (The npm account is `hyperion2144`; `rianico` belongs to the fork upstream's old `dsh-better-edit` package — this package is independently maintained.)
-
-## Working with Git
-
-Prefer issues + pull requests. See [`.agents/skills/git-std.md`](.agents/skills/git-std.md) for the repo's PR-first rule and `Closes #NN` convention.
-
-## Agent skills
-
-### Issue tracker
-
-Issues and specs live as GitHub Issues on `hyperion2144/dsh-hashline-edittool`; use the `gh` CLI for all reads/writes. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-The five canonical triage roles are kept at their default names: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context layout — one `CONTEXT.md` plus `docs/adr/` at the repo root (both already present). See `docs/agents/domain.md`.
+- **Checks:** `npm run typecheck`, `npm test`, `npm run build`
+- **Release & publish:** [`docs/workflows/release.md`](docs/workflows/release.md)
+- **Git flow** (branch → PR, `Closes #NN`): [`.agents/skills/git-std.md`](.agents/skills/git-std.md)
+- **GitHub issues** via `gh`: [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
+- **Knowledge changes** are logged in [`docs/CHANGELOG-MEMORY.md`](docs/CHANGELOG-MEMORY.md)
