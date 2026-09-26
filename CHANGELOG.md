@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **拒绝回显不再改写已分配的锚点（#187 现场故障）**：回显窗口的分配曾用**重建串** `fileLines.join("\n")`（丢了尾换行）→ `ensureState` 判 checksum 不符 → 触发一次**虚假 realign**，把已分配的有效锚点释放、给同一行重铸新锚。现场表现：`read` 给 `ai:405`，edit 被拒后回显变成 `WQ:405` 并反过来报 `ai` 是 stale。现两处回显分配都改用**文件真实内容**（`verifyServedRange` 新增 `content` 参数、由已有该参数的 `applyEdit` 传入），拿不到真实内容时**跳过分配而不是近似重建**。全 src 排查：无重建串调用点残留；四个锚点入口内部规范化，raw/规范化混用无害。
+
 ## [0.9.3] - 2026-09-25
 
 - **行 diff 换成有界 Myers（#190 / #192）**：edit 路径上两处 jsdiff 全文件 diff 都换掉了：`genDiff` 的 `diffLines`（模型看到的 diff）与 `computeHunkDiffs` 的 `structuredPatch`（web 卡片的 hunk），统一走基于行哈希的有界 Myers（单遍 + trace）。20 个形状逐字段对拍全绿。实测 80 万行：行 diff 144–162 MB / ~0.42 s；hunk 407→204 MB。
