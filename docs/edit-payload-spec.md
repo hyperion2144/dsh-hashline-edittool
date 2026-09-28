@@ -140,8 +140,11 @@ Validation rules (in `execute`, after schema soft-validates the schema shape):
 - If `op === "replace"` and `anchor_end` is missing → defaults to a SINGLE-LINE range (anchor_start only); `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines.
 - If `op === "replace"` and `lines` is missing or empty → `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.`
   (An edit that replaces with `[""]` is distinct from `op:"del"`: the line
-  still exists in the file, just empty. The `anchor_start..anchor_end` range
-  shrinks by 0 if single-line.)
+  still exists in the file, just empty. **One element of `lines` is ONE line** —
+  only an element that itself carries a newline becomes several, and the
+  encoding from array to `replacement_text` must never collapse an all-blank
+  array (`[""]` is one blank line, not zero). The `anchor_start..anchor_end`
+  range shrinks by 0 if single-line.)
 - If `op === "ins"` and `lines` is missing or empty → `[E_BAD_SHAPE] edits[i].op:"ins" requires a non-empty "lines" array of strings to insert.`
 
 ### 3.3 Edit application order and Shift blocks
@@ -399,7 +402,7 @@ original snapshot; overlapping ranges are rejected; applied atomically):
 | `edit.op: "replace"` single line | `anchor_start` line is replaced with `lines` (both anchors passed); no Shift block (net line count 0). |
 | `edit.op: "replace"` range | `anchor_start..anchor_end` lines are replaced with `lines`; Shift block if `lines.length !== range.length`. |
 | `edit.op: "replace"` with empty `lines` | Reject: `[E_BAD_SHAPE] edits[i].op:"replace" requires a non-empty "lines" array of strings. Use op:"del" to delete.` |
-| `edit.op: "replace"` with `lines: [""]` | Accepted: the line becomes empty (still exists in the file). |
+| `edit.op: "replace"` with `lines: [""]` | Accepted: the line becomes empty (still exists in the file) — one element is one line. |
 | `edit` with mixed `edits` (ins + del + replace) | All hunks resolve against the same original snapshot (overlaps rejected); each produces its own Shift block. |
 | `edit` with no top-level `path` and per-item `path` | Per-item `path` wins; the file used by each edit matches the per-item path. |
 | `edit` with neither top-level nor per-item `path` | Reject: `[E_BAD_SHAPE] edits[i] requires a "path" string.` |

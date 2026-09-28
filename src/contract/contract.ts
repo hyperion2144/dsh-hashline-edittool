@@ -588,7 +588,7 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 				type: "array",
 				items: { type: "string" },
 				description:
-					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. FORBIDDEN on `op:"sed"`, whose replacement is `pattern`/`replacement`. For `ins`: ONLY the new lines that go BELOW `anchor_after` — the anchor\'s own line is kept, and putting it here duplicates it. For `replace`: the lines that SUBSTITUTE the anchor_start..anchor_end range, so the range\'s original lines do not belong here either. Pass `[""]` to clear a single line (still a replace, not a del).'
+					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. FORBIDDEN on `op:"sed"`, whose replacement is `pattern`/`replacement`. For `ins`: ONLY the new lines that go BELOW `anchor_after` — the anchor\'s own line is kept, and putting it here duplicates it. For `replace`: the lines that SUBSTITUTE the anchor_start..anchor_end range, so the range\'s original lines do not belong here either. One element is ONE line — only an element that itself carries a newline becomes several, never a silent change of the line count. Pass `[""]` to clear a single line (still a replace, not a del).'
 			},
 			pattern: {
 				type: "string",

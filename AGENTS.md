@@ -7,7 +7,7 @@
 # l0_domains lets an agent decide which domain is relevant WITHOUT opening it.
 # One line per domain. Domains without durable knowledge are omitted.
 l0_domains:
-  decisions: "ADRs 0001–0011: anchor lifecycle, error conversion, sparse + bounded anchors, alignment"
+  decisions: "ADRs 0001–0012: anchor lifecycle, error conversion, sparse + bounded anchors, alignment, the `lines` line array"
   workflows: "Release & publish procedure — tag-first, npm publish gated on the tag"
   agents: "Issue tracker, triage labels, and domain-doc conventions for the engineering skills"
   reference: "The anchor contract, tool surface, settings, error codes, DSH support (README)"

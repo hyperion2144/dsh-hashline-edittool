@@ -33,7 +33,7 @@ export { anchorsFor, anchorsPure, allocateForLines, updateAnchorsAfterEdit } fro
 
 export { lineHashes } from "./hash.js";
 
-export { parseHashRef, parseText } from "./anchor-pipeline.js";
+export { encodeText, parseHashRef, parseText } from "./anchor-pipeline.js";
 export type { Anchor } from "./anchor-pipeline.js";
 
 export { resEdit } from "./anchor-pipeline.js";

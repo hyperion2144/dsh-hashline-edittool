@@ -163,7 +163,7 @@ just gave you, or re-read.
 
 | op | anchor field | behavior |
 | --- | --- | --- |
-| `replace` | `anchor_start` (+ optional `anchor_end`) | swap the range for `lines` (non-empty; `[""]` clears a line to empty, distinct from `del`). `anchor_end` omitted = single-line replace; **required when `lines` spans multiple lines**. |
+| `replace` | `anchor_start` (+ optional `anchor_end`) | swap the range for `lines` (non-empty; **one element = one line** — only an element's own newline adds a line; `[""]` clears a line to empty, distinct from `del`). `anchor_end` omitted = single-line replace; **required when the range spans multiple lines**. |
 | `ins` | `anchor_after` | insert `lines` **below** that line — the anchor line is kept, `lines` holds only what is new. `anchor_start`/`anchor_end` are refused. May anchor on another hunk's range **end** line, never its start/interior. |
 | `del` | `anchor_start` (+ optional `anchor_end`) | delete the range (or the single `anchor_start` line); `lines` is ignored. |
 | `sed` | `anchor_start` (+ optional `anchor_end`) | rewrite the range **line by line** with `pattern` + `replacement` + optional `flags` (`gims`), no `lines`, no newline in `replacement`; sed's `\1`/`&` and JS's `$1`/`$&` both accepted. |

@@ -132,7 +132,7 @@ D0:4|export function greet(name: string): string {
 
 | op | 锚点字段 | 行为 |
 | --- | --- | --- |
-| `replace` | `anchor_start`（+ 可选 `anchor_end`） | 用 `lines` 换掉该范围（非空；`[""]` 把行清成空行，区别于 `del`）。省略 `anchor_end` = 单行替换；**`lines` 跨多行时必填**。 |
+| `replace` | `anchor_start`（+ 可选 `anchor_end`） | 用 `lines` 换掉该范围（非空；**一个元素就是一行** —— 只有元素自身含换行符才添行；`[""]` 把行清成空行，区别于 `del`）。省略 `anchor_end` = 单行替换；**范围跨多行时必填**。 |
 | `ins` | `anchor_after` | 在该行**下方**插入 `lines` —— 锚点行保留，`lines` 只放新内容。`anchor_start`/`anchor_end` 会被拒绝。可以锚在其他 hunk 范围的**结束行**，绝不能是起点或内部。 |
 | `del` | `anchor_start`（+ 可选 `anchor_end`） | 删除范围（或单个 `anchor_start` 行）；`lines` 被忽略。 |
 | `sed` | `anchor_start`（+ 可选 `anchor_end`） | 用 `pattern` + `replacement` + 可选 `flags`（`gims`）**逐行**重写范围；不放 `lines`，`replacement` 不得含换行；sed 的 `\1`/`&` 与 JS 的 `$1`/`$&` 都接受。 |

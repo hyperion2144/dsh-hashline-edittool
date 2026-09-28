@@ -12,6 +12,7 @@ import { contextLinesCfg } from "../../hashline/index.js";
 export const EDIT_DIFF_LEGEND =
 	"Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.";
 import type { HunkShift } from "./edit-engine.js";
+import { replacedOriginalRanges } from "./edit-engine.js";
 
 
 export type EditDetails = {
@@ -76,6 +77,8 @@ export interface SuccessInput {
 	driftNotice?: string;
 	/** v2.0: render diff rows as `<line>:<anchor>` (informational only). */
 	lineNumbers?: boolean;
+	/** The batch's hunks, when the caller has them — removal-row attribution (#198). */
+	hunkShifts?: HunkShift[];
 }
 
 export function buildMetrics(args: {
@@ -202,6 +205,8 @@ export function buildChanged(input: SuccessInput): TResult {
 		resultHashes,
 		originalHashes,
 		input.lineNumbers !== false,
+		undefined,
+		replacedOriginalRanges(input.hunkShifts ?? []),
 	);
 	const addedLines = editMeta.addedLines;
 	const removedLines = editMeta.removedLines;
@@ -306,6 +311,9 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			contextLinesCfg(),
 			s.resultHashes,
 			s.originalHashes,
+			undefined,
+			undefined,
+			replacedOriginalRanges(s.hunkShifts),
 		);
 		diffParts.push(
 			`--- ${s.path} ---\n${EDIT_DIFF_LEGEND}\n${diffResult.diff}`

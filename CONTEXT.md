@@ -35,7 +35,7 @@ The line-range anchors of one `edits[i]` entry — variable-length Base62 marker
 _Avoid_: `from` / `to` (design-era names), `remove_from` / `remove_to` (0.3-era names), standalone `start` / `end` (reserved for byte offsets elsewhere in the plugin)
 
 **`lines`**:
-An array of strings — the new content applied by `op: "replace"` and `op: "ins"`: required and non-empty for both, forbidden for `op: "del"`. Use `[""]` to clear a single line to empty (the line still exists — distinct from `del`).
+An array of strings — the new content applied by `op: "replace"` and `op: "ins"`: required and non-empty for both, forbidden for `op: "del"`. **One element is ONE line**; only an element that itself carries a newline becomes several, and no input may change the line count silently. Use `[""]` to clear a single line to empty (the line still exists — distinct from `del`).
 _Avoid_: text, content, replacement, `replacement_text` (the pre-0.4 name)
 
 **`edits`**:
