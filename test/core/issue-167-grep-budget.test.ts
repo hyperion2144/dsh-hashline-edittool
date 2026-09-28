@@ -13,8 +13,9 @@
 import { describe, expect, it } from "vitest";
 import { truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { GREP_MAX_FILE_BYTES, GREP_MAX_TOTAL_BYTES } from "../../src/infra/constants.js";
+import { GREP_MAX_TOTAL_BYTES } from "../../src/infra/constants.js";
 import { getText, setupIntegrationTest, withTempDir } from "../support/fixtures.js";
+import { rgFilesWithMatches } from "../../src/tools/grep-rg.js";
 
 type GrepTool = {
 	execute(
@@ -32,7 +33,9 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 			// its RETURNED rows, so the hard skip is gone and the file IS searched.
 			const huge = join(cwd, "huge.log");
 			await writeFile(huge, "needle at the head\n");
-			await truncate(huge, GREP_MAX_FILE_BYTES + 1);
+			// Past the per-file ceiling grep USED to have (#169 removed the skip, so the
+			// number now lives here as a fixture size, not as shipped policy).
+			await truncate(huge, 4 * 1024 * 1024 + 1);
 
 			const res = await (harness.getTool("grep") as unknown as GrepTool).execute("g", {
 				path: ".",
@@ -53,12 +56,13 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 	it("stops at the TOTAL budget with an honest notice, not a lying empty", async () => {
 		await withTempDir("grep-budget-only-", async (cwd) => {
 			const harness = setupIntegrationTest(cwd);
-			// The TOTAL budget is the remaining ceiling: a tree whose sum exceeds
-			// it stops exhausted, and the notice says so.
-			await writeFile(join(cwd, "a.log"), "needle one\n");
+			// Every file MATCHES, so the ripgrep pre-filter keeps them all and the READS
+			// are what exceed the ceiling: the scan stops exhausted and says so. (Files
+			// that do not match no longer reach the read stage at all — see the sibling
+			// test below, which is the reported shape.)
 			for (let i = 0; i < 3; i++) {
-				const huge = join(cwd, `fill-${i}.log`);
-				await writeFile(huge, "filler\n");
+				const huge = join(cwd, `hit-${i}.log`);
+				await writeFile(huge, "needle at the head\n");
 				await truncate(huge, Math.ceil(GREP_MAX_TOTAL_BYTES / 2));
 			}
 
@@ -70,6 +74,35 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 
 			expect(out).toContain("[grep budget]");
 			expect(out).toContain("total read budget");
+		});
+	});
+
+	it("huge files that do NOT match cost nothing — the pre-filter keeps them unread", async () => {
+		// The reported shape: a tree full of build output the pattern cannot match. The
+		// JS engine used to read all of it and stop at the budget; ripgrep answers first,
+		// so the scan reads only the hits — here, none.
+		await withTempDir("grep-prefilter-skip-", async (cwd) => {
+			const harness = setupIntegrationTest(cwd);
+			await writeFile(join(cwd, "a.txt"), "nothing to see\n");
+			const aTxt = join(cwd, "a.txt");
+			for (let i = 0; i < 3; i++) {
+				const huge = join(cwd, `fill-${i}.log`);
+				await writeFile(huge, "filler\n");
+				await truncate(huge, Math.ceil(GREP_MAX_TOTAL_BYTES / 2));
+			}
+
+			// Without rg the JS engine reads everything by contract — and the budget
+			// notice is then the CORRECT answer, so this case is only meaningful with rg.
+			if ((await rgFilesWithMatches("needle-not-anywhere-198", [aTxt], 15_000)) === undefined) return;
+
+			const res = await (harness.getTool("grep") as unknown as GrepTool).execute("g", {
+				path: ".",
+				pattern: "needle-not-anywhere-198",
+			});
+			const out = getText(res);
+
+			expect(out).toContain("No matches");
+			expect(out).not.toContain("[grep budget]");
 		});
 	});
 

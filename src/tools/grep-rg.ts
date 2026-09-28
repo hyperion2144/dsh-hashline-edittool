@@ -20,6 +20,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 
 /**
@@ -32,20 +33,45 @@ import { createRequire } from "node:module";
 function resolveRg(): string | undefined {
 	try {
 		const req = createRequire(import.meta.url);
+		// A declared dependency whose platform binary never materialized (install
+		// scripts skipped, optional platform package absent) resolves to a path that
+		// is NOT there — spawning it would fail once per chunk. So verify, and let
+		// the PATH lookup below try instead: the same fallback DSH's own search
+		// rides on.
+		let shipped: string | undefined;
 		try {
-			return req("@vscode/ripgrep")?.rgPath as string | undefined;
+			shipped = req("@vscode/ripgrep")?.rgPath as string | undefined;
 		} catch {
 			// Not directly requirable (pnpm layout): ask the fs-search package,
 			// which DSH ships for exactly this binary.
-			const search = req("@deepseek-ai/dsh-tool-fs-search") as
-				| { rgPath?: string }
-				| undefined;
-			if (search?.rgPath) return search.rgPath;
-			return "rg";
+			shipped = (req("@deepseek-ai/dsh-tool-fs-search") as { rgPath?: string } | undefined)
+				?.rgPath;
 		}
+		if (shipped !== undefined && existsSync(shipped)) return shipped;
+		return "rg";
 	} catch {
 		return undefined;
 	}
+}
+
+/** One rg invocation's outcome: an answer, a definitive "nothing matched", or a failure. */
+export type RgOutcome = "matched" | "no-match" | "failed";
+
+/**
+ * Classify an `execFile` result from `rg --files-with-matches`.
+ *
+ * Exit 0 = matched; exit 1 = NOTHING matched — an ANSWER, not a failure.
+ * Collapsing the two made the caller keep its whole candidate list and re-read the
+ * tree with the JS engine, so a zero-hit grep — the very case this pre-filter exists
+ * to make cheap — was the one that burned the read budget instead. Everything else
+ * (ENOENT, timeout, exit 2 for a rejected pattern) stays a failure, and the caller
+ * keeps its list.
+ */
+export function classifyRgExit(
+	error: { code?: string | number | null } | null | undefined,
+): RgOutcome {
+	if (error === null || error === undefined) return "matched";
+	return error.code === 1 ? "no-match" : "failed";
 }
 
 let rgResolved: string | undefined | null;
@@ -82,7 +108,7 @@ export async function rgFilesWithMatches(
 				rg,
 				["--no-config", "--files-with-matches", "-e", pattern, ...chunk],
 				{ timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
-				(error, stdout) => resolve(error === undefined ? stdout : undefined),
+				(error, stdout) => resolve(classifyRgExit(error) === "failed" ? undefined : stdout),
 			);
 		});
 	for (let i = 0; i < files.length; i += CHUNK) {

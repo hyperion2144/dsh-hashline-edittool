@@ -15,27 +15,23 @@
  *
  * @module dsh-hashline-edittool/read-budget
  */
-import { GREP_MAX_FILE_BYTES, GREP_MAX_TOTAL_BYTES } from "./constants.js";
+import { GREP_MAX_TOTAL_BYTES } from "./constants.js";
 
 /** The ceilings one `grep` call runs under. */
 export interface ReadBudgetLimits {
-	/** Largest single file the scan will read, in bytes. */
-	readonly maxFileBytes: number;
 	/** Total bytes the whole scan may read, in bytes. */
 	readonly maxTotalBytes: number;
 }
 
 /** Defaults, from the shipped constants. Resolved per call so tests can stub them. */
 export function defaultLimits(): ReadBudgetLimits {
-	return { maxFileBytes: GREP_MAX_FILE_BYTES, maxTotalBytes: GREP_MAX_TOTAL_BYTES };
+	return { maxTotalBytes: GREP_MAX_TOTAL_BYTES };
 }
 
 /** Why a candidate file was not read. */
 export type SkipReason =
 	/** `stat` failed, or reported a non-regular file — it cannot be read. */
 	| "unreadable"
-	/** The file alone exceeds `maxFileBytes`. */
-	| "too-large"
 	/** The remaining `maxTotalBytes` allowance is smaller than the file. */
 	| "budget";
 
@@ -100,10 +96,6 @@ export interface ReadBudget {
  */
 export function makeReadBudget(limits: Partial<ReadBudgetLimits> = {}): ReadBudget {
 	const resolved = { ...defaultLimits(), ...limits };
-	const maxFileBytes =
-		Number.isFinite(resolved.maxFileBytes) && resolved.maxFileBytes > 0
-			? resolved.maxFileBytes
-			: Number.POSITIVE_INFINITY;
 	const maxTotalBytes =
 		Number.isFinite(resolved.maxTotalBytes) && resolved.maxTotalBytes > 0
 			? resolved.maxTotalBytes
@@ -116,10 +108,6 @@ export function makeReadBudget(limits: Partial<ReadBudgetLimits> = {}): ReadBudg
 
 	return {
 		admit(bytes: number): AdmitResult {
-			if (bytes > maxFileBytes) {
-				filesOmitted += 1;
-				return { ok: false, reason: "too-large", bytes };
-			}
 			if (bytesRead + bytes > maxTotalBytes) {
 				// The scan is over: continuing would skip this file and then refuse
 				// every remaining one, so the caller stops instead.

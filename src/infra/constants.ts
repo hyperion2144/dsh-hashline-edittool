@@ -3,14 +3,6 @@ export const SNIFF_BYTES = 8192;
 export const MAX_BYTES = 100 * 1024 * 1024;
 export const MAX_READ_LINE_BYTES = 200 * 1024;
 /**
- * Per-file admission limit for `grep` (issue #167). Deliberately far below
- * {@link MAX_BYTES}: a served row needs its line's anchor, and anchors plus the
- * per-file `hashes` array cost several times the file's own bytes, so a file
- * that `read` can still serve is not automatically safe for a whole-tree
- * grep. Files above this are omitted with an explicit notice — never read.
- */
-export const GREP_MAX_FILE_BYTES = 4 * 1024 * 1024;
-/**
  * Total bytes one `grep` call may READ across every visited file (#167). The
  * tree walk accumulates sections, card rows and anchor state as it goes; with
  * no ceiling a large tree grows the host heap until the process dies. Hitting
