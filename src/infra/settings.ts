@@ -25,6 +25,13 @@ export interface EffectiveHashlineConfig {
 	contextLines: number;
 	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
 	requireLineContent: boolean;
+	/**
+	 * `grep` builds its candidate list with ripgrep, so `.gitignore` / `.ignore` rules
+	 * apply and build output never reaches the read budget (default true). Off searches
+	 * what the plugin's own walk sees: the whole tree minus hidden entries and
+	 * `node_modules` — which is also the fallback whenever rg cannot be resolved.
+	 */
+	grepRespectGitignore: boolean;
 	/** AST capability master switch (see `HashlineSettings.ast`). */
 	astEnabled: boolean;
 	/** Per-language narrowing, from `ast.languages.<id>.enabled`. */
@@ -53,6 +60,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	astLanguages: new Set<string>(),
 	lspServers: new Map<string, string>(),
 	autoDiagnostics: true,
+	grepRespectGitignore: true,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };

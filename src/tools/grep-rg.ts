@@ -21,6 +21,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 
 /**
@@ -118,4 +119,58 @@ export async function rgFilesWithMatches(
 	}
 	const hit = new Set(out);
 	return files.filter((file) => hit.has(file));
+}
+
+/**
+ * List the files under `root` the way ripgrep would SEARCH them: `.gitignore` and
+ * `.ignore` rules applied, hidden entries skipped, `node_modules` excluded.
+ *
+ * This is the ignore-aware half of the walk — `infra/file-scan.ts` has no
+ * ignore-file support by design — so a repo full of build output no longer puts
+ * those files in front of the read budget at all. `--no-require-git` is deliberate
+ * too: a `.gitignore` should mean the same thing in a directory that is not a
+ * checkout yet.
+ *
+ * @param root - absolute directory to list.
+ * @param signal - optional abort; an aborted run reports "unavailable" like any
+ *   other failure, and the caller's own walk then re-checks the same signal.
+ * @param timeoutMs - per-invocation cap; a timeout yields undefined.
+ * @returns absolute paths, or undefined when ripgrep is unavailable or the
+ *   invocation failed for any reason — the caller keeps the plugin's own walk.
+ */
+export async function rgFiles(
+	root: string,
+	signal?: AbortSignal,
+	timeoutMs = 15_000,
+): Promise<string[] | undefined> {
+	if (rgResolved === null) return undefined;
+	rgResolved ??= resolveRg();
+	if (rgResolved === undefined) return undefined;
+	const rg = rgResolved;
+	const listed = await new Promise<{ ok: boolean; stdout: string }>((resolve) => {
+		execFile(
+			rg,
+			[
+				"--no-config",
+				"--files",
+				// A `.gitignore` should mean the same thing outside a checkout…
+				"--no-require-git",
+				// …and only the SEARCHED tree's rules apply: an ancestor's rule (the repo
+				// that happens to contain the path) must not silently empty the list when
+				// the caller named that path on purpose. Ignored directories such as
+				// `.tmp/` are exactly where this bites.
+				"--no-ignore-parent",
+				"--glob",
+				"!**/node_modules/**",
+				".",
+			],
+			{ cwd: root, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) },
+			(error, stdout) => resolve({ ok: classifyRgExit(error) !== "failed", stdout }),
+		);
+	});
+	if (!listed.ok) return undefined;
+	return listed.stdout
+		.split("\n")
+		.filter((line) => line !== "")
+		.map((line) => join(root, line));
 }

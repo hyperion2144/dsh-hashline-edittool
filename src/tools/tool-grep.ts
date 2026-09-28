@@ -40,7 +40,7 @@ import { hashlineHeader, contextLinesCfg } from "../hashline/hash-assign.js";
 import { fmtHashlineRow, fmtMarker, anchorWidth } from "../hashline/hash-assign.js";
 import { visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
-import { rgFilesWithMatches } from "./grep-rg.js";
+import { rgFiles, rgFilesWithMatches } from "./grep-rg.js";
 import { toLF } from "../render/edit-diff.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
@@ -262,7 +262,7 @@ export function buildGrepTool(io: FileIO) {
 			path: {
 				type: "string",
 				description:
-					"File or directory to search. Optional — defaults to the session workspace (cwd). Directories recurse the whole tree (hidden entries and node_modules skipped).",
+					"File or directory to search. Optional — defaults to the session workspace (cwd). Directories recurse using ripgrep's file list, so `.gitignore`d trees are skipped as well as hidden entries and node_modules (see the `grep_respect_gitignore` setting).",
 			},
 			include: {
 				type: "string",
@@ -426,7 +426,15 @@ export function buildGrepTool(io: FileIO) {
 				if (rootStat.isFile()) {
 					files = [root];
 				} else if (rootStat.isDirectory()) {
-					files = await gatherFiles(root, opts, signal);
+					// Ignore-aware by default: the candidate list comes from ripgrep, so
+					// `.gitignore`d trees (build output, vendored copies) never reach the read
+					// budget below. Any rg trouble — unavailable, aborted, a rejected flag —
+					// falls back to the plugin's own walk: whole tree, hidden entries and
+					// `node_modules` skipped, ignore files not consulted.
+					const listed = getEffectiveConfig().grepRespectGitignore
+						? await rgFiles(root, signal)
+						: undefined;
+					files = listed ?? (await gatherFiles(root, opts, signal));
 				} else {
 					throw new Error(
 						`[E_NOT_TEXT] Path is neither file nor directory: ${params.path}`,

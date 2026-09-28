@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- **`grep` 默认按 `.gitignore` 取候选清单（新设置 `grep_respect_gitignore`，默认开）**：候选文件清单改由 ripgrep 出（`--files --no-require-git --no-ignore-parent`），被忽略的树（`target/`、`build/`、vendored 副本）**根本不进读取集**，从根上避开 64 MiB 读取预算那道墙。`--no-ignore-parent` 是刻意的：只认**被搜目录自身**的忽略规则，祖先目录（恰好包含该路径的那个仓库）的规则不得把清单悄悄清空。关掉该设置即退回插件自己的走查（隐藏项 + `node_modules` 跳过、不读忽略文件），rg 不可用时是同一回退；且预算被撑爆而预过滤没参与时，notice 会点名这一点。
+
 ### Fixed
 
 - **`lines` 是行数组：一个元素就是一行，`[""]` 不再变成删除（#198）**：载荷在进入引擎前被 `join("\n")` 压成字符串，而字符串形态用同一个 `""` 同时表达「没有行（删除）」与空行族 —— 于是 `[""]` 变成**零行**（`replace` 静默删掉该行、`ins` 变成无操作），`["",""]` 静默少一行。修法是把数组→文本的桥做成**无损编码**（新增 `encodeText`，即 `parseText` 在数组面的逆）：只有全空族改用 `"\n".repeat(n)` 的写法，其余数组一字不变；`op:"del"` 仍独占删除语义。`resolveIns` 的第二处 join 一并修正（锚点行自身为空时，插入空行同样会丢行）。

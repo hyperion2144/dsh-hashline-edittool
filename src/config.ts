@@ -52,6 +52,14 @@ export interface HashlineSettings {
 	/** When true, edit anchors are `{ anchor, line }` declaration pairs (default false). */
 	require_line_content?: boolean;
 	/**
+	 * When true (default), `grep` gets its candidate list from ripgrep: `.gitignore`
+	 * and `.ignore` rules apply, so ignored trees (build output, vendored copies) are
+	 * never read. Off searches what the plugin's own walk sees — the whole tree minus
+	 * hidden entries and `node_modules` — which is also the behavior whenever rg
+	 * cannot be resolved on this machine.
+	 */
+	grep_respect_gitignore?: boolean;
+	/**
 	 * The AST capability's namespace entry.
 	 *
 	 * **Default off**: AST is additive, and with it off `read`/`edit` behave
@@ -113,6 +121,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		output_format: z.union(["text", "json"]).volatile(),
 		context_lines: z.number().min(0).max(20).volatile(),
 		require_line_content: z.boolean().volatile(),
+		grep_respect_gitignore: z.boolean().volatile(),
 		// The volatile mark sits on the OUTERMOST node of each live-editable
 		// subtree only: schemastery requires a volatile field to have a fixed
 		// path with no enclosing volatile, and every descendant of a volatile
@@ -377,6 +386,10 @@ const sep =
 		typeof settings?.require_line_content === "boolean"
 			? settings.require_line_content
 			: defaults.requireLineContent;
+	const grepRespectGitignore =
+		typeof settings?.grep_respect_gitignore === "boolean"
+			? settings.grep_respect_gitignore
+			: defaults.grepRespectGitignore;
 	// The edit tool's model-facing schema depends on this flag: when it
 	// FLIPS, live agents' edit surfaces must be disposed and re-registered
 	// so the next model step sees the new parameter set (issue #75/#76).
@@ -414,6 +427,7 @@ const sep =
 		astLanguages: astLangs,
 		lspServers: lspServers,
 		autoDiagnostics: autoDiag,
+		grepRespectGitignore,
 	};
 	setEffectiveSnapshot(next);
 	applyHashlineShape({ separator: sep, contextLines: nctx });
@@ -567,6 +581,10 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 		else if (key === "require_line_content") {
 			if (value === "true") out.require_line_content = true;
 			else if (value === "false") out.require_line_content = false;
+		}
+		else if (key === "grep_respect_gitignore") {
+			if (value === "true") out.grep_respect_gitignore = true;
+			else if (value === "false") out.grep_respect_gitignore = false;
 		}
 	}
 	if (Object.keys(astLangs).length > 0) {
