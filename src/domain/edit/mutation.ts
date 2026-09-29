@@ -33,7 +33,7 @@ import { normFromText } from "../session/file-view.js";
 import { fileSnap } from "../../infra/file-snap.js";
 import type { LineEnding } from "../../render/edit-diff.js";
 import { toCwd } from "../../infra/paths.js";
-import { resEdit, type NEdit } from "../../hashline/anchor-pipeline.js";
+import { encodeText, resEdit, type NEdit } from "../../hashline/anchor-pipeline.js";
 import type { ResolvedRange } from "../../hashline/anchor-pipeline.js";
 import { AnchorMismatchError, ServedRejectionError } from "../../hashline/anchor-pipeline.js";
 import { loadServed, sessionKeyFor, recordEchoServes, scanDrift, type ServeRecordPolicy } from "../session/session-view.js";
@@ -132,7 +132,7 @@ export async function execPipeline(
 		removeFromRaw
 	const replTextRaw =
 		(params as { replacement_text?: string }).replacement_text ??
-		(firstItem?.lines ?? []).join("\n")
+		encodeText(firstItem?.lines ?? [])
 	const op = (firstItem?.op ?? (params as { op?: EditOp }).op ?? "replace")
 	const removeFrom = removeFromRaw ?? ""
 	const removeTo = removeToRaw ?? removeFrom

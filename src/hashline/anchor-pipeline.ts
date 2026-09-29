@@ -122,6 +122,36 @@ export function parseText(edit: string): string[] {
 	return normalized.split("\n");
 }
 
+/**
+ * The canonical `replacement_text` for a `lines` array — the array surface's half of the
+ * pair whose other half is {@link parseText}.
+ *
+ * One element is ONE line; an element that itself carries a newline legitimately becomes
+ * several (CRLF / CR / LF each fold to one break, matching the read line space). Nothing
+ * else may change the line count.
+ *
+ * The encoding is deliberately NOT a plain `join("\n")`: the string surface spells both
+ * "no lines" (`""`, which `parseText` reads as a delete range) and the all-blank families
+ * with newlines alone, so `join` collapses every all-blank array onto the wrong side of
+ * that boundary — `[""]` came back as zero lines (a silent delete) and `["",""]` as one.
+ * Only that family needs the explicit `"\n".repeat(n)` spelling; every other array is
+ * unchanged by the round trip.
+ *
+ * Invariant: `parseText(encodeText(lines))` is `lines` with each element split on its own
+ * newlines — never a line more or fewer.
+ */
+export function encodeText(lines: readonly string[]): string {
+	const expanded: string[] = [];
+	for (const line of lines) {
+		expanded.push(...line.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n"));
+	}
+	// No lines at all is the string surface's delete, and now its ONLY spelling: an
+	// all-blank array is never empty, so a blank line can no longer be read as one.
+	if (expanded.length === 0) return "";
+	if (expanded.every((line) => line === "")) return "\n".repeat(expanded.length);
+	return expanded.join("\n");
+}
+
 export type RAnchor = {
 	anchor: string;
 	line: number;
@@ -1211,6 +1241,10 @@ function resToSpan(
 			kind: "replace",
 			start: lineStarts[startLine - 1]!,
 			end: lineStarts[endLine - 1]! + fileLines[endLine - 1]!.length,
+			// Plain join, NOT encodeText: `content_lines` is already the parsed array (the
+			// array surface was decoded on the way in), and this string is spliced between
+			// BYTE OFFSETS — the line's own break belongs to `content.slice(end)`, so
+			// re-encoding the array here would count that newline twice.
 			replacement: edit.content_lines.join("\n"),
 		};
 	}

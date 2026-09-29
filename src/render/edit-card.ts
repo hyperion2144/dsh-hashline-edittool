@@ -11,7 +11,7 @@
  */
 import { diffLinesBoundedResult } from "./line-diff.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
-import { genDiff, formatRowMarker } from "./edit-diff.js";
+import { genDiff, formatRowMarker, type ChangedOriginalRange } from "./edit-diff.js";
 
 /** One applied hunk: prior and new content for the same range, with 3 lines of context on each side. */
 export type FileDiff = {
@@ -115,6 +115,10 @@ export type EditDiffRow = {
  * @param after - the post-edit content.
  * @param afterHashes - anchors for `after` (allocated when omitted).
  * @param beforeHashes - anchors for `before` (allocated when omitted).
+ * @param changedRanges - the original-file ranges the caller's hunks REPLACED,
+ * ascending: the pool a removal row's attribution is drawn from (issue #198). An
+ * `ins` hunk contributes none — its anchor line is kept. Omitted means "no hunk
+ * knowledge" — a whole-file diff — and the text walk decides.
  * @returns the keyed diff rows.
  */
 export function diffDictFrom(
@@ -122,6 +126,7 @@ export function diffDictFrom(
 	after: string,
 	afterHashes?: readonly string[],
 	beforeHashes?: readonly string[],
+	changedRanges?: readonly ChangedOriginalRange[],
 ): Record<string, string> {
 	const { rows } = genDiff(
 		before,
@@ -130,6 +135,8 @@ export function diffDictFrom(
 		afterHashes === undefined ? undefined : [...afterHashes],
 		beforeHashes === undefined ? undefined : [...beforeHashes],
 		true,
+		undefined,
+		changedRanges,
 	);
 	const dict: Record<string, string> = {};
 	for (const row of rows) {

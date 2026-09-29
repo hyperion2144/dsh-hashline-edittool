@@ -163,7 +163,7 @@ just gave you, or re-read.
 
 | op | anchor field | behavior |
 | --- | --- | --- |
-| `replace` | `anchor_start` (+ optional `anchor_end`) | swap the range for `lines` (non-empty; `[""]` clears a line to empty, distinct from `del`). `anchor_end` omitted = single-line replace; **required when `lines` spans multiple lines**. |
+| `replace` | `anchor_start` (+ optional `anchor_end`) | swap the range for `lines` (non-empty; **one element = one line** — only an element's own newline adds a line; `[""]` clears a line to empty, distinct from `del`). `anchor_end` omitted = single-line replace; **required when the range spans multiple lines**. |
 | `ins` | `anchor_after` | insert `lines` **below** that line — the anchor line is kept, `lines` holds only what is new. `anchor_start`/`anchor_end` are refused. May anchor on another hunk's range **end** line, never its start/interior. |
 | `del` | `anchor_start` (+ optional `anchor_end`) | delete the range (or the single `anchor_start` line); `lines` is ignored. |
 | `sed` | `anchor_start` (+ optional `anchor_end`) | rewrite the range **line by line** with `pattern` + `replacement` + optional `flags` (`gims`), no `lines`, no newline in `replacement`; sed's `\1`/`&` and JS's `$1`/`$&` both accepted. |
@@ -177,6 +177,15 @@ When `hashline.require_line_content` is on, every anchor becomes a
 Declarations are verified after the stale-anchor check; a mismatch rejects the call with
 `[E_CONTENT_MISMATCH]` and echoes where your declared content actually lives.
 
+### `grep_respect_gitignore` (default on)
+
+`grep` builds its candidate list with ripgrep, so `.gitignore` / `.ignore` rules decide what
+is searched at all: build output and vendored copies never reach the read stage (nor its
+64 MiB budget). Only the **searched tree's own** ignore files apply — naming an ignored
+directory on purpose still searches it. Turn `hashline.grep_respect_gitignore` off to
+search what the plugin's own walk sees (the whole tree minus hidden entries and
+`node_modules`), which is also the behavior whenever ripgrep cannot be resolved.
+
 ## Tools
 
 | Tool | What it does |
@@ -184,7 +193,7 @@ Declarations are verified after the stale-anchor check; a mismatch rejects the c
 | `read` | File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers (set `line_numbers: false` for bare anchors). `offset` (1-based) / `limit` paging; oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. |
 | `edit` | One or more range edits via `{ path?, edits: [{ op, … }, …] }` — the full contract is [above](#the-anchor-contract). Replaces the legacy `batch_edit`. |
 | `write` | Fully shadowed: creates/overwrites a file and returns the write **plus an auto-read preview** with fresh anchors, so the next edit never needs a separate read. |
-| `grep` | JavaScript-flavre regex search (or `regex: false` for literal) across a path tree, one section per file under the same header, full lines only. `-C N` echoes context rows; hits are served → directly editable. |
+| `grep` | JavaScript-flavre regex search (or `regex: false` for literal) across a path tree, one section per file under the same header, full lines only. The tree comes from ripgrep, so `.gitignore`d paths are skipped by default (see `grep_respect_gitignore`). `-C N` echoes context rows; hits are served → directly editable. |
 | `undo_last_edit` | `{ path }` reverts the file's last hashline edit — only while the file still matches the stored post-edit content; survives restarts. |
 | `ast_grep` | Structural search by syntax shape (`pat` with `$NAME` / `$$$ARGS` / `$_` metavariables). Refuses instead of guessing when a pattern does not parse as one node. Long files come back as a folded, editable outline. |
 | `ast_edit` | Structural rewrite: finds places by shape and hands the change to the **same engine** `edit` uses — served-state check, undo entry, diff and syntax gate all apply. |

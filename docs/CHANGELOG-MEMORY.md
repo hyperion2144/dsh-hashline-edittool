@@ -97,3 +97,38 @@ maintainer's standing rule is sharper:
 ### Path / Affected typed relationships
 
 - `AGENTS.md` — rule 2 rewritten. No other document's reading changes.
+
+---
+
+## 2026-09-28 — ADR-0012 recorded: `lines` is a line array (#198)
+
+**Type:** decision + contract documentation
+**Confidence:** High
+**Evidence:** `npm run typecheck` (root + client, exit 0), `npm test` (114 files /
+1,342 tests, exit 0), `npm test -w client` (6 files / 148 tests, exit 0),
+`test/core/issue-198-lines-semantics.test.ts` (new, 12 tests), live repro in
+`.tmp/triage-198-*` (issue [#198](https://github.com/hyperion2144/dsh-hashline-edittool/issues/198))
+
+### Why
+
+Two defects in one report: (a) `lines` was flattened with `join("\n")` before the
+engine saw it, so every all-blank array landed on the wrong side of the string
+surface's `""` = delete marker — `[""]` deleted the line instead of clearing it,
+`["",""]` lost a line, `ins` + `[""]` was a noop; (b) a diff's removal row took
+its anchor from the text diff's head-first alignment, so with identical adjacent
+lines it named the SURVIVOR instead of the line the engine spliced out.
+
+The maintainer ruled the contract: in `lines`, one element is ONE line, only an
+element's own newline becomes several, and no input may change the line count
+silently. That is a durable, non-obvious invariant (the `"\n".repeat(n)` spelling
+looks arbitrary without it) with real alternatives (carry the array deeper / change
+`parseText`), so it is recorded as ADR-0012 rather than left in code comments.
+
+### Path / Affected typed relationships
+
+- `docs/adr/0012-lines-line-array.md` — new: the decision record.
+- `AGENTS.md` — `l0_domains.decisions` now spans ADRs 0001–0012.
+- `CONTEXT.md` — the `lines` glossary entry states the line rule (canonical vocabulary).
+- `README.md` / `README.zh.md` — the `replace` row states it in both mirrors.
+- `docs/edit-payload-spec.md` — the `[""]` bullet and the acceptance-table row.
+- `CHANGELOG.md` — new `[Unreleased] → Fixed` section (in Chinese, per rule 4).

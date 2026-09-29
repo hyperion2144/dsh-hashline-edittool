@@ -31,6 +31,7 @@ import {
 	resEdit,
 	parseHashRef,
 	parseText,
+	encodeText,
 	type Anchor,
 	type HEdit,
 	type NEdit,
@@ -41,6 +42,7 @@ import {
 	type RangeEdge,
 } from "./range-conflicts.js";
 import { lineHashes } from "../../hashline/hash.js";
+import type { ChangedOriginalRange } from "../../render/edit-diff.js";
 import {
 	AnchorMismatchError,
 	ServedRejectionError,
@@ -219,6 +221,29 @@ export interface HunkShift {
 	 * keeps its anchor and only the inserted rows allocate fresh ones.
 	 */
 	isIns?: boolean;
+}
+
+/**
+ * The original-file ranges a batch's removal rows may be attributed to — ascending.
+ *
+ * Every hunk EXCEPT `ins`: by {@link toAnchorHunk}'s rule an `ins` covers NO old line
+ * (its anchor line is kept, not replaced), so that line must never become a candidate
+ * for "the line this edit removed" — a twin further down would otherwise be reported
+ * as the untouched anchor (issue #198). Ascending order is what makes "the earliest
+ * matching line" well defined for the renderer.
+ */
+export function replacedOriginalRanges(
+	hunks: readonly HunkShift[],
+): ChangedOriginalRange[] {
+	const ranges: ChangedOriginalRange[] = [];
+	for (const hunk of hunks) {
+		if (hunk.isIns === true) continue;
+		ranges.push({
+			originalStartLine: hunk.originalStartLine,
+			originalEndLine: hunk.originalEndLine,
+		});
+	}
+	return ranges.sort((a, b) => a.originalStartLine - b.originalStartLine);
 }
 
 /**
@@ -558,7 +583,7 @@ export function resolveIns(
 		);
 	}
 	const effectiveReplacement =
-		[fromContent, ...insertedLines].join("\n");
+		encodeText([fromContent, ...insertedLines]);
 	warnings.push(
 		`[E_OP_INS] op:"ins" after line ${fromLine + 1}: preserved the anchor line and inserted ${insertedLines.length} line(s) below it.`,
 	);

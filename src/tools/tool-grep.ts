@@ -40,7 +40,7 @@ import { hashlineHeader, contextLinesCfg } from "../hashline/hash-assign.js";
 import { fmtHashlineRow, fmtMarker, anchorWidth } from "../hashline/hash-assign.js";
 import { visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
-import { rgFilesWithMatches } from "./grep-rg.js";
+import { rgFiles, rgFilesWithMatches } from "./grep-rg.js";
 import { toLF } from "../render/edit-diff.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
@@ -94,11 +94,13 @@ const DEFAULT_LIMIT = 100;
  *
  * @param skipped - every file the scan did not read, in visit order.
  * @param usage - the final tally.
+ * @param prefiltered - whether ripgrep narrowed the candidate list before the reads.
  * @returns the notice, or "" when nothing was refused.
  */
 function buildBudgetNotice(
 	skipped: ReadonlyArray<{ path: string; reason: SkipReason; bytes: number }>,
 	usage: BudgetUsage,
+	prefiltered: boolean,
 ): string {
 	// `exhausted` is itself one of the omitted files: it is the file that did not
 	// fit, and it is what stopped the scan.
@@ -113,7 +115,15 @@ function buildBudgetNotice(
 	const head = usage.exhausted
 		? `${skipped.length} file(s) were not searched: the scan stopped at its ${formatSize(GREP_MAX_TOTAL_BYTES)} total read budget, with ${skippedByBudget} file(s) past the cut.`
 		: `${skipped.length} file(s) were not searched (unreadable).`;
-	return `[grep budget] ${head} Not searched: ${shown}${more}.`;
+	// A budget-stopped scan that never got the ripgrep pre-filter is a different
+	// story from one that did: the reads were the whole candidate list, not the
+	// files that actually matched. Say which, or the model cannot tell a partial
+	// scan from a slow one.
+	const noPrefilter =
+		usage.exhausted && !prefiltered
+			? " No ripgrep pre-filter ran, so every candidate file was read in JS."
+			: "";
+	return `[grep budget] ${head} Not searched: ${shown}${more}.${noPrefilter}`;
 }
 
 function buildMatcher(pattern: string, regex: boolean): (line: string) => boolean {
@@ -252,7 +262,7 @@ export function buildGrepTool(io: FileIO) {
 			path: {
 				type: "string",
 				description:
-					"File or directory to search. Optional — defaults to the session workspace (cwd). Directories recurse the whole tree (hidden entries and node_modules skipped).",
+					"File or directory to search. Optional — defaults to the session workspace (cwd). Directories recurse using ripgrep's file list, so `.gitignore`d trees are skipped as well as hidden entries and node_modules (see the `grep_respect_gitignore` setting).",
 			},
 			include: {
 				type: "string",
@@ -416,7 +426,15 @@ export function buildGrepTool(io: FileIO) {
 				if (rootStat.isFile()) {
 					files = [root];
 				} else if (rootStat.isDirectory()) {
-					files = await gatherFiles(root, opts, signal);
+					// Ignore-aware by default: the candidate list comes from ripgrep, so
+					// `.gitignore`d trees (build output, vendored copies) never reach the read
+					// budget below. Any rg trouble — unavailable, aborted, a rejected flag —
+					// falls back to the plugin's own walk: whole tree, hidden entries and
+					// `node_modules` skipped, ignore files not consulted.
+					const listed = getEffectiveConfig().grepRespectGitignore
+						? await rgFiles(root, signal)
+						: undefined;
+					files = listed ?? (await gatherFiles(root, opts, signal));
 				} else {
 					throw new Error(
 						`[E_NOT_TEXT] Path is neither file nor directory: ${params.path}`,
@@ -431,12 +449,16 @@ export function buildGrepTool(io: FileIO) {
 				// include/exclude semantics are untouched; any rg failure returns
 				// undefined and the full list is kept (JS engine, as always). Fixed-
 				// string mode maps to rg's -F.
+				let prefiltered = false;
 				if (files.length > 1) {
 					const narrow = await rgFilesWithMatches(
 						opts.regex === false ? `-F${params.pattern}` : params.pattern,
 						files,
 					);
-					if (narrow !== undefined) files = narrow;
+					if (narrow !== undefined) {
+						files = narrow;
+						prefiltered = true;
+					}
 				}
 
 				const fileSections: string[] = [];
@@ -455,10 +477,9 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 				// serve record, so without a ceiling a large tree grew the host heap
 				// until the process died and the desktop app restarted it.
 				const budget = makeReadBudget({
-					// #169 sparse lazy anchors: a big file costs only its RETURNED rows,
-					// so the per-file hard skip is gone — large files are searched. The
+					// #169 sparse lazy anchors: a big file costs only its RETURNED rows, so
+					// there is no per-file skip any more — large files are searched. The
 					// TOTAL budget stays as the scan's memory ceiling (issue #167).
-					maxFileBytes: 0, // 0 = unlimited per file
 					maxTotalBytes: GREP_MAX_TOTAL_BYTES,
 				});
 				const skipped: Array<{ path: string; reason: SkipReason; bytes: number }> = [];
@@ -474,8 +495,8 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 					const admitted = budget.admit(size);
 					if (!admitted.ok) {
 						skipped.push({ path: file, reason: admitted.reason, bytes: admitted.bytes });
-						// An exhausted total ends the scan; a too-large file is skipped and
-						// the walk keeps going.
+						// Exhausting the total ends the scan: every later file would be
+						// refused too, so stopping is the only honest move.
 						if (budget.usage().exhausted) break;
 						continue;
 					}
@@ -595,7 +616,7 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 
 				// issue #167: a budget-hit scan is not a complete one — say so, or the
 				// model reads a partial result as the whole answer.
-				const budgetNotice = buildBudgetNotice(skipped, budget.usage());
+				const budgetNotice = buildBudgetNotice(skipped, budget.usage(), prefiltered);
 				const noticeText = budgetNotice === "" ? "" : `\n\n${budgetNotice}`;
 
 				if (fileSections.length === 0) {

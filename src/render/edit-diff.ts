@@ -38,6 +38,7 @@ import {
 // engine, and importing it from the `hashline/served` shim (which re-exports
 // that engine) is what made this module part of the barrel cycle.
 import type { ServedRow } from "../hashline/anchor-pipeline.js";
+import { splitLines } from "../infra/utils.js";
 
 export type LineEnding = "\r\n" | "\n" | "\r";
 
@@ -96,6 +97,15 @@ export interface DiffRow {
 	oldHash?: string;
 }
 
+/**
+ * The original-file span one hunk covered — `HunkShift` satisfies this structurally,
+ * so the render layer needs no import from the domain to be handed one.
+ */
+export interface ChangedOriginalRange {
+	originalStartLine: number;
+	originalEndLine: number;
+}
+
 export function genDiff(
 	oldContent: string,
 	newContent: string,
@@ -104,6 +114,12 @@ export function genDiff(
 	oldContentHashes?: string[],
 	lineNumbers = true,
 	partsFor?: (oldText: string, newText: string) => LineDiffPart[],
+	/**
+	 * The original-file ranges this render's hunks covered, ascending. Their lines are
+	 * the pool a `-` row's attribution is drawn from; omitted (a whole-file `write` /
+	 * `undo` diff) leaves the text walk in charge.
+	 */
+	changedRanges?: readonly ChangedOriginalRange[],
 ): {
 	diff: string;
 	rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }>;
@@ -123,6 +139,32 @@ export function genDiff(
 	const servedRows: ServedRow[] = [];
 	let newLineNum = 1;
 	let oldLineNum = 1;
+	// Which `-` row is which LINE is not something the text can answer when two
+	// lines are identical: a head-first alignment calls the LATER twin removed,
+	// while the engine spliced the range's own line out and released its anchor
+	// (ADR-0006/0009 keep the surviving twin's). So when the caller hands us the
+	// ranges its hunks covered, a removal row takes the earliest line in them still
+	// unclaimed that carries its content; a row no range matches keeps the walk's
+	// own number — and a whole-file `write`/`undo` diff, which has no hunks, passes
+	// nothing and is unchanged. The caller hands over `replacedOriginalRanges`, so an
+	// `ins` anchor line (kept, never removed) is not in the pool at all.
+	const claimed = new Set<number>();
+	const oldLines =
+		changedRanges !== undefined && changedRanges.length > 0
+			? splitLines(oldContent)
+			: undefined;
+	const attributedRemovedLine = (content: string, walked: number): number => {
+		if (oldLines === undefined || changedRanges === undefined) return walked;
+		for (const range of changedRanges) {
+			for (let line = range.originalStartLine; line <= range.originalEndLine; line++) {
+				if (!claimed.has(line) && oldLines[line - 1] === content) {
+					claimed.add(line);
+					return line;
+				}
+			}
+		}
+		return walked;
+	};
 	let lastWasChange = false;
 	let firstChangedLine: number | undefined;
 
@@ -143,8 +185,10 @@ export function genDiff(
 					}
 					newLineNum++;
 				} else {
-					const oldHash = oldContentHashes?.[oldLineNum - 1];
-					output.push({ prefix: "-", line: displayLines[k]!, hash: undefined, lineNumber: oldLineNum, oldHash });
+					const content = displayLines[k]!;
+					const lineNumber = attributedRemovedLine(content, oldLineNum);
+					const oldHash = oldContentHashes?.[lineNumber - 1];
+					output.push({ prefix: "-", line: content, hash: undefined, lineNumber, oldHash });
 					oldLineNum++;
 				}
 			}

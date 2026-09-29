@@ -45,11 +45,12 @@ import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } fro
 // `<line>:<anchor>` handling when the block-op path was removed.
 import { lineHintOf } from "../hashline/declaration.js";
 import type { AnchorRef } from "../hashline/declaration.js";
+import { encodeText } from "../hashline/anchor-pipeline.js";
 import { abortIf, isRec, visLines } from "../infra/utils.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "../domain/edit/mutation.js";
-import { runFileEdits, type PreparedItem, type FileEditResult } from "../domain/edit/edit-engine.js";
+import { replacedOriginalRanges, runFileEdits, type PreparedItem, type FileEditResult } from "../domain/edit/edit-engine.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -156,7 +157,7 @@ export function buildPreparedItem(
 	const replacementText =
 		item.op === "del"
 			? ""
-			: (item.lines ?? []).join("\n");
+			: encodeText(item.lines ?? []);
 	return {
 		index,
 		path: itemPath,
@@ -560,7 +561,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					multiDiffRowGroups.push({
 						path: o.displayPath,
 						rows: diffRowsFromGenDiff(
-							genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true).rows,
+							genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true, undefined, replacedOriginalRanges(file.hunkShifts)).rows,
 						),
 					});
 				}
@@ -721,7 +722,7 @@ async function applyFileResultTo(
 					ctx.absolutePath,
 					head.anchor_start,
 					head.anchor_end ?? head.anchor_start,
-					(head.lines ?? []).join("\n"),
+					encodeText(head.lines ?? []),
 				);
 				const count = trackNoopPayload(ctx.absolutePath, payload);
 				if (count >= 2) {
@@ -729,7 +730,7 @@ async function applyFileResultTo(
 						absolutePath: ctx.absolutePath,
 						removeFrom: head.anchor_start,
 						removeTo: head.anchor_end ?? head.anchor_start,
-						replacementText: (head.lines ?? []).join("\n"),
+						replacementText: encodeText(head.lines ?? []),
 						displayPath: ctx.displayPath,
 						count,
 					});
@@ -816,6 +817,8 @@ export function buildCanonicalFromFileResult(
 			file.resultHashes,
 			file.originalHashes,
 			true,
+			undefined,
+			replacedOriginalRanges(file.hunkShifts),
 		).rows,
 	);
 	const result = {
@@ -864,6 +867,8 @@ function buildChangedModelText(
 		file.resultHashes,
 		file.originalHashes,
 		lineNumbers,
+		undefined,
+		replacedOriginalRanges(file.hunkShifts),
 	);
 	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
 	const successPrefix = `Successfully edited in ${displayPath}.`;
@@ -915,6 +920,7 @@ export function buildEditJson(
 		file.result,
 		file.resultHashes,
 		file.originalHashes,
+		replacedOriginalRanges(file.hunkShifts),
 	);
 	const hints = (file.hunkShifts ?? [])
 		.filter((h) => h.delta !== 0 || h.finalStartLine !== h.originalStartLine)

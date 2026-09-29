@@ -132,7 +132,7 @@ D0:4|export function greet(name: string): string {
 
 | op | 锚点字段 | 行为 |
 | --- | --- | --- |
-| `replace` | `anchor_start`（+ 可选 `anchor_end`） | 用 `lines` 换掉该范围（非空；`[""]` 把行清成空行，区别于 `del`）。省略 `anchor_end` = 单行替换；**`lines` 跨多行时必填**。 |
+| `replace` | `anchor_start`（+ 可选 `anchor_end`） | 用 `lines` 换掉该范围（非空；**一个元素就是一行** —— 只有元素自身含换行符才添行；`[""]` 把行清成空行，区别于 `del`）。省略 `anchor_end` = 单行替换；**范围跨多行时必填**。 |
 | `ins` | `anchor_after` | 在该行**下方**插入 `lines` —— 锚点行保留，`lines` 只放新内容。`anchor_start`/`anchor_end` 会被拒绝。可以锚在其他 hunk 范围的**结束行**，绝不能是起点或内部。 |
 | `del` | `anchor_start`（+ 可选 `anchor_end`） | 删除范围（或单个 `anchor_start` 行）；`lines` 被忽略。 |
 | `sed` | `anchor_start`（+ 可选 `anchor_end`） | 用 `pattern` + `replacement` + 可选 `flags`（`gims`）**逐行**重写范围；不放 `lines`，`replacement` 不得含换行；sed 的 `\1`/`&` 与 JS 的 `$1`/`$&` 都接受。 |
@@ -145,6 +145,14 @@ D0:4|export function greet(name: string): string {
 是你对该行**当前完整文本**的声明。声明在陈旧锚点检查之后验证；不匹配则以
 `[E_CONTENT_MISMATCH]` 拒绝整次调用，并回显你声明的内容实际所在的位置。
 
+### `grep_respect_gitignore`（默认开）
+
+`grep` 的候选文件清单由 ripgrep 出，因此 `.gitignore` / `.ignore` 规则决定「什么会被搜」：
+构建产物与 vendored 副本根本不进读取阶段（自然也不吃那 64 MiB 读取预算）。只认**被搜目录
+自身**的忽略规则 —— 你点名一个被忽略的目录，它照样会搜。关掉
+`hashline.grep_respect_gitignore` 即退回插件自己的走查（整棵树减去隐藏项与
+`node_modules`），rg 无法解析时也是同一回退。
+
 ## 工具
 
 | 工具 | 功能 |
@@ -152,7 +160,7 @@ D0:4|export function greet(name: string): string {
 | `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记（`line_numbers: false` 得到裸锚点）。`offset`（1 起）/ `limit` 分页；超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。 |
 | `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。 |
 | `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加带新鲜锚点的自动 read 预览**，下一次编辑不再需要单独 read。 |
-| `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。`-C N` 回显上下文行；命中即 served → 可直接编辑。 |
+| `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。清单由 ripgrep 出，因此 `.gitignore` 的路径默认跳过（见 `grep_respect_gitignore`）。`-C N` 回显上下文行；命中即 served → 可直接编辑。 |
 | `undo_last_edit` | `{ path }` 撤销该文件最后一次 hashline 编辑 —— 仅当文件仍与存储的编辑后内容一致时；可跨重启。 |
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
 | `ast_edit` | 结构改写：按形状找到位置，把变更交给 `edit` **同一引擎** —— served 校验、undo 记录、diff 与语法门全部生效。 |
