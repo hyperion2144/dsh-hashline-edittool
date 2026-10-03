@@ -228,12 +228,20 @@ export function buildReadTool(io: FileIO) {
 						const continuedBody = continued.hadUtf8DecodeErrors
 							? `${continued.text}\n\n${UTF8_REWRITE_NOTE}`
 							: continued.text;
+						const allLines = splitLines(continued.normalized ?? "");
+						const shownEnd = continued.nextOffset !== undefined ? continued.nextOffset - 1 : continuedTotal;
+						const lines: Array<{ number: number; text: string }> = [];
+						const hashlines: Array<{ number: number; hash: string; text: string }> = [];
+						for (let i = windowOffset - 1; i < Math.min(shownEnd, allLines.length); i++) {
+							lines.push({ number: i + 1, text: allLines[i] ?? "" });
+							hashlines.push({ number: i + 1, hash: continued.hashes?.[i] ?? "", text: allLines[i] ?? "" });
+						}
 						return {
 							path: windowPath,
 							offset: windowOffset,
 							totalLines: continuedTotal,
-							lines: [],
-							hashlines: [],
+							lines,
+							hashlines,
 							modelText: continuedBody,
 						} as ReadValue & { modelText: string };
 					}
