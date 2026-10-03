@@ -19,6 +19,7 @@ import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { languageForPath } from "../ast/language.js";
 import { getLspManager } from "../lsp/manager.js";
+import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { splitLines } from "../infra/utils.js";
 import { toLF } from "../render/edit-diff.js";
@@ -583,7 +584,8 @@ export function buildLspTool(io: FileIO) {
 			} catch (error) {
 				return thrownErrorResult(error, { path: pathFromArgs(args) }) as never;
 			}
-			return { ...value, modelText: lspModelText(value) };
+			const streamedLsp = await spillModelTextOverflow({ sessionKey: execSessionKey(exec), producer: "lsp", consumer: "read", modelText: lspModelText(value), budgetChars: responseBudgetChars() });
+			return { ...value, modelText: streamedLsp.modelText };
 		},
 	} as typeof tool;
 }

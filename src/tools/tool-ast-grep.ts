@@ -27,6 +27,7 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure 
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
 import { getEffectiveConfig, isJsonOutput } from "../config.js";
 import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
+import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
@@ -591,6 +592,7 @@ export function buildAstGrepTool(io: FileIO) {
 				exec,
 				io,
 			});
+				const streamedAg = await spillModelTextOverflow({ sessionKey: execSessionKey(exec), producer: "ast_grep", consumer: "read", modelText, budgetChars: responseBudgetChars() });
 			return {
 				path: args.path,
 				pat: args.pat,
@@ -598,7 +600,7 @@ export function buildAstGrepTool(io: FileIO) {
 				cardFiles: [{ path: args.path, rows: cardRows }],
 				truncated: false,
 				total,
-				modelText,
+				modelText: streamedAg.modelText,
 			};
 			} catch (error) {
 				return {
