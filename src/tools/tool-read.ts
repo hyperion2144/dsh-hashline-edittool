@@ -394,7 +394,7 @@ export function buildReadTool(io: FileIO) {
 
 				// ADR-0013: when the window was budget-cut, mint the continuation.
 				let continuation: { resume: string; remaining: number } | undefined;
-				if (result.nextOffset !== undefined && result.nextOffset <= totalLines) {
+				if (canonical.limit === undefined && result.nextOffset !== undefined && result.nextOffset <= totalLines) {
 					const { token } = await createResume({
 						sessionKey,
 						producer: "read",

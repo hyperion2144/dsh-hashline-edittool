@@ -521,6 +521,8 @@ export async function fmtReadPreview(
     : totalLines;
   let selected = allLines.slice(startLine - 1, endIdx);
   const allHashes = precomputedHashes ?? (path ? anchorsFor(path, text) : []);
+  let budgetCut = false;
+  const originalCount = endIdx - startLine + 1;
   // ADR-0013: the char budget is the segment bound — walk whole rows (a line
   // is never cut), est. +24 chars/row for marker+separator overhead, and cut
   // BEFORE allocation so persisted == served == visible holds exactly.
@@ -535,7 +537,10 @@ export async function fmtReadPreview(
     }
     selected = selected.slice(0, count);
     endIdx = startLine - 1 + count;
+    budgetCut = count < originalCount;
   }
+		// Track whether the CHAR BUDGET (not limit) actually cut rows — this is
+		// the only condition that mints a resume token downstream.
   // LAZY (#169): allocate for EXACTLY the window rows this read serves —
   // persisted rows == served rows == visible rows, never the whole file.
 	if (path && precomputedHashes === undefined) {
@@ -610,7 +615,7 @@ export async function fmtReadPreview(
     return {
       text: preview,
       truncation: skippedTruncation.truncated ? skippedTruncation : undefined,
-      ...(nextOffset !== undefined ? { nextOffset } : {}),
+      ...(budgetCut && nextOffset !== undefined ? { nextOffset } : {}),
       hashes: allHashes,
       served,
     };
@@ -647,7 +652,7 @@ export async function fmtReadPreview(
   return {
     text: preview,
     truncation: truncation.truncated ? truncation : undefined,
-    ...(nextOffset !== undefined ? { nextOffset } : {}),
+    ...(budgetCut && nextOffset !== undefined ? { nextOffset } : {}),
     // LAZY (#169): the PATCHED array — the presentation layer rebuilds the
     // model text from it, so it must carry the window's real anchors.
     hashes: allHashes,
