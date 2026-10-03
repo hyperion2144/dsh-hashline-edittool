@@ -56,7 +56,7 @@ describe("tool-read structured presentation", () => {
 		});
 	});
 
-	it("the model text starts with the hashline header and ends with the pagination footer", async () => {
+	it("the model text starts with the hashline header and ends with the resume footer", async () => {
 		await withTempFile("p2.txt", "x\n".repeat(2500), async ({ cwd }) => {
 			const { localIO } = await import("../../src/infra/fs-bridge.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");
@@ -70,8 +70,9 @@ describe("tool-read structured presentation", () => {
 			const value = (await tool.execute({ path: "p2.txt" }, exec({}))) as { modelText: string; lines: { number: number }[] };
 			expect(value.modelText.startsWith("ANCHOR:LINE")).toBe(true);
 			expect(value.modelText).not.toContain("<type>file</type>");
-			expect(value.modelText).toMatch(/\[Showing lines 1-2000 of 2500/);
-			expect(value.lines).toHaveLength(2000);
+			expect(value.lines.length).toBeGreaterThan(0);
+			expect(value.lines.length).toBeLessThan(2500);
+			expect(value.modelText).toMatch(/\(Omitted \d+ lines\. Use read \{resume: "rs-[0-9a-f]{32}"\} to continue\.\)$/);
 		});
 	});
 });
@@ -105,14 +106,17 @@ describe("tool-grep structured presentation", () => {
 			expect(value.files[0]?.path).toBe("g.txt");
 			const rows = value.files[0]!.rows;
 			// Every displayed line is a row; only the real matches carry `match`.
-			// Default context is 0: the card rows are exactly the match rows.
-			expect(rows.map((row) => row.number)).toEqual([1, 3]);
-			expect(rows.map((row) => row.text)).toEqual(["alpha", "alpha-again"]);
-			expect(rows.every((row) => row.match === true)).toBe(true);
+			// Default context is context_lines (3): the card rows are the ±3 window.
+			expect(rows.map((row) => row.number)).toEqual([1, 2, 3, 4]);
+			expect(rows.map((row) => row.text)).toEqual(["alpha", "beta", "alpha-again", "gamma"]);
+			expect(rows[0]?.match).toBe(true);
+			expect(rows[1]?.match).toBeUndefined();
+			expect(rows[2]?.match).toBe(true);
+			expect(rows[3]?.match).toBeUndefined();
 			// Highlights point at every occurrence on the line.
 			expect(rows[0]?.spans).toEqual([[0, 5]]);
 			// "alpha-again" holds ONE occurrence (`-again` is not `alpha`).
-			expect(rows[1]?.spans).toEqual([[0, 5]]);
+			expect(rows[2]?.spans).toEqual([[0, 5]]);
 			expect(value.total).toBe(2);
 			expect(value.truncated).toBe(false);
 			expect(value.modelText).toMatch(/^--- g\.txt ---$/m);

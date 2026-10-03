@@ -397,7 +397,9 @@ export function buildReadTool(io: FileIO) {
 					});
 					const omitted = totalLines - shownEnd;
 					continuation = { resume: token, remaining: omitted };
-					body = `${body}\n\n(Omitted ${omitted} lines. Use read {resume: "${token}"} to continue.)`;
+					// ADR-0013: the classic pagination hint is superseded by the resume footer.
+					body = body.replace(/\n*\[Showing lines [^\]]*\]\s*$/, "\n");
+					body = `${body}(Omitted ${omitted} lines. Use read {resume: "${token}"} to continue.)`;
 				}
 				return {
 					...presentation,

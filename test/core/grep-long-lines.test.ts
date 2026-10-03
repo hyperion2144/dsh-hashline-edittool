@@ -6,13 +6,12 @@
  * `require_line_content` mode the clipped line could never match the declared
  * full line, forcing `[E_CONTENT_MISMATCH]`.
  *
- * Contract now: rows carry the FULL line; only a row exceeding the read tool's
- * per-line byte budget (200KB) is hidden, with the same `sed` pointer read
- * emits; no silent ellipsis anywhere.
+ * Contract now (ADR-0013/#205): rows carry the FULL line; a row over the
+ * per-response char budget is pointer-ized (sed pointer, no silent ellipsis);
+ * a row over the legacy 200KB per-line byte budget keeps its byte pointer.
  *
  * @module test/core/grep-long-lines.test
  */
-
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -100,7 +99,7 @@ describe("grep long lines", () => {
 		}
 	});
 
-	it("hides only rows above the 200KB per-line budget, with a sed pointer", async () => {
+	it("pointer-izes rows over the per-response budget, with a sed pointer (#205)", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "grep-huge-"));
 		try {
 			const huge = "HUGE " + "z".repeat(MAX_READ_LINE_BYTES + 1024);
@@ -113,7 +112,7 @@ describe("grep long lines", () => {
 			const text = getText(res);
 			expect(text).toContain("content not shown");
 			expect(text).toContain("sed -n '1p'");
-			expect(text).toContain(`head -c ${MAX_READ_LINE_BYTES}`);
+			expect(text).toContain("head -c 48000");
 			// The giant content itself is not shipped.
 			expect(text.length).toBeLessThan(MAX_READ_LINE_BYTES);
 		} finally {

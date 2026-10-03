@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MAX_BYTES } from "../../src/domain/session/file-view.js";
+// Retired constant (#205/#210): kept as a local literal to pin the row-cap
+// semantics these unit tests exercise.
+const DEFAULT_MAX_BYTES = 50 * 1024;
 import { fmtReadPreview } from "../../src/domain/session/file-view.js";
 import { useTestHome } from "../support/fixtures.js";
 

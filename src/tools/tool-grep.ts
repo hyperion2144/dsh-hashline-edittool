@@ -58,7 +58,7 @@ import {
 	type GrepFileRows,
 	type MatchSpan,
 } from "../render/grep-card.js";
-import { fmtMarker, hashlineHeader, contextLinesCfg, hashSep, canon, contentChecksum } from "../hashline/hash-assign.js";
+import { fmtMarker, hashlineHeader, contextLinesCfg, hashSep, canon, contentChecksum, fmtHashlineRow, anchorWidth } from "../hashline/hash-assign.js";
 
 /**
  * One row in a grep section's context set (hash + content, used to render the
@@ -71,6 +71,8 @@ export interface GrepSectionRow {
 	isMatch: boolean;
 	/** Highlight spans for this line (empty when nothing is markable). */
 	spans: MatchSpan[];
+	/** Pointer rows: content replaced by a bash pointer (over budget per #205). */
+	pointer?: true;
 }
 
 export interface GrepFileSection {
@@ -157,14 +159,12 @@ function renderSection(
 		const anchor = anchorsByPosition.get(row.position) ?? "";
 		return anchor !== "" ? fmtMarker(anchor, row.position + 1, lineNumbers) : `[line ${row.position + 1}] `;
 	});
-	const widths = markers.map((m) => m.length);
-	const width = Math.max(0, ...widths);
+	const width = anchorWidth(markers);
 	for (const [i, row] of rows.entries()) {
 		const marker = markers[i]!;
-		const rendered =
-			anchorsByPosition.has(row.position)
-				? `${marker}${" ".repeat(Math.max(0, width - marker.length))}${hashSep()}${row.content}`
-				: `${marker}${row.content}`;
+		const rendered = anchorsByPosition.has(row.position)
+			? fmtHashlineRow(marker, row.content, width)
+			: `[line ${row.position + 1}] ${row.content}`;
 		const rowBytes = Buffer.byteLength(rendered, "utf-8");
 		if (rowBytes > MAX_READ_LINE_BYTES) {
 			headerLines.push(
@@ -464,7 +464,7 @@ export function buildGrepTool(io: FileIO) {
 				}
 				const opts = {
 					limit: typeof params.limit === "number" ? params.limit : undefined,
-					context: typeof params.context === "number" ? params.context : undefined,
+					context: typeof params.context === "number" ? params.context : contextLinesCfg(),
 					regex: params.regex !== false,
 					lineNumbers: params.line_numbers !== false,
 				};
@@ -531,6 +531,14 @@ export function buildGrepTool(io: FileIO) {
 					const text = toLF(raw);
 					const section = await grepFileContent(file, text, params.pattern, opts);
 					if (section === undefined) continue;
+				// #205 Q5: a single row over the budget is pointer-ized and the segment
+				// keeps assembling — one pathological line never destroys a section.
+				for (const row of section.contextRows) {
+					if (codeUnits(row.content) + 24 > budget) {
+						row.content = `[Line ${row.position + 1} is ~${codeUnits(row.content)} chars, exceeds the ${budget}-char per-response budget; content not shown. Use bash: sed -n '${row.position + 1}p' ${file} | head -c ${budget}]`;
+						row.pointer = true;
+					}
+				}
 					const displayPath = relative(root, file) || basename(file);
 					totalMatches += section.matches.length;
 					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
@@ -542,6 +550,7 @@ export function buildGrepTool(io: FileIO) {
 						const anchorsByPosition = new Map<number, string>();
 						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
 						section.contextRows.forEach((row, index) => {
+						if (row.pointer) return;
 							const anchor = allocated[index] ?? "";
 							anchorsByPosition.set(row.position, anchor);
 							if (anchor !== "") {
@@ -620,7 +629,9 @@ export function buildGrepTool(io: FileIO) {
 				}
 
 				if (fileSections.length === 0 && spillRows.length === 0) {
-					const noMatchModelText = `No matches for "${params.pattern}" in ${root}.`;
+					const noMatchModelText = jsonOutput
+						? JSON.stringify({ total: 0, truncated: false, files: [] })
+						: `No matches for "${params.pattern}" in ${root}.`;
 					return {
 						files: [],
 						truncated: false,
@@ -635,16 +646,20 @@ export function buildGrepTool(io: FileIO) {
 						truncated: true,
 						total: totalMatches,
 						...(continuation !== undefined ? { continuation } : {}),
-						modelText: `Matches exist but exceed the per-response budget.\n${noticeText}`,
+						modelText: jsonOutput
+							? JSON.stringify({ total: totalMatches, truncated: true, files: [], ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`)
+							: `Matches exist but exceed the per-response budget.\n${noticeText}`,
 					} satisfies GrepCanonicalValue & { modelText: string };
 				}
 
 				const value: GrepCanonicalValue & { modelText: string } = {
 					files: cardFiles,
-					truncated: spillRows.length > 0,
+ 				truncated: truncated || spillRows.length > 0,
 					total: totalMatches,
 					...(continuation !== undefined ? { continuation } : {}),
-					modelText: `${fileSections.join("\n\n")}${noticeText === "" ? "" : `\n${noticeText}`}`,
+					modelText: jsonOutput
+						? JSON.stringify({ total: totalMatches, truncated: truncated || spillRows.length > 0, files: jsonFiles, ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`)
+						: `${fileSections.join("\n\n")}${noticeText === "" ? "" : `\n${noticeText}`}`,
 				};
 				return value;
 		}).catch((error: unknown) => ({
