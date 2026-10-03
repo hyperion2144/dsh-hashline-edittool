@@ -82,3 +82,25 @@ _Avoid_: `errors` (plural — that is the JSON success shape's field), ErrorMeta
 A failure carrying an `[E_*]` code from the tool's own vocabulary (`E_STALE`, `E_BAD_SHAPE`, `E_BATCH_ABORT`, …). The only kind converted into a structured error value; aborts, sandbox denials and unexpected crashes rethrow to the host untouched.
 _Avoid_: any failure, host error, framework error
 
+## Segmented responses
+
+**Per-response budget**:
+The UTF-16-code-unit ceiling on one tool response's model text (default 48,000, `max_response_chars`). Flow control, never a refusal — oversized results spill instead of being refused.
+_Avoid_: read budget, scan budget (the retired refusal-era terms), max tokens
+
+**Segment**:
+One response's worth of a larger result — assembled whole-line (a line is never cut), sections/matches kept intact when they fit, continuation pieces repeating their section header.
+_Avoid_: chunk, page, slice, batch
+
+**Spill**:
+The session-scoped temp file holding the part of an oversized result that was not returned, written incrementally as the scan proceeds; the source a resume serves from.
+_Avoid_: overflow dump, cache, temp store
+
+**Resume token**:
+The opaque handle a truncated result carries — a random id bound to a sidecar state file (session, consumer tool, spill file, cursor, version stamps). Consumed via a `resume` parameter; read-only tools consume their own, read consumes every mutating tool's report segment.
+_Avoid_: continuation id, spill path (never exposed), cursor
+
+**Version stamp**:
+The per-file identity recorded when a spill is written and re-checked when a resume is served (snapshot id first, mtime+size fallback); a mismatch raises the modified-file caution.
+_Avoid_: mtime check, file hash, staleness token
+

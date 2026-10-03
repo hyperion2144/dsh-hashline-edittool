@@ -132,3 +132,33 @@ looks arbitrary without it) with real alternatives (carry the array deeper / cha
 - `README.md` / `README.zh.md` — the `replace` row states it in both mirrors.
 - `docs/edit-payload-spec.md` — the `[""]` bullet and the acceptance-table row.
 - `CHANGELOG.md` — new `[Unreleased] → Fixed` section (in Chinese, per rule 4).
+
+---
+
+## 2026-10-03 — ADR-0013 recorded: refusing by size becomes flow control (#200 → #201)
+
+**Type:** decision + contract documentation
+**Confidence:** High
+**Evidence:** wayfinder map [#201](https://github.com/hyperion2144/dsh-hashline-edittool/issues/201), decisions #204/#205, specs #209/#210, research #202 (host gate measured: single block ≤49,984 chars) and #203 (8-tool surface inventory), both refusal shapes reproduced in-session via the integration harness (issue [#200](https://github.com/hyperion2144/dsh-hashline-edittool/issues/200)); ADR + CONTEXT written on `main` per the docs-push convention.
+
+### Why
+
+#200 confirmed the #167 budget's gross-size billing produced false refusals
+(a 68 MB file with one match reported "No matches"; folder scans truncated
+with an under-reporting notice). The maintainer ruled the direction: refusals
+retire entirely — oversized results stream in segments (48,000 code units,
+`max_response_chars`) with session spill files and resume tokens, anchors
+allocated at serve time (ADR-0009's model, unchanged). That is a durable,
+non-obvious architectural reversal (a budget that refuses → a budget that
+flows) with real rejected alternatives (served-row billing, higher caps,
+host-spill reliance, resume-on-mutating-tools), so it is recorded as
+ADR-0013 rather than left in issues.
+
+### Path / Affected typed relationships
+
+- `docs/adr/0013-streaming-segmented-responses.md` — new: the decision record.
+- `AGENTS.md` — `l0_domains.decisions` now spans ADRs 0001–0013.
+- `CONTEXT.md` — new "Segmented responses" cluster (per-response budget,
+  segment, spill, resume token, version stamp).
+- Implementation (constants retirement, resume params, spill store) is
+  tracked by #207 against specs #209/#210 — not part of this entry.
