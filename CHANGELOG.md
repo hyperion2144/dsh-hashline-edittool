@@ -4,6 +4,17 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Changed
+
+- **ADR-0013**: refusals by size are retired — all tools stream oversized results in segments (per-response char budget, default 48,000) with resume tokens instead of refusing. `GREP_MAX_TOTAL_BYTES` and the 100 MiB read gate are gone. `grep` never returns "No matches" for a file it hasn't searched.
+- **grep default context** is now `context_lines` (3) instead of 0 — text and JSON contracts are aligned.
+
+### Added
+
+- `read` / `grep` / `ast_grep` / `lsp`: `resume` parameter + continuation tokens. Oversized results return a first segment and a continuation footer; pass the token back to get the next segment.
+- Settings: `max_response_chars` (per-response char budget, default 48,000, clamp [8,000, 49,984]).
+- New module `src/infra/response-stream.ts`: spill store + resume tokens + segment assembler.
+
 ## [0.9.5] - 2026-09-29
 
 ### Added

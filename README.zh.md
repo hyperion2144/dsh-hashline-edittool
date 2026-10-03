@@ -186,6 +186,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
     separator: "|"           # 标记/内容列分隔符（默认 ":"）
     output_format: text      # "text" | "json"
     context_lines: 3         # 陈旧回显 / diff 的上下文行数（0..20）
+    max_response_chars: 48000 # 每次响应的字符预算（默认 48000，范围 [8000, 49984]）
     require_line_content: false
     ast:
       enabled: true
