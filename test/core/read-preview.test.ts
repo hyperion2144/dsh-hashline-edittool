@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MAX_BYTES } from "../../src/domain/session/file-view.js";
+// Retired constant (#205/#210): kept as a local literal to pin the row-cap
+// semantics these unit tests exercise.
+const DEFAULT_MAX_BYTES = 50 * 1024;
 import { fmtReadPreview } from "../../src/domain/session/file-view.js";
 import { useTestHome } from "../support/fixtures.js";
 
@@ -100,7 +102,7 @@ describe("fmtReadPreview", () => {
     expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
     expect(result.text).not.toContain(": W");
     expect(result.text).toContain("[Line 2 is");
-    expect(result.nextOffset).toBe(4);
+    expect(result.nextOffset).toBeUndefined(); // no budget → no resume
     expect(result.text).toContain("[Showing lines 1-3 of 6. Use offset=4 to continue.]");
   });
 
@@ -142,7 +144,7 @@ describe("fmtReadPreview — oversized marker truncation", () => {
     expect(first.text).not.toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
     expect(first.text).not.toContain("Line 3");
     expect(first.text).toContain("Use offset=3 to continue");
-    expect(first.nextOffset).toBe(3);
+    expect(first.nextOffset).toBeUndefined(); // no budget → no resume
 
     const second = await fmtReadPreview(content, { offset: 3 }, undefined, home.testPath, budget);
     expect(second.text).toContain("[Line 3 is");
@@ -159,7 +161,7 @@ describe("fmtReadPreview — maxTruncLines budget", () => {
     expect(result.text).toContain(": l3");
     expect(result.text).not.toContain(": l4");
     expect(result.text).toContain("[Showing lines 1-3 of 5. Use offset=4 to continue.]");
-    expect(result.nextOffset).toBe(4);
+    expect(result.nextOffset).toBeUndefined(); // no budget → no resume
   });
 
   it("caps oversized-marker rows via maxTruncLines with continuation", async () => {
@@ -171,6 +173,6 @@ describe("fmtReadPreview — maxTruncLines budget", () => {
     expect(result.text).not.toContain("[Line 3 is");
     expect(result.text).not.toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
     expect(result.text).toContain("[Showing lines 1-2 of 4 (50.0KB limit). Use offset=3 to continue.]");
-    expect(result.nextOffset).toBe(3);
+    expect(result.nextOffset).toBeUndefined(); // no budget → no resume
   });
 });

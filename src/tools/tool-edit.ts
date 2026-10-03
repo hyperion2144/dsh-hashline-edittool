@@ -40,6 +40,7 @@ import {
 	type EditOp,
 } from "../contract/contract.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 // Marker parsing, not symbol reading: `lineHintOf` moved beside the other
 // `<line>:<anchor>` handling when the block-op path was removed.
@@ -509,6 +510,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					// (the web card's rendering channel). Two channels, two shapes.
 					const diagJson = diagnostics === undefined ? undefined : diagnosticsJson([diagnostics]);
 					const canonicalValue = buildCanonicalFromFileResult(file, displayPath, lineNumbers);
+					const streamed = await spillModelTextOverflow({ sessionKey, producer: "edit", consumer: "read", kind: "report-segment", modelText: canonicalValue.modelText, budgetChars: responseBudgetChars() });
 					return isJsonOutput()
 						? {
 							...canonicalValue,
@@ -524,7 +526,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						: {
 							...canonicalValue,
 							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
-							modelText: diagSection === "" ? canonicalValue.modelText : `${canonicalValue.modelText}\n\n${diagSection}`,
+							modelText: diagSection === "" ? streamed.modelText : `${streamed.modelText}\n\n${diagSection}`,
 						};
 				}
 
@@ -608,7 +610,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						const detected = extractFailure(message);
 						return `Edit for ${o.displayPath} failed: ${detected.code} ${detected.message}`;
 					});
-				return { success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}` };
+				const multiStreamed = await spillModelTextOverflow({ sessionKey, producer: "edit", consumer: "read", kind: "report-segment", modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}`, budgetChars: responseBudgetChars() });
+				return { success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiStreamed.modelText };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)

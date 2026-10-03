@@ -17,6 +17,8 @@
  * @module dsh-hashline-edittool/infra/settings
  */
 
+import { RESPONSE_BUDGET_DEFAULT, RESPONSE_BUDGET_MIN, RESPONSE_BUDGET_MAX } from "./constants.js";
+
 export type OutputFormat = "text" | "json";
 
 export interface EffectiveHashlineConfig {
@@ -25,6 +27,8 @@ export interface EffectiveHashlineConfig {
 	contextLines: number;
 	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
 	requireLineContent: boolean;
+	/** Per-response char budget (ADR-0013): see `RESPONSE_BUDGET_*`. */
+	maxResponseChars: number;
 	/**
 	 * `grep` builds its candidate list with ripgrep, so `.gitignore` / `.ignore` rules
 	 * apply and build output never reaches the read budget (default true). Off searches
@@ -61,6 +65,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	lspServers: new Map<string, string>(),
 	autoDiagnostics: true,
 	grepRespectGitignore: true,
+	maxResponseChars: RESPONSE_BUDGET_DEFAULT,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -124,6 +129,25 @@ export function isAutoDiagnosticsEnabled(): boolean {
 	return effective.autoDiagnostics;
 }
 
+
+/**
+ * The effective per-response char budget, re-clamped defensively: the config
+ * layer already clamps + warns, so an out-of-range value here means the
+ * snapshot was written by something that bypassed it.
+ */
+export function responseBudget(): number {
+	const v = effective.maxResponseChars;
+	if (!Number.isFinite(v) || v < RESPONSE_BUDGET_MIN || v > RESPONSE_BUDGET_MAX) {
+		const clamped = Number.isFinite(v)
+			? Math.min(RESPONSE_BUDGET_MAX, Math.max(RESPONSE_BUDGET_MIN, v))
+			: RESPONSE_BUDGET_DEFAULT;
+		console.warn(
+			`[hashline] max_response_chars ${v} out of range [${RESPONSE_BUDGET_MIN}, ${RESPONSE_BUDGET_MAX}]; clamped to ${clamped}.`,
+		);
+		return clamped;
+	}
+	return v;
+}
 export function isJsonOutput(): boolean {
 	return effective.outputFormat === "json";
 }

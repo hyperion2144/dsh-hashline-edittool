@@ -10,11 +10,13 @@
  * `:` separator in the row format does not trigger markdown table parsing).
  * `output.presentationMeta` derives the read-card projection; `presentResult`
  * reads the persisted meta + content and emits a `ReadResultView`.
- * `presentCall` is generic (no IO, pure on `args`) — the read result isn't
- * available until `execute` returns.
- * @module dsh-hashline-edittool/tool-read
+ *
+ * ADR-0013: the returned window is bounded by the per-response char budget;
+ * a truncated read carries a `continuation` token consumable via `resume`
+ * (or the classic `offset`). Report/text continuations from other tools are
+ * consumed here too — read is the only continuation exit.
+ * @module dsh-tool-hashline/tool-read
  */
-
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
@@ -22,18 +24,17 @@ import {
 	assertReadRequest,
 	readFilePathSchema,
 	lineNumbersSchema,
+	type ReadParams,
 } from "../contract/contract.js";
 
 import { readAndServe, UTF8_REWRITE_NOTE } from "../read-and-serve.js";
-// Everything the AST forms needed is gone with them: this module reads LINES.
-// Keeping the imports would keep the illusion that it does more.
 import { readDescription } from "../domain/edit/prompts.js";
-import { DEFAULT_MAX_LINES } from "../domain/session/file-view.js";
 import { splitLines } from "../infra/utils.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { readView } from "../domain/session/file-view.js";
 import { recordServed } from "../domain/session/session-view.js";
+import { createResume, loadResume, takeTextContinuation, responseBudgetChars } from "../infra/response-stream.js";
 import {
 	buildReadPresentation,
 	buildReadJson,
@@ -47,6 +48,8 @@ import {
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { withWorkspace } from "../domain/session/session-view.js";
+
+const RESUME_WINDOW_LINES = 4000;
 
 /**
  * Register the hash-anchored `read` tool on the calling agent's scope.
@@ -65,14 +68,19 @@ export function buildReadTool(io: FileIO) {
 				type: "number",
 				description: "Line number to start reading from (1-indexed)",
 			},
-		limit: {
-			type: "number",
-			description: "Maximum number of lines to read",
+			limit: {
+				type: "number",
+				description: "Maximum number of lines to read",
+			},
+			resume: {
+				type: "string",
+				description:
+					'Continuation token from a previous truncated result. Takes precedence over offset/limit. Report continuations (from write/edit/undo) are consumed here too.',
+			},
+			line_numbers: {
+				...lineNumbersSchema,
+			},
 		},
-		line_numbers: {
-			...lineNumbersSchema,
-		},
-	},
 		output: {
 			schema: {
 				type: "object",
@@ -108,6 +116,14 @@ export function buildReadTool(io: FileIO) {
 					},
 					truncatedByBytes: { type: "boolean" },
 					modelText: { type: "string", required: true },
+					continuation: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							resume: { type: "string", required: true },
+							remaining: { type: "integer", required: true },
+						},
+					},
 					error: errorFieldSchema,
 					// Present only on a symbol/anchor read; JSON mode's extra projection.
 					symbol: {
@@ -184,9 +200,65 @@ export function buildReadTool(io: FileIO) {
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 
-				const canonical = normReq(args);
+				const canonical = normReq(args) as ReadParams;
 				assertReadRequest(canonical);
-				const rawPath = canonical.path;
+				const budget = responseBudgetChars();
+
+				// ADR-0013: a resume token takes precedence over offset/limit. Two
+				// kinds land here — read's own file windows (fall through to the
+				// normal read flow at the token's offset) and report/text segments
+				// produced by the mutating tools (consumed as plain text: their
+				// anchors, where they exist, were minted and served by the producer).
+				if (typeof canonical.resume === "string" && canonical.resume.length > 0) {
+					const sidecar = await loadResume(sessionKey, canonical.resume, "read");
+					if (sidecar.kind === "file-window") {
+						const windowPath =
+							typeof sidecar.meta.path === "string" ? sidecar.meta.path : pathFromArgs(args) ?? "";
+						const windowOffset =
+							typeof sidecar.meta.nextOffset === "number" ? sidecar.meta.nextOffset : 1;
+						const continued = await readAndServe(io, windowPath, cwd, {
+							sessionKey,
+							signal,
+							offset: windowOffset,
+							lineNumbers: canonical.line_numbers !== false,
+							maxChars: budget,
+							exec,
+						});
+						const continuedTotal = splitLines(continued.normalized ?? "").length;
+						const continuedBody = continued.hadUtf8DecodeErrors
+							? `${continued.text}\n\n${UTF8_REWRITE_NOTE}`
+							: continued.text;
+						const allLines = splitLines(continued.normalized ?? "");
+						const shownEnd = continued.nextOffset !== undefined ? continued.nextOffset - 1 : continuedTotal;
+						const lines: Array<{ number: number; text: string }> = [];
+						const hashlines: Array<{ number: number; hash: string; text: string }> = [];
+						for (let i = windowOffset - 1; i < Math.min(shownEnd, allLines.length); i++) {
+							lines.push({ number: i + 1, text: allLines[i] ?? "" });
+							hashlines.push({ number: i + 1, hash: continued.hashes?.[i] ?? "", text: allLines[i] ?? "" });
+						}
+						return {
+							path: windowPath,
+							offset: windowOffset,
+							totalLines: continuedTotal,
+							lines,
+							hashlines,
+							modelText: continuedBody,
+						} as ReadValue & { modelText: string };
+					}
+					const take = await takeTextContinuation(sessionKey, canonical.resume, "read", RESUME_WINDOW_LINES);
+					const footer = take.done
+						? "[End of continued report.]"
+						: `(Omitted ${take.remaining} more lines. Use read {resume: "${canonical.resume}"} to continue.)`;
+					const modelText = `[Continued report]\n${take.lines.join("\n")}\n${footer}`;
+					return {
+						path: typeof sidecar.meta.path === "string" ? sidecar.meta.path : pathFromArgs(args) ?? "",
+						offset: 1,
+						totalLines: 0,
+						lines: [],
+						hashlines: [],
+						modelText,
+					} as ReadValue & { modelText: string };
+				}
 
 				// `read` READS LINES. It used to answer structural questions too — a
 				// symbol's block, an outline, cross-file references — until those
@@ -208,7 +280,7 @@ export function buildReadTool(io: FileIO) {
 				try {
 					result = await readAndServe(
 						io,
-						rawPath,
+						canonical.path,
 						cwd,
 						{
 							sessionKey,
@@ -216,6 +288,7 @@ export function buildReadTool(io: FileIO) {
 							offset: canonical.offset,
 							limit: canonical.limit,
 							lineNumbers: canonical.line_numbers !== false,
+							maxChars: budget,
 							exec,
 						},
 					);
@@ -241,7 +314,7 @@ export function buildReadTool(io: FileIO) {
 					// back to a generic string-shaped value so the model still gets
 					// the read.
 					return {
-						path: rawPath,
+						path: canonical.path,
 						offset: 1,
 						totalLines: 0,
 						lines: [],
@@ -249,7 +322,17 @@ export function buildReadTool(io: FileIO) {
 						modelText: result.text,
 					} as ReadValue & { modelText: string };
 				}
-				
+
+				// ADR-0013 seam fix: BOTH presentations derive their window from the
+				// one bounded render (result.nextOffset), so the model can never see
+				// rows that were not served. `nextOffset` is the line AFTER the last
+				// shown row; `shownEnd` is the last shown line.
+				const totalLines = splitLines(result.normalized).length;
+				const start = Math.max(1, canonical.offset ?? 1);
+				const shownEnd =
+					result.nextOffset !== undefined ? result.nextOffset - 1 : totalLines;
+				const shownCount = Math.max(0, shownEnd - start + 1);
+
 				const presentation = isJsonOutput()
 					? (() => {
 						// v2.0 (#66/B1): rebuild the pure-JSON view on the bare-anchor
@@ -257,20 +340,16 @@ export function buildReadTool(io: FileIO) {
 						// <number>#<hash> form); with v2.0 bare anchors there is no '#',
 						// number parsing produced NaN, and NaN is not lossless JSON —
 						// every read in json mode failed output validation.
-						const allLines = splitLines(result.normalized);
-						const start = Math.max(1, canonical.offset ?? 1);
+						const allLines = splitLines(result.normalized!);
 						const startIdx = start - 1;
-						const endIdx = Math.min(
-							startIdx + (canonical.limit ?? DEFAULT_MAX_LINES),
-							allLines.length,
-						);
+						const endIdx = Math.min(shownEnd, allLines.length);
 						const lines: Array<{ number: number; text: string }> = [];
 						const hashlines: Array<{ number: number; hash: string; text: string }> = [];
 						const lineDict: Record<string, string> = {};
 						for (let i = startIdx; i < endIdx; i++) {
 							const number = i + 1;
 							const text = allLines[i] ?? "";
-							const hash = result.hashes[i] ?? "";
+							const hash = result.hashes![i] ?? "";
 							lines.push({ number, text });
 							hashlines.push({ number, hash, text });
 							// anchor-keyed dict (grep/edit symmetry); with line_numbers on
@@ -278,13 +357,13 @@ export function buildReadTool(io: FileIO) {
 							lineDict[canonical.line_numbers !== false ? `${hash}:${number}` : hash] = text;
 						}
 						const modelView = {
-							path: rawPath,
+							path: canonical.path,
 							offset: start,
 							totalLines: allLines.length,
 							lines: lineDict,
 						};
 						return {
-							path: rawPath,
+							path: canonical.path,
 							offset: start,
 							totalLines: allLines.length,
 							lines,
@@ -292,18 +371,18 @@ export function buildReadTool(io: FileIO) {
 							modelText: JSON.stringify(modelView),
 						} as ReadValue & { modelText: string };
 					})()
-: buildReadPresentation(
-							result.normalized,
-							result.hashes,
-							canonical.offset ?? 1,
-							canonical.limit ?? DEFAULT_MAX_LINES,
-							rawPath,
+				: buildReadPresentation(
+							result.normalized!,
+							result.hashes!,
+							start,
+							shownCount,
+							canonical.path,
 							{ lineNumbers: canonical.line_numbers !== false },
 						);
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the
 				// structured value's modelText is faithful to the original contract.
-				const body = result.hadUtf8DecodeErrors
+				let body = result.hadUtf8DecodeErrors
 					? `${presentation.modelText}\n\n${UTF8_REWRITE_NOTE}`
 					: presentation.modelText;
 				// Issue #71: the dsh read envelope is gone. Direction B (the bundled
@@ -312,7 +391,29 @@ export function buildReadTool(io: FileIO) {
 				// four <path>/<type>/<content> wrapper lines per read — and json
 				// mode emits pure JSON again. extractReadBody still strips the
 				// envelope from PRE-0.4.2 session history.
-				return { ...presentation, modelText: body };
+
+				// ADR-0013: when the window was budget-cut, mint the continuation.
+				let continuation: { resume: string; remaining: number } | undefined;
+				if (result.nextOffset !== undefined && result.nextOffset <= totalLines) {
+					const { token } = await createResume({
+						sessionKey,
+						producer: "read",
+						consumer: "read",
+						kind: "file-window",
+						rows: [],
+						meta: { path: result.absolutePath, nextOffset: result.nextOffset },
+					});
+					const omitted = totalLines - shownEnd;
+					continuation = { resume: token, remaining: omitted };
+					// ADR-0013: the classic pagination hint is superseded by the resume footer.
+					body = body.replace(/\n*\[Showing lines [^\]]*\]\s*$/, "\n");
+					body = `${body}(Omitted ${omitted} lines. Use read {resume: "${token}"} to continue.)`;
+				}
+				return {
+					...presentation,
+					modelText: body,
+					...(continuation !== undefined ? { continuation } : {}),
+				};
 		}).catch((error: unknown) => ({
 			path: pathFromArgs(args) ?? "",
 			offset: 1,
@@ -325,7 +426,6 @@ export function buildReadTool(io: FileIO) {
 	});
 }
 
-
 /**
  * Register the hashline tool on the calling agent's scope (own layer).
  */
@@ -336,4 +436,3 @@ export function registerReadTool(
 ): () => void {
 	return agentCtx.tools.register(buildReadTool(io));
 }
-

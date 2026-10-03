@@ -225,6 +225,7 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
     separator: "|"           # marker/content column separator (default ":")
     output_format: text      # "text" | "json"
     context_lines: 3         # context rows around stale echoes / diffs (0..20)
+    max_response_chars: 48000 # per-response char budget (default 48000, clamp [8000, 49984])
     require_line_content: false
     ast:
       enabled: true

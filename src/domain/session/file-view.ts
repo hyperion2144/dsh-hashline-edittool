@@ -22,7 +22,7 @@ import { constants } from "node:fs";
 import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
-import { SNIFF_BYTES, MAX_BYTES, MAX_READ_LINE_BYTES } from "../../infra/constants.js";
+import { SNIFF_BYTES, MAX_READ_LINE_BYTES } from "../../infra/constants.js";
 import { anchorsFor, allocateForLines, fmtRegion, hashSep } from "../../hashline/index.js";
 import { fmtMarker, hashlineHeader, canon, contentChecksum } from "../../hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "../../infra/utils.js";
@@ -33,8 +33,8 @@ import type { ServedRow } from "../../hashline/anchor-pipeline.js";
 import type { HashStore } from "./hash-store.js";
 import { loadHashStore } from "./hash-store.js";
 
-export const DEFAULT_MAX_LINES = 2000;
-export const DEFAULT_MAX_BYTES = 50 * 1024;
+// The default read window is the per-response char budget (ADR-0013); the
+// retired DEFAULT_MAX_LINES / DEFAULT_MAX_BYTES pair is gone (#205/#210).
 
 // --- Truncate (from truncate.ts, private to this seam) ---
 
@@ -69,8 +69,8 @@ export function truncateHead(
   content: string,
   options: { maxLines?: number; maxBytes?: number } = {},
 ): TruncationResult {
-  const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+  const maxLines = options.maxLines ?? Number.MAX_SAFE_INTEGER;
+  const maxBytes = options.maxBytes ?? Number.MAX_SAFE_INTEGER;
   const totalBytes = Buffer.byteLength(content, 'utf-8');
   const lines = splitLinesForCounting(content);
   const totalLines = lines.length;
@@ -202,12 +202,8 @@ export async function loadFileKindAndText(
       description: "unsupported file type",
     };
   }
-  if (pathStat.size > MAX_BYTES) {
-    return {
-      kind: "binary",
-      description: `file exceeds ${MAX_BYTES} byte limit`,
-    };
-  }
+  // ADR-0013: the size gate is gone — files of any size are read in full and
+  // delivered in segments. Binary detection below still applies.
   const fileHandle = await fsOpen(filePath, "r");
   try {
     const buffer = Buffer.alloc(SNIFF_BYTES);
@@ -471,13 +467,15 @@ export async function fmtReadPreview(
 	options: {
 		offset?: number;
 		limit?: number;
+		/** ADR-0013: char budget for the returned window (whole-line assembly). */
+		maxChars?: number;
 		/** v2.0: prefix every row marker with `<line>:<anchor>`. */
 		lineNumbers?: boolean;
 	},
   precomputedHashes?: string[],
   path?: string,
   maxLineBytes = MAX_READ_LINE_BYTES,
-  maxTruncLines = DEFAULT_MAX_LINES,
+  maxTruncLines = Number.MAX_SAFE_INTEGER,
 ): Promise<{
   text: string;
   truncation?: TruncationResult;
@@ -518,11 +516,31 @@ export async function fmtReadPreview(
     };
   }
   const limit = normPosInt(options.limit, 'limit');
-  const endIdx = limit
+  let endIdx = limit
     ? Math.min(startLine - 1 + limit, totalLines)
     : totalLines;
-  const selected = allLines.slice(startLine - 1, endIdx);
+  let selected = allLines.slice(startLine - 1, endIdx);
   const allHashes = precomputedHashes ?? (path ? anchorsFor(path, text) : []);
+  let budgetCut = false;
+  const originalCount = endIdx - startLine + 1;
+  // ADR-0013: the char budget is the segment bound — walk whole rows (a line
+  // is never cut), est. +24 chars/row for marker+separator overhead, and cut
+  // BEFORE allocation so persisted == served == visible holds exactly.
+  if (options.maxChars !== undefined) {
+    let acc = 0;
+    let count = 0;
+    for (const line of selected) {
+      const cost = line.length + 24;
+      if (acc + cost > options.maxChars && count > 0) break;
+      acc += cost;
+      count += 1;
+    }
+    selected = selected.slice(0, count);
+    endIdx = startLine - 1 + count;
+    budgetCut = count < originalCount;
+  }
+		// Track whether the CHAR BUDGET (not limit) actually cut rows — this is
+		// the only condition that mints a resume token downstream.
   // LAZY (#169): allocate for EXACTLY the window rows this read serves —
   // persisted rows == served rows == visible rows, never the whole file.
 	if (path && precomputedHashes === undefined) {
@@ -597,7 +615,7 @@ export async function fmtReadPreview(
     return {
       text: preview,
       truncation: skippedTruncation.truncated ? skippedTruncation : undefined,
-      ...(nextOffset !== undefined ? { nextOffset } : {}),
+      ...(budgetCut && nextOffset !== undefined ? { nextOffset } : {}),
       hashes: allHashes,
       served,
     };
@@ -634,7 +652,7 @@ export async function fmtReadPreview(
   return {
     text: preview,
     truncation: truncation.truncated ? truncation : undefined,
-    ...(nextOffset !== undefined ? { nextOffset } : {}),
+    ...(budgetCut && nextOffset !== undefined ? { nextOffset } : {}),
     // LAZY (#169): the PATCHED array — the presentation layer rebuilds the
     // model text from it, so it must carry the window's real anchors.
     hashes: allHashes,
@@ -659,6 +677,8 @@ export interface FileView {
 
 export interface PreviewOpts {
 	/** v2.0: prefix every read/diff row marker with `<line>:<anchor>`. */
+	/** ADR-0013: per-response char budget for the returned window. */
+	maxChars?: number;
 	lineNumbers?: boolean;
 	offset?: number;
 	limit?: number;
@@ -705,8 +725,8 @@ export async function readView(
     });
 	const r = await fmtReadPreview(
 		normalized,
-			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false }, // issue #66/B5: was dropped — lineNumbers never reached the renderer
-		undefined, // LAZY (#169): the renderer fetches the view and allocates the window itself; a provided precomputed array means REAL hashes (write shadow) and is never re-allocated
+			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false, maxChars: opts.maxChars }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget
+			undefined, // LAZY (#169): the renderer fetches the view and allocates the window itself; a provided precomputed array means REAL hashes (write shadow) and is never re-allocated
 		absolutePath,
 	);
   return {

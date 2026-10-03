@@ -132,6 +132,8 @@ export interface ReadParams {
 	path: string;
 	offset?: number;
 	limit?: number;
+	/** ADR-0013: continuation token from a previous truncated call. */
+	resume?: string;
 	/** Optional: render rows with `<line>:<anchor>` markers (default false). */
 	line_numbers?: boolean;
 	// No `symbol` / `kind` / `anchor` / `references` / `include`.
@@ -185,6 +187,7 @@ const READ_KS = new Set([
 	"offset",
 	"limit",
 	"line_numbers",
+	"resume",
 ]);
 
 // ---- normalization -----------------------------------------------------------

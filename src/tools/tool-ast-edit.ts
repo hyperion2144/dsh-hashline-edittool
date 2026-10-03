@@ -39,6 +39,7 @@ import {
 	type DiagMetaEntry,
 } from "../lsp/auto-diag.js";
 
+import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 
 type AstEditValue = {
 	readonly path: string;
@@ -422,7 +423,7 @@ async function runAstEdit(
 	// the rewritten body instead told the model nothing about the change and
 	// made it re-read what it had just written.
 	const canonical = buildCanonicalFromFileResult(result, args.path, true);
-	const modelText = isJsonOutput()
+	const modelText0 = isJsonOutput()
 		? JSON.stringify({
 				...buildEditJson(result, args.path),
 				pattern: args.pat,
@@ -432,13 +433,14 @@ async function runAstEdit(
 		: diagSection === ""
 			? canonical.modelText
 			: `${canonical.modelText}\n\n${diagSection}`;
+	const streamed = await spillModelTextOverflow({ sessionKey: execSessionKey(exec), producer: "ast_edit", consumer: "read", kind: "report-segment", modelText: modelText0, budgetChars: responseBudgetChars() });
 	return {
 		...canonical,
 		pat: args.pat,
 		count: matches.length,
 		ok: true,
 		...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
-		modelText,
+		modelText: streamed.modelText,
 	};
 }
 

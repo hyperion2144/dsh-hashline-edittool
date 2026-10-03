@@ -165,7 +165,8 @@ describe("grep — line#hash output", () => {
 			expect(lines[1]).toMatch(/^ANCHOR:LINE/);
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*alpha$/);
 			expect(lines.some((l) => l.includes("alpha-again"))).toBe(true);
-			expect(lines.some((l) => l.includes("gamma"))).toBe(false);
+			// Default context (context_lines = 3) pulls gamma into the window.
+			expect(lines.some((l) => l.includes("gamma"))).toBe(true);
 			expect(value.files.length).toBe(1);
 			expect(value.total).toBe(2);
 		});
@@ -199,8 +200,7 @@ describe("grep — line#hash output", () => {
 	});
 
 	it("grepFileContent returns no section when there is no match", async () => {
-		const hashes = lineHashesPure("a\nb\nc\n");
-		const section = await grepFileContent("/x", "a\nb\nc\n", hashes, "zzz");
+		const section = await grepFileContent("/x", "a\nb\nc\n", "zzz");
 		expect(section).toBeUndefined();
 	});
 });

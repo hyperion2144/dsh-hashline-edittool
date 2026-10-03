@@ -13,7 +13,6 @@
 import { describe, expect, it } from "vitest";
 import { truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { GREP_MAX_TOTAL_BYTES } from "../../src/infra/constants.js";
 import { getText, setupIntegrationTest, withTempDir } from "../support/fixtures.js";
 import { rgFilesWithMatches } from "../../src/tools/grep-rg.js";
 
@@ -53,7 +52,7 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 		});
 	});
 
-	it("stops at the TOTAL budget with an honest notice, not a lying empty", async () => {
+	it("oversized single-line matches pointer-ize into the first response — never refused", async () => {
 		await withTempDir("grep-budget-only-", async (cwd) => {
 			const harness = setupIntegrationTest(cwd);
 			// Every file MATCHES, so the ripgrep pre-filter keeps them all and the READS
@@ -80,8 +79,10 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 			});
 			const out = getText(res);
 
-			expect(out).toContain("[grep budget]");
-			expect(out).toContain("total read budget");
+			expect(out).toContain("hit-0.log");
+			expect(out).toContain("hit-1.log");
+			expect(out).toContain("sed -n '1p'");
+			expect(out).not.toContain("[grep budget]");
 		});
 	});
 
@@ -96,7 +97,7 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 			for (let i = 0; i < 3; i++) {
 				const huge = join(cwd, `fill-${i}.log`);
 				await writeFile(huge, "filler\n");
-				await truncate(huge, Math.ceil(GREP_MAX_TOTAL_BYTES / 2));
+			await truncate(huge, 32 * 1024 * 1024);
 			}
 
 			// Without rg the JS engine reads everything by contract — and the budget
