@@ -29,7 +29,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { execCwd, execSessionKey, openWorkspaceStore, recordServed } from "../domain/session/session-view.js";
-import { createResume } from "../infra/response-stream.js";
+import { createResume, responseBudgetChars } from "../infra/response-stream.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
@@ -256,6 +256,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// ---- model channel: serve the written lines (fresh anchors) ----
 				const served = await readAndServe(io, rawPath, cwd, {
 					sessionKey,
+					maxChars: responseBudgetChars(),
 					signal,
 					exec,
 				}).catch(() => undefined);
