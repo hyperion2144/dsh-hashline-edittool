@@ -3,42 +3,50 @@
  * the built-in `grep` on the agent's own scope layer. Output mirrors the
  * `read` tool: every match row is `<line>#<hash>│content` under a
  * `ANCHOR:FILELINE` header, one section per file. Matches are
- * recorded as served so a follow-up `edit` against a hit does not require a
+ * recorded as served, so a follow-up `edit` against a hit does not require a
  * separate `read`.
  *
- * Structured presentation: the canonical value carries `files` (per-file
- * grouped matches) / `truncated` / `total`. `output.render` projects the
- * model text from those fields. `output.presentationMeta` derives the
- * `SearchMatchesResultView` projection. `presentResult` reads the
- * persisted meta and emits a `card: 'search' shape: 'matches'` view.
- * `grep` has NO `presentCall` — per the dsh-tools spec, a search has no
- * `card: 'search'` call-time analogue because the pending state has no
- * matches or paths to show.
+ * ADR-0013: the scan runs to completion — nothing is refused by size. The
+ * response carries whole sections up to the per-response char budget; rows
+ * beyond it spill to a session file and the response carries a resume token
+ * (`grep {resume}`). Resumed rows allocate/reuse anchors at serve time
+ * (ADR-0009), against the live file when its version stamp still matches,
+ * otherwise as caution-flagged snapshot text.
+ *
+ * Structured presentation: the canonical value carries `files` / `truncated` /
+ * `total`. `output.render` projects the model text from those fields.
+ * `output.presentationMeta` derives the search-card projection.
  * @module dsh-hashline-edittool/tool-grep
  */
-
+import type { Context } from "@deepseek-ai/cordis";
+import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readdir, lstat } from "node:fs/promises";
 import { lineNumbersSchema } from "../contract/contract.js";
 import { MAX_READ_LINE_BYTES } from "../infra/constants.js";
 import { formatSize } from "../domain/session/file-view.js";
 import { minimatch } from "minimatch";
 import { basename, join, relative } from "node:path";
-import type { Context } from "@deepseek-ai/cordis";
-import { defineTool } from "@deepseek-ai/dsh-tools";
-import type { ToolExecution } from "@deepseek-ai/dsh-tools";
+import type { Context as CordisContext } from "@deepseek-ai/cordis";
 
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey, recordServed, openWorkspaceStore } from "../domain/session/session-view.js";
 import { isJsonOutput, getEffectiveConfig } from "../config.js";
-import { GREP_MAX_TOTAL_BYTES, GREP_MODEL_TEXT_MAX_BYTES } from "../infra/constants.js";
-import { capModelText, makeReadBudget, type BudgetUsage, type SkipReason } from "../infra/read-budget.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
+import {
+	codeUnits,
+	createResume,
+	loadResume,
+	readSpillRows,
+	advanceResume,
+	responseBudgetChars,
+	stampChanged,
+	type SegmentRow,
+	type ResumeSidecar,
+	takeRowsWithinBudget,
+} from "../infra/response-stream.js";
+import { allocateForLines } from "../hashline/session-anchors.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { withWorkspace } from "../domain/session/session-view.js";
-import { lineHashes } from "../hashline/index.js";
-import { hashlineHeader, contextLinesCfg } from "../hashline/hash-assign.js";
-import { fmtHashlineRow, fmtMarker, anchorWidth } from "../hashline/hash-assign.js";
-import { visLines, abortIf } from "../infra/utils.js";
+import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
 import { rgFiles, rgFilesWithMatches } from "./grep-rg.js";
 import { toLF } from "../render/edit-diff.js";
@@ -50,17 +58,16 @@ import {
 	type GrepFileRows,
 	type MatchSpan,
 } from "../render/grep-card.js";
+import { fmtMarker, hashlineHeader, contextLinesCfg, hashSep, canon, contentChecksum } from "../hashline/hash-assign.js";
 
 /**
- * One row in a grep section's context set (hash + content, used to render the model
- * text) plus the card facts: whether the capped match list contains it, and the
- * highlight spans of every pattern occurrence in the line.
+ * One row in a grep section's context set (hash + content, used to render the
+ * model text) plus the card facts: whether the capped match list contains it,
+ * and the highlight spans of every pattern occurrence in the line.
  */
 export interface GrepSectionRow {
 	position: number;
-	anchor: string;
 	content: string;
-	/** True for the capped match rows; false for rows that merely echo context. */
 	isMatch: boolean;
 	/** Highlight spans for this line (empty when nothing is markable). */
 	spans: MatchSpan[];
@@ -68,8 +75,11 @@ export interface GrepSectionRow {
 
 export interface GrepFileSection {
 	path: string;
+	/** Absolute path of the section's file (for anchor allocation). */
+	absolutePath: string;
+	/** Total lines of the section's file (for recordServed). */
+	lineCount: number;
 	matches: GrepSectionRow[];
-	/** Context rows around each match (always includes the match position too). */
 	contextRows: GrepSectionRow[];
 }
 
@@ -85,71 +95,16 @@ export interface GrepToolOptions {
 }
 
 const DEFAULT_LIMIT = 100;
+
 /**
- * One line reporting what the memory budget refused (issue #167).
- *
- * A budget-hit scan is NOT a complete one, and a silently partial result is
- * the failure mode that matters here: a model reads it as the whole answer.
- * The line names the two ceilings so the next call can be narrowed.
- *
- * @param skipped - every file the scan did not read, in visit order.
- * @param usage - the final tally.
- * @param prefiltered - whether ripgrep narrowed the candidate list before the reads.
- * @returns the notice, or "" when nothing was refused.
+ * Pure helper: extract rows from one file's content given a matcher.
+ * `content` must already be in the read line space (toLF — issue #147).
+ * ADR-0013: allocation is the CALLER's job — only rows actually returned to
+ * the model get anchors (persisted == served == visible).
  */
-function buildBudgetNotice(
-	skipped: ReadonlyArray<{ path: string; reason: SkipReason; bytes: number }>,
-	usage: BudgetUsage,
-	prefiltered: boolean,
-): string {
-	// `exhausted` is itself one of the omitted files: it is the file that did not
-	// fit, and it is what stopped the scan.
-	const skippedByBudget = usage.exhausted ? 1 : 0;
-	if (skipped.length === 0) return "";
-	const parts = skipped.map((entry) => {
-		const name = entry.reason === "unreadable" ? entry.path : `${entry.path} (${formatSize(entry.bytes)})`;
-		return name;
-	});
-	const shown = parts.slice(0, 5).join(", ");
-	const more = parts.length > 5 ? `, and ${parts.length - 5} more` : "";
-	const head = usage.exhausted
-		? `${skipped.length} file(s) were not searched: the scan stopped at its ${formatSize(GREP_MAX_TOTAL_BYTES)} total read budget, with ${skippedByBudget} file(s) past the cut.`
-		: `${skipped.length} file(s) were not searched (unreadable).`;
-	// A budget-stopped scan that never got the ripgrep pre-filter is a different
-	// story from one that did: the reads were the whole candidate list, not the
-	// files that actually matched. Say which, or the model cannot tell a partial
-	// scan from a slow one.
-	const noPrefilter =
-		usage.exhausted && !prefiltered
-			? " No ripgrep pre-filter ran, so every candidate file was read in JS."
-			: "";
-	return `[grep budget] ${head} Not searched: ${shown}${more}.${noPrefilter}`;
-}
-
-function buildMatcher(pattern: string, regex: boolean): (line: string) => boolean {
-	if (!regex) {
-		const needle = pattern;
-		return (line) => line.includes(needle);
-	}
-	let compiled: RegExp;
-	try {
-		compiled = new RegExp(pattern);
-	} catch (error) {
-		throw new Error(
-			`[E_BAD_SHAPE] Grep regex "${pattern}" is invalid: ${error instanceof Error ? error.message : String(error)}.`,
-		);
-	}
-	return (line) => compiled.test(line);
-}
-
-/** Pure helper: extract sections from one file's content given a matcher.
- * `content` must already be in the read line space (toLF — issue #147): the row
- * positions index into `content`'s lines AND into `hashes`, which is always
- * computed from toLF text. */
 export async function grepFileContent(
 	path: string,
 	content: string,
-	hashes: string[],
 	pattern: string,
 	opts: GrepToolOptions = {},
 ): Promise<GrepFileSection | undefined> {
@@ -170,55 +125,46 @@ export async function grepFileContent(
 			contextSet.add(k);
 		}
 	}
-	// One row list drives BOTH the model text and the card: the row identity,
-	// the match flag and the highlight spans can never drift apart.
 	const matchSet = new Set(matchPositions);
-	// LAZY (#169): allocate for EXACTLY the rows this section serves — the
-	// matches and their context. persisted == served == visible, never the
-	// whole file.
-	const servedLineNos = [...contextSet].sort((a, b) => a - b).map((p) => p + 1);
-	const allocated = allocateForLines(path, content, servedLineNos);
-	for (let k = 0; k < servedLineNos.length; k++) {
-		hashes[servedLineNos[k]! - 1] = allocated[k]!;
-	}
-	const rows = [...contextSet]
+	const rows: GrepSectionRow[] = [...contextSet]
 		.sort((a, b) => a - b)
 		.map((position) => ({
 			position,
-			anchor: hashes[position]!,
 			content: lines[position]!,
 			isMatch: matchSet.has(position),
 			spans: matchSpans(lines[position]!, pattern, opts.regex !== false),
 		}));
-	const rowByPosition = new Map(rows.map((row) => [row.position, row]));
 	return {
 		path,
-		matches: matchPositions.map((position) => rowByPosition.get(position)!),
+		absolutePath: path,
+		lineCount: lines.length,
+		matches: rows.filter((row) => matchSet.has(row.position)),
 		contextRows: rows,
 	};
 }
 
+/** Render one section: rows with anchors where available, pointer for oversize. */
 function renderSection(
 	path: string,
-	section: GrepFileSection,
-	lineNumbers = true,
-	// issue #66/B3: the ANCHOR:FILELINE format header used to repeat once per
-	// matching file; a single grep call must print it at most ONCE. The first
-	// section carries it, the rest get only the --- path --- separator.
-	includeFormatHeader = true,
+	rows: GrepSectionRow[],
+	anchorsByPosition: Map<number, string>,
+	lineNumbers: boolean,
+	includeFormatHeader: boolean,
 ): string {
 	const headerLines: string[] = [`--- ${path} ---`];
-		if (includeFormatHeader) headerLines.push(hashlineHeader(lineNumbers));
-	const markers = section.contextRows.map((row) =>
-		fmtMarker(row.anchor, row.position + 1, lineNumbers),
-	);
-	const width = anchorWidth(markers);
-	for (const [i, row] of section.contextRows.entries()) {
-		// Full line content — the 200-char clip was removed (grep rows carry
-		// editable anchors, and anchors require full lines). Only a row that
-		// exceeds the read tool's per-line byte budget is hidden, with the same
-		// `sed` pointer read emits; never a silent ellipsis.
-		const rendered = fmtHashlineRow(markers[i]!, row.content, width);
+	if (includeFormatHeader) headerLines.push(hashlineHeader(lineNumbers));
+	const markers = rows.map((row) => {
+		const anchor = anchorsByPosition.get(row.position) ?? "";
+		return anchor !== "" ? fmtMarker(anchor, row.position + 1, lineNumbers) : `[line ${row.position + 1}] `;
+	});
+	const widths = markers.map((m) => m.length);
+	const width = Math.max(0, ...widths);
+	for (const [i, row] of rows.entries()) {
+		const marker = markers[i]!;
+		const rendered =
+			anchorsByPosition.has(row.position)
+				? `${marker}${" ".repeat(Math.max(0, width - marker.length))}${hashSep()}${row.content}`
+				: `${marker}${row.content}`;
 		const rowBytes = Buffer.byteLength(rendered, "utf-8");
 		if (rowBytes > MAX_READ_LINE_BYTES) {
 			headerLines.push(
@@ -231,20 +177,27 @@ function renderSection(
 	return headerLines.join("\n");
 }
 
-/** Build the model-facing text for one file section (reused by `render`). */
-function buildSectionModelText(
-	path: string,
-	section: GrepFileSection,
-	lineNumbers = true,
-	includeFormatHeader = true,
-): string {
-	return renderSection(path, section, lineNumbers, includeFormatHeader);
+function buildMatcher(pattern: string, regex: boolean): (line: string) => boolean {
+	if (!regex) {
+		const needle = pattern;
+		return (line) => line.includes(needle);
+	}
+	let compiled: RegExp;
+	try {
+		compiled = new RegExp(pattern);
+	} catch (error) {
+		throw new Error(
+			`[E_BAD_SHAPE] Grep regex "${pattern}" is invalid: ${error instanceof Error ? error.message : String(error)}.`,
+		);
+	}
+	return (line) => compiled.test(line);
 }
 
 interface GrepCanonicalValue {
 	files: GrepFileRows[];
 	truncated: boolean;
 	total: number;
+	continuation?: { resume: string; remaining: number };
 }
 
 /**
@@ -271,8 +224,7 @@ export function buildGrepTool(io: FileIO) {
 			},
 			pattern: {
 				type: "string",
-				description:
-					"Pattern to match; treated as a JavaScript-flavre regex by default. Pass `regex: false` for literal substring matching.",
+				description: "Pattern to match; treated as a JavaScript-flavre regex by default. Pass `regex: false` for literal substring matching.",
 			},
 			regex: {
 				type: "boolean",
@@ -280,17 +232,20 @@ export function buildGrepTool(io: FileIO) {
 			},
 			context: {
 				type: "number",
-				description:
-					"Number of context rows above and below each match (default 0).",
+				description: "Number of context rows above and below each match (default 0).",
+			},
+			limit: {
+				type: "number",
+				description: "Cap on matches per file (default 100).",
+			},
+			resume: {
+				type: "string",
+				description: "Continuation token from a previous truncated scan; returns the next segment of matches.",
+			},
+			line_numbers: {
+				...lineNumbersSchema,
+			},
 		},
-		limit: {
-			type: "number",
-			description: "Cap on matches per file (default 100).",
-		},
-		line_numbers: {
-			...lineNumbersSchema,
-		},
-	},
 		output: {
 			schema: {
 				type: "object",
@@ -330,15 +285,20 @@ export function buildGrepTool(io: FileIO) {
 					},
 					truncated: { type: "boolean", required: true },
 					total: { type: "integer", required: true },
+					continuation: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							resume: { type: "string", required: true },
+							remaining: { type: "integer", required: true },
+						},
+					},
 					modelText: { type: "string" },
 					error: errorFieldSchema,
 				},
 			},
 			render: (_args, value) => [
-				{
-					type: "text",
-					text: (value as GrepCanonicalValue & { modelText: string }).modelText,
-				},
+				{ type: "text", text: (value as GrepCanonicalValue & { modelText: string }).modelText },
 			],
 			presentationMeta: (_args, value) => {
 				const v = value as GrepCanonicalValue & { error?: ErrorMeta };
@@ -354,16 +314,11 @@ export function buildGrepTool(io: FileIO) {
 		},
 		// grep has no presentCall — per the dsh-tools spec, a search has no
 		// `card: 'search'` call-time analogue because the pending state has no
-		// matches or paths to show. The pending card stays generic with
-		// `kind: 'search'`.
+		// matches or paths to show.
 		presentResult: (_args, result) => {
 			if (result.isError) return undefined;
 			const meta = grepPresentationFromMeta(result.meta);
 			if (meta === undefined) return undefined;
-			// A built-in-compatible `ToolResultView` built from the persisted meta
-			// alone (`presentResult` cannot reach the canonical value). Only the
-			// rows the capped match list contains become entries — a context row
-			// that happens to contain the pattern is not a result.
 			return {
 				card: "search",
 				shape: "matches",
@@ -380,17 +335,114 @@ export function buildGrepTool(io: FileIO) {
 		async execute(args, exec) {
 			return withWorkspace(execCwd(exec), async () => {
 				const cwd = execCwd(exec);
-				// The scan allocates anchors for the rows it serves, and the anchor
-				// port writes only to an OPEN store — open this workspace's first, or
-				// a grep that is the session's first tool call renders anchors that
-				// were never persisted (#171 probe).
-				await openWorkspaceStore(cwd);
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
+				const budget = responseBudgetChars();
+
+				// ADR-0013: a scan continuation serves the next budget of spilled
+				// rows. Unchanged files re-read live and allocate/serve anchors at
+				// this point (ADR-0009); changed files serve the snapshot as caution-
+				// flagged plain rows (never allocate against drifted content).
+				if (typeof (args as Record<string, unknown>).resume === "string") {
+					const token = (args as Record<string, unknown>).resume as string;
+					const sidecar = await loadResume(sessionKey, token, "grep");
+					const remaining = await readSpillRows(sidecar, sidecar.total - sidecar.cursor);
+					const take = takeRowsWithinBudget(remaining, budget, (row) => row.content.length + 24);
+					const servedParts: string[] = [];
+					const cardFiles: GrepFileRows[] = [];
+					const cautions: string[] = [];
+					let servedCount = 0;
+					// group by path, preserving order
+					const groups: Array<{ path: string; rows: SegmentRow[] }> = [];
+					for (const row of take.included) {
+						const last = groups[groups.length - 1];
+						if (last !== undefined && last.path === row.path) last.rows.push(row);
+						else groups.push({ path: row.path ?? "", rows: [row] });
+					}
+					for (const group of groups) {
+						const stamp = sidecar.stamps.find((s) => s.path === group.path);
+						const current = await io.statVersion(group.path, signal).catch(() => undefined);
+						let changed = stampChanged(
+							stamp,
+							current !== undefined ? { version: current } : undefined,
+						);
+						let content: string | undefined;
+						if (!changed) {
+							try {
+								content = await io.readText(group.path, signal);
+							} catch {
+								changed = true;
+							}
+						}
+						if (changed) {
+							cautions.push(
+								`[Caution: ${group.path} changed since this excerpt was captured. Lines below are from the earlier snapshot; anchors may not match the current file — re-read before editing.]`,
+							);
+						}
+						const rowsOut: GrepFileRows["rows"] = [];
+						const normalized = content === undefined ? undefined : toLF(content);
+						const lineCount = normalized === undefined ? 0 : splitLines(normalized).length;
+						const positions = group.rows.map((row) => row.line ?? 0);
+						const allocated =
+							!changed && normalized !== undefined
+								? allocateForLines(group.path, normalized, positions)
+								: [];
+						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
+						group.rows.forEach((row, index) => {
+							const anchor = allocated[index] ?? "";
+							const line = row.line ?? 0;
+							if (anchor !== "") {
+								rowsOut.push({ number: line, hash: anchor, text: row.content, ...(row.kind !== "ctx" ? { match: true as const } : {}) });
+								servedRows.push({ position: line - 1, anchor, key: contentChecksum(canon(row.content)) });
+							} else {
+								rowsOut.push({ number: line, hash: "", text: row.content });
+							}
+						});
+						if (servedRows.length > 0 && normalized !== undefined) {
+							await recordServed(sessionKey, group.path, servedRows, lineCount).catch(() => undefined);
+						}
+						servedParts.push(`--- ${group.path} ---`);
+						for (const row of rowsOut) {
+							servedParts.push(
+								row.hash !== ""
+									? `${row.hash}:${row.number}${hashSep()}${row.text}`
+									: `[line ${row.number}] ${row.text}`,
+							);
+						}
+						cardFiles.push({ path: group.path, rows: rowsOut });
+						servedCount += group.rows.length;
+					}
+					const overflow = take.overflow;
+					let continuation: { resume: string; remaining: number } | undefined;
+					const parts = [...cautions, ...servedParts];
+					if (overflow.length > 0) {
+						const next = await createResume({
+							sessionKey,
+							producer: "grep",
+							consumer: "grep",
+							kind: "scan-continuation",
+							rows: overflow,
+							stamps: sidecar.stamps,
+						});
+						continuation = { resume: next.token, remaining: overflow.length };
+						parts.push(
+							`(Omitted ${overflow.length} lines (~${overflow.reduce((a, r) => a + codeUnits(r.content), 0)} chars). Use grep {resume: "${next.token}"} to continue.)`,
+						);
+					}
+					const modelText = parts.join("\n");
+					return {
+						files: cardFiles,
+						truncated: overflow.length > 0,
+						total: servedCount,
+						...(continuation !== undefined ? { continuation } : {}),
+						modelText,
+					} satisfies GrepCanonicalValue & { modelText: string };
+				}
+
+				await openWorkspaceStore(cwd);
+				const signal2 = signal;
 
 				const params = args as Record<string, unknown>;
-				// `path` is optional — it defaults to the session workspace (cwd),
-				// matching the host grep. Directories recurse the whole tree.
 				if (
 					params.path !== undefined &&
 					(typeof params.path !== "string" || params.path.length === 0)
@@ -410,46 +462,36 @@ export function buildGrepTool(io: FileIO) {
 				if (typeof params.pattern !== "string") {
 					throw new Error('[E_BAD_SHAPE] Grep request requires a "pattern" string.');
 				}
-				const opts: GrepToolOptions = {
+				const opts = {
 					limit: typeof params.limit === "number" ? params.limit : undefined,
 					context: typeof params.context === "number" ? params.context : undefined,
 					regex: params.regex !== false,
 					lineNumbers: params.line_numbers !== false,
 				};
 				// Pre-build matcher so a bad regex fails before any IO.
-				buildMatcher(params.pattern, opts.regex === true);
+				buildMatcher(params.pattern, opts.regex);
 
-				const root = await io.resolve(params.path ?? ".", cwd, signal);
-				abortIf(signal);
+				const root = await io.resolve(params.path ?? ".", cwd, signal2);
+				abortIf(signal2);
 				const rootStat = await lstat(root);
 				let files: string[];
 				if (rootStat.isFile()) {
 					files = [root];
 				} else if (rootStat.isDirectory()) {
-					// Ignore-aware by default: the candidate list comes from ripgrep, so
-					// `.gitignore`d trees (build output, vendored copies) never reach the read
-					// budget below. Any rg trouble — unavailable, aborted, a rejected flag —
-					// falls back to the plugin's own walk: whole tree, hidden entries and
-					// `node_modules` skipped, ignore files not consulted.
 					const listed = getEffectiveConfig().grepRespectGitignore
-						? await rgFiles(root, signal)
+						? await rgFiles(root, signal2)
 						: undefined;
-					files = listed ?? (await gatherFiles(root, opts, signal));
+					files = listed ?? (await gatherFiles(root, opts, signal2));
 				} else {
-					throw new Error(
-						`[E_NOT_TEXT] Path is neither file nor directory: ${params.path}`,
-					);
+					throw new Error(`[E_NOT_TEXT] Path is neither file nor directory: ${params.path}`);
 				}
 				if (includeGlob !== undefined) {
 					const relOf = (p: string) => relative(root, p);
 					files = files.filter((p) => matchInclude(includeGlob!, relOf(p)));
 				}
-				// ripgrep pre-filter (#183): only files WITH a match go on to the read-
-				// and-anchor stage. The filter only NARROWS the caller's list, so
-				// include/exclude semantics are untouched; any rg failure returns
-				// undefined and the full list is kept (JS engine, as always). Fixed-
-				// string mode maps to rg's -F.
-				let prefiltered = false;
+				// ripgrep pre-filter (#183): only files WITH a match go on to the read
+				// and anchor stage. Any rg failure returns undefined and the full list
+				// is kept (JS engine, as always).
 				if (files.length > 1) {
 					const narrow = await rgFilesWithMatches(
 						opts.regex === false ? `-F${params.pattern}` : params.pattern,
@@ -457,188 +499,152 @@ export function buildGrepTool(io: FileIO) {
 					);
 					if (narrow !== undefined) {
 						files = narrow;
-						prefiltered = true;
 					}
 				}
 
 				const fileSections: string[] = [];
 				const cardFiles: GrepFileRows[] = [];
 				const jsonOutput = isJsonOutput();
-				const jsonFiles: Array<{
-					path: string;
-					matches: Record<string, string>;
-				}> = [];
-const allServed: Array<{ path: string; rows: { position: number; anchor: string; contentKey?: string }[]; lineCount: number }> = [];
-				const allSeen: Array<{ path: string }> = [];
+				const jsonFiles: Array<{ path: string; matches: Record<string, string> }> = [];
+				const spillRows: SegmentRow[] = [];
+				const spillStamps: ResumeSidecar["stamps"] = [];
+				const spillStampPaths = new Set<string>();
 				let totalMatches = 0;
 				let truncated = false;
-				// issue #167: the scan runs under a memory budget. Every visited file
-				// contributes a line-`hashes` array, a model section, card rows and a
-				// serve record, so without a ceiling a large tree grew the host heap
-				// until the process died and the desktop app restarted it.
-				const budget = makeReadBudget({
-					// #169 sparse lazy anchors: a big file costs only its RETURNED rows, so
-					// there is no per-file skip any more — large files are searched. The
-					// TOTAL budget stays as the scan's memory ceiling (issue #167).
-					maxTotalBytes: GREP_MAX_TOTAL_BYTES,
-				});
-				const skipped: Array<{ path: string; reason: SkipReason; bytes: number }> = [];
+				let usedChars = 0;
+				let spilling = false;
+				let headerEmitted = false;
+
+				// ADR-0013: the scan runs to COMPLETION — nothing is refused by size.
+				// Sections fitting the per-response budget are returned (allocated +
+				// served here); everything past the budget spills as unallocated rows
+				// and is served at resume time.
 				for (const file of files) {
-					abortIf(signal);
-					// Stat before reading: the whole point of the per-file ceiling is to
-					// never pull an oversized file into the heap at all.
-					const size = await io.statSize(file, signal);
-					if (size === undefined) {
-						skipped.push({ path: file, reason: "unreadable", bytes: 0 });
-						continue;
-					}
-					const admitted = budget.admit(size);
-					if (!admitted.ok) {
-						skipped.push({ path: file, reason: admitted.reason, bytes: admitted.bytes });
-						// Exhausting the total ends the scan: every later file would be
-						// refused too, so stopping is the only honest move.
-						if (budget.usage().exhausted) break;
-						continue;
-					}
+					abortIf(signal2);
 					let raw: string;
 					try {
-						raw = await io.readText(file, signal);
+						raw = await io.readText(file, signal2);
 					} catch (error) {
-						budget.release(admitted.bytes);
-						// An abort is the caller's, not this file's: it must stop the scan.
-						if (signal?.aborted === true) throw error;
-						skipped.push({ path: file, reason: "unreadable", bytes: 0 });
-						continue;
+						if (signal2?.aborted === true) throw error;
+						continue; // unreadable file — skipped, never a refusal
 					}
-					// Issue #147 (ADR-0008): the READ LINE SPACE — every line number this tool reports is
-					// computed in the space read serves: toLF folds CRLF, bare CR and LF each to
-					// one line break, so a progress-bar log's \r overwrites count as lines
-					// exactly as pwsh counts them, and the toLF-based anchors pair with these
-					// rows again instead of drifting by the cumulative CR count above each line.
 					const text = toLF(raw);
-					// The reservation was made from the stat size. A file that changed in
-					// between must re-enter the budget honestly, or the ceiling leaks:
-					// release the old reservation before adding the real byte count.
-					const actualBytes = Buffer.byteLength(text, "utf8");
-					if (actualBytes !== admitted.bytes) {
-						budget.release(admitted.bytes);
-						const reAdmitted = budget.admit(actualBytes);
-						if (!reAdmitted.ok) {
-							skipped.push({ path: file, reason: reAdmitted.reason, bytes: reAdmitted.bytes });
-							if (budget.usage().exhausted) break;
-							continue;
-						}
-					}
-				// LAZY (#169): the VIEW only — grepFileContent allocates for exactly the
-				// rows it serves (persisted == served == visible).
-				const hashes = anchorsFor(file, text);
-					const section = await grepFileContent(file, text, hashes, params.pattern, opts);
-					if (!section) continue;
-					// Truncation = the per-file cap was hit.
-					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
-					totalMatches += section.matches.length;
-					// The model-facing path is the relative path the user passed in,
-					// derived from `file` (absolute) by stripping the directory part.
-					// Show the path relative to the searched root (host-aligned):
-					// src/deep.txt under a directory root; the bare basename when
-					// the root IS the file.
+					const section = await grepFileContent(file, text, params.pattern, opts);
+					if (section === undefined) continue;
 					const displayPath = relative(root, file) || basename(file);
-					// issue #66/B3: format header on the FIRST section only — one grep
-					// call prints the ANCHOR:FILELINE explainer at most once.
-					fileSections.push(
-						buildSectionModelText(displayPath, section, opts.lineNumbers, fileSections.length === 0),
-					);
-					// The card rows are built from the SAME structured rows the model text
-					// renders (identity + match flag + highlight spans), never by re-parsing
-					// the rendered section text (issue #92 / ADR-0005).
-					cardFiles.push({
-						path: displayPath,
-						rows: section.contextRows.map((row) => ({
-							number: row.position + 1,
-							hash: row.anchor,
-							text: row.content,
-							...(row.isMatch ? { match: true as const } : {}),
-							...(row.spans.length > 0 ? { spans: row.spans } : {}),
-						})),
-					});
-					if (jsonOutput) {
-						// matches is ONE anchor-keyed dict like read's lines: match
-						// rows and their context rows live together, key = line:anchor,
-						// value = verbatim content (no separate before/after fields).
-						const context = opts.context ?? contextLinesCfg();
-						const matches: Record<string, string> = {};
-						const rowsByPos = new Map<number, GrepSectionRow>(
-							section.contextRows.map((r) => [r.position, r]),
-						);
-						// The key carries its line number the way every other row does —
-						// anchor first, its line trailing — so the JSON view and the text
-						// view name a line IDENTICALLY.
-						const anchorAt = (pos: number) => {
-							const anchor = rowsByPos.get(pos)?.anchor ?? hashes[pos] ?? "";
-							return opts.lineNumbers && anchor !== "" ? `${anchor}:${pos + 1}` : anchor;
-						};
-						for (const m of section.matches) {
-								matches[anchorAt(m.position)] =
-								rowsByPos.get(m.position)?.content ?? visLines(text)[m.position] ?? "";
-							for (let k = Math.max(0, m.position - context); k <= Math.min(visLines(text).length - 1, m.position + context); k++) {
-								if (k === m.position) continue;
-								matches[anchorAt(k)] = rowsByPos.get(k)?.content ?? visLines(text)[k] ?? "";
+					totalMatches += section.matches.length;
+					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
+					const sectionChars =
+						codeUnits(section.contextRows.map((row) => row.content).join("\n")) + 24 * (section.contextRows.length + 1);
+					if (!spilling && usedChars + sectionChars <= budget) {
+						const positions = section.contextRows.map((row) => row.position + 1);
+						const allocated = allocateForLines(file, text, positions);
+						const anchorsByPosition = new Map<number, string>();
+						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
+						section.contextRows.forEach((row, index) => {
+							const anchor = allocated[index] ?? "";
+							anchorsByPosition.set(row.position, anchor);
+							if (anchor !== "") {
+								servedRows.push({
+									position: row.position,
+									anchor,
+									key: contentChecksum(canon(row.content)),
+								});
+							}
+						});
+						if (servedRows.length > 0) {
+							await recordServed(sessionKey, file, servedRows, splitLines(text).length).catch(() => undefined);
+							if (exec !== undefined) {
+								await io.emitObserved(file, exec, signal2).catch(() => undefined);
 							}
 						}
-						jsonFiles.push({ path: displayPath, matches });
-					}
-					allServed.push({ path: file, rows: section.contextRows, lineCount: hashes.length });
-					allSeen.push({ path: file });
-				}
-
-				for (const seen of allSeen) {
-					await io.emitObserved(seen.path, exec as ToolExecution, signal);
-				}
-				for (const served of allServed) {
-					if (served.rows.length === 0) continue;
-					try {
-						await recordServed(
-							sessionKey,
-							served.path,
-							served.rows.map((r) => ({ position: r.position, anchor: r.anchor })),
-							served.lineCount,
+						fileSections.push(
+							renderSection(displayPath, section.contextRows, anchorsByPosition, opts.lineNumbers, !headerEmitted),
 						);
-					} catch (error) {
-						// issue #136: one file's serve-record failure must not kill the whole
-						// scan, but it must not be silent either — without the record the next
-						// edit on those rows rejects with an honest "never served" + echo.
-						console.error(
-							`[E_SERVED_RECORD] failed to record served rows for ${served.path}:`,
-							error,
-						);
+						headerEmitted = true;
+						cardFiles.push({
+							path: displayPath,
+							rows: section.contextRows.map((row) => ({
+								number: row.position + 1,
+								hash: anchorsByPosition.get(row.position) ?? "",
+								text: row.content,
+								...(row.isMatch ? { match: true as const } : {}),
+								...(row.spans.length > 0 ? { spans: row.spans } : {}),
+							})),
+						});
+						if (jsonOutput) {
+							const context = opts.context ?? contextLinesCfg();
+							const matches: Record<string, string> = {};
+							const anchorsByPos = anchorsByPosition;
+							for (const match of section.matches) {
+								const key = `${anchorsByPos.get(match.position) ?? ""}:${match.position + 1}`;
+								matches[key] = rowContent(section, match.position);
+								for (let k = Math.max(0, match.position - context); k <= Math.min(section.lineCount - 1, match.position + context); k++) {
+									if (k === match.position) continue;
+									matches[`${anchorsByPos.get(k) ?? ""}:${k + 1}`] = rowContent(section, k);
+								}
+							}
+							jsonFiles.push({ path: displayPath, matches });
+						}
+						usedChars += sectionChars;
+					} else {
+						spilling = true;
+						if (!spillStampPaths.has(file)) {
+							spillStampPaths.add(file);
+							const version = await io.statVersion(file, signal2).catch(() => undefined);
+							spillStamps.push({ path: file, version });
+						}
+						for (const row of section.contextRows) {
+							spillRows.push({ content: row.content, path: file, line: row.position + 1, kind: row.isMatch ? "row" : "ctx" });
+						}
 					}
 				}
+				function rowContent(section: { contextRows: Array<{ position: number; content: string }> }, position: number): string {
+					return section.contextRows.find((row) => row.position === position)?.content ?? "";
+				}
 
-				// issue #167: a budget-hit scan is not a complete one — say so, or the
-				// model reads a partial result as the whole answer.
-				const budgetNotice = buildBudgetNotice(skipped, budget.usage(), prefiltered);
-				const noticeText = budgetNotice === "" ? "" : `\n\n${budgetNotice}`;
+				let continuation: { resume: string; remaining: number } | undefined;
+				let noticeText = "";
+				if (spillRows.length > 0) {
+					const { token } = await createResume({
+						sessionKey,
+						producer: "grep",
+						consumer: "grep",
+						kind: "scan-continuation",
+						rows: spillRows,
+						stamps: spillStamps,
+					});
+					const omittedChars = spillRows.reduce((acc, row) => acc + codeUnits(row.content), 0);
+					continuation = { resume: token, remaining: spillRows.length };
+					noticeText = `(Omitted ${spillRows.length} lines (~${omittedChars} chars). Use grep {resume: "${token}"} to continue.)`;
+				}
 
-				if (fileSections.length === 0) {
-					const noMatchModelText = `No matches for "${params.pattern}" in ${root}.${noticeText}`;
+				if (fileSections.length === 0 && spillRows.length === 0) {
+					const noMatchModelText = `No matches for "${params.pattern}" in ${root}.`;
 					return {
 						files: [],
-						truncated: budgetNotice !== "",
+						truncated: false,
 						total: 0,
 						modelText: noMatchModelText,
+					} satisfies GrepCanonicalValue & { modelText: string };
+				}
+				if (fileSections.length === 0) {
+					// everything spilled: the response is the continuation notice alone
+					return {
+						files: [],
+						truncated: true,
+						total: totalMatches,
+						...(continuation !== undefined ? { continuation } : {}),
+						modelText: `Matches exist but exceed the per-response budget.\n${noticeText}`,
 					} satisfies GrepCanonicalValue & { modelText: string };
 				}
 
 				const value: GrepCanonicalValue & { modelText: string } = {
 					files: cardFiles,
-					truncated: truncated || budgetNotice !== "",
+					truncated: spillRows.length > 0,
 					total: totalMatches,
-					modelText: capModelText(
-						(jsonOutput
-							? JSON.stringify({ total: totalMatches, truncated, files: jsonFiles })
-							: fileSections.join("\n\n")) + noticeText,
-						GREP_MODEL_TEXT_MAX_BYTES,
-					),
+					...(continuation !== undefined ? { continuation } : {}),
+					modelText: `${fileSections.join("\n\n")}${noticeText === "" ? "" : `\n${noticeText}`}`,
 				};
 				return value;
 		}).catch((error: unknown) => ({
@@ -652,14 +658,9 @@ const allServed: Array<{ path: string; rows: { position: number; anchor: string;
 }
 
 export function registerGrepTool(
-	_rootCtx: Context,
-	agentCtx: Context,
+	_rootCtx: CordisContext,
+	agentCtx: CordisContext,
 	io: FileIO,
 ): () => void {
 	return agentCtx.tools.register(buildGrepTool(io));
 }
-
-
-
-
-

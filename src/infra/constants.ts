@@ -1,21 +1,19 @@
 export const AUTO_READ_MAX = 2000;
 export const SNIFF_BYTES = 8192;
-export const MAX_BYTES = 100 * 1024 * 1024;
 export const MAX_READ_LINE_BYTES = 200 * 1024;
+export const MAX_BYTES = 100 * 1024 * 1024;
 /**
- * Total bytes one `grep` call may READ across every visited file (#167). The
- * tree walk accumulates sections, card rows and anchor state as it goes; with
- * no ceiling a large tree grows the host heap until the process dies. Hitting
- * it stops the scan and reports what was skipped.
+ * Per-response budget (ADR-0013, specs #209/#210): UTF-16 code units one tool
+ * response's model text may reach before the rest spills to a resume file.
+ * 48,000 sits just under the host's measured 49,984-char inline gate
+ * (dsh-spill-policy); the settings field `max_response_chars` overrides it
+ * within [RESPONSE_BUDGET_MIN, RESPONSE_BUDGET_MAX].
  */
-export const GREP_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
-/**
- * Serialized byte ceiling for grep's model-facing text (#167). The card-side
- * projection already has its own budget ({@link GREP_META_MAX_BYTES}); without
- * a matching one here a many-file scan can hand the host a multi-megabyte
- * string to serialize and inject.
- */
-export const GREP_MODEL_TEXT_MAX_BYTES = 1024 * 1024;
+export const RESPONSE_BUDGET_DEFAULT = 48_000;
+export const RESPONSE_BUDGET_MIN = 8_000;
+export const RESPONSE_BUDGET_MAX = 49_984;
+/** Spill sidecars and session dirs older than this are swept lazily. */
+export const RESUME_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const HASH_STORE_BUSY_TIMEOUT = 1000;
 export const HASH_STORE_VERSION = 6;

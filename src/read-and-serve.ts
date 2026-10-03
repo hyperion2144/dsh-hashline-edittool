@@ -26,6 +26,8 @@ export interface ReadAndServeOptions {
 	/** Pagination for the rendered preview (undefined = from the start). */
 	offset?: number;
 	limit?: number;
+	/** ADR-0013: per-response char budget for the returned window. */
+	maxChars?: number;
 	/** v2.0: prefix every row marker with `<line>:<anchor>`. */
 	lineNumbers?: boolean;
 	/**
@@ -54,6 +56,8 @@ export interface ReadAndServeResult {
 	hashes?: string[];
 	/** The LF-normalized full file content (the basis for hashing + lines). */
 	normalized?: string;
+	/** ADR-0013: next offset when the window was char-budget-truncated. */
+	nextOffset?: number;
 }
 
 /**
@@ -78,6 +82,7 @@ export async function readAndServe(
 		offset: options.offset,
 		limit: options.limit,
 		lineNumbers: options.lineNumbers,
+		maxChars: options.maxChars,
 		signal,
 	});
 	if (view.served.length > 0) {
@@ -105,5 +110,6 @@ export async function readAndServe(
 		absolutePath: view.absolutePath,
 		hashes: view.hashes,
 		normalized: view.normalized,
+		...(view.nextOffset !== undefined ? { nextOffset: view.nextOffset } : {}),
 	};
 }

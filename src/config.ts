@@ -51,6 +51,8 @@ export interface HashlineSettings {
 	context_lines?: number;
 	/** When true, edit anchors are `{ anchor, line }` declaration pairs (default false). */
 	require_line_content?: boolean;
+	/** Per-response char budget (ADR-0013, #205): default 48,000, clamped in resolve. */
+	max_response_chars?: number;
 	/**
 	 * When true (default), `grep` gets its candidate list from ripgrep: `.gitignore`
 	 * and `.ignore` rules apply, so ignored trees (build output, vendored copies) are
@@ -122,6 +124,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		context_lines: z.number().min(0).max(20).volatile(),
 		require_line_content: z.boolean().volatile(),
 		grep_respect_gitignore: z.boolean().volatile(),
+		max_response_chars: z.number().volatile(),
 		// The volatile mark sits on the OUTERMOST node of each live-editable
 		// subtree only: schemastery requires a volatile field to have a fixed
 		// path with no enclosing volatile, and every descendant of a volatile
@@ -423,6 +426,10 @@ const sep =
 		outputFormat: fmt,
 		contextLines: nctx,
 		requireLineContent: requireLine,
+		maxResponseChars:
+			typeof settings?.max_response_chars === "number" && Number.isInteger(settings.max_response_chars)
+				? settings.max_response_chars
+				: defaults.maxResponseChars,
 		astEnabled: astOn,
 		astLanguages: astLangs,
 		lspServers: lspServers,
@@ -585,6 +592,10 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 		else if (key === "grep_respect_gitignore") {
 			if (value === "true") out.grep_respect_gitignore = true;
 			else if (value === "false") out.grep_respect_gitignore = false;
+		}
+		else if (key === "max_response_chars") {
+			const n = Number(value);
+			if (Number.isInteger(n)) out.max_response_chars = n;
 		}
 	}
 	if (Object.keys(astLangs).length > 0) {
