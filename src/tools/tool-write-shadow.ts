@@ -29,6 +29,7 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { execCwd, execSessionKey, openWorkspaceStore, recordServed } from "../domain/session/session-view.js";
+import { createResume } from "../infra/response-stream.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
@@ -259,7 +260,6 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					exec,
 				}).catch(() => undefined);
 
-				const baseText =
 					served === undefined
 						? `Wrote ${rawPath} (${operation}).`
 						: isJsonOutput() &&
@@ -274,7 +274,42 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 										rawPath,
 									),
 								)
-							: `${AUTO_READ_HEADING}\n${served.text}`;
+						: `${AUTO_READ_HEADING}\n${served.text}`;
+				// ADR-0013: a truncated auto-read preview carries a resume token —
+				// consumed with `read {resume}` (file-window), never by re-writing.
+				let continuation: { resume: string; remaining: number } | undefined;
+				let baseText =
+					served === undefined
+						? `Wrote ${rawPath} (${operation}).`
+						: isJsonOutput() &&
+							  served.normalized !== undefined &&
+							  served.hashes !== undefined
+						  ? JSON.stringify(
+								buildReadJson(
+									served.normalized,
+									served.hashes,
+									1,
+									served.hashes.length,
+									rawPath,
+								),
+						  )
+						  : `${AUTO_READ_HEADING}\n${served.text}`;
+				if (served?.nextOffset !== undefined && served.hashes !== undefined) {
+					const total = served.hashes.length;
+					if (served.nextOffset <= total) {
+						const { token } = await createResume({
+							sessionKey,
+							producer: "write",
+							consumer: "read",
+							kind: "file-window",
+							rows: [],
+							meta: { path: served.absolutePath, nextOffset: served.nextOffset },
+						});
+						const omitted = total - (served.nextOffset - 1);
+						continuation = { resume: token, remaining: omitted };
+						baseText = `${baseText}\n\n(Omitted ${omitted} lines. Use read {resume: "${token}"} to continue.)`;
+					}
+				}
 				// #131: diagnostics ride BOTH channels — a field in the JSON envelope,
 				// an appended section in text mode. The envelope stays parseable.
 				// The JSON envelope carries the marker-keyed projection (diff-aligned);
