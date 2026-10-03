@@ -267,6 +267,36 @@ export function stampChanged(
 }
 
 /** Best-effort stat of a spill dir — used by tests and diagnostics. */
+
+/**
+ * Split an oversized text model response: the head stays inline, the tail
+ * spills to a resume file. Lines are never cut. Returns the model text with
+ * the continuation footer appended, plus the continuation field.
+ */
+export async function spillModelTextOverflow(opts: {
+	sessionKey: string;
+	producer: string;
+	consumer: string;
+	kind?: string;
+	modelText: string;
+	budgetChars: number;
+}): Promise<{ modelText: string; continuation?: { resume: string; remaining: number } }> {
+	if (codeUnits(opts.modelText) <= opts.budgetChars) return { modelText: opts.modelText };
+	const lines = opts.modelText.split("\n");
+	const { included, overflow } = takeRowsWithinBudget(lines, opts.budgetChars, codeUnits);
+	const { token } = await createResume({
+		sessionKey: opts.sessionKey,
+		producer: opts.producer,
+		consumer: opts.consumer,
+		kind: opts.kind ?? "text-continuation",
+		rows: overflow.map((content) => ({ content })),
+	});
+	const omittedChars = overflow.reduce((acc, line) => acc + codeUnits(line), 0);
+	return {
+		modelText: `${included.join("\n")}\n\n(Omitted ${overflow.length} lines (~${omittedChars} chars). Use ${opts.consumer} {resume: "${token}"} to continue.)`,
+		continuation: { resume: token, remaining: omittedChars },
+	};
+}
 export async function spillDirInfo(sessionKey: string): Promise<string | undefined> {
 	const dir = sessionDir(sessionKey);
 	try {
