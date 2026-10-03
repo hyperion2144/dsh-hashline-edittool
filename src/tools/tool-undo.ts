@@ -36,6 +36,7 @@ import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js"
 import { withWorkspace } from "../domain/session/session-view.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
+import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import {
 	deliverDiagnosticsAfterWrite,
 	diagnosticsMeta,
@@ -353,6 +354,18 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				}
 			}
 
+			const fullReport =
+				diagSection === ""
+					? [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join("\n")
+					: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff, "", diagSection].join("\n");
+			const streamedUndo = await spillModelTextOverflow({
+				sessionKey,
+				producer: "undo_last_edit",
+				consumer: "read",
+				kind: "report-segment",
+				modelText: fullReport,
+				budgetChars: responseBudgetChars(),
+			});
 			return {
 				path: absolutePath,
 				// `before` is the post-edit content (what the file had), `after`
@@ -368,10 +381,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				// the reader sees (ADR-0005 — never a re-parse of `modelText`).
 				diffRows: diffRowsFromGenDiff(undoDiffResult.rows),
 				...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
-				modelText:
-					diagSection === ""
-						? [parts.join("\n"), "", "Diff of the revert:", "", undoDiff].join("\n")
-						: [parts.join("\n"), "", "Diff of the revert:", "", undoDiff, "", diagSection].join("\n"),
+				modelText: streamedUndo.modelText,
 				empty: false,
 			} satisfies UndoCanonicalValue;
 		}).catch((error: unknown) => ({
