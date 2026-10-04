@@ -112,7 +112,7 @@ D0:4|export function greet(name: string): string {
 工具结果向模型展示过的行即成为 **served**（`read`、`grep`、编辑 diff、结构结果、LSP
 行）。`edit` 在写入前对照该镜像验证每个解析出的范围：
 
-- 锚点未知或行从未 served → `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]`；
+- 锚点未知 → `[E_STALE]`；区间行在本会话从未 served → `[E_RANGE_UNVERIFIED]`；
 - served 内容与磁盘不一致 → `[E_STALE]` / `[E_RANGE_STALE]`；
 - 每次拒绝都会**把当前行作为 served 行回显并附带新鲜锚点** —— 修复方式就是：取回显里
   的标记重新提交。served 行同时以 `fs/observed` 发出，立即可写。
@@ -227,7 +227,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_NOT_OBSERVED]` | 本会话未观察过该文件（先读后写策略）。 |
 | `[E_OP_INS]` | 提示：`ins` 已把行插入锚点之后。 |
 | `[E_PASTE_DUP]` | 替换行与相邻文件行相同；原样保留。 |
-| `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` | served 校验失败；范围已回显为新鲜行。 |
+| `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | served 校验失败；范围已回显为新鲜行。 |
 | `[E_STALE]` | 锚点不再匹配 served 内容；重新 read。 |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit` 的替换会让文件无法解析；未写入。 |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | 编辑后文件被改动 / undo 历史无法持久化。 |

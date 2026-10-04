@@ -582,7 +582,7 @@ export function buildAstGrepTool(io: FileIO) {
 						.trimEnd();
 			// SERVE what this call found, exactly as the outline branch and `read`
 			// do: an anchor the model can see but the served mirror never heard of
-			// is an anchor `edit` rejects with [E_RANGE_UNSERVED] (#171 probe).
+			// is an anchor `edit` rejects with [E_RANGE_UNVERIFIED] (#171 probe).
 			await serveRowsInWorkspace({
 				sessionKey: execSessionKey(exec),
 				cwd,

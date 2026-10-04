@@ -650,11 +650,14 @@ export async function applyOne(
 			edit,
 			input.signal,
 			input.hashes,
-			input.displayPath,
+				input.displayPath,
 			input.served,
 			{ start: input.expectedStart, end: input.expectedEnd },
 			{
 				lineNumbers: input.lineNumbers,
+				// #212: the echo-window allocations key the anchor STATE by the
+				// absolute path; filePath above stays the display path the model used.
+				statePath: input.absolutePath,
 				transform:
 					input.op === "sed"
 						? sedTransform(input.pattern ?? "", input.replacement ?? "", input.flags)

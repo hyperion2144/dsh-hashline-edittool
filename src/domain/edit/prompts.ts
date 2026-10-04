@@ -74,7 +74,7 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 			"`edit`: anchors must be variable-length Base62 markers copied from the leftmost column of a read/grep/diff row — never hand-write or paste line content. The legacy `<line>#<hash>` form is rejected (`E_BAD_REF`).",
 			"`edit`: identical content lines get DISTINCT anchors — copy the exact marker of the line you mean.",
 			"`edit`: ALL anchors in one call come from the same ORIGINAL read — never shift them to positions a previous hunk would produce in sequence (there is no 'after the previous edit' coordinate; the batch applies against the original snapshot). The response's diff rows show the FINAL positions; there is no `Shift:` block — re-read for fresh anchors after an edit.",
-			"`edit`: a stale or never-served range is hard-rejected (`[E_STALE]` / `[E_RANGE_UNSERVED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
+			"`edit`: a stale or never-served range is hard-rejected (`[E_STALE]` / `[E_RANGE_UNVERIFIED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
 			"`edit`: the batch is ATOMIC — any hunk failure rejects the WHOLE batch ([E_BATCH_ABORT]) and nothing is written; already-resolved hunks are not applied, so there is nothing to roll back or undo. Do not issue several `edit` calls in one message — one call, one `edits` array.",
 		],
 	};

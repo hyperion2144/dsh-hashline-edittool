@@ -323,55 +323,76 @@ export function buildReadTool(io: FileIO) {
 					} as ReadValue & { modelText: string };
 				}
 
-				// ADR-0013 seam fix: BOTH presentations derive their window from the
-				// one bounded render (result.nextOffset), so the model can never see
-				// rows that were not served. `nextOffset` is the line AFTER the last
-				// shown row; `shownEnd` is the last shown line.
+				// Window seam (#212): the render bound is `shownEnd` — the renderer's
+				// LAST SERVED row. `nextOffset` is NOT the render bound: it exists
+				// only when the char BUDGET cut the window (it mints the resume
+				// token), so deriving the window from it made every limit-cut fall
+				// back to EOF and rebuild rows that were never served — bare-number
+				// rows for unallocated lines, "not in served set" for persisted ones.
 				const totalLines = splitLines(result.normalized).length;
 				const start = Math.max(1, canonical.offset ?? 1);
 				const shownEnd =
-					result.nextOffset !== undefined ? result.nextOffset - 1 : totalLines;
+					result.shownEnd ??
+					(result.nextOffset !== undefined ? result.nextOffset - 1 : totalLines);
 				const shownCount = Math.max(0, shownEnd - start + 1);
-
-				const presentation = isJsonOutput()
-					? (() => {
-						// v2.0 (#66/B1): rebuild the pure-JSON view on the bare-anchor
-						// contract. The legacy branch split dict keys on '#' (v1.0
-						// <number>#<hash> form); with v2.0 bare anchors there is no '#',
-						// number parsing produced NaN, and NaN is not lossless JSON —
-						// every read in json mode failed output validation.
-						const allLines = splitLines(result.normalized!);
-						const startIdx = start - 1;
-						const endIdx = Math.min(shownEnd, allLines.length);
-						const lines: Array<{ number: number; text: string }> = [];
-						const hashlines: Array<{ number: number; hash: string; text: string }> = [];
-						const lineDict: Record<string, string> = {};
-						for (let i = startIdx; i < endIdx; i++) {
-							const number = i + 1;
-							const text = allLines[i] ?? "";
-							const hash = result.hashes![i] ?? "";
-							lines.push({ number, text });
-							hashlines.push({ number, hash, text });
-							// anchor-keyed dict (grep/edit symmetry); with line_numbers on
-							// the key renders as `<anchor>:<line>`, matching the text rows.
-							lineDict[canonical.line_numbers !== false ? `${hash}:${number}` : hash] = text;
-						}
+				// Served rows are normally the contiguous window [start..shownEnd].
+				// The oversized-line branch serves a SPARSE set (oversized rows are
+				// shown as notices, not content) — rebuild those from the served
+				// rows alone so presentation == served, never more.
+				const servedRows = result.served;
+				const contiguous =
+					servedRows.length > 0 &&
+					servedRows[0]!.position === start - 1 &&
+					servedRows[servedRows.length - 1]!.position - servedRows[0]!.position + 1 ===
+						servedRows.length;
+				const servedAllLines = splitLines(result.normalized);
+				const buildFromServed = (): ReadValue & { modelText: string } => {
+					const lines: Array<{ number: number; text: string }> = [];
+					const hashlines: Array<{ number: number; hash: string; text: string }> = [];
+					const lineDict: Record<string, string> = {};
+					for (const row of servedRows) {
+						const number = row.position + 1;
+						const text = servedAllLines[row.position] ?? "";
+						lines.push({ number, text });
+						hashlines.push({ number, hash: row.anchor, text });
+						lineDict[canonical.line_numbers !== false ? `${row.anchor}:${number}` : row.anchor] =
+							text;
+					}
+					if (isJsonOutput()) {
 						const modelView = {
 							path: canonical.path,
 							offset: start,
-							totalLines: allLines.length,
+							totalLines: servedAllLines.length,
 							lines: lineDict,
 						};
 						return {
 							path: canonical.path,
 							offset: start,
-							totalLines: allLines.length,
+							totalLines: servedAllLines.length,
 							lines,
 							hashlines,
 							modelText: JSON.stringify(modelView),
 						} as ReadValue & { modelText: string };
-					})()
-				: buildReadPresentation(
+					}
+					// Text mode: the renderer's preview IS the model text here — it
+					// carries the header, the served rows and the oversized-row
+					// notices that a range rebuild could not reproduce.
+					return {
+						path: canonical.path,
+						offset: start,
+						totalLines: servedAllLines.length,
+						lines,
+						hashlines,
+						modelText: result.text,
+					} as ReadValue & { modelText: string };
+				};
+				// JSON mode: one builder for both windows — the served rows ARE the
+				// rendered rows in every branch (contiguous window or sparse
+				// oversized-line set), so the dict/arrays come from one place.
+				const presentation =
+					!contiguous || isJsonOutput()
+						? buildFromServed()
+						: buildReadPresentation(
 							result.normalized!,
 							result.hashes!,
 							start,

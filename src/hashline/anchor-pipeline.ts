@@ -390,17 +390,31 @@ function fmtMismatchWithServes(
 			);
 			pushRow(ln);
 		}
-		const markers = group.map((c) => {
-			const centerLine = c.center;
-			return `${fileAnchors[centerLine - 1] ?? "?"}`;
-		});
+		const markers = [
+			...new Set(
+				group
+					.map((c) => {
+						const marker = fileAnchors[c.center - 1];
+						// #212: unallocated lines are "" in the sparse view — a "" or
+						// "?" marker in "reuse the fresh marker X" told the model to
+						// reuse an anchor that does not exist. Only non-empty markers
+						// may be advertised; otherwise the hint degrades to read().
+						return marker !== undefined && marker !== "" && marker !== "?"
+							? marker
+							: undefined;
+					})
+					.filter((m): m is string => m !== undefined),
+			),
+		];
 		const hint =
 			markers.length === 1
-				? `reuse the fresh marker ${markers[0]}`
-				: `reuse a fresh marker from: ${markers.join(", ")}`;
+				? `reuse the fresh marker ${markers[0]} without calling read`
+				: markers.length > 1
+					? `reuse a fresh marker from: ${markers.join(", ")} without calling read`
+					: "the named line has no anchor yet — call read() to serve it, then retry";
 		out.push("");
 		out.push(
-			`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader(lineNumbers !== false)}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint} without calling read.\n  If not, call read() to find the correct line.`,
+			`  Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${hashlineHeader(lineNumbers !== false)}\n${echoLines.join("\n")}\n\n  If this is the line you meant to edit, ${hint}.\n  If not, call read() to find the correct line.`,
 		);
 	}
 
@@ -932,7 +946,6 @@ export { warnUnicodeEsc };
 
 export type ServedCode =
 	| "E_RANGE_STALE"
-	| "E_RANGE_UNSERVED"
 	| "E_RANGE_UNVERIFIED";
 
 export interface ServedRow {
@@ -1027,6 +1040,13 @@ export function verifyServedRange(args: {
 	fileLines: string[];
 	filePath?: string;
 	/**
+	 * #212: the STATE key the echo-window allocation writes under — the
+	 * absolute path the rest of the anchor state is keyed by. Defaults to
+	 * `filePath`; split from it because `filePath` is the DISPLAY path and
+	 * allocations under a display-relative key are invisible to the retry.
+	 */
+	statePath?: string;
+	/**
 	 * The file's REAL content. Required for the echo-window allocation: a
 	 * rebuilt `fileLines.join` string differs from the canonical content
 	 * (trailing newline), so `ensureState` realigns and rewrites anchors that
@@ -1044,6 +1064,7 @@ export function verifyServedRange(args: {
 		fileAnchors,
 		fileLines,
 		filePath,
+		statePath,
 		content,
 	} = args;
 	const where = filePath ? ` in ${filePath}` : "";
@@ -1074,21 +1095,22 @@ export function verifyServedRange(args: {
 	// the proof. A mismatch means the anchor was never served (or the line's
 	// content changed, producing a new anchor not in the set).
 	const currentLen = endLine - startLine + 1;
-	const firstMismatch: number | undefined = (() => {
-		for (let k = 0; k < currentLen; k++) {
-			const position = startLine - 1 + k;
-			const expectedAnchor =
-				currentLen === 1
+	// #212: collect EVERY unserved position, not just the first — the
+	// rejection names all of them and the re-read window they define.
+	const unservedPositions: number[] = [];
+	for (let k = 0; k < currentLen; k++) {
+		const position = startLine - 1 + k;
+		const expectedAnchor =
+			currentLen === 1
+				? startAnchor
+				: k === 0
 					? startAnchor
-					: k === 0
-						? startAnchor
-						: k === currentLen - 1
-							? endAnchor
-							: fileAnchors[position];
-			if (!served.has(expectedAnchor)) return position;
-		}
-		return undefined;
-	})();
+					: k === currentLen - 1
+						? endAnchor
+						: fileAnchors[position];
+		if (!served.has(expectedAnchor)) unservedPositions.push(position);
+	}
+	const firstMismatch: number | undefined = unservedPositions[0];
 
 	if (firstMismatch !== undefined) {
 		const mismatchLine = firstMismatch + 1;
@@ -1107,15 +1129,15 @@ export function verifyServedRange(args: {
 		// ONLY with the real content: `fileLines.join("\n")` is not the canonical
 		// string (trailing newline), so `ensureState` would see a checksum
 		// mismatch, realign, and rewrite anchors that were already valid.
-		if (filePath && content !== undefined) {
+		if (statePath && content !== undefined) {
 			const echoWindow: number[] = [];
 			for (let ln = ctxFrom; ln <= ctxTo; ln++) echoWindow.push(ln);
 			if (echoWindow.length > 0) {
-				allocateForLines(filePath, content, echoWindow);
+				allocateForLines(statePath, content, echoWindow);
 				// Re-materialise: the allocation minted anchors for lines whose
 				// contentKey did not match (or that were never served). The fresh
 				// view carries them; the stale local `fileAnchors` does not.
-				const fresh = anchorsFor(filePath, content);
+				const fresh = anchorsFor(statePath, content);
 				for (let ln = ctxFrom; ln <= ctxTo; ln++) {
 					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
 				}
@@ -1139,16 +1161,51 @@ export function verifyServedRange(args: {
 		// the stale one (possibly empty) is what failed, not what to reuse.
 		const retryMarker = fileAnchors[firstMismatch] ?? expectedAnchor;
 		const freshMarker = `${retryMarker}`;
-		const staleMsg = `line ${mismatchLine}'s current content was not shown to you (anchor ${retryMarker} was never served). The echo below now carries real anchors for every line — reuse any of them, or read() for a full window.`;
+		// #212: name EVERY unserved run, say WHY a served record can be empty
+		// (a session restart clears it — the anchors themselves persist), and
+		// give the exact re-read parameters that make the same edit succeed.
+		// The old copy blamed "a previous edit shifted lines", which misread
+		// the by-far-most-common restart case and never mentioned the middle
+		// lines a bounded echo cannot show.
+		const runs: Array<[number, number]> = [];
+		for (const p of unservedPositions) {
+			const last = runs[runs.length - 1];
+			if (last && p === last[1] + 1) last[1] = p;
+			else runs.push([p, p]);
+		}
+		const MAX_RUNS = 4;
+		const hiddenRuns = runs.length - MAX_RUNS;
+		const runsText =
+			runs
+				.slice(0, MAX_RUNS)
+				.map(([a, b]) => (a === b ? `line ${a + 1}` : `lines ${a + 1}-${b + 1}`))
+				.join(", ") +
+				(hiddenRuns > 0
+					? ` … (${hiddenRuns} more unserved run${hiddenRuns === 1 ? "" : "s"})`
+					: "");
+		const readFrom = unservedPositions[0]! + 1;
+		const readTo = unservedPositions[unservedPositions.length - 1]! + 1;
+		const span = readTo - readFrom + 1;
+		const READ_WINDOW_CAP = 2000;
+		const readLimit = Math.min(span, READ_WINDOW_CAP);
+		const cappedNote =
+			span > READ_WINDOW_CAP
+				? " (window capped — re-read the remaining unserved lines the same way)"
+				: "";
+		const target = filePath ?? statePath ?? "<path>";
+		const staleMsg =
+			`your range covers ${runsText} of lines ${startLine}-${endLine} that were never shown in this session — ` +
+			`a session restart clears the served record (the anchors themselves persist), or those lines were never read. ` +
+			`Re-read them first: read {file_path: "${target}", offset: ${readFrom}, limit: ${readLimit}}${cappedNote}, then retry the same edit. ` +
+			`The echo below carries real anchors for its window — reusing any of them also works.`;
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
-				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${staleMsg}. ` +
-				`This usually happens after a previous edit shifted lines below your read window. ` +
-				`A full read() will re-sync, but if the line below is what you meant, you can reuse the fresh marker instead.\n` +
-				`Echo of the line you tried (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
+				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${staleMsg}\n` +
+				`Echo of the first unserved line (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
 				`If this is the line you meant, reuse the fresh marker ${freshMarker} without calling read.\n` +
 				`If not, call read() to find the correct line.`,
+			firstOffendingLine: mismatchLine,
 			servedRows: ctxServedRows,
 		});
 	}
@@ -1310,6 +1367,14 @@ export function applyEdit(
 	opts?: {
 		lineNumbers?: boolean;
 		/**
+		 * #212: the STATE key for the echo-window allocations (mismatch ctx +
+		 * served gate) — the absolute path the anchor state is keyed by. Falls
+		 * back to `filePath`; split from it because `filePath` is the DISPLAY
+		 * path the model used and allocations under it are invisible to the
+		 * retry's anchorsFor.
+		 */
+		statePath?: string;
+		/**
 		 * `op: "sed"` arrives here as a TRANSFORM rather than as literal lines:
 		 * the substitution is a function of the range's CURRENT text, so it can
 		 * only run once the anchors have resolved. Applied after every
@@ -1396,11 +1461,19 @@ export function applyEdit(
 		// shows to the model MUST carry a real anchor. Allocate the echo window
 		// (the mismatch lines ± context) so the markers are `<anchor>:N`, never
 		// bare `:N` — and the servedRows below are immediately usable.
-		if (filePath) {
+		const stateKey = opts?.statePath ?? filePath;
+		if (stateKey) {
 			const mismatchCtx = new Set<number>();
 			for (const m of mismatches) {
-				const line = m.ref?.line;
-				if (line !== undefined) {
+				// #212: a BARE digit carries its line in the anchor field, not in
+				// `ref.line` — without this the echo-window allocation collected
+				// nothing and the echo rendered bare `:N:` rows with an empty
+				// "reuse the fresh marker" hint (the third #187 path).
+				const anchorText = m.ref?.anchor ?? "";
+				const line =
+					m.ref?.line ??
+					(/^\d+$/.test(anchorText) ? Number.parseInt(anchorText, 10) : undefined);
+				if (line !== undefined && line >= 1 && line <= lineIndex.fileLines.length) {
 					for (let ln = Math.max(1, line - contextLinesCfg()); ln <= Math.min(lineIndex.fileLines.length, line + contextLinesCfg()); ln++) {
 						mismatchCtx.add(ln);
 					}
@@ -1409,8 +1482,8 @@ export function applyEdit(
 			if (mismatchCtx.size > 0) {
 				// The REAL content parameter, never `lineIndex.fileLines.join("\n")`:
 				// a rebuilt string realigns the state and rewrites valid anchors (#187).
-				allocateForLines(filePath, content, [...mismatchCtx].sort((a, b) => a - b));
-				const fresh = anchorsFor(filePath, content);
+				allocateForLines(stateKey, content, [...mismatchCtx].sort((a, b) => a - b));
+				const fresh = anchorsFor(stateKey, content);
 				for (const ln of mismatchCtx) {
 					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
 				}
@@ -1456,6 +1529,7 @@ export function applyEdit(
 			fileAnchors,
 			fileLines: lineIndex.fileLines,
 			filePath,
+			statePath: opts?.statePath,
 			// The echo-window allocation needs the REAL content (#187).
 			content,
 		});
