@@ -13,7 +13,8 @@ import {
 	resEdit,
 } from "../../src/hashline/anchor-pipeline.js";
 import { applyHashlineShape, hashlineHeader, hashSep } from "../../src/hashline/hash-assign.js";
-import { anchorsPure, anchorsFor } from "../../src/hashline/session-anchors.js";
+import { anchorsPure } from "../../src/hashline/alloc.js";
+import { anchorsFor } from "../../src/domain/session/anchor-state.js";
 import { buildReadJson } from "../../src/render/read-card.js";
 import { useTestHome } from "../support/fixtures.js";
 

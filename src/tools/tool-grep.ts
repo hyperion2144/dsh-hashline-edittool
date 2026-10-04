@@ -43,9 +43,8 @@ import {
 	type ResumeSidecar,
 	takeRowsWithinBudget,
 } from "../infra/response-stream.js";
-import { allocateForLines } from "../hashline/session-anchors.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { withWorkspace } from "../domain/session/session-view.js";
+import { withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
 import { rgFiles, rgFilesWithMatches } from "./grep-rg.js";
@@ -383,9 +382,19 @@ export function buildGrepTool(io: FileIO) {
 						const normalized = content === undefined ? undefined : toLF(content);
 						const lineCount = normalized === undefined ? 0 : splitLines(normalized).length;
 						const positions = group.rows.map((row) => row.line ?? 0);
+						// #223: one call mints the anchors AND records them as served, in one
+						// transaction. This used to be `allocateForLines` here plus a
+						// `recordServed` further down, so a failure between them served rows
+						// that no session had "seen".
 						const allocated =
 							!changed && normalized !== undefined
-								? allocateForLines(group.path, normalized, positions)
+								? await anchorForInWorkspace({
+										cwd,
+										absolutePath: group.path,
+										content: normalized,
+										lines: positions,
+										sessionKey,
+									})
 								: [];
 						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
 						group.rows.forEach((row, index) => {
@@ -398,9 +407,9 @@ export function buildGrepTool(io: FileIO) {
 								rowsOut.push({ number: line, hash: "", text: row.content });
 							}
 						});
-						if (servedRows.length > 0 && normalized !== undefined) {
-							await recordServed(sessionKey, group.path, servedRows, lineCount).catch(() => undefined);
-						}
+						// Already served: `anchorForInWorkspace` recorded these anchors in
+						// the same transaction that minted them. A second `recordServed` here
+						// would be re-writing the same fact (and swallowing its own errors).
 						servedParts.push(`--- ${group.path} ---`);
 						for (const row of rowsOut) {
 							servedParts.push(
@@ -546,7 +555,14 @@ export function buildGrepTool(io: FileIO) {
 						codeUnits(section.contextRows.map((row) => row.content).join("\n")) + 24 * (section.contextRows.length + 1);
 					if (!spilling && usedChars + sectionChars <= budget) {
 						const positions = section.contextRows.map((row) => row.position + 1);
-						const allocated = allocateForLines(file, text, positions);
+						// #223: same single entry point as the section branch above.
+						const allocated = await anchorForInWorkspace({
+							cwd,
+							absolutePath: file,
+							content: text,
+							lines: positions,
+							sessionKey,
+						});
 						const anchorsByPosition = new Map<number, string>();
 						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
 						section.contextRows.forEach((row, index) => {
@@ -561,11 +577,9 @@ export function buildGrepTool(io: FileIO) {
 								});
 							}
 						});
-						if (servedRows.length > 0) {
-							await recordServed(sessionKey, file, servedRows, splitLines(text).length).catch(() => undefined);
-							if (exec !== undefined) {
-								await io.emitObserved(file, exec, signal2).catch(() => undefined);
-							}
+						// Served by the mint above; only the OBSERVATION is left.
+						if (servedRows.length > 0 && exec !== undefined) {
+							await io.emitObserved(file, exec, signal2).catch(() => undefined);
 						}
 						fileSections.push(
 							renderSection(displayPath, section.contextRows, anchorsByPosition, opts.lineNumbers, !headerEmitted),

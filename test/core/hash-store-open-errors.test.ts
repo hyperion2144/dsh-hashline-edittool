@@ -126,7 +126,10 @@ describe("hash store open error handling", () => {
     const store = await loadHashStore();
     state.busyOnce = busyError("database is locked");
     expect(() => {
-      store.upsertSnapshot("/p.ts", "checksum", 1, ["AAA"]);
+      // Was `upsertSnapshot`, which is gone with the `snapshots` table (§8). The
+      // test is about the busy-retry around a WRITE, so any real anchor-state
+      // write does — `upsertServed` takes the same `withBusyRetry` path.
+      store.upsertServed("s", "/p.ts", ["AAA"]);
     }).not.toThrow();
     expect(state.runCalls).toBeGreaterThan(1);
   });
@@ -139,7 +142,7 @@ describe("hash store open error handling", () => {
     state.persistentBusy = true;
     const callsBefore = state.runCalls;
     expect(() => {
-      store.upsertSnapshot("/p.ts", "checksum", 1, ["AAA"]);
+      store.upsertServed("s", "/p.ts", ["AAA"]);
     }).toThrow(/locked/);
     expect(state.runCalls - callsBefore).toBe(4);
   });

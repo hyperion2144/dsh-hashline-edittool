@@ -64,11 +64,18 @@ function touchPath(
 	lines: string[],
 	offsetMs = 0,
 ): void {
-const content = lines.join("\n") + "\n"; store.upsertSnapshot(path, contentChecksum(content), splitLines(content).length, lines.map((_, i) => `${i.toString(16).padStart(4, "0")}a`)); 
+const content = lines.join("\n") + "\n";
+	// Seed through the tables that survived `snapshots` (contract §8): the same
+	// anchors, written as `anchor_meta` + one `anchor_lines` row per line.
+	const db0 = new DatabaseSync(sqlitePath(home), { defensive: false } as never);
+	db0.prepare("INSERT OR REPLACE INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?)").run(path, contentChecksum(content), lines.length, Date.now());
+	const ins0 = db0.prepare("INSERT OR REPLACE INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)");
+	for (let i = 0; i < lines.length; i++) ins0.run(path, i + 1, `${i.toString(16).padStart(4, "0")}a`, i, Date.now());
+	db0.close();
+	void store;
 	if (offsetMs !== 0) {
 		const target = Date.now() - offsetMs;
 		const db = new DatabaseSync(sqlitePath(home), { defensive: false } as never);
-		db.prepare("UPDATE snapshots SET updated_at = ? WHERE path = ?").run(target, path);
 		db.prepare("UPDATE anchor_meta SET updated_at = ? WHERE path = ?").run(target, path);
 		db.prepare("UPDATE anchor_lines SET updated_at = ? WHERE path = ?").run(target, path);
 		db.close();
@@ -76,7 +83,7 @@ const content = lines.join("\n") + "\n"; store.upsertSnapshot(path, contentCheck
 }
 
 /** Build a path with N anchor_lines rows so we can drive the row budget. */
-function pushPathWithLines(store: HashStore, path: string, lineCount: number, home: string): void { const lines: string[] = []; for (let i = 0; i < lineCount; i++) lines.push(`line ${i}`); const content = lines.join("\n") + "\n"; store.upsertSnapshot(path, contentChecksum(content), lineCount, lines.map((_, i) => `${i.toString(16).padStart(4, "0")}b`)); const db = new DatabaseSync(sqlitePath(home), { defensive: false } as never); db.prepare("INSERT OR REPLACE INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?)").run(path, contentChecksum(content), lineCount, Date.now()); const ins = db.prepare("INSERT OR REPLACE INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)"); for (let i = 0; i < lineCount; i++) ins.run(path, i + 1, `${i.toString(16).padStart(4, "0")}b`, i, Date.now()); db.close(); }
+function pushPathWithLines(store: HashStore, path: string, lineCount: number, home: string): void { void store; const lines: string[] = []; for (let i = 0; i < lineCount; i++) lines.push(`line ${i}`); const content = lines.join("\n") + "\n"; const db = new DatabaseSync(sqlitePath(home), { defensive: false } as never); db.prepare("INSERT OR REPLACE INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?)").run(path, contentChecksum(content), lineCount, Date.now()); const ins = db.prepare("INSERT OR REPLACE INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)"); for (let i = 0; i < lineCount; i++) ins.run(path, i + 1, `${i.toString(16).padStart(4, "0")}b`, i, Date.now()); db.close(); }
 
 describe("hash-store.sweep — paths budget", () => {
 	it("drops oldest paths first when paths exceeds budget", async () => {

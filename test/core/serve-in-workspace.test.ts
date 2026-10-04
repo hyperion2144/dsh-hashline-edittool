@@ -1,5 +1,5 @@
 /**
- * `serveRowsInWorkspace` — the scope-aware serve primitive.
+ * `observeServedRows` — the scope-aware serve primitive.
  *
  * Field-reported shape of the bug it exists to prevent: `lsp` and `ast_grep`
  * wrote their served rows with a bare `recordServed`, and neither tool wraps
@@ -23,9 +23,10 @@ import { describe, expect, it, beforeAll } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import {
+	anchorForInWorkspace,
 	loadServed,
 	recordServed,
-	serveRowsInWorkspace,
+	observeServedRows,
 	workspaceCwd,
 	withWorkspace,
 	type ServedEntry,
@@ -46,12 +47,14 @@ function fakeExec() {
 	} as never;
 }
 
-const ROWS: ServedEntry[] = [
-	{ position: 0, anchor: "aa" },
-	{ position: 1, anchor: "bb" },
+/** The two lines every case serves, and a helper for building their rows. */
+const CONTENT = "alpha\nbravo";
+const rowsFor = (anchors: readonly string[]): ServedEntry[] => [
+	{ position: 0, anchor: anchors[0]! },
+	{ position: 1, anchor: anchors[1]! },
 ];
 
-describe("serveRowsInWorkspace", () => {
+describe("observeServedRows", () => {
 	beforeAll(async () => {
 		await getWritableTempRoot();
 	});
@@ -64,11 +67,23 @@ describe("serveRowsInWorkspace", () => {
 			// situation that produced the bug.
 			expect(workspaceCwd()).toBeUndefined();
 
-			await serveRowsInWorkspace({
+			// MINT through the scope-aware half: this is what `lsp` / `ast_grep` now
+			// do, from outside every workspace scope.
+			const anchors = await anchorForInWorkspace({
+				cwd,
+				absolutePath: path,
+				content: CONTENT,
+				lines: [1, 2],
+				sessionKey: "serve-scope-session",
+			});
+			expect(anchors).toHaveLength(2);
+			expect(anchors[0]).not.toBe("");
+			// The observing half, unchanged in shape.
+			await observeServedRows({
 				sessionKey: "serve-scope-session",
 				cwd,
 				absolutePath: path,
-				rows: ROWS,
+				rows: rowsFor(anchors),
 				lineCount: 2,
 				exec: fakeExec(),
 				io: noopIO,
@@ -77,8 +92,8 @@ describe("serveRowsInWorkspace", () => {
 			// Read back THROUGH the workspace the caller named: this is exactly what
 			// a later `edit` does, and it is what failed before.
 			const served = await withWorkspace(cwd, () => loadServed("serve-scope-session", path));
-			expect([...served][0]).toBe("aa");
-			expect([...served][1]).toBe("bb");
+			// A Set: compare as one, not element-wise (order is not part of the claim).
+			expect(served).toEqual(new Set(anchors));
 		} finally {
 			shutdownHashStore();
 		}
@@ -88,11 +103,20 @@ describe("serveRowsInWorkspace", () => {
 		const cwd = mkdtempSync(join(await getWritableTempRoot(), "dsh-serve-leak-"));
 		const path = join(cwd, "g.txt");
 		try {
-			await serveRowsInWorkspace({
+			// Mint through the workspace-scoped half, then observe: neither may land
+			// in the shared store.
+			const anchors = await anchorForInWorkspace({
+				cwd,
+				absolutePath: path,
+				content: CONTENT,
+				lines: [1, 2],
+				sessionKey: "serve-scope-session",
+			});
+			await observeServedRows({
 				sessionKey: "serve-scope-session",
 				cwd,
 				absolutePath: path,
-				rows: ROWS,
+				rows: rowsFor(anchors),
 				lineCount: 2,
 				exec: fakeExec(),
 				io: noopIO,
@@ -115,7 +139,7 @@ describe("serveRowsInWorkspace", () => {
 			// Negative control for the two tests above: the unwrapped call lands in
 			// the shared store, so the same workspace-scoped read comes back empty.
 			// This is the failing behaviour the primitive replaced.
-			await recordServed("serve-scope-session", path, ROWS, 2);
+			await recordServed("serve-scope-session", path, rowsFor(["aa", "bb"]), 2);
 
 			const served = await withWorkspace(cwd, () => loadServed("serve-scope-session", path));
 			expect(served).toEqual(new Set());

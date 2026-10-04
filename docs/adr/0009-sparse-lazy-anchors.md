@@ -36,6 +36,12 @@ allocated-anchor set, not by whole-file pre-allocation.**
 - Every tool (read, grep, lsp, ast_grep, ast_edit, edit) allocates anchors
   for exactly the rows it renders. grep allocates for match rows AND context
   rows — everything the model sees.
+- Allocation happens ONLY for rows the response actually returns. A response
+  is segmented to its budget FIRST (ADR-0013); rows cut from the returned
+  segment carry no anchor and are allocated when a later segment, a `resume`,
+  or a fresh read actually returns them. No mechanism may allocate ahead of
+  the response — an anchor the model never saw is a silent binding, and this
+  ADR's whole point is that bindings are earned by being seen.
 - The per-path state is a sparse map `line → (anchor, contentKey)`,
   persisted in the hash-store (a dedicated row family). Allocation probes
   from the content key with the file's persisted allocated-anchor set as the
@@ -65,6 +71,21 @@ allocated-anchor set, not by whole-file pre-allocation.**
 - Migration: existing dense persisted rows expand 1:1 into the sparse map
   (no anchors are lost or re-minted on upgrade).
 
+## Amendments
+
+**2026-10-04, #215** — the Decision is unchanged; one constraint is now
+explicit. Allocation happens ONLY for rows the response actually returns: the
+response is segmented to its budget first (ADR-0013), and rows cut from the
+returned segment carry no anchor until a later segment, a `resume`, or a fresh
+read returns them. "Everything the model sees" is therefore exact, not
+aspirational — no mechanism may allocate ahead of the response, and the
+served-state gate this ADR relied on is now the persisted per-session served
+set rather than an in-memory mirror (ADR-0006, amended).
+
+This states the DESIGN the map is implementing: the echo path and the grep path
+still allocate a whole planned window before assembling their response, and are
+brought into line with it by the implementation tickets on map #214.
+
 ## Alternatives Considered
 
 - **Subset allocation against a throwaway used-set** (hash only the returned lines): anchors disagree with the full-file allocation for duplicate content — the model's anchor resolves to a DIFFERENT line at edit time. Rejected.
@@ -73,3 +94,8 @@ allocated-anchor set, not by whole-file pre-allocation.**
   rows would carry line numbers without anchors, so nothing is editable
   until a read — strictly worse than the sparse model, which keeps served
   rows editable.
+
+## References
+
+- Amended: [#215](https://github.com/hyperion2144/dsh-hashline-edittool/issues/215) (allocation ordered after response segmentation)
+- Related: [ADR-0006](0006-anchor-lifecycle-inheritance.md) (the lifecycle gate this ADR's allocation feeds), [ADR-0010](0010-bounded-anchor-storage.md) (the store the sparse map lives in), [ADR-0013](0013-streaming-segmented-responses.md) (the segmentation that decides what is returned)

@@ -21,14 +21,13 @@ import { isAstEnabled, isAstLanguageEnabled } from "../config.js";
 import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure } from "../hashline/hash-assign.js";
 // tools emit the SAME `files` shape precisely so one cap governs both.
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
 import { getEffectiveConfig, isJsonOutput } from "../config.js";
 import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
-import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { observeServedRows, anchorForInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
 import { splitLines } from "../infra/utils.js";
@@ -271,7 +270,6 @@ export function buildAstGrepTool(io: FileIO) {
 				const lines = splitLines(text);
 				// LAZY (#169): the view first; the allocation happens only AFTER the
 				// gate — a refused file allocates nothing at all.
-				let hashes = anchorsFor(absolutePath, text);
 				const tooBig = summaryGate({ totalLines: lines.length, byteLength: text.length });
 				if (tooBig !== undefined) {
 					// A file the outline gate refuses is not an error: say which rule it hit
@@ -292,10 +290,15 @@ export function buildAstGrepTool(io: FileIO) {
 				}
 				// Not refused: the outline answers a whole-file question — allocate
 				// for every line the file has.
-				hashes = await allocateInWorkspace(
-					cwd, absolutePath, text,
-					Array.from({ length: lines.length }, (_, i) => i + 1),
-				);
+				const hashes = [
+					...(await anchorForInWorkspace({
+						cwd,
+						absolutePath,
+						content: text,
+						lines: Array.from({ length: lines.length }, (_, i) => i + 1),
+						sessionKey: execSessionKey(exec),
+					})),
+				];
 				let spans;
 				try {
 					spans = await getAstClient().summarySpans({
@@ -369,7 +372,7 @@ export function buildAstGrepTool(io: FileIO) {
 				// Through the scope-aware primitive: `ast_grep` has no `withWorkspace`
 				// body, so a bare `recordServed` here resolved the SHARED `$DSH_HOME`
 				// store rather than this project's — served to nobody.
-				await serveRowsInWorkspace({
+				await observeServedRows({
 					sessionKey: execSessionKey(exec),
 					cwd,
 					absolutePath,
@@ -417,7 +420,10 @@ export function buildAstGrepTool(io: FileIO) {
 			// the separator (issue #69). The rows are exactly what `read` produces, so
 			// a match can be handed straight to `edit`.
 			const lines = splitLines(text);
-			const anchors = anchorsFor(absolutePath, text);
+			// NO dense read: the only entries ever READ below are the served lines',
+			// and those are exactly what the mint returns. The array stays full
+			// length because the row builder indexes it by LINE.
+			const anchors: string[] = new Array(lines.length).fill("");
 			// LAZY (#169): allocate for exactly the rows this call serves — one row
 			// per line any match touches. Everything else keeps its state (or stays
 			// unallocated until something serves it).
@@ -428,11 +434,20 @@ export function buildAstGrepTool(io: FileIO) {
 					return rows;
 				}),
 			)].sort((a, b) => a - b);
-			const allocatedAnchors = await allocateInWorkspace(cwd, absolutePath, text, servedLineNos);
+			const allocatedAnchors = await anchorForInWorkspace({
+				cwd,
+				absolutePath,
+				content: text,
+				lines: servedLineNos,
+				sessionKey: execSessionKey(exec),
+			});
 			for (let k = 0; k < servedLineNos.length; k++) {
 				anchors[servedLineNos[k]! - 1] = allocatedAnchors[k]!;
 			}
-			const width = anchors.reduce((w, a) => Math.max(w, a.length), 0);
+			// The gutter width comes from the anchors this call actually SERVES, not
+			// from every anchor in the file: the card renders those rows, and a width
+			// taken from rows nobody is looking at silently widens every gutter.
+			const width = allocatedAnchors.reduce((w, a) => Math.max(w, a.length), 0);
 			// THE CARD'S ROWS, built from the SAME `lines` / `anchors` the model text
 			// uses. A card is a projection of facts, never a re-parse of the rendered
 			// text (ADR-0005): two renderers on one string drift, and the day they do
@@ -583,7 +598,7 @@ export function buildAstGrepTool(io: FileIO) {
 			// SERVE what this call found, exactly as the outline branch and `read`
 			// do: an anchor the model can see but the served mirror never heard of
 			// is an anchor `edit` rejects with [E_RANGE_UNVERIFIED] (#171 probe).
-			await serveRowsInWorkspace({
+			await observeServedRows({
 				sessionKey: execSessionKey(exec),
 				cwd,
 				absolutePath,

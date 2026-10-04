@@ -7,14 +7,20 @@
  * regression: without the per-content cursor, identical lines spilled after
  * ~64 rows per layer), and incremental edit updates.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { assignAnchors, allocateAnchor } from "../../src/hashline/alloc.js";
-import {
-  updateAnchorsAfterEdit,
-  anchorsFor,
-  anchorsPure,
-} from "../../src/hashline/session-anchors.js";
+import { anchorsPure } from "../../src/hashline/alloc.js";
+import { updateAnchorsAfterEdit, anchorsFor } from "../../src/domain/session/anchor-state.js";
 import { splitLines } from "../../src/infra/utils.js";
+import { useMemoryAnchorStore } from "../support/anchor-serve.js";
+
+// The anchor state IS the rows, and the rows live behind the persistence port.
+// These cases exercise the pure allocator / remap logic, so they register an
+// in-memory implementation of that port. They used to rely on the module's own
+// private cache, which is gone — `anchorsFor` reads the port, so a test with no
+// port sees an unallocated file.
+const memory = useMemoryAnchorStore();
+afterEach(() => memory.reset());
 
 /**
  * Usable 2-character anchors: `62 ** 2` slots, MINUS every digits-only one.

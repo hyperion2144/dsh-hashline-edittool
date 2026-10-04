@@ -17,6 +17,40 @@ import { HASH_STORE_VERSION, SERVED_TTL_MS } from "../../src/infra/constants.js"
 import { getWritableTempRoot } from "../support/fixtures.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
 
+/**
+ * Seed one file's anchor state and read it back, through their own connections.
+ *
+ * Both used to go through the `snapshots` table (`upsertSnapshot` /
+ * `getSnapshot`), which contract §8 deletes: it duplicated `anchor_meta` +
+ * `anchor_lines`. These two helpers read and write those tables directly, so a
+ * test still proves the rows reached the database rather than a cache.
+ */
+function seedAnchors(home: string, path: string, content: string, hashes: string[]): void {
+	const db = new DatabaseSync(sqlitePath(home));
+	try {
+		db.prepare("INSERT OR REPLACE INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?)").run(
+			path, contentChecksum(content), hashes.length, Date.now(),
+		);
+		const ins = db.prepare(
+			"INSERT OR REPLACE INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		for (let i = 0; i < hashes.length; i++) ins.run(path, i + 1, hashes[i]!, i, Date.now());
+	} finally {
+		db.close();
+	}
+}
+
+function anchorsOf(home: string, path: string): string[] | undefined {
+	const db = new DatabaseSync(sqlitePath(home), { readOnly: true });
+	try {
+		const rows = db
+			.prepare("SELECT anchor FROM anchor_lines WHERE path = ? ORDER BY line ASC")
+			.all(path) as { anchor: string }[];
+		return rows.length === 0 ? undefined : rows.map((row) => row.anchor);
+	} finally {
+		db.close();
+	}
+}
 let tmpHome: string;
 beforeAll(async () => {
 });
@@ -186,13 +220,13 @@ describe("served state — session isolation", () => {
 	});
 });
 
-describe("served state — session wipe keeps snapshots and undo", () => {
-	it("removes all served records while keeping snapshots and undo", async () => {
-		await withTempHome(async () => {
+describe("served state — session wipe keeps ANCHOR state and undo", () => {
+	it("removes all served records while keeping anchors and undo", async () => {
+		await withTempHome(async (home) => {
 			const store = await loadHashStore();
 			await recordServed("sessionA", "/a.ts", [{ position: 0, anchor: "abc" }]);
 			await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
-			store.upsertSnapshot("/a.ts", contentChecksum("a\n"), 1, ["abc"]);
+			seedAnchors(home, "/a.ts", "a\n", ["abc"]);
 			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
@@ -205,7 +239,7 @@ describe("served state — session wipe keeps snapshots and undo", () => {
 
 			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set());
 			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Set());
-			expect(store.getSnapshot("/a.ts", "a\n")).toEqual(["abc"]);
+			expect(anchorsOf(home, "/a.ts")).toEqual(["abc"]);
 			expect(store.getUndo("/u.ts")).toBeDefined();
 		});
 	});
@@ -288,7 +322,7 @@ describe("served state — schema versioning", () => {
 		await withTempHome(async (home) => {
 			const store = await loadHashStore();
 			await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "XYZ" }]);
-			store.upsertSnapshot("/p.ts", contentChecksum("x\n"), 1, ["XYZ"]);
+			seedAnchors(home, "/p.ts", "x\n", ["XYZ"]);
 			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
@@ -305,7 +339,7 @@ describe("served state — schema versioning", () => {
 			db.close();
 
 			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set());
-			expect((await loadHashStore()).getSnapshot("/p.ts", "x\n")).toBeUndefined();
+			expect(anchorsOf(home, "/p.ts")).toBeUndefined();
 			expect((await loadHashStore()).getUndo("/u.ts")).toBeUndefined();
 
 			const check = new DatabaseSync(sqlitePath(home), {
@@ -374,8 +408,8 @@ describe("served state — pruneMissing", () => {
 			const store = await loadHashStore();
 			await recordServed("sessionA", existing, [{ position: 0, anchor: "KEP" }]);
 			await recordServed("sessionA", "/gone.ts", [{ position: 0, anchor: "GON" }]);
-			store.upsertSnapshot(existing, contentChecksum("keep\n"), 1, ["KEP"]);
-			store.upsertSnapshot("/gone.ts", contentChecksum("gone\n"), 1, ["GON"]);
+			seedAnchors(home, existing, "keep\n", ["KEP"]);
+			seedAnchors(home, "/gone.ts", "gone\n", ["GON"]);
 			store.pushUndo(existing, {
 				content: "old",
 				bom: "",
@@ -394,8 +428,8 @@ describe("served state — pruneMissing", () => {
 
 			expect(await loadServed("sessionA", existing)).toEqual(new Set(["KEP"]));
 			expect(await loadServed("sessionA", "/gone.ts")).toEqual(new Set());
-			expect(store.getSnapshot(existing, "keep\n")).toEqual(["KEP"]);
-			expect(store.getSnapshot("/gone.ts", "gone\n")).toBeUndefined();
+			expect(anchorsOf(home, existing)).toEqual(["KEP"]);
+			expect(anchorsOf(home, "/gone.ts")).toBeUndefined();
 			expect(store.getUndo(existing)).toBeDefined();
 			expect(store.getUndo("/gone.ts")).toBeUndefined();
 		});

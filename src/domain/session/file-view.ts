@@ -23,7 +23,9 @@ import { open as fsOpen, stat as fsStat } from "fs/promises";
 import { access as fsAccess } from "fs/promises";
 import { fileTypeFromBuffer } from "file-type";
 import { SNIFF_BYTES, MAX_READ_LINE_BYTES } from "../../infra/constants.js";
-import { anchorsFor, allocateForLines, fmtRegion, hashSep } from "../../hashline/index.js";
+import { fmtRegion, hashSep } from "../../hashline/index.js";
+import { anchorsFor } from "./anchor-state.js";
+import { anchorForInWorkspace, workspaceCwd } from "./session-view.js";
 import { fmtMarker, hashlineHeader, canon, contentChecksum } from "../../hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "../../infra/utils.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "../../render/edit-diff.js";
@@ -471,6 +473,19 @@ export async function fmtReadPreview(
 		maxChars?: number;
 		/** v2.0: prefix every row marker with `<line>:<anchor>`. */
 		lineNumbers?: boolean;
+		/**
+		 * The session this read serves (#223). The renderer mints its own window,
+		 * and serving is per-session — this is what lets that mint go through the
+		 * one entry point instead of a second allocation path.
+		 */
+		sessionKey?: string;
+		/**
+		 * The workspace root for that mint. Passed explicitly because the
+		 * renderer is also reachable with NO ambient scope (see the callers that
+		 * have no `withWorkspace` body) — and minting into the wrong store is
+		 * silent, which is the failure class this refactor exists to remove.
+		 */
+		cwd?: string;
 	},
   precomputedHashes?: string[],
   path?: string,
@@ -501,7 +516,16 @@ export async function fmtReadPreview(
       // LAZY (#169): the one visible row of an empty file IS the serve.
       let emptyLineHash = allHashes[0] ?? "";
       if (path) {
-        const [allocated] = allocateForLines(path, text, [1]);
+        // #223: through the ONE entry point — it mints AND records served in the
+        // same transaction, so the single visible row of an empty file cannot be
+        // shown-but-unserved.
+        const [allocated] = await anchorForInWorkspace({
+          cwd: options.cwd ?? workspaceCwd() ?? "",
+          absolutePath: path,
+          content: text,
+          lines: [1],
+          sessionKey: options.sessionKey ?? "",
+        });
         if (allocated !== undefined && allocated !== "") emptyLineHash = allocated;
       }
       return {
@@ -557,7 +581,17 @@ export async function fmtReadPreview(
 			{ length: endIdx - startLine + 1 },
 			(_, i) => startLine + i,
 		);
-		const allocated = allocateForLines(path, text, windowLines);
+		// #223: mints AND records served in one transaction, through the entry
+		// point. The renderer is the right caller — it is the only one that knows
+		// the window (the char budget and the per-row byte cap decide it) — but it
+		// must not keep an allocation path of its own.
+		const allocated = await anchorForInWorkspace({
+			cwd: options.cwd ?? workspaceCwd() ?? "",
+			absolutePath: path,
+			content: text,
+			lines: windowLines,
+			sessionKey: options.sessionKey ?? "",
+		});
 		for (let i = 0; i < allocated.length; i++) {
 			allHashes[startLine - 1 + i] = allocated[i]!;
 		}
@@ -704,6 +738,13 @@ export interface PreviewOpts {
 
 export interface ReadViewOpts extends PreviewOpts {
   signal?: AbortSignal;
+  /**
+   * The session this read serves (#223). It lives HERE and not on
+   * `PreviewOpts` on purpose: minting and serving are what a READ does, not
+   * what rendering a preview does — a caller that only renders (the write
+   * shadow's diff, tests) has no session and needs none.
+   */
+  sessionKey?: string;
 }
 
 export async function preview(
@@ -743,7 +784,7 @@ export async function readView(
     });
 	const r = await fmtReadPreview(
 		normalized,
-			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false, maxChars: opts.maxChars }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget
+			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false, maxChars: opts.maxChars, sessionKey: opts.sessionKey, cwd }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget; #223: sessionKey is what lets the renderer mint through the one entry point
 			undefined, // LAZY (#169): the renderer fetches the view and allocates the window itself; a provided precomputed array means REAL hashes (write shadow) and is never re-allocated
 		absolutePath,
 	);

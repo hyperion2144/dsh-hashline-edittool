@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lineHashes, resEdit, applyEdit } from "../../src/hashline/index.js";
+import { lineHashesPure, resEdit, applyEdit } from "../../src/hashline/index.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -7,7 +7,7 @@ const home = useTestHome();
 describe("indentation-difference boundary rows (#66/B7 — warning-only)", () => {
   it("keeps a leading-duplicate replacement row when indentation matches, with warning", async () => {
     const file = "  foo\nbar\n  baz";
-    const hashes = await lineHashes(file, home.testPath);
+    const hashes = lineHashesPure(file);
     const result = applyEdit(file, resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[1]!}`, replacement_text: "  foo\n  bar" },
     ));
@@ -19,7 +19,7 @@ describe("indentation-difference boundary rows (#66/B7 — warning-only)", () =>
 
   it("keeps a leading-duplicate row (indent+content match) with warning", async () => {
     const file = "  foo\n  bar\n  baz";
-    const hashes = await lineHashes(file, home.testPath);
+    const hashes = lineHashesPure(file);
     const result = applyEdit(file, resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[1]!}`, replacement_text: "  foo\n  new" },
     ));

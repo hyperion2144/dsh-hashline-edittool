@@ -20,7 +20,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/fixtures.js";
-import { anchorsFor, allocateForLines } from "../../src/hashline/session-anchors.js";
+import { anchorsFor } from "../../src/domain/session/anchor-state.js";
+import { serveLines } from "../support/anchor-serve.js";
 import { withWorkspace, openWorkspaceStore } from "../../src/domain/session/session-view.js";
 import { splitLines } from "../../src/infra/utils.js";
 
@@ -59,10 +60,18 @@ describe("#187: an allocated anchor never changes while content is unchanged", (
 		}
 		expect(readAnchors.size).toBeGreaterThan(0);
 
-		// Persist anchors for lines 8-12 WITHOUT serving them (a pure allocation,
-		// exactly what an echo-window allocation does).
+		// Allocate anchors for lines 8-12 in ANOTHER SESSION, so they exist in
+		// `anchor_lines` while THIS session has never been shown them.
+		//
+		// The old version of this case reached the same state through
+		// `allocateForLines` ("allocate without serving"). That function is gone: by
+		// design there is ONE entry point and allocating IS serving (§2.1 — the two
+		// commit in one transaction, which is what stops "served but not allocated"
+		// and its mirror). The state itself is still perfectly reachable — it is
+		// just CROSS-SESSION now, which is the case the design actually cares about
+		// (§2.2 condition 2: live, but not in this session's set).
 		await withWorkspace(cwd, async () => {
-			allocateForLines(file, content, [8, 9, 10, 11, 12]);
+			await serveLines(file, content, [8, 9, 10, 11, 12], "other-session");
 		});
 		const before = await currentAnchors(cwd, file, content);
 		expect(before.filter((a) => a !== "").length).toBeGreaterThanOrEqual(10);
@@ -117,10 +126,10 @@ describe("#187: an allocated anchor never changes while content is unchanged", (
 		await openWorkspaceStore(cwd);
 
 		// First allocation: lines 1-4.
-		const first = (await withWorkspace(cwd, async () => allocateForLines(file, content, [1, 2, 3, 4]))) as string[];
+		const first = (await withWorkspace(cwd, async () => serveLines(file, content, [1, 2, 3, 4]))) as string[];
 		// Second allocation over a WINDOW THAT OVERLAPS: lines 2-6. Lines 2-4
 		// already have anchors and MUST keep them; 5-6 are new.
-		const second = (await withWorkspace(cwd, async () => allocateForLines(file, content, [2, 3, 4, 5, 6]))) as string[];
+		const second = (await withWorkspace(cwd, async () => serveLines(file, content, [2, 3, 4, 5, 6]))) as string[];
 		expect(second.slice(0, 3)).toEqual(first.slice(1, 4));
 		// And the whole view is unchanged for the lines that had anchors.
 		const view = (await withWorkspace(cwd, async () => anchorsFor(file, content))) as string[];

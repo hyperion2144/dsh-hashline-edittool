@@ -43,10 +43,9 @@ import {
 	fmtHashlineRow,
 	fmtMarker,
 } from "../hashline/hash-assign.js";
-import { execSessionKey, recordServed } from "../domain/session/session-view.js";
+import { anchorForInWorkspace, execSessionKey, workspaceCwd } from "../domain/session/session-view.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { getLspManager } from "./manager.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
 import type { LspSession } from "./session.js";
 
 /**
@@ -212,9 +211,11 @@ export async function deliverDiagnosticsAfterWrite(
 			startAsyncWait(input);
 			return undefined;
 		}
-		const report = collectReport(input, verified.items);
+		const report = await collectReport(input, verified.items);
 		if (report === undefined) return undefined;
-		await serveReport(input, report.rows);
+		// #223: `collectReport` minted the anchors AND served them; the
+		// observation is the only thing left, and it is not a store write.
+		await observeReport(input);
 		return report;
 	} catch (error) {
 		console.error(
@@ -328,11 +329,15 @@ async function waitPushMatching(
  * an empty push (the server looked and found nothing — clean, not silent),
  * or only severities this feature does not report.
  */
-function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): FileDiagnostics | undefined {
+async function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): Promise<FileDiagnostics | undefined> {
 	const pushed = pushedArg ?? input.session?.getDiagnostics(input.uri);
 	if (pushed === undefined || pushed.length === 0) return undefined;
 	const lines = splitLines(input.text);
-	const anchors = anchorsFor(input.absolutePath, input.text);
+	// NO dense read: every entry ever READ below belongs to a line in
+	// `diagLineNos`, and the mint fills exactly those in. Paying for a query
+	// over the file's whole anchor table to fill an array the next statement
+	// overwrites is the kind of cost nobody sees and nobody questions.
+	const anchors: string[] = new Array(lines.length).fill("");
 	const byLine = new Map<number, { messages: string[]; severities: number[] }>();
 	let totalSeen = 0;
 	let truncated = false;
@@ -362,9 +367,17 @@ function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): 
 	if (byLine.size === 0) return undefined;
 	// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
 	const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
-	// (The callers are the write/edit tool bodies, which are already inside a
-	// `withWorkspace` scope — so this plain allocation lands in the right store.)
-	const diagAllocated = allocateForLines(input.absolutePath, input.text, diagLineNos);
+	// #223: mint through the one entry point and record the served set in the
+	// same transaction. The callers are the write/edit tool bodies, already
+	// inside a `withWorkspace` scope; entering it again here is idempotent and
+	// means this call site cannot be the one that forgets to.
+	const diagAllocated = await anchorForInWorkspace({
+		cwd: workspaceCwd() ?? "",
+		absolutePath: input.absolutePath,
+		content: input.text,
+		lines: diagLineNos,
+		sessionKey: execSessionKey(input.exec),
+	});
 	for (let k = 0; k < diagLineNos.length; k++) {
 		anchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
 	}
@@ -388,21 +401,21 @@ function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): 
 }
 
 /**
- * Serve and observe the reported rows, so their markers are directly editable.
+/**
+ * Mark the reported file OBSERVED for this session — the half that is not a
+ * store write.
  *
- * An anchor the session never saw is rejected by the served-state check, which
- * would make "fix it at this marker" a lie — the same reason `lsp diagnostics`
- * serves its rows. Failures are logged, never raised.
+ * The anchors themselves, and their served rows, were committed by
+ * `anchorForInWorkspace` inside `collectReport` (#223): minting and serving
+ * are one transaction now. What remains is telling the dsh observation policy
+ * that this session has seen the file — without it the rows the card just
+ * showed are readable but not writable (`[E_NOT_OBSERVED]` on the next edit).
+ *
+ * @param input - the write that produced the report.
  */
-async function serveReport(input: AfterWriteInput, rows: readonly DiagRow[]): Promise<void> {
-	const served = rows
-		.filter((row) => row.hash !== "")
-		.map((row) => ({ position: row.number - 1, anchor: row.hash }));
-	if (served.length === 0) return;
-	await recordServed(execSessionKey(input.exec), input.absolutePath, served, splitLines(input.text).length);
+async function observeReport(input: AfterWriteInput): Promise<void> {
 	await input.io.emitObserved(input.absolutePath, input.exec, input.exec.signal);
 }
-
 /**
  * Start the bounded background wait for a slow push.
  *
@@ -449,9 +462,9 @@ function startAsyncWait(input: AfterWriteInput): void {
 				},
 			);
 			if (verified === undefined || signal.aborted) return;
-			const report = collectReport({ ...input, session }, verified.items);
+			const report = await collectReport({ ...input, session }, verified.items);
 			if (report === undefined) return;
-			await serveReport(input, report.rows);
+			await observeReport(input);
 			agent.inject(buildInjectedMessage(input, report));
 		} catch {
 			// A background delivery that fails stays silent: the write succeeded,

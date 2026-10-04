@@ -251,7 +251,7 @@ export function canon(line: string): string {
  * (variable-length, shortest-first; identical lines get distinct anchors).
  * O(n), with the allocation state deterministically rebuilt from content
  * alone — no cross-session state required. Session snapshots live in
- * session-anchors.ts.
+ * domain/session/anchor-state.ts.
  */
 export function lineHashesPure(content: string): string[] {
 	return assignAnchors(splitLines(content));

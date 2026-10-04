@@ -28,14 +28,14 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { execCwd, execSessionKey, openWorkspaceStore, recordServed } from "../domain/session/session-view.js";
+import { execCwd, execSessionKey, openWorkspaceStore, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { createResume, responseBudgetChars } from "../infra/response-stream.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
 import { genDiff } from "../render/edit-diff.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
+import { anchorsFor } from "../domain/session/anchor-state.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf, splitLines } from "../infra/utils.js";
 import { isJsonOutput } from "../config.js";
@@ -330,29 +330,15 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					after,
 					beforeHashes,
 					served !== undefined ? served.hashes : undefined,
+					{ cwd, sessionKey },
 				).catch(() => undefined);
 
-				// The diff rows carry anchors the model can SEE; they must also be in
-				// the SERVED set, or the model's next edit with them is rejected as
-				// "never served" — the write's own output would be unusable (#187).
-				if (diffRows !== undefined && diffRows.length > 0) {
-					try {
-						await recordServed(
-							sessionKey,
-							absolute,
-							diffRows
-								.filter((row) => row.hash !== "")
-								.map((row) => ({
-									position: row.lineNumber - 1,
-									anchor: row.hash,
-								})),
-							splitLines(after).length,
-							);
-					} catch {
-						// The write already happened; a failed serve is a degraded mirror,
-						// not a failed write.
-					}
-				}
+				// NO second serve here. The rows above were minted through
+				// `allocateForRenderedRows`, which now names EVERY rendered row and
+				// therefore serves all of them (the reused ones included) in one
+				// transaction. Re-recording them was a second write of a fact the
+				// previous call had already committed — the split §3 removes, and the
+				// one that let the two halves disagree (#187).
 
 				return {
 					path: rawPath,
@@ -387,6 +373,7 @@ async function buildDiffRows(
 	after: string,
 	beforeHashes: string[] | undefined,
 	afterHashes: string[] | undefined,
+	ctx: { cwd: string; sessionKey: string },
 ): Promise<EditDiffRow[]> {
 	// Anchor arrays flow in from the caller: `after` is the array the auto-
 	// read preview just served (same session allocator); `before` was captured
@@ -403,7 +390,7 @@ async function buildDiffRows(
 			: beforeHashes ?? anchorsFor(absolutePath, before);
 	const effAfter =
 		afterHashes ??
-		(await allocateForRenderedRows(absolutePath, before ?? "", after, effBefore));
+		(await allocateForRenderedRows(absolutePath, before ?? "", after, effBefore, ctx));
 	const { rows } = genDiff(
 		before ?? "",
 		after,
@@ -432,6 +419,9 @@ async function buildDiffRows(
  * @param before - pre-write content (`""` when the file did not exist).
  * @param after - post-write content, already on disk.
  * @param beforeHashes - the `-` side, when the caller captured it.
+ * @param ctx - the session context the mint belongs to. Required because the
+ * anchors are now SERVED here, not merely allocated (#223): serving is
+ * per-session, so this cannot be a bare path-keyed call.
  * @returns a per-line view whose RENDERED rows carry real anchors.
  */
 export async function allocateForRenderedRows(
@@ -439,6 +429,7 @@ export async function allocateForRenderedRows(
 	before: string,
 	after: string,
 	beforeHashes: string[] | undefined,
+	ctx: { cwd: string; sessionKey: string },
 ): Promise<string[]> {
 	const sparse = anchorsFor(absolutePath, after);
 	const firstPass = genDiff(before, after, contextLinesCfg(), sparse, beforeHashes);
@@ -447,13 +438,26 @@ export async function allocateForRenderedRows(
 	// will be shown but has no anchor yet". The rendered `anchor` field cannot
 	// be used for this — it is a formatted marker (four spaces when the hash is
 	// missing), so it is never the empty string.
-	const need = new Set<number>();
-	for (const row of firstPass.servedRows) {
-		if (row.anchor === "") need.add(row.position + 1);
-	}
-	if (need.size === 0) return sparse;
-	const lines = [...need].sort((a, b) => a - b);
-	const allocated = allocateForLines(absolutePath, after, lines);
+	// EVERY row the diff renders, not just the ones missing an anchor: the mint
+	// REUSES an anchor whose content still matches, so naming them all costs one
+	// lookup each and mints only the ones that need it — while naming only the
+	// empty ones leaves the reused rows UNSERVED, which forced the caller to
+	// record them in a second write of the same fact (the split §3 removes: an
+	// anchor that is live but unserved is an anchor the model cannot write with).
+	const rendered = new Set<number>();
+	for (const row of firstPass.servedRows) rendered.add(row.position + 1);
+	if (rendered.size === 0) return sparse;
+	const lines = [...rendered].sort((a, b) => a - b);
+	// #223: the one entry point mints (what is missing) AND serves (all of it),
+	// in one transaction — so a rendered row is never left in the state where
+	// the model can see its anchor and the edit gate refuses it.
+	const allocated = await anchorForInWorkspace({
+		cwd: ctx.cwd,
+		absolutePath,
+		content: after,
+		lines,
+		sessionKey: ctx.sessionKey,
+	});
 	const filled = [...sparse];
 	for (let i = 0; i < lines.length; i++) {
 		filled[lines[i]! - 1] = allocated[i] ?? "";

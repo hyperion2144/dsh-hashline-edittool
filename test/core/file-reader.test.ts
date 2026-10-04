@@ -68,8 +68,8 @@ describe("readNormFile", () => {
 			const result = await readNormFile("data.txt", cwd);
 			expect(result.fileHashes).toHaveLength(3);
 			// The view is unallocated; the SERVE point mints the anchors (#169).
-			const { allocateForLines } = await import("../../src/hashline/session-anchors.js");
-			const served = allocateForLines(result.absolutePath, result.normalized, [1, 2, 3]);
+			const { serveLines } = await import("../support/anchor-serve.js");
+			const served = await serveLines(result.absolutePath, result.normalized, [1, 2, 3]);
 			expect(served).toHaveLength(3);
 			for (const anchor of served) expect(anchor).toMatch(/^[A-Za-z0-9]{2,8}$/);
 			expect(served[0]).not.toBe(served[1]);

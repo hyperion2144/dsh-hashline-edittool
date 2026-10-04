@@ -11,15 +11,19 @@
  * @module dsh-hashline-edittool/anchor-lifecycle-invariants
  */
 import { describe, expect, it } from "vitest";
-import { anchorsFor, allocateForLines } from "../../src/hashline/session-anchors.js";
+import { anchorsFor } from "../../src/domain/session/anchor-state.js";
+import { anchorFor } from "../../src/domain/session/anchor-entry.js";
 import { splitLines } from "../../src/infra/utils.js";
 
-/** Serve every line — the read path's allocation step (LAZY #169). */
-function serveAll(path: string, content: string): string[] {
-	return allocateForLines(
-		path, content,
-		Array.from({ length: splitLines(content).length }, (_, i) => i + 1),
-	);
+/** Serve every line — the ONE allocate entry point (contract §2, LAZY #169). */
+async function serveAll(path: string, content: string): Promise<string[]> {
+	await anchorFor({
+		path,
+		content,
+		lines: Array.from({ length: splitLines(content).length }, (_, i) => i + 1),
+		sessionKey: "lifecycle-invariants",
+	});
+	return anchorsFor(path, content);
 }
 import { applyEdit, type HEdit } from "../../src/hashline/anchor-pipeline.js";
 import {
@@ -29,13 +33,13 @@ let unique = 0;
 const freshPath = (): string => `/tmp/invariants-${++unique}.ts`;
 
 describe("invariant 2 — rewrite inherits, unchanged lines keep anchors", () => {
-	it("a rewrite that changes one line preserves every other line's anchor", () => {
+	it("a rewrite that changes one line preserves every other line's anchor", async () => {
 		const path = freshPath();
 		const before = ["alpha", "beta", "gamma", "delta"].join("\n");
 		const after = ["alpha", "BETA", "gamma", "delta"].join("\n");
 
-		const a1 = serveAll(path, before);
-		const a2 = serveAll(path, after);
+		const a1 = await serveAll(path, before);
+		const a2 = await serveAll(path, after);
 
 		expect(a2[0]).toBe(a1[0]); // alpha unchanged → anchor kept
 		expect(a2[2]).toBe(a1[2]); // gamma unchanged → anchor kept
@@ -43,32 +47,32 @@ describe("invariant 2 — rewrite inherits, unchanged lines keep anchors", () =>
 		expect(a2[1]).not.toBe(a1[1]); // beta CHANGED → new anchor
 	});
 
-	it("a rewrite above identical blank lines does NOT reshuffle them", () => {
+	it("a rewrite above identical blank lines does NOT reshuffle them", async () => {
 		const path = freshPath();
 		const before = ["def a():", "    pass", "", "", "def b():"].join("\n");
 		const after = ["def a():", "    return 1", "", "", "def b():"].join("\n");
 
-		const a1 = serveAll(path, before);
-		const a2 = serveAll(path, after);
+		const a1 = await serveAll(path, before);
+		const a2 = await serveAll(path, after);
 
 		expect(a2[2]).toBe(a1[2]); // blank line 3 — same content, same anchor
 		expect(a2[3]).toBe(a1[3]); // blank line 4 — same content, same anchor
 		expect(a2[4]).toBe(a1[4]); // def b(): — same content, same anchor
 	});
 
-	it("normalization: BOM/CRLF raw text and clean text allocate IDENTICALLY", () => {
+	it("normalization: BOM/CRLF raw text and clean text allocate IDENTICALLY", async () => {
 		const path = freshPath();
 		const clean = "export const a = 1;\nexport const b = 2;\n";
 		const raw = `\uFEFFexport const a = 1;\r\nexport const b = 2;\r\n`;
-		expect(serveAll(path, raw)).toEqual(serveAll(path, clean));
+		expect(await serveAll(path, raw)).toEqual(await serveAll(path, clean));
 	});
 });
 
 describe("invariant 3 — exclusivity", () => {
-	it("anchorsFor output never contains duplicate anchors", () => {
+	it("anchorsFor output never contains duplicate anchors", async () => {
 		const path = freshPath();
 		const lines = ["x", "", "", "y", "", "z", ""].join("\n");
-		const anchors = serveAll(path, lines);
+		const anchors = await serveAll(path, lines);
 		expect(new Set(anchors).size).toBe(anchors.length);
 	});
 

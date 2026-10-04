@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   applyEdit,
-  lineHashes,
   lineHashesPure,
   resEdit,
 } from "../../src/hashline/index.js";
+import { servedAnchors } from "../support/anchor-serve.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -12,7 +12,7 @@ const home = useTestHome();
 describe("applyEdit — recovery scenarios", () => {
   it("autocorrects reversed range (start > end) — SRC BUG: resEdit row-strip drops the line:hint, so reversed detection needs the line; needs src fix", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
 		{ remove_from: `4:${hashes[3]!}`,
 		remove_to: `2:${hashes[1]!}`, replacement_text: "X" },
@@ -23,7 +23,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("rejects stale anchor", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     expect(() =>
       applyEdit(content, resEdit(
         { remove_from: `${hashes[0]!}`,
@@ -34,7 +34,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("shows current context around the resolved anchor when only one anchor of a range is stale", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const staleStart = "ZZZ";
     let caught: Error | undefined;
     try {
@@ -53,7 +53,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("shows context anchored on the start when only the end is stale", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const staleEnd = "ZZZ";
     let caught: Error | undefined;
     try {
@@ -143,7 +143,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("strips a full line#hash: prefix in content_lines", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[1]!}`,
 		remove_to: `${hashes[2]!}`, replacement_text: `2:${hashes[1]!}:b\nX` },
@@ -154,7 +154,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("strips an anchored +line#hash: diff preview row in content_lines", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[1]!}`,
 		remove_to: `${hashes[1]!}`, replacement_text: `+2:${hashes[1]!}:B` },
@@ -165,7 +165,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("warns on unicode escape sequences in content", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[1]!}`,
       remove_to: `${hashes[1]!}`, replacement_text: "\\uDDDD" },
@@ -176,7 +176,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("handles tab characters in content_lines", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[2]!}`,
       remove_to: `${hashes[2]!}`, replacement_text: "\t\treplaced" },
@@ -186,7 +186,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("preserves literal tab in content_lines", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[2]!}`,
       remove_to: `${hashes[2]!}`, replacement_text: "\t\treplaced" },
@@ -196,7 +196,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("detects noop when content unchanged", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[1]!}`,
       remove_to: `${hashes[1]!}`, replacement_text: "b" },
@@ -206,7 +206,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("detects noop for range", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[1]!}`,
       remove_to: `${hashes[2]!}`, replacement_text: "b\nc" },
@@ -216,7 +216,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("handles single-line file", async () => {
     const content = "hello";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[0]!}`,
       remove_to: `${hashes[0]!}`, replacement_text: "world" },
@@ -226,7 +226,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("handles append to last line", async () => {
     const content = "a\nb";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[1]!}`,
       remove_to: `${hashes[1]!}`, replacement_text: "b\nc" },
@@ -236,7 +236,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("handles delete of first line", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[0]!}`,
       remove_to: `${hashes[0]!}`, replacement_text: "" },
@@ -246,7 +246,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("handles delete of last line", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[2]!}`,
       remove_to: `${hashes[2]!}`, replacement_text: "" },
@@ -256,7 +256,7 @@ describe("applyEdit — recovery scenarios", () => {
 
   it("handles edit of entire file", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[0]!}`,
       remove_to: `${hashes[2]!}`, replacement_text: "x\ny" },

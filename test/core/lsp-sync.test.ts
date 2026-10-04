@@ -14,8 +14,10 @@ import { notifyDocumentWritten, setDocumentSyncHook } from "../../src/lsp/sync.j
 import { getLspManager, LspManager, setLspManager } from "../../src/lsp/manager.js";
 import { encodeMessage, MessageReader } from "../../src/lsp/framing.js";
 import type { LspTransport } from "../../src/lsp/session.js";
-import { lineHashes } from "../../src/hashline/index.js";
 import { recordServed } from "../../src/domain/session/session-view.js";
+import { lineHashesPure } from "../../src/hashline/index.js";
+import { anchorForInWorkspace } from "../../src/domain/session/session-view.js";
+import { withWorkspace } from "../../src/infra/workspace.js";
 import { splitLines } from "../../src/infra/utils.js";
 import { canon, contentChecksum } from "../../src/hashline/hash-assign.js";
 
@@ -170,7 +172,25 @@ describe("the write path", () => {
 	it("notifies with the new content after an edit lands on disk", async () => {
 		const written: Array<[string, string]> = [];
 		setDocumentSyncHook((path, text) => written.push([path, text]));
-		const hashes = await lineHashes(SOURCE, file);
+		// The anchors the file's lines get: `lineHashesPure` is the same
+		// content-derived derivation the allocator uses, so these are exactly the
+		// values `anchorForInWorkspace` below reuses.
+		const hashes = lineHashesPure(SOURCE);
+		// §2.2 condition 1 is LIVENESS: the verdict asks whether the anchor is in
+		// `anchor_lines` for this path, not merely whether the session remembers
+		// seeing it. `lineHashes` is the PURE derivation (no store), so these
+		// anchors have to be minted into the workspace's state for the test to
+		// describe a state that can actually occur in production. `anchorFor` is
+		// content-keyed, so the resulting values are the ones `lineHashes` returned.
+		await withWorkspace(dir, () =>
+			anchorForInWorkspace({
+				cwd: dir,
+				absolutePath: file,
+				content: SOURCE,
+				lines: splitLines(SOURCE).map((_, index) => index + 1),
+				sessionKey,
+			}),
+		);
 		const lines = splitLines(SOURCE);
 		await recordServed(
 			sessionKey,
@@ -191,7 +211,13 @@ describe("the write path", () => {
 			op: "replace",
 			lineStart: 1,
 		} as PreparedItem;
-		const result = await runFileEdits(io, [item], { sessionKey });
+		// Inside the workspace scope: the engine resolves the store from
+		// `workspaceCwd()`, so without this it would read the DEFAULT store while
+		// the anchors above were minted into `dir`'s — and the edit would report
+		// `E_STALE` for an anchor that exists. Same trap #171 documented for writes.
+		const result = await withWorkspace(dir, () =>
+			runFileEdits(io, [item], { sessionKey, cwd: dir }),
+		);
 		await persistUndoAndWrite({
 			io,
 			signal: undefined,

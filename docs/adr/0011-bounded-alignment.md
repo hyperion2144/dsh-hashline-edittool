@@ -97,7 +97,13 @@ hundreds of megabytes in a test.
   rejected in favour of blocked DP: after trimming, the remaining inputs are small
   in the common case, blocked alignment is far easier to reason about and to test,
   and a hand-written Myers would need its own correctness proof for a marginal
-  keep-rate gain.
+  keep-rate gain. **Clarified 2026-10-04 (#215)**: "main path" meant the WHOLE-FILE
+  realign above — and that rejection stands. Myers is now used INSIDE an `edit`
+  operation's span, where the two inputs are the op's own old range and its own
+  `lines` array: both are bounded by the request, the diff decides exactly which
+  lines changed (so only those re-hash), and this path never runs over a whole
+  file. Blocked DP keeps the whole-file realign, and with it the memory bound this
+  ADR exists to provide.
 - **Raising the heap (`--max-old-space-size`)** — rejected: the plugin cannot
   dictate the host process's heap, and the pathological inputs are unbounded.
 - **A pre-flight size check in the caller** — rejected: `ensureState`'s realign is

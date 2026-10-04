@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { lineHashesPure, lineHashes } from "../../src/hashline/index.js";
+import { lineHashesPure } from "../../src/hashline/index.js";
+import { servedAnchors } from "../support/anchor-serve.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -25,14 +26,14 @@ describe("deterministic hashing — stability as a function property", () => {
 	it("produces the identical hash set through the persistence path", async () => {
 		const content = "a\nb\nc";
 		const pure = lineHashesPure(content);
-		const throughStore = await lineHashes(content, home.testPath);
+		const throughStore = await servedAnchors(content, home.testPath);
 		expect(throughStore).toEqual(pure);
 	});
 
 	it("is stable across store reloads (cache and recompute agree)", async () => {
 		const content = "first\nsecond\nthird";
-		const first = await lineHashes(content, home.testPath);
-		const second = await lineHashes(content, home.testPath);
+		const first = await servedAnchors(content, home.testPath);
+		const second = await servedAnchors(content, home.testPath);
 		expect(second).toEqual(first);
 	});
 

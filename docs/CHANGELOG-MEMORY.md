@@ -162,3 +162,56 @@ ADR-0013 rather than left in issues.
   segment, spill, resume token, version stamp).
 - Implementation (constants retirement, resume params, spill store) is
   tracked by #207 against specs #209/#210 — not part of this entry.
+
+---
+
+## 2026-10-04 — 锚点模型修订与词汇重构：单一数据源、分配时机、跨会话边界 (#215)
+
+**Type:** decision + contract documentation
+**Confidence:** High
+**Evidence:** wayfinder map [#214](https://github.com/hyperion2144/dsh-hashline-edittool/issues/214) 的对齐票 [#215](https://github.com/hyperion2144/dsh-hashline-edittool/issues/215)；维护者逐轮裁定（TTL 与有界淘汰保留、served 是锚点 set 且按会话隔离、分配时机在响应截断之后、Myers 只作用于 op 跨度、undo 快照深度 3 不跨会话）；代码核对确认锚点分配早已持久化（ADR-0006 的 #136 修正案），而 served 没有内存镜像，每次判定都要把整个集合从 sqlite 读出并反序列化；ADR-0010 活动库中 `snapshots` 0 行（死表）而 `anchor_meta` 106 行。
+
+### Why
+把「锚点从哪来」这件事收归一处。核对后发现要消掉的不是 served 这个概念，而是三条并存的路：取锚 API 有四个（`anchorsFor` / `allocateForLines` / `updateAnchorsAfterEdit` / `anchorsPure`）被 9 个工具模块各自调用，而没有哪一个能被称为唯一入口；可写判定每次 `edit` 都要把整个 served 集合读出并反序列化成 `Set<string>`（`loadServed`），没有内存镜像可依；而 ADR-0006 的 #136 修正案早已把**分配**持久化 —— 于是同一件事存在两个判定面，正是「刚读到的锚点被判没见过」那类故障的土壤。
+
+两条裁定与既有 ADR 正面相撞，必须显式推翻而不是悄悄改实现：ADR-0010 的 Alternatives 写明「**Served as a row table** — rejected … it would need its own budget story」，而新设计采用行表（维护者裁决：集合语义由主键约束表达，成员资格必须可在库内按范围查询，否则每次 edit 仍要全量载入）；ADR-0011 的 Alternatives 写明「**Myers O(NP) banded DP as the main path** — rejected」。后者限缩适用范围即消解：Myers 只用于 op 跨度内（两侧输入都由该 op 界定），整文件 realign 仍归有界 DP，本 ADR 要保的内存上界不受影响。
+
+另有三条新语义在此定型：分配时机在响应截断**之后**（只为真正返回给模型的行分配，不提前分配）；行号位移只是**重映射**、绝不重新哈希（未变行的锚点身份原样保留）；外部改动走 read 路径，只对**已分配锚点**的行做内容配对并重分配变化的行。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0006-anchor-lifecycle-inheritance.md` — Amended：分配从两种情形扩为三种（首次服务 / 内容变化 / 外部改动），enforcement 载体由内存镜像改为持久化行族 + 按会话 served 集合，稳定性边界由「单个会话内」升为「同一工作区的所有会话」。
+- `docs/adr/0009-sparse-lazy-anchors.md` — Amended：新增「分配只在真正返回的行上发生」条款（响应先按预算分段，见 ADR-0013）。
+- `docs/adr/0010-bounded-anchor-storage.md` — Amended：**served 保持整集 blob，不做逐锚点行表**；行表经 2026-10-04 的实测（#217）被否决 —— 写入放大 ≈187×、行族占库 0.73%→10.5%、300k 行 = 73.2 MiB 超 64 MiB 上限，且它解决的是一个没人提的查询（校验的天然单位是整个集合）。预算、两层淘汰与 TTL 不变，无需放宽；Alternatives 的 row-table 条目标注为「已评估并第二次否决（这次基于实测）」。
+- `docs/adr/0011-bounded-alignment.md` — Amended：澄清「main path」指整文件 realign，该拒绝成立；Myers 限定在 op 跨度内使用。
+- `CONTEXT.md` — 词汇拆分与新增：Rendered 改为 Anchor entry point，Served 明确按会话隔离，新增 Allocation / Editability / Release pool / Remap / Echo。
+- `CHANGELOG.md` — 契约变化（分配时机、跨会话稳定性与失效条件）随实施票落 `[Unreleased]`。
+- `docs/agents/` — 无变化；实施与发布归 map [#214](https://github.com/hyperion2144/dsh-hashline-edittool/issues/214) 的 #224 / #226 / #227。
+
+### 更正（2026-10-04，追加）
+
+本条目 `### Why` 那一节里有一句**写错了、且已被实测与后续裁定推翻**：「而新设计采用行表（维护者裁决：集合语义由主键约束表达，成员资格必须可在库内按范围查询）」。
+- **行表已被否决**：取证 #217 实测出写入放大 ≈187×（read 200 行从 1 行 / 274 B 变成 200 行 / ≈51 KiB）、行族占库 0.73%→10.5%、300k 行 = 73.2 MiB **超出 64 MiB 字节上限**；决定性理由是行表解决了一个**没人提的查询**（校验的天然单位就是整个集合）。最终裁定：**`served` 保持整集 blob**。以本条目上方的 Path 段（已正确写为「served 保持整集 blob，不做逐锚点行表」）与 ADR-0010 的 2026-10-04 修正案为准。
+- 同时，本条目的 Path 段还漏了两块后来才定下的内容：**释放 = 三清**（含「只清发起释放的会话」）与**逐行三条判定 + 校验和不是拒绝条件**，以及**会话语义与四类 echo 原因**。完整定案见 [`docs/anchor-entry-contract.md`](../anchor-entry-contract.md)。
+
+（按本文件的 append-only 约定，上面那句原文不改写；此更正条目生效。）
+
+---
+
+## 2026-10-04（实施期）— 契约 §6 更正：锚点不可解析走既有的 `[E_STALE]`
+
+**Type:** accuracy correction
+**Confidence:** High
+**Evidence:** `src/hashline/anchor-pipeline.ts:321`（定位阶段抛出）、`README.md:144` 与 `README.md:282`（错误码表）、`test/core/anchor-drift-cross-session.test.ts`、`npm test`（123 文件 / 1396 例，exit 0）
+
+### Why
+
+实施 #223 / #224 时写「跨会话把某行替换掉、原会话拿旧锚点重提」的用例，实测拿到的是 `[E_STALE]`，而 [`docs/anchor-entry-contract.md`](../anchor-entry-contract.md) §6 写的是「失败**始终**是 `E_RANGE_UNVERIFIED`」。
+
+追下去发现**代码与 README 一致，是契约那一节漏了一条路径**：锚点**根本无法解析**时，管线在**定位阶段**就拒绝了，而 served 集合的判定发生在之后的 `verifyServedRange` 里 —— 那条路径根本走不到。`README.md` 的错误码表本来就写着「`[E_STALE]` — anchor unknown」。
+
+### Path / Affected typed relationships
+
+- `docs/anchor-entry-contract.md` §6 — Amended：新增「实测补充」段，并把「失败始终是 `E_RANGE_UNVERIFIED`」限定为**本节范围内**。正确读法：`E_RANGE_UNVERIFIED` 覆盖「已解析但不在本会话 served 集合」；「锚点不可解析」归既有的 `E_STALE`。§2.4 的四类 `reason` 仍按原样分岔提示语，**不改动任何一个码**。
+- 不涉及 `README.md`：它本来就是对的，改的是契约对它的复述。
+- 不涉及错误码集合的增删 —— 本次重构的「错误码一字不改」承诺未破。

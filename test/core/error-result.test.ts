@@ -323,8 +323,15 @@ describe("echo context end-to-end (require_line_content)", () => {
 			).toBe(true);
 			expect(value.modelText).toMatch(/E_RANGE_UNSERVED|E_RANGE_UNVERIFIED|E_STALE/);
 			// A line hint lets the rejection center its ±context echo on the named
-			// line, and that echo block is exactly what lands in context.
-			expect(value.error?.context ?? "").toMatch(/^Echo of the line you tried/);
+			// line, and that echo block is exactly what lands in context. Either
+			// header is acceptable: the LOCATE stage says "Echo of the line you tried"
+			// while the SERVED verdict says "Echo of the first unserved line" — and
+			// an externally drifted line is now caught by the verdict (the content
+			// key no longer matches), so this case takes the second wording. Both are
+			// recognized by the error-response recognizer (infra/error-result.ts).
+			expect(value.error?.context ?? "").toMatch(
+				/^(Echo of the line you tried|Echo of the first unserved line)/,
+			);
 		});
 	});
 });

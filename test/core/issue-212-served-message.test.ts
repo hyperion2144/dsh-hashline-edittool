@@ -196,3 +196,40 @@ describe("#212 Q4 decision: the dead `E_RANGE_UNSERVED` promise is gone", () => 
 		}
 	});
 });
+
+/**
+ * §2.4: one code, four causes — and the wording has to match the cause.
+ *
+ * `verifyServedRange` used to explain every served-set failure with "a session
+ * restart clears the served record". That is true for exactly one of the four
+ * cases. For a line whose CONTENT changed underneath the session it prescribes
+ * the wrong recovery: the model is told to go re-read a file it could already
+ * fix with the marker the rejection echoes.
+ */
+describe("#212 §2.4 — the refusal distinguishes restart from a changed line", () => {
+	it("a line rewritten out-of-band is refused, and the file is untouched", async () => {
+		const { cwd } = await makeCase("cause");
+		const tools = sessionTools(cwd, "cause-session");
+		const first = await tools.read({ path: "f.txt" });
+		// The anchor of line 3, taken from the read the model would have seen.
+		const anchor = /^\s*([A-Za-z0-9]{2,8}):3[:|]/m.exec(first.modelText)?.[1];
+		expect(anchor).toBeDefined();
+
+		// Out-of-band rewrite of THAT line. No tool call in between, so nothing
+		// reconciles the served mirror.
+		const rewritten =
+			Array.from({ length: LINES }, (_, i) =>
+				i === 2 ? "line-03 REWRITTEN" : `line-${String(i + 1).padStart(2, "0")} content`,
+			).join("\n") + "\n";
+		await writeFile(join(cwd, "f.txt"), rewritten);
+
+		const res = await tools.edit({
+			path: "f.txt",
+			edits: [{ op: "replace", anchor_start: anchor, anchor_end: anchor, lines: ["x"] }],
+		});
+		// The code set is unchanged — only the wording differs by cause.
+		expect(res.modelText).toMatch(/E_STALE|E_RANGE_UNVERIFIED/);
+		// Refusal is all-or-nothing: the out-of-band rewrite survives.
+		expect(await readFile(join(cwd, "f.txt"), "utf-8")).toBe(rewritten);
+	});
+});

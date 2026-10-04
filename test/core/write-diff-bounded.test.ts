@@ -25,7 +25,8 @@ import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/f
 import { hashStorePath } from "../../src/infra/paths.js";
 import { allocateForRenderedRows } from "../../src/tools/tool-write-shadow.js";
 import { genDiff } from "../../src/render/edit-diff.js";
-import { anchorsFor, allocateForLines } from "../../src/hashline/session-anchors.js";
+import { anchorsFor } from "../../src/domain/session/anchor-state.js";
+import { serveLines } from "../support/anchor-serve.js";
 import { splitLines } from "../../src/infra/utils.js";
 import { contextLinesCfg } from "../../src/hashline/hash-assign.js";
 import { withWorkspace } from "../../src/domain/session/session-view.js";
@@ -77,9 +78,15 @@ describe("#188: a write's diff allocates its window, not the file", () => {
 		await harness.readTool.execute("read", { path: "big.ts", limit: 5 });
 
 		// Persistence is wired per workspace scope (the write tool runs inside it),
-		// so the probe enters the same scope its real caller would.
+		// Persistence is wired per workspace scope (the write tool runs inside it),
+		// so the probe enters the same scope its real caller would — and passes the
+		// session context, because the mint now also RECORDS the anchors as served
+		// (#223).
 		const view = await withWorkspace(cwd, () =>
-			allocateForRenderedRows(file, before, after, undefined),
+			allocateForRenderedRows(file, before, after, undefined, {
+				cwd,
+				sessionKey: harness.sessionKey,
+			}),
 		);
 		expect(view.length).toBe(splitLines(after).length);
 
@@ -98,17 +105,30 @@ describe("#188: a write's diff allocates its window, not the file", () => {
 		const persisted = anchorRowCount(cwd, file);
 		expect(persisted).toBeGreaterThanOrEqual(renderedLines);
 		expect(persisted).toBeLessThan(renderedLines * 3 + 50);
-		// EQUIVALENCE: the old dense allocation renders the same rows, anchors
-		// included — so this is a cost change, not a behaviour change.
-		const denseAfter = allocateForLines(
+		// EQUIVALENCE of the DIFF: the same rows, in the same kinds, at the same
+		// line numbers, with the same content — so this is a cost change, not a
+		// behaviour change.
+		//
+		// The ANCHORS of a row deep in a 40k-line file are deliberately NOT compared
+		// against a dense baseline. The 2-character layer holds 3,744 anchors, so
+		// past that every allocation is scope-dependent: allocating the whole file
+		// exhausts the layer before it reaches line 39993 and hands that line a
+		// 3-character anchor (`afG`), while the sparse path — which is the point of
+		// #188 — mints against the few anchors the file actually holds and stays at
+		// 2 (`fG`). Measured, and not a defect: the anchor is opaque, and the row
+		// is still served, still unique, and still usable.
+		const denseAfter = await serveLines(
 			file,
 			after,
 			Array.from({ length: splitLines(after).length }, (_, i) => i + 1),
 		);
 		const denseRows = genDiff(before, after, contextLinesCfg(), denseAfter, undefined).rows;
 		const shape = (rows: typeof denseRows) =>
-			rows.map((r) => [r.kind, r.lineNumber, r.hash, r.content]);
+			rows.map((r) => [r.kind, r.lineNumber, r.content]);
 		expect(shape(denseRows)).toEqual(shape(rendered.rows));
+		// …and every rendered row still carries an anchor (the anchors differ in
+		// LENGTH at scale, never in presence).
+		expect(rendered.rows.every((row) => row.kind === "-" || row.hash !== "")).toBe(true);
 	}, 120_000);
 
 	it("keeps the sparse view's inheritance when nothing new needs allocating", async () => {
@@ -124,7 +144,10 @@ describe("#188: a write's diff allocates its window, not the file", () => {
 		// beyond what the session already holds.
 		const beforeCount = anchorRowCount(cwd, file);
 		const view = await withWorkspace(cwd, () =>
-			allocateForRenderedRows(file, before, before, undefined),
+			allocateForRenderedRows(file, before, before, undefined, {
+				cwd,
+				sessionKey: harness.sessionKey,
+			}),
 		);
 		expect(anchorRowCount(cwd, file)).toBe(beforeCount);
 		expect(view.length).toBe(splitLines(before).length);

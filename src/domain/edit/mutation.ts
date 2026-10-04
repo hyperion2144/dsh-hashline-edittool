@@ -37,9 +37,10 @@ import { encodeText, resEdit, type NEdit } from "../../hashline/anchor-pipeline.
 import type { ResolvedRange } from "../../hashline/anchor-pipeline.js";
 import { AnchorMismatchError, ServedRejectionError } from "../../hashline/anchor-pipeline.js";
 import { loadServed, sessionKeyFor, recordEchoServes, scanDrift, type ServeRecordPolicy } from "../session/session-view.js";
+import { allocationUsedSet } from "../session/anchor-entry.js";
 import { abortIf, splitLines } from "../../infra/utils.js";
 import { applyOne, toAnchorHunk } from "./edit-engine.js";
-import { updateAnchorsAfterEdit } from "../../hashline/session-anchors.js";
+import { updateAnchorsAfterEdit } from "../session/anchor-state.js";
 import {
   runFileEdits,
   resolveMissingPath,
@@ -176,6 +177,8 @@ export async function execPipeline(
 			content: originalNormalized,
 			hashes: originalHashes,
 			served,
+			sessionKey,
+			cwd,
 			removeFrom: removeFrom,
 			removeTo: removeTo,
 			replacementText: op === "del" ? "" : replTextRaw,
@@ -257,6 +260,11 @@ let driftNotice: string | undefined
 				oldContent: originalNormalized,
 				newContent: result,
 				oldAnchors: originalHashes,
+				// The remap MINTS for the hunk's fresh lines, so it takes the same
+				// avoid-set as every other allocation: the file's live rows ∪ this
+				// call's release pool (§2.1 item 3, §4.1). Without it a line could be
+				// handed an anchor this call just released (§9 invariant 5).
+				used: allocationUsedSet(absolutePath),
 				// The single edit's hunk, shaped by the one rule that owns it (#151).
 				hunks: hunkShifts.map((s) =>
 					toAnchorHunk({

@@ -1,6 +1,6 @@
 # ADR-0010 — Bounded anchor storage: budgets, two-layer eviction, and tiered rebuild
 
-> **Status**: Implemented (spec [#184](https://github.com/hyperion2144/dsh-hashline-edittool/issues/184); decisions taken with the maintainer on 2026-09-24 across map [#173](https://github.com/hyperion2144/dsh-hashline-edittool/issues/173); implementation in [#180](https://github.com/hyperion2144/dsh-hashline-edittool/issues/180)).
+> **Status**: Implemented (spec [#184](https://github.com/hyperion2144/dsh-hashline-edittool/issues/184); decisions taken with the maintainer on 2026-09-24 across map [#173](https://github.com/hyperion2144/dsh-hashline-edittool/issues/173); implementation in [#180](https://github.com/hyperion2144/dsh-hashline-edittool/issues/180)). The 2026-10-04 amendment below **keeps `served` as one serialized blob per `(session_id, path)`** — the "served as a row table" shape was evaluated and rejected a second time, on measurement ([#217](https://github.com/hyperion2144/dsh-hashline-edittool/issues/217)). Nothing about that representation needs building.
 
 ## Problem Statement
 
@@ -104,6 +104,31 @@ stops scaling with the store's contents.
   with a warning that names the field, the value, the range and the fallback. A
   change lands on the store's next sweep, never synchronously.
 
+**Amendment (2026-10-04, #215/#217)** — the served set keeps its CURRENT
+representation: one serialized blob per `(session_id, path)`. "Served as a row
+table" was evaluated and **rejected a second time** — this time on measurement,
+not on the reasoning below.
+
+What changed is the reason the earlier rejection gave. It argued the row table was
+too big; the measurement says it is far too big. On this repository's store: a
+per-anchor row costs **≈256 B** (58 B path; 255.80 measured, of which the PRIMARY
+KEY autoindex alone is 131 B — the index costs more than the row), against
+**1.41 B per anchor** packed in the current blob. One serve of 200 lines moves
+from **1 row / 274 B** to **200 rows / ≈51 KiB** — a ≈187× write amplification —
+and the served row family grows from **0.73 % to 10.5 %** of the store.
+300,000 rows × 256 B = **73.2 MiB, past the 64 MiB byte ceiling**: the byte
+budget is hit long before the row budget (≈262,144 rows max).
+
+The decisive argument is not the size, though — it is that the row table would
+buy nothing. A blob is deserialized once per edit, and the WHOLE SET is the
+natural unit of verification: `verifyServedRange` asks "is this anchor in the
+session's set", never "which anchors are in this line range". Range membership
+is answered from memory plus the per-line anchor row. Rows would solve a query
+nobody makes.
+
+Consequence: the row-count and byte thresholds below stay as they are, and
+`served` stays out of any per-row budgeting.
+
 ## Alternatives Considered
 
 - **Per-path cap on `served`** — rejected by the maintainer as the wrong frame:
@@ -114,8 +139,21 @@ stops scaling with the store's contents.
   dimension, so a multi-line claim's middle lines would be accepted on "this line
   was served once" alone, weakening the drift guarantee the anchor-as-content-
   identity design exists to provide.
-- **Served as a row table** — exact and O(delta) per serve, but 30–40 B per anchor
-  (more disk than the JSON it replaces) and it would need its own budget story.
+- **Served as a row table** — rejected at the time, then *proposed again* by the
+  2026-10-04 refactor's design phase (on the argument that 30–40 B per anchor is
+  the price of session-scoped editability and no second in-memory copy), and
+  **rejected a second time on measurement** ([#217](https://github.com/hyperion2144/dsh-hashline-edittool/issues/217):
+  ≈187× write amplification, the row family growing from 0.73% to 10.5% of the
+  database, 300k rows = 73.2 MiB against a 64 MiB cap — and, decisively, it
+  answers a question nobody asks: verification's natural unit is the whole set).
+  **`served` is one serialized blob per `(session_id, path)`** — see the Status
+  line above and contract §8. What the 2026-10-04 work removed was the second
+  in-memory copy of the ANCHOR state, which is `anchor_lines`' business, not
+  `served`'s.
+  > This bullet previously read "…rejected at the time, then REVERSED by the
+  > 2026-10-04 amendment", which contradicted this ADR's own Status line and the
+  > shipped schema. Corrected in place rather than deleted, per the repo's rule
+  > that a superseded claim is marked, not removed.
 - **Physical `page_count` accounting** — makes "delete until under budget"
   unsatisfiable, as above.
 - **`VACUUM` inside the sweep** — a 2 GB `VACUUM` costs ~8–10 s and needs roughly

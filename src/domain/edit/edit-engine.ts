@@ -41,7 +41,6 @@ import {
 	describeEdge,
 	type RangeEdge,
 } from "./range-conflicts.js";
-import { lineHashes } from "../../hashline/hash.js";
 import type { ChangedOriginalRange } from "../../render/edit-diff.js";
 import {
 	AnchorMismatchError,
@@ -54,8 +53,12 @@ import {
 // Served-state recording lives with the state it writes (`session-view`),
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
-import { findSnapshotPathsByHashes } from "../session/hash-store.js";
-import { updateAnchorsAfterEdit, allocateForLines, takeAlignmentNotice, type EditHunk } from "../../hashline/session-anchors.js";
+import { findPathsByAnchors, takeRebuildWarning, withStoreAsync } from "../session/hash-store.js";
+import { allocationUsedSet, releaseLines } from "../session/anchor-entry.js";
+import { anchorForInWorkspace, withWorkspace, workspaceCwd } from "../session/session-view.js";
+import { probeLines } from "../session/anchor-entry.js";
+import type { ServedVerdict } from "../../hashline/anchor-pipeline.js";
+import { updateAnchorsAfterEdit, takeAlignmentNotice, type EditHunk } from "../session/anchor-state.js";
 import { contextLinesCfg } from "../../hashline/hash-assign.js";
 import { saveUndo } from "./undo-edit.js";
 import {
@@ -349,7 +352,7 @@ const hashes: string[] = [];
 	}
 	let matches: string[];
 	try {
-		matches = await findSnapshotPathsByHashes(hashes);
+		matches = await findPathsByAnchors(hashes);
 	} catch {
 		return undefined;
 	}
@@ -413,6 +416,14 @@ export interface ApplyOneInput {
 	countHashes?: string[];
 	store?: HashStore;
 	persist: boolean;
+	/**
+	 * The session these lines are served to, and the workspace root to enter.
+	 * Both are needed by the PRE-FLIGHT MINT (#223): a rejection echo has to
+	 * show real anchors, and minting is a SESSION write, so the pure pipeline
+	 * cannot do it.
+	 */
+	sessionKey: string;
+	cwd: string | undefined;
 	/** Pre-resolved edit (single path keeps resEdit before IO for error order). */
 	edit?: HEdit;
 	/**
@@ -591,6 +602,144 @@ export function resolveIns(
 }
 
 /**
+ * Mint the anchors a rejection echo may need, BEFORE the pipeline runs.
+ *
+ * The echo shows the failing line plus `context_lines` either side, and every
+ * line it shows has to carry a real anchor — otherwise the model is told to
+ * "reuse the fresh marker" while looking at bare `:N:` rows (#187). The
+ * pipeline used to mint that window itself; it cannot any more, because minting
+ * is a SESSION write and the pipeline is the pure domain layer (contract §3).
+ *
+ * So the window is minted here, from the requested range widened by the
+ * configured context — the union of every echo window the range could produce.
+ * Minting is content-keyed, so lines that already have anchors are reused and
+ * cost nothing; on the happy path these are the same lines the response diff
+ * renders, so nothing extra is anchored.
+ *
+ * @param input - the resolved single-edit input (content, range, session).
+ */
+async function mintEchoWindow(input: ApplyOneInput): Promise<ServedVerdict | undefined> {
+	const lines = splitLines(input.content).length;
+	// The range arrives as ANCHOR strings (`removeFrom`/`removeTo`), but a ref
+	// may also be a BARE LINE NUMBER — the legacy/`#187` spelling, which by
+	// definition has no live anchor to resolve. Try the anchor lookup first and
+	// fall back to the digits, so an echo for a bare ref is anchored too (#212).
+	const asLine = (ref: string): number | undefined =>
+		/^\d+$/.test(ref) ? Number.parseInt(ref, 10) : undefined;
+	// A ref may arrive in ANY of the spellings the tool accepts: `<anchor>`,
+	// `<anchor>:<line>`, or the legacy `<line>:<anchor>` — the model copies what
+	// the row showed. Comparing the RAW ref against `hashes` finds nothing when a
+	// line part is present, and the whole verdict below would then be SKIPPED
+	// (the range looks unresolvable, so there is nothing to ask about and the
+	// edit proceeds unverified — measured: an edit over an externally drifted
+	// line succeeded instead of being refused).
+	const anchorOf = (ref: string): string => {
+		try {
+			return parseHashRef(ref).anchor;
+		} catch {
+			return ref;
+		}
+	};
+	const fromAnchor = anchorOf(input.removeFrom);
+	const toAnchor = anchorOf(input.removeTo ?? input.removeFrom);
+	const fromIdx = input.hashes.indexOf(fromAnchor);
+	const toIdx = input.hashes.indexOf(toAnchor);
+	const fromLine = fromIdx >= 0 ? fromIdx + 1 : asLine(input.removeFrom);
+	if (fromLine === undefined) return undefined;
+	const toLine =
+		toIdx >= 0 ? toIdx + 1 : (asLine(input.removeTo ?? input.removeFrom) ?? fromLine);
+	const lo = Math.min(fromLine, toLine);
+	const hi = Math.max(fromLine, toLine);
+	const pad = Math.max(2, contextLinesCfg());
+	const window: number[] = [];
+	for (let ln = Math.max(1, lo - pad); ln <= Math.min(lines, hi + pad); ln++) window.push(ln);
+	if (window.length === 0) return undefined;
+	const cwd = input.cwd ?? workspaceCwd() ?? "";
+	// §2.2: the VERDICT comes from the primitive, not from a set-membership test
+	// re-derived in the pipeline. `probeLines` answers "may this session write
+	// the lines it named?" with the three conditions per line, and it is
+	// read-only — so asking it here cannot change what the edit does; it only
+	// decides whether the edit may proceed.
+	//
+	// Only with a session: without one the probe would read the shared fallback
+	// store and answer about a different world (#171). No session means the
+	// pipeline's own fallback applies, which is the status quo for those callers.
+	// THE VERDICT IS COMPUTED BEFORE THE MINT, and that order is load-bearing.
+	//
+	// The mint SERVES the lines it anchors. Minting the window first would
+	// therefore put the range's own lines into this session's served set — and
+	// the probe would then answer "served" for the very input whose served-ness
+	// is the question. Measured: doing it the other way round turned a
+	// session-restart rejection into a successful edit.
+	//
+	// So: ask first (read-only), mint second (a write, and the reason the echo
+	// can hand back usable markers).
+	let verdict: ServedVerdict | undefined;
+	if (input.sessionKey === "" || fromIdx < 0) {
+		verdict = undefined;
+	} else {
+		const refs: Array<{ anchor: string; line: number }> = [];
+		for (let i = fromIdx; i <= (toIdx >= 0 ? toIdx : fromIdx); i++) {
+			const anchor = input.hashes[i];
+			if (anchor !== undefined) refs.push({ anchor, line: i + 1 });
+		}
+		if (refs.length === 0) {
+			verdict = undefined;
+		} else {
+			const probe = await withWorkspace(cwd, () =>
+				probeLines({
+					path: input.absolutePath,
+					content: input.content,
+					refs,
+					sessionKey: input.sessionKey,
+				}),
+			);
+			verdict = probe.ok
+				? { ok: true, badLines: [] }
+				: {
+						ok: false,
+						badLines: probe.rows.map((row) => row.line).sort((a, b) => a - b),
+						reason: probe.reason,
+					};
+		}
+	}
+	// THE MINT IS GATED ON A REJECTION COMING, and the gate covers BOTH ways a
+	// rejection can arise here.
+	//
+	// 1. The probe failed (`verdict.ok === false`) — that verdict is what the
+	//    pipeline renders.
+	// 2. We could not even ASK: the refs did not resolve to a live range (a bare
+	//    line number in the `#187` spelling, or a dead anchor). The call dies
+	//    earlier (`[E_BAD_REF]` / `[E_STALE]`) — but its echo still renders lines,
+	//    so its window still has to be anchored. Measured: gating on the verdict
+	//    alone left the bare-number echo with NO anchors at all
+	//    (`issue-212-bare-echo`).
+	//
+	// Nothing is minted when the edit is going to proceed: its response anchors
+	// come from the ordinary post-edit path (`updateAnchorsAfterEdit` + the
+	// served rows built from the diff). Minting unconditionally would SERVE
+	// range±context on EVERY edit, including lines the response never shows —
+	// which is what ADR-0009 ("only model-visible rows are ever served") and
+	// #223's acceptance criterion ("only actually-returned lines get allocated")
+	// forbid.
+	//
+	// A session is required either way: minting is a per-session write, and
+	// without one the caller gets the pre-existing unsessioned behaviour.
+	const rejecting =
+		input.sessionKey !== "" && (verdict === undefined || !verdict.ok);
+	if (rejecting) {
+		await anchorForInWorkspace({
+			cwd,
+			absolutePath: input.absolutePath,
+			content: input.content,
+			lines: window,
+			sessionKey: input.sessionKey,
+		});
+	}
+	return verdict;
+}
+
+/**
  * One edit against in-memory content: resolve (unless a pre-resolved edit was
  * given) → apply with served verification → stable re-hash → line counts.
  *
@@ -643,6 +792,22 @@ export async function applyOne(
 		}
 	}
 
+	// PRE-FLIGHT MINT (#223): the rejection echo renders the failing line plus
+	// its context, and every line it shows must carry a real anchor (#187).
+	// The pipeline cannot mint it any more — it is the pure domain layer and
+	// must not reach into `domain/session` (contract §3) — so the window is
+	// minted HERE, before the call, and recorded served in the same transaction.
+	//
+	// The range is the requested one widened by the configured context, which is
+	// exactly the window an echo of any line in the range can show. Content-keyed
+	// reuse means already-anchored lines cost nothing, and on the happy path the
+	// same lines are the ones the diff and its context render, so nothing extra
+	// is anchored.
+	// §2.2/#224: the prelude MINTs the echo window AND asks the primitive whether
+	// this session may write the range. The verdict is then handed to the
+	// pipeline, so the primitive — not a set-membership test re-derived there —
+	// decides.
+	const verdict = await mintEchoWindow(input);
 	let anchorResult: ReturnType<typeof applyEdit>;
 	try {
 		anchorResult = applyEdit(
@@ -662,6 +827,9 @@ export async function applyOne(
 					input.op === "sed"
 						? sedTransform(input.pattern ?? "", input.replacement ?? "", input.flags)
 						: undefined,
+				// The primitive's verdict from the prelude: it decides whether this
+				// session may write, and the pipeline only renders the decision.
+				verdict,
 			},
 		);
 	} catch (error) {
@@ -734,6 +902,11 @@ export async function applyOne(
 		hunks: [
 			hunk,
 		],
+		// Minting here is an allocation, so it takes the same avoid-set as every
+		// other one: the file's live rows ∪ this call's release pool (§2.1 item 3).
+		// Without it the hunk's fresh lines could be handed an anchor this very
+		// call released (§9 invariant 5).
+		used: allocationUsedSet(input.absolutePath),
 	});
 	// The realign inside `updateAnchorsAfterEdit` may have degraded (#182): past
 	// the bounded-DP threshold a low-similarity rewrite drops every anchor this
@@ -913,7 +1086,7 @@ function echoRowsForItem(
 export async function runFileEdits(
 	io: FileIO,
 	rawItems: PreparedItem[],
-	opts: { signal?: AbortSignal; sessionKey: string; lineNumbers?: boolean; exec?: ToolExecution },
+	opts: { signal?: AbortSignal; sessionKey: string; lineNumbers?: boolean; exec?: ToolExecution; cwd?: string },
 ): Promise<FileEditResult> {
 	const items = [...rawItems];
 	const first = items[0]!;
@@ -935,6 +1108,16 @@ export async function runFileEdits(
 
 	let served = await loadServed(opts.sessionKey, absolutePath);
 	const warnings: string[] = [];
+	// A REBUILD (a version upgrade, or a capacity sweep) invalidated every anchor
+	// this workspace had. The first tool result afterwards has to say so — and
+	// `takeRebuildWarning` CLEARS it, so exactly one does, whichever tool ran
+	// first. Without it the model keeps resubmitting markers that are now dead
+	// and reads each refusal as its own mistake; `unshift` so it frames the rest
+	// of the warnings rather than trailing them.
+	{
+		const rebuildNotice = takeRebuildWarning();
+		if (rebuildNotice !== undefined) warnings.unshift(rebuildNotice);
+	}
 	// A literal U+2026 in a payload is almost always a pasted `ast_grep` outline
 	// row rather than source, and writing one puts the fold marker into the file.
 	//
@@ -1112,6 +1295,8 @@ const ordered = [...resolvedEdits].sort(
 				expectedEnd: item.expectedEnd,
 				absolutePath,
 				displayPath: item.path,
+				sessionKey: opts.sessionKey,
+				cwd: opts.cwd,
 				signal: opts.signal,
 				warnings,
 				lineNumbers: opts.lineNumbers,
@@ -1245,23 +1430,70 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 	if (appliedCount > 0) {
 		// v2.0 incremental anchor update (not a full recompute): unchanged
 		// lines keep their anchors across the whole batch.
-		resultHashes = updateAnchorsAfterEdit({
-			path: absolutePath,
-			oldContent: originalNormalized,
-			newContent: result,
-			oldAnchors: originalHashes,
-			// The batch's hunks are already in original + final coordinates; the op is
-			// what `toAnchorHunk` turns into the anchor update's shape (#151).
-			hunks: hunkShifts.map((s) =>
-				toAnchorHunk({
-					isIns: s.isIns === true,
-					oldStart1: s.originalStartLine,
-					oldEnd1: s.originalEndLine,
-					finalStart1: s.finalStartLine,
-					finalEnd1: s.finalEndLine,
-				}),
-			),
+		//
+		// This is the ONE call that sees the whole batch in ORIGINAL coordinates,
+		// so it is also the one that can enumerate every anchor the batch drops.
+		// The per-edit calls inside `applyOne` allocate for the lines they serve but
+		// do not collect releases: none of them has the full hunk set, and the last
+		// one exits early (the state already matches), so collecting there would
+		// silently lose whatever the earlier calls dropped.
+		const releasedLines: number[] = [];
+		// §7 "每文件一个事务": the anchor udate and the release that completes it
+		// commit TOGETHER, or neither does. They are two halves of one fact —
+		// "these lines now carry these anchors, and the old ones are gone" — and a
+		// commit between them would leave the state asserting something untrue
+		// (released rows still live, or live rows not yet served). Wrapping is
+		// possible because `withStore` nests: the primitives' own `withStore` calls
+		// join this transaction instead of opening a second one.
+		await withStoreAsync(async () => {
+			resultHashes = updateAnchorsAfterEdit({
+				path: absolutePath,
+				oldContent: originalNormalized,
+				newContent: result,
+				oldAnchors: originalHashes,
+				// Same avoid-set discipline as the single-edit path: a batch mints for
+				// its hunks too, and the pool is per file per call (§2.1 item 3, §4.1).
+				used: allocationUsedSet(absolutePath),
+				// The batch's hunks are already in original + final coordinates; the op is
+				// what `toAnchorHunk` turns into the anchor update's shape (#151).
+				hunks: hunkShifts.map((s) =>
+					toAnchorHunk({
+						isIns: s.isIns === true,
+						oldStart1: s.originalStartLine,
+						oldEnd1: s.originalEndLine,
+						finalStart1: s.finalStartLine,
+						finalEnd1: s.finalEndLine,
+					}),
+				),
+				released: releasedLines,
+			});
+			// Complete the release (#223, contract §4). Dropping the rows above is only
+			// the first of three things: those anchors must ALSO leave THIS session's
+			// served set and enter this call's release pool. Without that, a released
+			// anchor can come back on another line while the model still holds the old
+			// meaning — and the served check passes it, which is the silent wrong-line
+			// edit (#217 §1).
+			if (releasedLines.length > 0) {
+				await releaseLines({
+					path: absolutePath,
+					// Original coordinates: `released` holds pre-edit line numbers, and the
+					// release has to be reasoned about against the OLD content to address
+					// the rows that actually exist there.
+					lines: releasedLines,
+					content: originalNormalized,
+					sessionKey: opts.sessionKey,
+				});
+			}
 		});
+		if (releasedLines.length > 0) {
+			// The edit response serves the changed region, so the lines just released
+			// are no longer what the model holds. Keep the local mirror in step or the
+			// drift scan below reasons about a stale set.
+			for (const line of releasedLines) {
+				const anchor = originalHashes[line - 1];
+				if (anchor !== undefined && anchor !== "") served.delete(anchor);
+			}
+		}
 	}
 
 	if (hadUtf8DecodeErrors) {
@@ -1327,12 +1559,17 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 		// diff hunks' new-file rows (position, hash) plus context. This is
 		// what `recordServedTruncated` later records so the model's view of
 		// the change region is marked served for the next edit.
-		servedRows: appliedCount > 0 ? buildServedRowsFromDiff(
-			originalNormalized,
-			result,
-			resultHashes,
-			absolutePath,
-		) : [],
+		servedRows:
+			appliedCount > 0
+				? await buildServedRowsFromDiff({
+						before: originalNormalized,
+						after: result,
+						resultHashes,
+						absolutePath,
+						cwd: opts.cwd,
+						sessionKey: opts.sessionKey,
+					})
+				: [],
 		...(unionFirstChangedLine !== undefined ? { firstChangedLine: unionFirstChangedLine } : {}),
 		...(unionLastChangedLine !== undefined ? { lastChangedLine: unionLastChangedLine } : {}),
 	};
@@ -1344,12 +1581,15 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
  * removed, or context) are marked served. This is the batch/merge analogue
  * of the single-edit `genDiff().servedRows`.
  */
-function buildServedRowsFromDiff(
-	before: string,
-	after: string,
-	resultHashes: string[],
-	absolutePath: string,
-): { position: number; anchor: string }[] {
+async function buildServedRowsFromDiff(input: {
+	before: string;
+	after: string;
+	resultHashes: string[];
+	absolutePath: string;
+	cwd: string | undefined;
+	sessionKey: string;
+}): Promise<{ position: number; anchor: string }[]> {
+	const { before, after, resultHashes, absolutePath, cwd, sessionKey } = input;
 	// The window pads by the CONFIGURED diff context (≥2): the response's
 	// genDiff renders with contextLinesCfg(), and a served set narrower than
 	// the rendered rows would leave context rows uneditable.
@@ -1386,11 +1626,16 @@ function buildServedRowsFromDiff(
 	for (let p = Math.max(0, firstDiff - ctxPad); p <= Math.min(resultHashes.length - 1, lastDiff + ctxPad); p++) {
 		push(p);
 	}
-	// LAZY (#169): allocate for EXACTLY these rows — the response's diff
-	// window is what the model sees. persisted == served == visible.
+	// #223: mints AND records served in one transaction, through the entry point.
 	if (rows.length > 0) {
 		const servedLineNos = rows.map((r) => r.position + 1);
-		const allocated = allocateForLines(absolutePath, after, servedLineNos);
+		const allocated = await anchorForInWorkspace({
+			cwd: cwd ?? "",
+			absolutePath,
+			content: after,
+			lines: servedLineNos,
+			sessionKey,
+		});
 		for (let k = 0; k < servedLineNos.length; k++) {
 			resultHashes[servedLineNos[k]! - 1] = allocated[k]!;
 			rows[k] = { position: servedLineNos[k]! - 1, anchor: allocated[k]! };
