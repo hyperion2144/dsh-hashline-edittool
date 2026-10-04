@@ -141,7 +141,7 @@ A row becomes **served** when a tool result shows it to the model (`read`, `grep
 diffs, structural results, LSP rows). `edit` verifies each resolved range against that
 mirror before writing:
 
-- anchor unknown or row never served → `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]`;
+- anchor unknown → `[E_STALE]`; a range row never served in this session → `[E_RANGE_UNVERIFIED]`;
 - served content differs from disk → `[E_STALE]` / `[E_RANGE_STALE]`;
 - every rejection **echoes the current lines as served rows with fresh anchors**, so the
   fix is: take the marker from the echo and resubmit. Served rows are also emitted as
@@ -278,7 +278,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_OP_INS]` | Informational: `ins` placed lines after the anchor. |
 | `[E_PASTE_DUP]` | Replacement line matches an adjacent file line; kept verbatim. |
 | `[E_SERVED_RECORD]` | Diagnostics: served state could not be persisted (storage failure); the response carries a re-read notice instead of silently losing the rows. |
-| `[E_RANGE_STALE]` / `[E_RANGE_UNSERVED]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. |
+| `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. |
 | `[E_STALE]` | Anchor no longer matches served content; re-read. |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit`'s replacement would leave the file unparsable; not written. |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | File changed after the edit / undo history could not persist. |

@@ -58,6 +58,8 @@ export interface ReadAndServeResult {
 	normalized?: string;
 	/** ADR-0013: next offset when the window was char-budget-truncated. */
 	nextOffset?: number;
+	/** #212: absolute line of the last served row — the tool layer's render bound. */
+	shownEnd?: number;
 }
 
 /**
@@ -111,5 +113,6 @@ export async function readAndServe(
 		hashes: view.hashes,
 		normalized: view.normalized,
 		...(view.nextOffset !== undefined ? { nextOffset: view.nextOffset } : {}),
+		...(view.shownEnd !== undefined ? { shownEnd: view.shownEnd } : {}),
 	};
 }

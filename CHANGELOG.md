@@ -15,6 +15,13 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - Settings: `max_response_chars` (per-response char budget, default 48,000, clamp [8,000, 49,984]).
 - New module `src/infra/response-stream.ts`: spill store + resume tokens + segment assembler.
 
+### Fixed
+
+- **`read` 的窗口与 served 集合重新一致（#212 根因 A）**：渲染器本就按 `offset`/`limit` 精确切窗、分配与 serve 也只做窗口行，但工具层用「仅 char 预算截断才存在的 `nextOffset`」推导渲染端点 —— limit 截断没有该值，端点回落为文件末行，模型文本被按**全文件**重建：窗口外的行要么带历史持久化锚点（**未 served**，下一次编辑直接「not in served set」，无需重启）、要么渲染成裸行号占位（违背「模型看到的行必须有锚点」）。现在渲染器返回 `shownEnd`（最后 served 行）作为唯一渲染边界，工具层按它重建文本与结构化值；`nextOffset` 回归预算截断/续读令牌的专属职责。超长行分支（>200KB）的展示改为按 served 行直建，杜绝「可见却未 served」。实测：12 行文件 `read {offset:5, limit:3}` 恰返回 5–7 行；limit 截断不再签发 resume 令牌。
+- **裸行号拒绝回显的锚点盲区（#212 根因 B，#187 的第三条路径）**：mismatch 回显的补分配窗口按 `ref.line` 收集，而裸行号的数字在 `ref.anchor`、`ref.line` 为空 → 补分配集合为空 → 回显整块 `:N:` 裸行号，且指引模板插入**空串**（"reuse the fresh marker  without calling read"）。现在裸行号解析出的目标行并入补分配集合（仍走 `allocateForLines` 同一入口），指引只广告非空标记，无可用标记时降级为「call read()」。
+- **served 丢失的拒绝文案与恢复指引（#212 根因 C）**：served 集合按会话键存储、重启即空（锚点本身持久化），而区间编辑逐行校验全区间 in-served —— 重启后首次区间编辑必拒，旧文案却固定归因「上次编辑移动了行」。现在校验收集**全部**未 served 位置并分组成区间列出，文案明示双成因（会话重启 / 从未读过）并给出**具体的重读参数**（`read {file_path, offset, limit}`，窗口 2000 行封顶并注明），照做一次同一编辑即成功；首个未 served 行的 ±context 回显照旧全行真锚点。**死码清理（维护者拍板 Q4）**：`E_RANGE_UNSERVED` 从 `ServedCode` 类型、README / README.zh 错误码表与 edit 指引中移除 —— 运行时从未抛出过它（统一 `E_RANGE_UNVERIFIED`）。
+- **拒绝回显补分配的状态键（#212 实施中发现）**：`applyEdit` 的 `filePath` 实参一直是**显示路径**，而锚点状态按**绝对路径**键控 —— 回显窗口的补分配（#187）被写进影子键，回显给出的锚点在重试时报「no longer exists」。`applyOne` 现传 `absolutePath`，回显补分配与重试读到的状态同键。
+
 ## [0.9.5] - 2026-09-29
 
 ### Added

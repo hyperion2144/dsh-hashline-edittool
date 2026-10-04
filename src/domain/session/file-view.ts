@@ -480,6 +480,14 @@ export async function fmtReadPreview(
   text: string;
   truncation?: TruncationResult;
   nextOffset?: number;
+  /**
+   * Absolute 1-indexed line of the LAST SERVED row — the render bound the tool
+   * layer must rebuild from (#212). Independent of `nextOffset`, which exists
+   * only when the char BUDGET cut the window (it mints the resume token):
+   * deriving the window from `nextOffset` made every limit-cut fall back to
+   * EOF and rebuild rows that were never served.
+   */
+  shownEnd?: number;
   served: ServedRow[];
   /** The window's anchors, patched in place (#169) — callers rebuild rows from it. */
   hashes: string[];
@@ -499,6 +507,7 @@ export async function fmtReadPreview(
       return {
 		text: `${hashlineHeader(false)}\n${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
 		hashes: allHashes,
+		shownEnd: 1,
 		served: [{ position: 0, anchor: emptyLineHash, contentKey: contentChecksum(canon("")) }],
       };
     }
@@ -616,6 +625,10 @@ export async function fmtReadPreview(
       text: preview,
       truncation: skippedTruncation.truncated ? skippedTruncation : undefined,
       ...(budgetCut && nextOffset !== undefined ? { nextOffset } : {}),
+      // The last SERVED row is the render bound (#212): oversized rows are
+      // shown as notices, not content, so they are not served and must not be
+      // rebuilt into the presentation either.
+      ...(served.length > 0 ? { shownEnd: served[served.length - 1]!.position + 1 } : {}),
       hashes: allHashes,
       served,
     };
@@ -656,6 +669,9 @@ export async function fmtReadPreview(
     // LAZY (#169): the PATCHED array — the presentation layer rebuilds the
     // model text from it, so it must carry the window's real anchors.
     hashes: allHashes,
+    // The last SERVED row is the render bound (#212): a limit-cut sets it
+    // WITHOUT minting a resume token (`nextOffset` stays budget-only).
+    ...(served.length > 0 ? { shownEnd: served[served.length - 1]!.position + 1 } : {}),
     served,
   };
 }
@@ -669,6 +685,8 @@ export interface FileView {
   absolutePath: string;
   truncation?: TruncationResult;
   nextOffset?: number;
+  /** #212 — absolute line of the last served row; the tool layer's render bound. */
+  shownEnd?: number;
   hadUtf8DecodeErrors: boolean;
   bom: string;
   originalEnding: LineEnding;
@@ -738,6 +756,7 @@ export async function readView(
     absolutePath,
     truncation: r.truncation,
     nextOffset: r.nextOffset,
+    shownEnd: r.shownEnd,
     hadUtf8DecodeErrors,
     bom,
     originalEnding,
