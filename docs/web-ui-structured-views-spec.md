@@ -252,6 +252,11 @@ format). `newText` is the after-context + added-line lines + the
 same trailing context. Empty diffs means noop; we still return
 `{ diffs: [] }` and `presentResult` falls back to `undefined`
 (no card to render).
+> **Annotated 2026-10-05 (ADR-0015).** `presentationMeta` grew a parallel
+> `failures` channel (`{ path, code?, message, context?, hint? }`, one entry per
+> failed file, input order, absent when empty) for a partially failed multi-file
+> `edit`; see `docs/adr/0015-partial-failure-visibility.md`. Everything else on
+> this page is the historical record and is **not** updated.
 
 `presentCall(args)` — note: hashline-anchored edits need a special
 case. The user-facing anchors are `<line>#<hash>`, but the diff card

@@ -96,8 +96,12 @@ The success-shaped value a tool's `execute` returns after catching one of its ow
 _Avoid_: error result (`isError: true` is host vocabulary), thrown error, error return value
 
 **`meta.error`**:
-The single error object persisted in presentationMeta on a failed call — `{ code, message, path?, context?, hint? }`; one failure carries one error, and batch per-item detail lives in `context` text. Unrelated to the `errors` array field of edit's JSON success shape (soft per-item notes there, not failures).
+The single error object persisted in presentationMeta when a call changed **nothing** — `{ code, message, path?, context?, hint? }`. One failure carries one error. When only some of a multi-file call's files landed, the call is not an error: those files travel in the parallel `failures` list instead. Unrelated to the `errors` array field of edit's JSON success shape (soft per-item notes there, not failures).
 _Avoid_: `errors` (plural — that is the JSON success shape's field), ErrorMeta as a model-facing term
+
+**Partial failure**:
+A multi-file `edit` in which at least one file landed and at least one was rejected. The card keeps the successful files as diff tabs, adds one red-dotted tab per failed file, and puts a single `role="alert"` banner above the strip ("N of M files failed"); the row itself stays a success, because changes were applied. `meta.error` and `meta.failures` are mutually exclusive and together exhaustive: a call either changed nothing (one `error`) or changed something (a `failures` list, or neither key).
+_Avoid_: failure list (that is the model-side `fail[]` array, brackets and all), partial error
 
 **Domain error (域错误)**:
 A failure carrying an `[E_*]` code from the tool's own vocabulary (`E_STALE`, `E_BAD_SHAPE`, `E_BATCH_ABORT`, …). The only kind converted into a structured error value; aborts, sandbox denials and unexpected crashes rethrow to the host untouched.
