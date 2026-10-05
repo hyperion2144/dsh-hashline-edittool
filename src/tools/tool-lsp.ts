@@ -26,11 +26,10 @@ import { toLF } from "../render/edit-diff.js";
 // The SAME anchor assigner `read` uses, so a row the card shows carries the
 // marker an `edit` accepts — otherwise the card would be decorative.
 import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashline/hash-assign.js";
-import { serveRowsInWorkspace, allocateInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { observeServedRows, anchorForInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { anchorsFor } from "../hashline/session-anchors.js";
 import { diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
@@ -349,7 +348,10 @@ export function buildLspTool(io: FileIO) {
 					};
 				}
 				const diagLines = splitLines(text);
-				const diagAnchors = anchorsFor(absolutePath, text);
+				// NO dense read: every entry ever READ below belongs to a line in
+				// `diagLineNos`, and those are exactly the lines the mint fills in.
+				// The array stays full length because the rows index it by LINE.
+				const diagAnchors: string[] = new Array(diagLines.length).fill("");
 				// ONE ROW PER LINE: the row IS the source line, its diagnostics are a
 				// SEPARATE field.
 				//
@@ -391,7 +393,13 @@ export function buildLspTool(io: FileIO) {
 				}
 				// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
 				const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
-				const diagAllocated = await allocateInWorkspace(cwd, absolutePath, text, diagLineNos);
+				const diagAllocated = await anchorForInWorkspace({
+					cwd,
+					absolutePath,
+					content: text,
+					lines: diagLineNos,
+					sessionKey: execSessionKey(exec),
+				});
 				for (let k = 0; k < diagLineNos.length; k++) {
 					diagAnchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
 				}
@@ -411,7 +419,7 @@ export function buildLspTool(io: FileIO) {
 				// Through the scope-aware primitive: `lsp` has no `withWorkspace` body, so
 				// a bare `recordServed` here resolved the SHARED `$DSH_HOME` store instead
 				// of this project's — the rows landed where no later edit looks.
-				await serveRowsInWorkspace({
+				await observeServedRows({
 					sessionKey: execSessionKey(exec),
 					cwd,
 					absolutePath,
@@ -488,7 +496,10 @@ export function buildLspTool(io: FileIO) {
 				// no usable position, and such a symbol is left out of the CARD rather
 				// than drawn at line 0 — the model text still lists it.
 				const sourceLines = splitLines(text);
-				const anchors = anchorsFor(absolutePath, text);
+				// NO dense read, same reason as the diagnostics branch above: the rows
+				// below are built from `seenLines`, and the mint then fills exactly
+				// those lines in. A read here was paid for and then overwritten.
+				const anchors: string[] = new Array(sourceLines.length).fill("");
 				const seenLines = new Set<number>();
 				const hashlines: { number: number; hash: string; text: string }[] = [];
 				for (const symbol of flat) {
@@ -505,7 +516,13 @@ export function buildLspTool(io: FileIO) {
 				// the serve below publishes these anchors, and an unallocated symbol
 				// row would be dropped from the serve (and be uneditable).
 				const symbolLineNos = [...seenLines].sort((a, b) => a - b);
-				const symbolAllocated = await allocateInWorkspace(cwd, absolutePath, text, symbolLineNos);
+				const symbolAllocated = await anchorForInWorkspace({
+					cwd,
+					absolutePath,
+					content: text,
+					lines: symbolLineNos,
+					sessionKey: execSessionKey(exec),
+				});
 				for (let k = 0; k < symbolLineNos.length; k++) {
 					const anchor = symbolAllocated[k]!;
 					const row = hashlines.find((r) => r.number === symbolLineNos[k]);
@@ -514,7 +531,7 @@ export function buildLspTool(io: FileIO) {
 				// The symbol rows are SERVED and OBSERVED exactly like a read's: an
 				// anchor the card shows is an anchor the next edit may use.
 				// Same scope-aware primitive as the diagnostics branch above.
-				await serveRowsInWorkspace({
+				await observeServedRows({
 					sessionKey: execSessionKey(exec),
 					cwd,
 					absolutePath,

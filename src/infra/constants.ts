@@ -16,13 +16,33 @@ export const RESPONSE_BUDGET_MAX = 49_984;
 export const RESUME_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const HASH_STORE_BUSY_TIMEOUT = 1000;
-export const HASH_STORE_VERSION = 6;
+/**
+ * The store's schema/语义 version. A change WIPES anchor state on open
+ * (see `buildStore`): nothing is migrated, because a half-migrated anchor
+ * set is worse than a clean one — every anchor the model still holds has to
+ * be re-read either way.
+ *
+ * **6 → 7** for the single-source-anchor refactor (map #214 / decision #222).
+ * The bump is the deliberate part: the refactor changes what "served" MEANS
+ * (a per-session anchor SET whose release is a three-way clear), so a set
+ * written under the old rules cannot be trusted to answer the new per-line
+ * verdict. Wiping is safer than reinterpreting.
+ *
+ * Operational `meta` keys survive it (`clean_shutdown`,
+ * `last_open_integrity_check`, `last_rebuild_at`) — see the note in
+ * `buildStore`: the wipe touches only the anchor state, never `meta`.
+ */
+export const HASH_STORE_VERSION = 7;
 /**
  * How many successive edits `undo_last_edit` can walk back on one path
  * (#151/P5). The undo row family is a bounded STACK: the newest entry is the
  * one a call reverts, and the oldest beyond this depth is dropped on push.
+ *
+ * Three, per contract §2 (undo): the stack exists to recover from a wrong
+ * edit, not to be a history. Each entry carries the pre-edit body, so a deeper
+ * stack is a deeper text payload per path for a capability nobody asked for.
  */
-export const UNDO_STACK_DEPTH = 10;
+export const UNDO_STACK_DEPTH = 3;
 /**
  * Per-call cap on the `edits` array length. Same default (32) as the
  * pre-0.4 `batch_edit` cap. Above this, the call is hard-rejected with

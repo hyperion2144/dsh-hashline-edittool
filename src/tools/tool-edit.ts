@@ -267,7 +267,9 @@ async function applyFileGroup(
 		// `exec` rides along so a rejection's echo can emit `fs/observed` —
 		// with `actor: undefined` the policy records NOTHING, which is what
 		// made an echoed marker un-writable on the single-file path.
-		const file = await runFileEdits(io, items, { signal, sessionKey, lineNumbers, exec });
+		// `cwd` rides along so the post-edit served-window mint can enter the
+		// workspace scope explicitly (#223) rather than relying on the ambient one.
+		const file = await runFileEdits(io, items, { signal, sessionKey, lineNumbers, exec, cwd });
 		await applyFileResultTo(file, {
 			canonical,
 			displayPath,

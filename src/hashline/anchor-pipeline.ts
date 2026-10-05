@@ -49,9 +49,27 @@ import {
 	lineHashesPure,
 } from "./hash-assign.js";
 import { verifyExpectedLines, type ExpectedLines } from "./declaration.js";
-// The lifecycle gate (anchorsFor) lives here in the same package — the
-// engine's fallback with a known path flows through it (no recompute).
-import { anchorsFor, allocateForLines } from "./session-anchors.js";
+// The lifecycle gate (`anchorsFor`) belongs to the SESSION layer: it reads
+// `anchor_lines` through the store's scope and its transaction. This module is
+// the pure half of the engine and must not reach for it — so the reader is
+// INJECTED, the same shape as the anchor-state persistence port
+// (`registerAnchorPersistence`). A caller with no session (a preview, most unit
+// tests) gets the pure derivation, which is exactly what the no-path arm below
+// already used.
+export type AnchorReader = (path: string, content: string) => string[];
+let injectedAnchorReader: AnchorReader | undefined;
+
+/**
+ * Wire the session layer's anchor reader, or clear it on store shutdown.
+ * @param impl - the reader, or `undefined` to fall back to the pure derivation.
+ */
+export function registerAnchorReader(impl: AnchorReader | undefined): void {
+	injectedAnchorReader = impl;
+}
+
+/** The anchors for a path: the injected state read, or the pure derivation. */
+const readAnchors = (path: string, content: string): string[] =>
+	injectedAnchorReader !== undefined ? injectedAnchorReader(path, content) : lineHashesPure(content);
 import { SERVED_ECHO_CAP } from "../infra/constants.js";
 import { NEW_CONTENT_NOT_STRING_MSG } from "../infra/constants.js";
 
@@ -1030,6 +1048,28 @@ function paginationHint(nextOffset: number, more: number): string {
 	return `[... ${more} more lines — use read with offset=${nextOffset} to see the rest]`;
 }
 
+/**
+ * The session layer's answer to "may this session write the lines it named?"
+ * (contract §2.2), as produced by the `probeLines` primitive.
+ *
+ * STRUCTURAL on purpose: `hashline/` is the pure domain layer and must not
+ * depend on `domain/session/` (contract §3), so the shape is declared here and
+ * the session layer passes a value that satisfies it. Nothing is imported, and
+ * the dependency direction stays intact.
+ */
+export interface ServedVerdict {
+	/** True when every line the caller named passed all three conditions. */
+	ok: boolean;
+	/** 1-based lines that failed, ascending. Empty when `ok`. */
+	badLines: number[];
+	/**
+	 * Which condition failed, when `!ok`: `line-changed` | `line-moved` |
+	 * `never-seen` | `not-live`. Free-form here because the four reasons are the
+	 * session layer's vocabulary; the pipeline only relays it into the message.
+	 */
+	reason?: string;
+}
+
 export function verifyServedRange(args: {
 	served: Set<string>;
 	startAnchor: string;
@@ -1054,6 +1094,11 @@ export function verifyServedRange(args: {
 	 * `WQ` (#187). Without it the allocation is skipped instead.
 	 */
 	content?: string;
+	/**
+	 * The session layer's verdict from `probeLines` (contract §2.2), when the
+	 * caller has a session. Structural — see {@link ServedVerdict}.
+	 */
+	verdict?: ServedVerdict;
 }): void {
 	const {
 		served,
@@ -1066,6 +1111,7 @@ export function verifyServedRange(args: {
 		filePath,
 		statePath,
 		content,
+		verdict,
 	} = args;
 	const where = filePath ? ` in ${filePath}` : "";
 
@@ -1088,27 +1134,41 @@ export function verifyServedRange(args: {
 		});
 	}
 
-	// Set-based verification: the anchor IS the content identity. If it's in
-	// the served set, the line was served and (because anchors are
-	// deterministic + stable across edits/inherit) the content hasn't changed.
-	// No position-indexed lookup, no content-key mirror — the anchor alone is
-	// the proof. A mismatch means the anchor was never served (or the line's
-	// content changed, producing a new anchor not in the set).
-	const currentLen = endLine - startLine + 1;
-	// #212: collect EVERY unserved position, not just the first — the
-	// rejection names all of them and the re-read window they define.
-	const unservedPositions: number[] = [];
-	for (let k = 0; k < currentLen; k++) {
-		const position = startLine - 1 + k;
-		const expectedAnchor =
-			currentLen === 1
-				? startAnchor
-				: k === 0
+	// The VERDICT comes from the session layer's `probeLines` primitive when it is
+	// supplied (contract §2.2): "may this session write the lines it named?" is a
+	// domain question with three conditions per line, and it belongs to the
+	// primitive that owns it — not to a set-membership test re-derived here.
+	//
+	// The pipeline keeps the fallback below because it is the PURE layer and must
+	// not depend on `domain/session/` (contract §3): a caller that has no session
+	// (unit tests, the write shadow) still gets a verdict. `ServedVerdict` is a
+	// structural type, so nothing has to be imported to pass one in.
+	let unservedPositions: number[];
+	if (args.verdict) {
+		unservedPositions = args.verdict.badLines.map((line) => line - 1);
+	} else {
+		// Set-based verification: the anchor IS the content identity. If it's in
+		// the served set, the line was served and (because anchors are
+		// deterministic + stable across edits/inherit) the content hasn't changed.
+		// No position-indexed lookup, no content-key mirror — the anchor alone is
+		// the proof. A mismatch means the anchor was never served (or the line's
+		// content changed, producing a new anchor not in the set).
+		const currentLen = endLine - startLine + 1;
+		// #212: collect EVERY unserved position, not just the first — the
+		// rejection names all of them and the re-read window they define.
+		unservedPositions = [];
+		for (let k = 0; k < currentLen; k++) {
+			const position = startLine - 1 + k;
+			const expectedAnchor =
+				currentLen === 1
 					? startAnchor
-					: k === currentLen - 1
-						? endAnchor
-						: fileAnchors[position];
-		if (!served.has(expectedAnchor)) unservedPositions.push(position);
+					: k === 0
+						? startAnchor
+						: k === currentLen - 1
+							? endAnchor
+							: fileAnchors[position];
+			if (!served.has(expectedAnchor)) unservedPositions.push(position);
+		}
 	}
 	const firstMismatch: number | undefined = unservedPositions[0];
 
@@ -1123,24 +1183,28 @@ export function verifyServedRange(args: {
 		// Every line the echo shows MUST carry a real anchor (#187 user report:
 		// the echo rendered `:N:` with empty anchors, so the model could not
 		// retry with the fresh markers the rejection told it to reuse).
-		// Allocate the echo window now: the sparse state persists it, the
-		// servedRows below record it, and the model can immediately retry.
+		// The echo window's anchors were ALREADY minted, before this call, by the
+		// owner of the session (`anchorForInWorkspace` in the edit engine — it
+		// mints the requested range plus its configured context up front, and
+		// records them served in the same transaction). So this only re-materialises
+		// the dense view from the state; it does not allocate.
+		//
+		// Deferring is what keeps the dependency direction intact: this module is
+		// the pure domain layer and must not reach up into `domain/session`
+		// (contract §3). It also keeps mint-and-serve atomic, which an allocation
+		// here could not be.
 		//
 		// ONLY with the real content: `fileLines.join("\n")` is not the canonical
 		// string (trailing newline), so `ensureState` would see a checksum
 		// mismatch, realign, and rewrite anchors that were already valid.
 		if (statePath && content !== undefined) {
-			const echoWindow: number[] = [];
-			for (let ln = ctxFrom; ln <= ctxTo; ln++) echoWindow.push(ln);
-			if (echoWindow.length > 0) {
-				allocateForLines(statePath, content, echoWindow);
-				// Re-materialise: the allocation minted anchors for lines whose
-				// contentKey did not match (or that were never served). The fresh
-				// view carries them; the stale local `fileAnchors` does not.
-				const fresh = anchorsFor(statePath, content);
-				for (let ln = ctxFrom; ln <= ctxTo; ln++) {
-					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
-				}
+			// Re-materialise the dense view FROM THE STATE (no allocation): the
+			// caller minted these lines, so a line whose contentKey now matches
+			// carries its anchor here, while the stale local `fileAnchors` does not.
+			const fresh = readAnchors(statePath, content);
+			for (let ln = ctxFrom; ln <= ctxTo; ln++) {
+				const anchor = fresh[ln - 1];
+				if (anchor !== undefined && anchor !== "") fileAnchors[ln - 1] = anchor;
 			}
 		}
 		const ctxEchoLines: string[] = [];
@@ -1167,6 +1231,34 @@ export function verifyServedRange(args: {
 		// The old copy blamed "a previous edit shifted lines", which misread
 		// the by-far-most-common restart case and never mentioned the middle
 		// lines a bounded echo cannot show.
+		// The anchor the CALLER gave for this position, captured before anything
+		// below recomputes or re-materialises the live view.
+		const callerAnchor = expectedAnchor;
+		// The anchor the file's state holds for this position now. `""` means the
+		// position has none (never served, or released).
+		const liveAnchor = fileAnchors[firstMismatch] ?? "";
+		// §2.4: four causes, one code — the wording (and the recovery) differ.
+		//
+		// Prefer the PRIMITIVE's reason when the session layer supplied a verdict:
+		// it saw the conditions in the order the contract defines them, and it is
+		// the owner of that vocabulary. The local classifier stays for callers with
+		// no session (the pure-layer fallback above), and for a verdict that
+		// carried no reason.
+		const localReason = classifyServedFailure({
+			line: mismatchLine,
+			callerAnchor,
+			liveAnchor,
+			callerLiveElsewhere: fileAnchors.includes(callerAnchor),
+		}).reason;
+		const verdictReason = args.verdict?.reason;
+		const failReason: ServedFailReason =
+			verdictReason === "line-changed" ||
+			verdictReason === "line-moved" ||
+			verdictReason === "never-seen" ||
+			verdictReason === "not-live"
+				? verdictReason
+				: localReason;
+		const currentAnchor = liveAnchor;
 		const runs: Array<[number, number]> = [];
 		for (const p of unservedPositions) {
 			const last = runs[runs.length - 1];
@@ -1193,15 +1285,24 @@ export function verifyServedRange(args: {
 				? " (window capped — re-read the remaining unserved lines the same way)"
 				: "";
 		const target = filePath ?? statePath ?? "<path>";
-		const staleMsg =
-			`your range covers ${runsText} of lines ${startLine}-${endLine} that were never shown in this session — ` +
-			`a session restart clears the served record (the anchors themselves persist), or those lines were never read. ` +
-			`Re-read them first: read {file_path: "${target}", offset: ${readFrom}, limit: ${readLimit}}${cappedNote}, then retry the same edit. ` +
-			`The echo below carries real anchors for its window — reusing any of them also works.`;
+		// §2.4: the four causes get four explanations, because they need four
+		// different recoveries. Blaming a session restart for all of them was true
+		// for exactly one, and actively misleading for `line-changed`.
+		const nowOn = currentAnchor !== "" ? `; line ${mismatchLine} is now ${currentAnchor}` : "";
+		const reasonMsg: Record<ServedFailReason, string> = {
+			"line-changed":
+				`line ${mismatchLine} changed after you read it${nowOn}. Take that marker and resubmit the same edit — no re-read needed.`,
+			"line-moved":
+				`the anchor you gave for line ${mismatchLine} is still live but no longer on that line${nowOn}. Take the current marker and resubmit.`,
+			"never-seen":
+				`your range covers ${runsText} of lines ${startLine}-${endLine} that were never shown in this session — a session restart clears the served record (the anchors themselves persist), or those lines were never read. Re-read them first: read {file_path: "${target}", offset: ${readFrom}, limit: ${readLimit}}${cappedNote}, then retry the same edit.`,
+			"not-live":
+				`the anchor you gave for line ${mismatchLine} is gone from this file's anchor state (the line was removed or rewritten). Call read() to get the current markers.`,
+		};
 		throw new ServedRejectionError({
 			code: "E_RANGE_UNVERIFIED",
 			message:
-				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${staleMsg}\n` +
+				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${reasonMsg[failReason]}` +
 				`Echo of the first unserved line (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
 				`If this is the line you meant, reuse the fresh marker ${freshMarker} without calling read.\n` +
 				`If not, call read() to find the correct line.`,
@@ -1211,6 +1312,74 @@ export function verifyServedRange(args: {
 	}
 }
 
+
+/**
+ * WHY a line failed the served check — four causes, one error code (§2.4).
+ *
+ * The code stays `E_RANGE_UNVERIFIED`; only the wording and the suggested
+ * recovery differ, because the four cases need different actions:
+ *
+ * - `line-changed` — that line's CONTENT changed after you read it. Take the
+ *   marker the echo shows for it and resubmit.
+ * - `line-moved` — the anchor is still live but no longer on the line you
+ *   named; take the current marker and resubmit.
+ * - `never-seen` — this session was never shown the line. Go READ it;
+ *   retrying the same input cannot help.
+ * - `not-live` — the anchor is gone from the file's state entirely.
+ *
+ * The old wording blamed a session restart for all four, which is true for only
+ * one of them and actively misleads for the others.
+ */
+type ServedFailReason = "line-changed" | "line-moved" | "never-seen" | "not-live";
+
+/**
+ * Classify the first failing line. Pure: everything it needs is already in hand.
+ *
+ * The decision tree, in order — each step is a fact the caller can act on:
+ *
+ * 1. the caller's anchor resolves to this position and the position is live:
+ *    then the failure is membership only (`never-seen`) — the anchor is the
+ *    one the state already holds, it is simply not in this session's served
+ *    set. This is the session-restart case, and it is the COMMON one;
+ * 2. otherwise, if the caller's anchor is still live SOMEWHERE, the line moved;
+ * 3. otherwise its content changed under the caller (`line-changed`);
+ * 4. otherwise the anchor is not live at all (`not-live`).
+ *
+ * Step 1 is what makes the wording honest. The first version asked only "is
+ * the caller's anchor in the live view?", which is true in the restart case
+ * too — so a restart was reported as `line-moved`, and the recovery it
+ * prescribed ("take the current marker") was the wrong action for the case
+ * that actually needs a re-read. `issue-212-served-message` caught it.
+ *
+ * @param args - the failing line, the caller's anchor, the live view, served.
+ * @returns the reason, plus that line's CURRENT anchor (`""` when none).
+ */
+function classifyServedFailure(args: {
+	line: number;
+	callerAnchor: string | undefined;
+	liveAnchor: string;
+	/** Whether the caller's anchor is live elsewhere in the file (it moved). */
+	callerLiveElsewhere: boolean;
+}): { reason: ServedFailReason; current: string } {
+	const { callerAnchor, liveAnchor } = args;
+	if (callerAnchor !== undefined && callerAnchor !== "" && callerAnchor === liveAnchor) {
+		// Same anchor, still bound here: only the served record is missing.
+		return { reason: "never-seen", current: liveAnchor };
+	}
+	if (liveAnchor === "") {
+		// The position has no anchor now. If the caller HAD one and the file no
+		// longer resolves it anywhere, its line was removed.
+		return { reason: callerAnchor === undefined ? "never-seen" : "not-live", current: "" };
+	}
+	// The position carries an anchor, but not the caller's. Two possibilities that
+	// need different recoveries: the caller's anchor may still be live SOMEWHERE
+	// (the content moved), or its line's content changed (the anchor is
+	// content-derived, so different content means a different anchor).
+	if (args.callerLiveElsewhere) {
+		return { reason: "line-moved", current: liveAnchor };
+	}
+	return { reason: "line-changed", current: liveAnchor };
+}
 export interface ResolvedRange {
 	startLine: number;
 	endLine: number;
@@ -1365,6 +1534,13 @@ export function applyEdit(
 	served?: Set<string>,
 	expected?: ExpectedLines,
 	opts?: {
+		/**
+		 * The session layer's `probeLines` verdict for this edit's range, when the
+		 * caller has a session. Passing it makes the PRIMITIVE the verdict
+		 * authority (contract §2.2); without it the pipeline falls back to set
+		 * membership, which is what a caller with no session can offer.
+		 */
+		verdict?: ServedVerdict;
 		lineNumbers?: boolean;
 		/**
 		 * #212: the STATE key for the echo-window allocations (mismatch ctx +
@@ -1396,9 +1572,10 @@ export function applyEdit(
 
 	const lineIndex = buildIdx(content);
 	// THE unified lifecycle door: with a known path, anchors ALWAYS flow
-	// through anchorsFor (cache hit → same array; content changed → diff-
-	// inherit). lineHashesPure is the NO-PATH fallback for pure callers only.
-	const fileAnchors = precomputedAnchors ?? (filePath !== undefined ? anchorsFor(filePath, content) : lineHashesPure(content));
+	// through the injected reader (content unchanged → the same array the state
+	// holds; content changed → diff-inherit). `lineHashesPure` is the NO-PATH
+	// and NO-SESSION fallback for pure callers only.
+	const fileAnchors = precomputedAnchors ?? (filePath !== undefined ? readAnchors(filePath, content) : lineHashesPure(content));
 	const warnings: string[] = [];
 
 	const rangeFixed = swapReversedRanges(edit, warnings);
@@ -1482,8 +1659,9 @@ export function applyEdit(
 			if (mismatchCtx.size > 0) {
 				// The REAL content parameter, never `lineIndex.fileLines.join("\n")`:
 				// a rebuilt string realigns the state and rewrites valid anchors (#187).
-				allocateForLines(stateKey, content, [...mismatchCtx].sort((a, b) => a - b));
-				const fresh = anchorsFor(stateKey, content);
+				// No allocation here: the caller minted these lines before the call
+				// (see the echo path above for why this module must not allocate).
+				const fresh = readAnchors(stateKey, content);
 				for (const ln of mismatchCtx) {
 					fileAnchors[ln - 1] = fresh[ln - 1] ?? fileAnchors[ln - 1]!;
 				}
@@ -1532,6 +1710,10 @@ export function applyEdit(
 			statePath: opts?.statePath,
 			// The echo-window allocation needs the REAL content (#187).
 			content,
+			// The session layer's `probeLines` verdict, when it supplied one: the
+			// PRIMITIVE decides whether this session may write, and this call only
+			// renders what it decided (#224 §2.2).
+			verdict: opts?.verdict,
 		});
 	}
 

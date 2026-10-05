@@ -14,7 +14,7 @@ import { withWorkspace, workspaceCwd } from "../../src/domain/session/session-vi
 import { hashStorePath, configDir } from "../../src/infra/paths.js";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { recordServed, loadServed } from "../../src/domain/session/session-view.js";
-import { lineHashes } from "../../src/hashline/index.js";
+import { servedAnchors } from "../support/anchor-serve.js";
 
 function tempWorkspace(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
@@ -69,7 +69,7 @@ const ws = tempWorkspace("dsh-ws-tail-");
 			await withWorkspace(ws, async () => {
 				const big = "a\nb\nc\nd\ne\nf\ng\nh\n";
 				writeFileSync(path, big);
-				const bigHashes = await lineHashes(big, path);
+				const bigHashes = await servedAnchors(big, path);
 				await recordServed(
 					session,
 					path,
@@ -79,7 +79,7 @@ const ws = tempWorkspace("dsh-ws-tail-");
 
 				const small = "b\nc\n";
 				writeFileSync(path, small);
-				const smallHashes = await lineHashes(small, path);
+				const smallHashes = await servedAnchors(small, path);
 				await recordServed(
 					session,
 					path,

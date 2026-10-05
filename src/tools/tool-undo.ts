@@ -16,14 +16,13 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { toLF, stripBOM, genDiff, restoreEndings } from "../render/edit-diff.js";
 import { cntDiff, splitLines } from "../infra/utils.js";
 import { assertUndoRequest, normalizeRequest as normReq, lineNumbersSchema } from "../contract/contract.js";
-import { upsertSnapshotFor } from "../domain/session/hash-store.js";
 import { contentChecksum, contextLinesCfg } from "../hashline/hash-assign.js";
-import { lineHashes } from "../hashline/hash.js";
 import { changedRange } from "../hashline/anchor-pipeline.js";
 import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
-import { recordServedTruncated, reconcileServed } from "../domain/session/session-view.js";
+import { recordServedTruncated, reconcileServed, anchorForInWorkspace } from "../domain/session/session-view.js";
+import { restoreAnchorBinding } from "../domain/session/anchor-entry.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
+import { anchorsFor } from "../domain/session/anchor-state.js";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
@@ -244,6 +243,15 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			// LAZY (#169): the restored content is live — realign the sparse state
 			// against it, allocate EXACTLY the revert diff's window rows, and render
 			// the `+` side with those anchors.
+			//
+			// #223 / contract §2 "undo": this is a SNAPSHOT ROLLBACK, not a remap.
+			// The binding saved with the undo entry (`hashes`) is put back WHOLESALE
+			// before anything is rendered, so the anchors the model held before the
+			// edit are the anchors it holds after the revert — content, binding and
+			// checksum together. Remapping instead would keep the undon edit's
+			// anchors and lose those handles, and a model that undoes and re-submits
+			// its previous edit would be rejected for holding anchors it did use.
+			restoreAnchorBinding({ path: absolutePath, content: undo.content, hashes: undo.hashes });
 			const dryWindow = genDiff(
 				currentNormalized,
 				undo.content,
@@ -256,7 +264,14 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const windowLineNos = [
 				...new Set(dryWindow.servedRows.map((r) => r.position + 1)),
 			].sort((a, b) => a - b);
-			const windowAllocated = allocateForLines(absolutePath, undo.content, windowLineNos);
+			// #223: mint + serve in one transaction, through the single entry point.
+			const windowAllocated = await anchorForInWorkspace({
+				cwd,
+				absolutePath,
+				content: undo.content,
+				lines: windowLineNos,
+				sessionKey,
+			});
 			for (let wi = 0; wi < windowLineNos.length; wi++) {
 				restoredHashes[windowLineNos[wi]! - 1] = windowAllocated[wi]!;
 			}
@@ -291,25 +306,15 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
 			const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
 
-			try {
-				await upsertSnapshotFor(
-					absolutePath,
-					contentChecksum(undo.content),
-					splitLines(undo.content).length,
-					undo.hashes,
-				);
-
-				// Re-seed the session anchor state with the restored content's
-				// original anchors: undo.hashes were allocated for exactly these
-				// lines, and the revert diff just served them as `fresh`. Without
-				// LAZY (#169): no explicit seed needed — the sparse state detects the
-				// content change on the next access and allocates fresh anchors.
-			} catch (error) {
-				console.error(
-					"Failed to restore hash store snapshot after undo:",
-					error,
-				);
-			}
+			// The `snapshots` row that used to be written here is GONE with the table
+			// (contract §8). It was a legacy cache keyed by (path, checksum,
+			// line_count) whose only reader, `getSnapshot`, had no caller left — so the
+			// write persisted nothing anyone would ever look up. What actually makes
+			// the restored binding durable is `restoreAnchorBinding` above, which
+			// writes `anchor_lines` + `anchor_meta` for the reverted content.
+			//
+			// The LAZY note it also carried still holds: no explicit re-seed is needed,
+			// because the sparse state detects the content change on the next access.
 
 			// CONSUME the entry, do not wipe the history: the entry below it is the
 			// next edit to revert, which is what makes this a stack (#151/P5).

@@ -46,21 +46,30 @@ _Avoid_: patches, modifications, replacements (plural); `batch_edit` (the remove
 With `require_line_content` enabled, each anchor in an `edits[i]` entry becomes a `{ anchor, line }` pair — `line` is the caller's declaration of the anchor line's CURRENT full text (single line, verbatim; trailing whitespace and a copied read-row marker prefix are tolerated). Every declaration is verified after the served-staleness check and before anything applies; a mismatch rejects the whole call (`E_CONTENT_MISMATCH`). With the switch off, declared lines do not exist and anchors are plain markers.
 _Avoid_: expected content, content echo, `line_content`, confirmation text
 
-**Lifecycle gate (`anchorsFor`)**:
-The single path through which anchors are allocated or released — every tool's marker column comes from it, and no other code mints anchors. Allocation happens in exactly two situations: a line's first serve, or a line whose content actually changed.
-_Avoid_: lineHashes as a second source, per-tool anchor computation, `anchorsPure` in production paths
+**Anchor entry point**:
+The designated single path for anchor markers — allocation and release both run through it, and no other code mints anchors. It replaces the four separate retrieval APIs (`anchorsFor` / `allocateForLines` / `updateAnchorsAfterEdit` / `anchorsPure` as separate entry points): allocation now happens in exactly two primitives, `anchorFor` (allocate + record served, one transaction) and `probeLines` (the editability verdict, read-only), both in `domain/session/anchor-entry.ts`. The remap path still mints for a hunk's fresh lines, and it takes the same avoid-set as every other allocation. Allocation happens in exactly three situations: a line's first serve, a line whose content actually changed, or a line whose content changed by an external modification discovered on re-read.
+_Avoid_: anchorsFor / allocateForLines / updateAnchorsAfterEdit / anchorsPure as separate entry points
 
 **Served**:
-A row the model has SEEN in a tool result (read, grep, edit diff, write preview, lsp, ast). Served rows are recorded in the session's served mirror and only served rows are editable; serving is also what triggers first-serve allocation.
-_Avoid_: observed (that is the fs-level event name), cached, known
+A line of a file that the model has seen in a tool result (read, grep, edit diff, write preview, echo, lsp, ast). Scoped to ONE session — the session's persisted served set holds the anchors it has seen; another session's sightings are invisible. Serving is also what triggers allocation, and only model-visible rows are ever served.
+_Avoid_: observed (fs-level event), cached, all sessions' sightings
+
+**Editability**:
+An anchor may be written with only when the line's current anchor is in THIS session's served set and that anchor is still live for the current content (a changed line mints a new anchor, so the old one is no longer in the set). A line this session has never seen is rejected however valid its anchor is in another session. The model's declared line number is informational only — a drifted line number never causes a rejection.
+_Avoid_: permission, ownership, write access
 
 **Inheritance**:
 On a rewrite or external change, prior anchors are diffed line-by-line (contentKey alignment) instead of recomputed — unchanged lines keep their anchors; only genuinely new content allocates; deleted lines release theirs. Supersedes the spec §4.4 recompute-on-mismatch tradeoff.
 _Avoid_: re-allocation, full recompute, refresh
 
+**Allocation**:
+An anchor identity bound to one line of one file. Scoped to a workspace and a file — NOT to a session: a session that allocates for a line leaves an anchor every later session can reuse without recomputing. A line gets at most one anchor at a time.
+The workspace × file scope is the DESIGN target of the map; today the store is per-workspace and the reading session supplies the file's content.
+_Avoid_: served (that is what the model has seen), assigned, minted, generated
+
 **Exclusivity**:
-One live anchor names at most one line of its file. Enforced by the allocator's occupied set and the served mirror's single-ownership purge; the model holding a stale binding is refused, never silently relocated.
-_Avoid_: uniqueness (weaker — says nothing about the mirror)
+One live anchor names at most one line of its file. The binding is one row per line in the persisted anchor row family, and the model holding a stale binding is refused with an echo of the current one, never silently relocated.
+_Avoid_: uniqueness (weaker — says nothing about the binding)
 
 **Double-booking**:
 The forbidden state where one anchor string is live on multiple lines of the same file — the mechanism behind the silent wrong-line edit incident. Structurally refused (`E_ANCHOR_AMBIGUOUS`) rather than resolved by first occurrence.
@@ -69,6 +78,18 @@ _Avoid_: collision (that is the allocator's normal probe path), duplicate hash
 **Reject-and-serve**:
 A rejected edit echoes the current lines as served rows with fresh, immediately usable anchors — the fix is take-the-marker-and-resubmit, never re-read-from-scratch. The rejection is the recovery path, not a dead end.
 _Avoid_: error-only rejection, retry-with-re-read
+
+**Release pool**:
+The anchors freed during one `edit` call — by deletion, or by replacement of a line whose content changed. Freed anchors enter an IN-MEMORY, per-file set for the remainder of that call: the allocator may not hand them to any other line, however good the natural slot. The set is discarded when the call ends, so the anchors become allocatable again on the next call. Bounded by one round's releases — never a permanent retired set. ENFORCED by the used-set every allocate-capable path builds: **the file's live `anchor_lines` rows ∪ this call's pool** (`allocationUsedSet`), with no third source — anchors are file-scoped, so another file's anchors are neither an obstacle nor a source. The remap path mints for a hunk's fresh lines too, so it takes the same set; minting without it could re-issue an anchor the same call just released (§9 invariant 5).
+_Avoid_: retired set, tombstones, permanent exclusion (the pool is per call and discarded)
+
+**Remap**:
+Moving an anchor to a different line number while keeping its identity — what an insertion or deletion does to every anchor below it. Distinct from reallocation (a new identity) and from re-hash (recomputing the identity of unchanged content); a remap never changes which anchor names which content.
+_Avoid_: realign (that is the content-pairing step), shift (too narrow — covers the arithmetic only), reallocate
+
+**Echo**:
+The rows a rejection returns with their currently valid anchors, so the model can resubmit with fresh markers instead of re-reading the file. An echo allocates for the rows it shows, and it is the only recovery path a rejected edit needs.
+_Avoid_: error dump, retry prompt
 
 **Structured error value**:
 The success-shaped value a tool's `execute` returns after catching one of its own domain errors — minimal `{ modelText, error }` inside the tool's output schema instead of a throw; the model reads the same `[E_*]` text as before, and the client renders the error card from the persisted `error`.

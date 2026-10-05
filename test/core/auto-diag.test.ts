@@ -478,8 +478,10 @@ describe("the config toggle (seam 3)", () => {
 			const exec = makeExec(cwd, () => undefined);
 			// Read first: the served-state check is the contract, not an obstacle.
 			await buildReadTool(io).execute({ path: file }, exec);
-			const hashes = (await import("../../src/hashline/index.js")).lineHashes;
-			const anchors = await hashes(SOURCE, file);
+			// `lineHashesPure` — the same content-derived derivation the allocator
+			// uses, so these are exactly the anchors the read above allocated.
+			const hashes = (await import("../../src/hashline/index.js")).lineHashesPure;
+			const anchors = hashes(SOURCE);
 			const value = (await tool.execute(
 				{
 					path: file,
@@ -543,8 +545,8 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 			const exec = makeExec(cwd, () => undefined);
 			// Read first: the served-state check is the contract, not an obstacle.
 			await buildReadTool(io).execute({ path: file }, exec);
-			const { lineHashes } = await import("../../src/hashline/index.js");
-			const anchors = await lineHashes(SOURCE, file);
+			const { lineHashesPure } = await import("../../src/hashline/index.js");
+			const anchors = lineHashesPure(SOURCE);
 			const value = (await tool.execute(
 				{
 					path: file,
@@ -607,8 +609,8 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 				const tool = buildEditTool(io, sandbox);
 				const exec = makeExec(cwd, () => undefined);
 				await buildReadTool(io).execute({ path: file }, exec);
-				const { lineHashes } = await import("../../src/hashline/index.js");
-				const anchors = await lineHashes(SOURCE, file);
+				const { lineHashesPure } = await import("../../src/hashline/index.js");
+				const anchors = lineHashesPure(SOURCE);
 				const previousMode = getEffectiveConfig().outputFormat;
 				applyEffective({ output_format: "json" });
 				try {
@@ -658,8 +660,8 @@ describe("seam 1 — the real edit tool delivers inline diagnostics", () => {
 			// the same from read to edit.
 			const exec = makeExec(cwd, undefined);
 			await buildReadTool(io).execute({ path: file }, exec);
-			const { lineHashes } = await import("../../src/hashline/index.js");
-			const anchors = await lineHashes(SOURCE, file);
+			const { lineHashesPure } = await import("../../src/hashline/index.js");
+			const anchors = lineHashesPure(SOURCE);
 			const started = Date.now();
 			const value = (await tool.execute(
 				{

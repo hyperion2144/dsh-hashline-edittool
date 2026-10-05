@@ -8,6 +8,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 - **ADR-0013**: refusals by size are retired — all tools stream oversized results in segments (per-response char budget, default 48,000) with resume tokens instead of refusing. `GREP_MAX_TOTAL_BYTES` and the 100 MiB read gate are gone. `grep` never returns "No matches" for a file it hasn't searched.
 - **grep default context** is now `context_lines` (3) instead of 0 — text and JSON contracts are aligned.
+- **锚点事实回归唯一持久化真相源（契约 §3/§8）**：`hashline/session-anchors.ts` 里那个 `Map<string, SparseState>` + LRU **整体删除**（连同 `ANCHOR_CACHE_LIMIT`、`dropAllAnchorState`、`applyEditToState`）。它让纯域层持有 store 作用域的可变状态，并把两个**只应由库回答**的问题从内存回答：「该文件已分配了哪些锚点」（§2.1 第3条）与「这个锚点还活着吗」（§2.2 条件1）。现在 `ensureState` 每次都读 `anchor_lines`，`anchorsFor` 是**纯读**（不再 realign、不再写库）。
+- **store 耦合的实现搬出 `hashline/`（契约 §3）**：`hashline/session-anchors.ts`（705 行）→ **`domain/session/anchor-state.ts`**（持久化端口、事务、`anchor_lines` 读写、对齐通知）；纯逻辑留在 `hashline/alloc.ts`（`SparseState` / `AnchorEntry` / `allocateInto` / `anchorsPure`）。`hashline/index.ts` 的 barrel **不再转发** store 耦合的一半 —— 那正是 `tools/` 当初能跨层的口子。解析引擎对状态的反向依赖改为**注入式读取器**（`registerAnchorReader`，由 `hash-store` 装配时接上，无会话时回退纯推导）。**验证**：`grep` 确认 `hashline/` 内零 `domain/` import、全库零 `session-anchors` 引用；6 个 tools/lsp 文件改从 `domain/session/` 引入。
+- **6 处整文件级冗余库读删除**：`ast_edit` / `ast_grep`（两处）/ `lsp`（两处）/ `auto_diag` 原先先做一次「把整文件锚点读成稠密数组」，随后又把其中**实际会被读取的那几行全部覆盖**成铸造结果 —— 数组里被真正用到的项无一来自那读。改为按行数建空数组、由铸造填。`ast_grep` 的槽宽也改为按**已服务的行**计算（原先按整文件算，静默把每条槽拉宽）。
+- **`write` 的 diff 不再二次记 served**：`allocateForRenderedRows` 现在把**全部渲染行**交给唯一入口（复用的行本就不会重铸），于是一行的锚点与它在 served 里的存在同一事务落定 —— `write` 工具里那段补记的 `recordServed` 随之删除（那是同一事实的第二次写，也是 #187 两半可能不一致的入口）。
+- **宿主的 `FS_STALE_VERSION` 与锚点的 `E_RANGE_STALE` 共用一码这件事已在契约 / README / README.zh 写明**：两者**补救手段相同**（重新 read 拿新锚点），但只有后者是「校验和 ≠ `anchor_meta`」的重映射信号。原先文档只说了后者，读码的人会以为标签只有一种含义。
 
 ### Added
 
@@ -17,10 +22,35 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Fixed
 
+- **diff 渲染在超大单块上抛 `RangeError`（#229）**：`partsFromRuns` 把游程拼回行数组时用 `push(...slice)` —— 展开会把每个元素当成**实参**，单块同向连续行达到约 15 万行就撞上 V8 的实参上限（Node 26 实测：10 万行通过、15 万行抛）。爆点在**渲染**，差分本身已算完（`degraded` 仍为 `false`）—— `write` 一个超大文件、`undo` 一次超大回滚会直接得到栈溢出而不是 diff。改为逐元素追加（新 `pushSlice`），输出逐位不变；新增 `test/core/line-diff-bounds.test.ts` 以 100 万行纯插入/纯删除钉住。
+- **Myers `maxD` 加上硬上限 1,024（#230）**：trace 是 `O(maxD²)`（`maxD + 1` 条 `2·maxD + 1` 的 int32），而 `maxD` 可由调用方指定且原本无上限 —— 实测 16,384 时单次调用要 ~1.3 GB。现在在**分配点**（`myersRange`）夹取，任何调用方都无法把 trace 撑过 ~8.4 MB；巨型 `maxD` 与上限本身的行为逐位一致（不再靠碰运气撞 `RangeError`）。
+  - ⚠️ **不采纳 #230 的另一半（默认值 256 → 64）**：该结论基于单个 800k 行 / 50% 变更的输入测得「快 6 倍且输出逐位相同」，但**不普遍成立**。反例是 #190 一致性契约里的「整文件重写、尾部幸存」：`maxD=64` 时预算先耗尽 → 区间被切分 → 幸存行被渲染成 `-`/`+` 而不是 context。`test/core/line-diff.test.ts` 把这一形状当作与 jsdiff 的逐字段一致性要求，所以 64 是**渲染缺陷**而非白赚的提速。默认值保持 256；两个数字的不同职责（默认值是质量底线、上限是安全网）写进源码注释，反例由 `test/core/line-diff-bounds.test.ts` 保存。
+
+- **取锚收敛为唯一入口（#223）**：`read` / `grep` / `lsp` / `ast_grep` / `ast_edit` / `undo` / `write` 各自直接调 `allocateForLines` / `allocateInWorkspace`，再另外调一次 `recordServed` 的时代结束 —— 全部改走 `anchorForInWorkspace`，**取锚与 served 记录在同一事务提交**。两次调用之间失败就留下「模型看见了但没有任何会话见过」的锚点（下一次编辑拿它直接被判 never-served），这是 `#136`/`#143` 那一类缺陷的孳生地。
+  - 会话层的 serve 拆成两半：`anchorForInWorkspace`（进作用域取锚 + 记 served，并**返回锚点**供渲染 —— 模型看到的必须就是它能用的那批）与 `serveRowsInWorkspace`（只剩 observe）。`session-view.allocateInWorkspace` 删除，已被前者取代。
+- **`allocateInto` 不再在同一次调用里释放旧锚点**：那条 `used.delete(existing.anchor)` 会把刚释放的锚点交给同一批次里的**另一行**，而模型手里那份仍在自己的 served 里 → 校验放行 → 静默错行编辑（`#217` §1 已构造性复现）。
+- **锚点状态写入改为差量**：原先每次写回都是「整路径 DELETE + 逐行重插」（`#217` 实测约 187× 写放大）；现在对照 store 现状只 upsert/delete 变化的行，并把写路径收成一条（`persistAnchorState`）。
+- ~~**关库时同时清掉内存里的锚点状态**~~（**已被取代**：内存里的锚点状态已**整体删除** —— 见 `### Changed` 第一条。当时那条修的是「缓存跑在库前面」，而现在根本没有缓存可跑；`shutdownHashStore` 只需关库，`dropAllAnchorState` 随之消失）。
+- **编辑路径补全「释放三清」（#223 §4 / #224）**：原先被替换行的锚点只做了一清 —— 从 `anchor_lines` 丢掉就结束，既没告诉发起释放的那个会话（served 里那条还在），也没进本次调用的释放池。于是它还能被重新发给另一行，而模型手里那份仍然「活着且已 served」→ 校验放行 → 静默错行编辑。现在 `updateAnchorsAfterEdit` 报告丢掉的行，`reconcileServed` 把摘掉的锚点送入释放池，edit 引擎据此同步本会话的 served 镜像。
+- **`probeLines` 的四类 reason 改为按「哪一条判定失败」给出**：原先靠「那行现在挂着谁的锚点」反推，那回答的是**行**的状态而非拒绝原因 —— 一个已被释放、其旧行现在挂着别人锚点的锚点会被报成「文件在你会话期间被改过」（`line-changed`），而真相是「这个锚点已经没了」（`not-live`）。
+- **`undo` 改为快照回退（#224）**：内容、行↔锚点绑定、校验和三者一起退回。原先只退内容，重新拿到的是被撤销那次编辑铸的锚点 —— 模型撤销一次误操作、再重提它本来要做的编辑时，会因为「锚点不是你会话见过的」被拒。现在 `UndoRecord` 里本就保存的编辑前绑定被整体写回。
+- **`undo` 栈深度 10 → 3**：栈是用来从一次误编辑里恢复的，不是历史记录；每个条目都带着编辑前的正文，更深的栈只是更深的载荷。
+- **读路径新增锚点/服务一致性断言**：渲染器自己铸窗口锚点、`readAndServe` 再经 `anchorFor` 记录 served，两者若不一致模型就会被展示一个锚点、服务另一个。现在不一致即抛错（内部不变量，不开新错误码）。
 - **`read` 的窗口与 served 集合重新一致（#212 根因 A）**：渲染器本就按 `offset`/`limit` 精确切窗、分配与 serve 也只做窗口行，但工具层用「仅 char 预算截断才存在的 `nextOffset`」推导渲染端点 —— limit 截断没有该值，端点回落为文件末行，模型文本被按**全文件**重建：窗口外的行要么带历史持久化锚点（**未 served**，下一次编辑直接「not in served set」，无需重启）、要么渲染成裸行号占位（违背「模型看到的行必须有锚点」）。现在渲染器返回 `shownEnd`（最后 served 行）作为唯一渲染边界，工具层按它重建文本与结构化值；`nextOffset` 回归预算截断/续读令牌的专属职责。超长行分支（>200KB）的展示改为按 served 行直建，杜绝「可见却未 served」。实测：12 行文件 `read {offset:5, limit:3}` 恰返回 5–7 行；limit 截断不再签发 resume 令牌。
 - **裸行号拒绝回显的锚点盲区（#212 根因 B，#187 的第三条路径）**：mismatch 回显的补分配窗口按 `ref.line` 收集，而裸行号的数字在 `ref.anchor`、`ref.line` 为空 → 补分配集合为空 → 回显整块 `:N:` 裸行号，且指引模板插入**空串**（"reuse the fresh marker  without calling read"）。现在裸行号解析出的目标行并入补分配集合（仍走 `allocateForLines` 同一入口），指引只广告非空标记，无可用标记时降级为「call read()」。
+- **编辑的判定权交给 `probeLines` 原语（#224 §2.2）**：原先管线自己用「锚点在不在 served 集合里」下结论，而契约 §2.2 的判定是逐行三条（存活 + 本会话 served + 行号仅供参考）。现在 edit 引擎在铸回显窗口**之前**先调 `probeLines`（纯读），把结论作为 `ServedVerdict` 交给管线渲染 —— 管线不再自行推导结论，只在无会话的调用方（单测、write 影子）上保留集合判定。**顺序是承重的**：铸锚会把它锚的行记入 served，先铸后判会把「待验的行」自己变成已 served，实测把一次会话重启拒绝变成了成功编辑（`issue-212-served-message` 当场抓到）。
+- **每文件一个事务（契约 §7）**：`withStore` 改为**可嵌套** —— 事务已开启时内层调用加入而不是再开一个（SQLite 没有嵌套 `BEGIN`），并新增 `withStoreAsync` 供 async 主体组合多个原语。edit 引擎据此把「锚点更新」与「完成释放」包进同一事务提交或一起回滚，两者本就是同一个事实的两半。实测反向对照：把嵌套去掉（恢复每次 `BEGIN`），`one-transaction-per-file.test.ts` 三条全红。
 - **served 丢失的拒绝文案与恢复指引（#212 根因 C）**：served 集合按会话键存储、重启即空（锚点本身持久化），而区间编辑逐行校验全区间 in-served —— 重启后首次区间编辑必拒，旧文案却固定归因「上次编辑移动了行」。现在校验收集**全部**未 served 位置并分组成区间列出，文案明示双成因（会话重启 / 从未读过）并给出**具体的重读参数**（`read {file_path, offset, limit}`，窗口 2000 行封顶并注明），照做一次同一编辑即成功；首个未 served 行的 ±context 回显照旧全行真锚点。**死码清理（维护者拍板 Q4）**：`E_RANGE_UNSERVED` 从 `ServedCode` 类型、README / README.zh 错误码表与 edit 指引中移除 —— 运行时从未抛出过它（统一 `E_RANGE_UNVERIFIED`）。
 - **拒绝回显补分配的状态键（#212 实施中发现）**：`applyEdit` 的 `filePath` 实参一直是**显示路径**，而锚点状态按**绝对路径**键控 —— 回显窗口的补分配（#187）被写进影子键，回显给出的锚点在重试时报「no longer exists」。`applyOne` 现传 `absolutePath`，回显补分配与重试读到的状态同键。
+
+- **同一份内容两种 contentKey（BOM/CRLF）**：`anchorFor` / `probeLines` 用**未正规化**的 content 算行键，而 `ensureState` / `persistAnchorState` 用正规化的（BOM 剥除 + CRLF→LF）。于是一个文件有两种拼写：先服务 `\uFEFF…\r\n` 再服务干净文本，line 1 的锚点每次都重铸（实测 `gi` vs `EB`）—— 反过来说，一个刚被读取过的文件可能看起来「从未分配」。两个原语现在都在入口 `normalizeContent`。
+- **30 万行的行预算被内存缓存掩盖**：ADR-0010 的行预算是 300,000，而一个大文件恰好写 300,000 行 —— 落库即成为淘汰首选。之前没人发现，是因为读走的是内存缓存（行没了但缓存还在）；缓存删除后测试当场重现。用例改为断言**调用返回值**（它的本意是「不抛 `E_FILE_TOO_LARGE`」）并把这条边界写进注释。
+- **带行号前缀的 ref 使 §2.2 判定整段跳过**：模型的锚点常是 `2:IJ`（read 输出的常态），而 preflight 用 `hashes.indexOf("2:IJ")` 找位置得 `-1` → 范围视为不可解 → **既不提问也不铸回显窗口** → 一次针对「被外部改过的行」的编辑**静默成功**。现在用 `parseHashRef` 解析 ref（与管线同一套）；`error-result` 也改为识别两种回显头（服务判定族的回显原先没被切进 `context`）。
+- **端口写路径不认嵌套事务（§7）**：`withTransaction` 每次都开自己的 `BEGIN`，所以 `persistAnchorState` 声称的「一个事务」实际是三个 —— 中途失败会留下 meta 行跑在 line 行前面的状态（两半世界都无法解释）。把 `anchorFor` 包进一个真事务后，它变成可测量的 `cannot start a transaction within a transaction`。现在 `withTransaction` 像 `withStore` 一样**加入**已开事务。
+- **断掉 `session-view ↔ anchor-entry` 导入环**：前者要原语（作用域铸造、`markReleased`），后者要 `loadServed`。共享读取抽到两者之下的叶子 `domain/session/served.ts`（`anchor-entry ─┐ / session-view ─┘ → served → hash-store`），`session-view` 仍 re-export 它。验证：`anchor-entry` 对 `session-view` 的引用为 0。
+- **重建通知从未送达模型（真机测试发现）**：版本升级（或容量淘汰）会作废整个工作区的锚点，store 一直备好了要说的话 —— 而 `takeRebuildWarning` 在 `src/` 里**从未被调用**，于是队列里那条消息没人取。后果在真机上刚刚发生过一次：库从 6 升到 7、36,789 行锚点被作废，而会话**没有收到任何提示**，模型会继续拿已死的标记提编辑、并把每次拒绝当成自己的错。现在 **`read` 把它前置到模型文本**、**`edit` 把它 `unshift` 进 warnings**；因为是 take-and-clear，重建后的**第一条**工具结果携带它，其余干净。新增 `rebuild-warning.test.ts` 钉住「首条携带 + 只一次 + 前置」。
+- **CI `verify-windows` 红（路径键的拼写）**：`write-two-paths.test.ts` 用 `` `${dir}/f.ts` `` 拼键，而 Windows 上 `dir` 带反斜杠 → 混合分隔符的字符串与工具 `path.resolve` 后存的键不等（POSIX 上两者同字符串，所以本地永远绿），报错形状是「写入后一个活锚点都查不到」。已把 5 处改为 `join(dir, …)`。
+  - 同时试过在 store 边界加 `normalize()` 一劳永逸 —— **实测被否决**：它修好了那 3 条，却弄红 6 条（`/proj/partial.ts` 在 Windows 被改写成 `\\proj\\partial.ts`，而原始 sqlite 行仍按旧键）。结论写在适配器上：**键对 store 是不透明的，规范拼写是调用方的责任**（每个工具都在进库前 resolve）。
 
 ## [0.9.5] - 2026-09-29
 

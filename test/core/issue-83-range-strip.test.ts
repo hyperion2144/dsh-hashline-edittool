@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { applyEdit, resEdit } from "../../src/hashline/anchor-pipeline.js";
 import { applyHashlineShape, hashSep } from "../../src/hashline/hash-assign.js";
-import { anchorsPure } from "../../src/hashline/session-anchors.js";
+import { anchorsPure } from "../../src/hashline/alloc.js";
 
 const SEP = hashSep();
 

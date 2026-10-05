@@ -48,6 +48,7 @@ import {
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { withWorkspace } from "../domain/session/session-view.js";
+import { takeRebuildWarning } from "../domain/session/hash-store.js";
 
 const RESUME_WINDOW_LINES = 4000;
 
@@ -406,7 +407,17 @@ export function buildReadTool(io: FileIO) {
 				let body = result.hadUtf8DecodeErrors
 					? `${presentation.modelText}\n\n${UTF8_REWRITE_NOTE}`
 					: presentation.modelText;
-				// Issue #71: the dsh read envelope is gone. Direction B (the bundled
+				// A REBUILD invalidated every anchor this workspace had (a version upgrade
+				// or a capacity sweep). The model has to hear it from the first result that
+				// runs afterwards, or it keeps presenting markers that are now dead and
+				// reads every refusal as its own mistake. `takeRebuildWarning` clears it, so
+				// exactly ONE result carries the notice — whichever tool ran first — and the
+				// rest of the session sees clean output.
+				//
+				// Prepended rather than appended: it is the frame the rows below are read
+				// in, not a footnote to them.
+				const rebuildNotice = takeRebuildWarning();
+				if (rebuildNotice !== undefined) body = `${rebuildNotice}\n\n${body}`;
 				// companion client plugin) renders the web read card from the
 				// persisted presentationMeta alone, so the model no longer pays the
 				// four <path>/<type>/<content> wrapper lines per read — and json

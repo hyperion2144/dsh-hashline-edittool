@@ -9,7 +9,8 @@
  * bounded trace. Time is O(N·D) with D the edit distance — a handful for the
  * edits this plugin renders, so a two-line change in an 800k-line file costs a
  * couple of linear passes — and memory is O(N + M + maxD²), the trace being
- * `maxD + 1` vectors of `2·maxD + 1` ints (~0.5 MB at the default cap).
+ * `maxD + 1` vectors of `2·maxD + 1` ints (~33 KB at the 64 default, ~8.4 MB at
+ * the {@link DIFF_HARD_MAX_D} ceiling).
  *
  * Bounds, stated rather than hidden:
  *  - the common prefix/suffix is matched directly, which is what keeps small
@@ -19,6 +20,11 @@
  *  - past that it becomes one removed block plus one added block, and
  *    `LineDiffResult.degraded` records that it happened. The rendering is still
  *    a correct description of the change, just coarser.
+ *  - `maxD` is CLAMPED to `DIFF_HARD_MAX_D`, because the trace is the one
+ *    allocation its caller controls the size of; the sweep of runs back into
+ *    line arrays is element-wise rather than a spread, because a single
+ *    same-direction block of a few hundred thousand lines otherwise blows V8's
+ *    argument limit (#229, #230 — `test/core/line-diff-bounds.test.ts`).
  *
  * The first attempt reused the anchor aligner (`alignPreservedBounded`) and was
  * rejected by measurement — 965 MB / 24.6 s at 800k lines, because that aligner
@@ -49,8 +55,31 @@ export interface LineDiffResult {
 	degraded: boolean;
 }
 
-/** Half-diagonals one search may explore before the range is split. */
+/**
+ * Half-diagonals one search may explore before the range is split.
+ *
+ * Kept at 256 rather than lowered for speed: #230 measured a 6× win on one
+ * 800k-line input at 64, but that does not generalise. A whole-file rewrite
+ * whose tail survives finds its common subsequence only past 64 half-diagonals —
+ * at 64 the budget runs out, the range is split, and surviving lines render as
+ * removed + re-added instead of context. [#190]'s parity contract in
+ * `test/core/line-diff.test.ts` pins that shape, so 64 is a rendering defect and
+ * not a free speedup. `test/core/line-diff-bounds.test.ts` keeps the
+ * counter-example.
+ *
+ * [#190]: https://github.com/hyperion2144/dsh-hashline-edittool/issues/190
+ */
 export const DEFAULT_MAX_D = 256;
+
+/**
+ * Hard ceiling on the distance any caller may ask for.
+ *
+ * The trace is `maxD + 1` vectors of `2·maxD + 1` int32 — `O(maxD²)` — so an
+ * unbounded knob is a memory defect, not a tuning knob: 16,384 wants ~1.3 GB,
+ * measured (#230). At this ceiling the trace is ~8.4 MB, which no real edit's
+ * distance comes close to needing.
+ */
+export const DIFF_HARD_MAX_D = 1024;
 
 /** How deep the split-and-retry fallback may recurse before going coarse. */
 export const MAX_SPLIT_DEPTH = 16;
@@ -153,11 +182,15 @@ function myersRange(
 ): Run[] | undefined {
 	const n = aHi - aLo;
 	const m = bHi - bLo;
-	const mid = maxD;
-	const v = new Int32Array(2 * maxD + 1);
+	// The trace is `O(maxD²)` and this is its only allocation site, so the clamp
+	// is applied here rather than trusting the caller to have used `effectiveMaxD`
+	// (#230).
+	const cap = effectiveMaxD(maxD);
+	const mid = cap;
+	const v = new Int32Array(2 * cap + 1);
 	const trace: Int32Array[] = [];
 	let reachedAt = -1;
-	for (let d = 0; d <= maxD && reachedAt < 0; d++) {
+	for (let d = 0; d <= cap && reachedAt < 0; d++) {
 		trace.push(v.slice());
 		for (let k = -d; k <= d; k += 2) {
 			let x: number;
@@ -195,6 +228,36 @@ function myersRange(
  * @param mid - the k offset those vectors use.
  * @returns the runs, forward order, absolute indices.
  */
+
+/**
+ * The distance a search may actually explore: floored at 0 and clamped to
+ * {@link DIFF_HARD_MAX_D}, so no caller can inflate the trace past the ceiling.
+ *
+ * @param maxD - the requested distance cap.
+ * @returns the cap this module will honour.
+ */
+export function effectiveMaxD(maxD: number): number {
+	if (!Number.isFinite(maxD)) return maxD > 0 ? DIFF_HARD_MAX_D : 0;
+	return Math.max(0, Math.min(DIFF_HARD_MAX_D, Math.floor(maxD)));
+}
+
+/**
+ * Append `[from, to)` of `units` to `out`, one element at a time.
+ *
+ * NOT `out.push(...units.slice(from, to))`: a spread passes every element as
+ * an ARGUMENT, and a contiguous same-direction block of ≥ ~150k lines blows V8's
+ * argument limit with `RangeError: Maximum call stack size exceeded` — thrown
+ * while rendering a diff that had already been computed correctly (#229).
+ * `write` of a huge file and a huge `undo` rollback both hit it.
+ *
+ * @param out - the array to extend.
+ * @param units - the source units.
+ * @param from - inclusive start index.
+ * @param to - exclusive end index.
+ */
+function pushSlice(out: string[], units: string[], from: number, to: number): void {
+	for (let i = from; i < to; i++) out.push(units[i]!);
+}
 function backtrack(
 	aLo: number,
 	bLo: number,
@@ -356,10 +419,10 @@ function partsFromRuns(runs: Run[], oldUnits: string[], newUnits: string[]): Lin
 		}
 		if (run.kind === "del") {
 			if (pendingIns.length > 0) flush();
-			pendingDel.push(...oldUnits.slice(run.a0, run.a1));
+			pushSlice(pendingDel, oldUnits, run.a0, run.a1);
 			continue;
 		}
-		pendingIns.push(...newUnits.slice(run.b0, run.b1));
+		pushSlice(pendingIns, newUnits, run.b0, run.b1);
 	}
 	flush();
 	return parts;
@@ -370,7 +433,7 @@ function partsFromRuns(runs: Run[], oldUnits: string[], newUnits: string[]): Lin
  *
  * @param oldText - the pre-change text.
  * @param newText - the post-change text.
- * @param maxD - distance cap per search.
+ * @param maxD - distance cap per search, clamped to {@link DIFF_HARD_MAX_D}.
  * @returns the blocks and whether any range was emitted coarse.
  */
 export function diffLinesBoundedResult(

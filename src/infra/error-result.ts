@@ -56,8 +56,17 @@ export const errorFieldSchema = {
 
 /** First bracketed `[E_*]` marker in a message — the domain-error whitelist shape. */
 const E_CODE = /\[(E_[A-Z_]+)\]/;
-/** The echo block's header phrase — the ±context rows a stale/declared rejection appends. */
-const ECHO_MARKER = "Echo of the line you tried";
+/**
+ * The echo block's header phrases — the ±context rows a rejection appends.
+ *
+ * TWO of them, because the refusal families word the echo differently: the
+ * locate stage says "Echo of the line you tried", the served verdict says
+ * "Echo of the first unserved line". Recognizing only the first meant a
+ * served-verdict refusal — including an externally drifted line, which that
+ * verdict now catches — had its echo left inside `message` instead of landing
+ * in `context`: the rows were there, just not where the card looks for them.
+ */
+const ECHO_MARKERS = ["Echo of the line you tried", "Echo of the first unserved line"] as const;
 
 /**
  * Pull the related file path out of a tool call's args (`path`, falling back
@@ -125,10 +134,11 @@ export function thrownErrorResult(err: unknown, opts?: { path?: string }): Error
 	if (match === null) throw err;
 	const code = match[1]!;
 	const head = message.slice(match.index + match[0].length).replace(/^ /, "");
-	// The echo header opens the ±context rows block the stale/declared
-	// rejections attach; the two composers indent it differently, so the
-	// marker phrase — not its whitespace — is the seam.
-	const echoAt = head.indexOf(ECHO_MARKER);
+	// The echo header opens the ±context rows block a rejection attaches; the
+	// composers indent it differently, so the marker phrase — not its whitespace
+	// — is the seam. Any of the known phrases opens the block.
+	const echoAt =
+		ECHO_MARKERS.map((marker) => head.indexOf(marker)).find((at) => at !== -1) ?? -1;
 	const split = echoAt !== -1 ? echoAt : head.indexOf("\n\n");
 	const body = split === -1 ? head : head.slice(0, split).replace(/\s+$/, "");
 	const context = split === -1 ? undefined : head.slice(split).replace(/^\s+/, "");

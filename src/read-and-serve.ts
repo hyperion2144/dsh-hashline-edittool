@@ -10,7 +10,8 @@
 
 import { abortIf } from "./infra/utils.js";
 import { readView } from "./domain/session/file-view.js";
-import { recordServed, clearDriftReported } from "./domain/session/session-view.js";
+import { clearDriftReported, withWorkspace } from "./domain/session/session-view.js";
+import { probeLines } from "./domain/session/anchor-entry.js";
 import type { FileIO } from "./infra/fs-bridge.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { ServedRow } from "./hashline/anchor-pipeline.js";
@@ -85,15 +86,50 @@ export async function readAndServe(
 		limit: options.limit,
 		lineNumbers: options.lineNumbers,
 		maxChars: options.maxChars,
+		// #223: the session the renderer mints its window for. Without it the
+		// renderer cannot serve what it shows, and this seam would have to keep a
+		// second recording path.
+		sessionKey,
 		signal,
 	});
 	if (view.served.length > 0) {
-		await recordServed(
-			sessionKey,
-			view.absolutePath,
-			view.served.map((r) => ({ position: r.position, anchor: r.anchor, key: r.contentKey ?? null })),
-			view.hashes.length,
-		);
+		// #223: the mint AND the served record now commit together, inside the
+		// renderer's call to the one entry point — see `fmtReadPreview`, which
+		// mints the window it is about to show and serves it in the same
+		// transaction. So this seam does NOT re-record: doing that would record
+		// the same rows a second time.
+		//
+		// What it does instead is CHECK. The model must be shown the anchors it can
+		// actually use, and the window the renderer minted is the one it rendered;
+		// if those ever disagreed the model would be handed one anchor and served
+		// another — silently, which is the #187/#212 class. `probeLines` is the
+		// read-only half of the entry point, so the check cannot itself record.
+		//
+		// A plain `Error`, deliberately WITHOUT an `[E_...]` token: this is an
+		// internal invariant, not a model-facing outcome, and the contract freezes
+		// the error-code set ("错误码集合一字不改").
+		const rows = view.served.filter((r) => r.anchor !== undefined && r.anchor !== null);
+		if (rows.length > 0) {
+			// Inside the workspace scope: `probeLines` reads the session's served set,
+			// and the store is resolved from the cwd — probing outside the scope reads
+			// the SHARED fallback store, where these rows are not (the same trap #171
+			// documented for writes).
+			const probe = await withWorkspace(cwd, () =>
+				probeLines({
+					path: view.absolutePath,
+					content: view.normalized,
+					refs: rows.map((r) => ({ anchor: r.anchor as string, line: r.position + 1 })),
+					sessionKey,
+				}),
+			);
+			if (!probe.ok) {
+				throw new Error(
+					`anchor/serve divergence in ${view.absolutePath}: the rendered rows are not usable (${probe.reason}). Row(s): ${probe.rows
+						.map((r) => `${r.line} given "${r.given}" current "${r.current}"`)
+						.join(", ")}. The rendered text and the served record disagree, so the row would be unusable; refusing to publish it.`
+				);
+			}
+		}
 		// The rows are served, so the session has SEEN this file: tell the dsh
 		// observation policy, or the very rows just handed over cannot be
 		// edited with until an explicit read re-observes the file.

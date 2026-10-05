@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	lineHashesPure,
-	lineHashes,
 	hashOf,
 	canon,
 } from "../../src/hashline/index.js";
+import { servedAnchors } from "../support/anchor-serve.js";
+import { anchorFor } from "../../src/domain/session/anchor-entry.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -33,12 +34,27 @@ describe("hashline size limits — removed in v2.0", () => {
 	// in this file left the other one failing the suite at random — which is worse
 	// than either, because a suite that is red one run in three teaches everyone to
 	// re-run instead of to look.
+	//
+	// NOTE on what this case can and cannot assert. ADR-0010's row budget is
+	// exactly 300,000 rows, and this file is exactly 300,000 lines — so the write
+	// lands ON the budget and the path is the first eviction candidate. The
+	// anchors still come back correct and unique (that is the case's point: no
+	// `E_FILE_TOO_LARGE`), but they must be read from the CALL's result, not
+	// from a follow-up store read, which a budget-evicted path answers with
+	// nothing. This used to pass only because reads hit an in-process cache that
+	// outlived the rows; with the cache gone (contract §8: the rows are the
+	// record) the boundary is visible instead of hidden.
 	it("does not throw E_FILE_TOO_LARGE through the persistence path", { timeout: 30_000 }, async () => {
 		const line = "x";
 		const content = Array.from({ length: 300_000 }, () => line).join("\n");
-		const hashes = await lineHashes(content, home.testPath);
-		expect(hashes).toHaveLength(300_000);
-		expect(new Set(hashes).size).toBe(300_000);
+		const { anchors } = await anchorFor({
+			path: home.testPath,
+			content,
+			lines: Array.from({ length: 300_000 }, (_, i) => i + 1),
+			sessionKey: "hashline-limit",
+		});
+		expect(anchors).toHaveLength(300_000);
+		expect(new Set(anchors).size).toBe(300_000);
 	});
 });
 

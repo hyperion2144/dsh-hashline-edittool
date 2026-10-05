@@ -25,9 +25,10 @@ import {
 } from "../../src/hashline/align-bounded.js";
 
 // The original `alignPreserved` is a module-private wrapper inside
-// session-anchors.ts; for testing it end-to-end we use the public bounded
+// anchor-state.ts; for testing it end-to-end we use the public bounded
 // variant (above) AND drive the wrapper through `anchorsFor`.
-import { anchorsFor, registerAnchorPersistence, allocateForLines } from "../../src/hashline/session-anchors.js";
+import { anchorsFor, registerAnchorPersistence } from "../../src/domain/session/anchor-state.js";
+import { serveLines } from "../support/anchor-serve.js";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -339,7 +340,7 @@ describe("threshold-below behavior is unchanged", () => {
 		expect(r.pairs.size).toBe(99);
 	});
 
-it("the wrapper in session-anchors returns the bounded pairs (1-line edit)", () => {
+it("the wrapper in anchor-state returns the bounded pairs (1-line edit)", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "align-test-"));
 		registerAnchorPersistence(undefined);
 		try {
@@ -347,10 +348,10 @@ it("the wrapper in session-anchors returns the bounded pairs (1-line edit)", () 
 			const before = "alpha\nbeta\ngamma\n";
 			// Allocate ALL lines so the sparse state has entries for the whole
 			// file — `anchorsFor` only materializes existing entries.
-			const anchors = allocateForLines(path, before, [1, 2, 3]);
+			const anchors = await serveLines(path, before, [1, 2, 3]);
 			expect(anchors.every((a) => a.length > 0)).toBe(true);
 			const after = "alpha\nBETA\ngamma\n";
-			const afterAnchors = allocateForLines(path, after, [1, 2, 3]);
+			const afterAnchors = await serveLines(path, after, [1, 2, 3]);
 			// Surrounding lines keep their anchor (content survived); the
 			// changed line gets a fresh one — proves the wrapper reached the
 			// bounded aligner and surfaced its pairs.

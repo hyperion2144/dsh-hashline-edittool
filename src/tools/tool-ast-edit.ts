@@ -19,8 +19,7 @@ import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/er
 import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import { runFileEdits, type PreparedItem } from "../domain/edit/edit-engine.js";
-import { execCwd, execSessionKey, withWorkspace } from "../domain/session/session-view.js";
-import { anchorsFor, allocateForLines } from "../hashline/session-anchors.js";
+import { execCwd, execSessionKey, withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "../render/edit-card.js";
 import { lineHashesPure } from "../hashline/hash-assign.js";
@@ -265,10 +264,16 @@ async function runAstEdit(
 				: `No match for \`${args.pat}\` in ${args.path}. ${message}`,
 		};
 	}
-	// The anchors come from the hashline allocator — the SAME primitive
-	// `read` uses — so what is edited is what a read would have shown.
-	const anchors = anchorsFor(absolutePath, text);
+	// NO read of the file's existing anchors, and that is the point: every line
+	// this function goes on to READ an anchor for is one of the matched lines it
+	// is about to mint (the rows it serves, the match bounds, the range it
+	// edits). A dense read first — which is what used to be here — paid for a
+	// query over every row of the file to fill an array whose only populated
+	// entries the mint is about to overwrite. The array is kept at full length
+	// because the downstream code indexes it by LINE, not by position in a short
+	// list.
 	const sourceLines = splitLines(text);
+	const anchors: string[] = new Array(sourceLines.length).fill("");
 	// LAZY (#169): allocate for exactly the matched lines this tool is about
 	// to serve and edit — the same rule the serve loop below states.
 	const servedLineNos = [...new Set(
@@ -278,7 +283,17 @@ async function runAstEdit(
 			return rows;
 		}),
 	)].sort((a, b) => a - b);
-	const allocatedAnchors = allocateForLines(absolutePath, text, servedLineNos);
+	// #223: one entry point mints the anchors for exactly these lines AND
+	// records them as served, in one transaction. This used to be a bare
+	// allocation plus a separate serve below, which is how anchors the model was
+	// shown ended up in nobody's served set.
+	const allocatedAnchors = await anchorForInWorkspace({
+		cwd,
+		absolutePath,
+		content: text,
+		lines: servedLineNos,
+		sessionKey: execSessionKey(exec),
+	});
 	for (let k = 0; k < servedLineNos.length; k++) {
 		anchors[servedLineNos[k]! - 1] = allocatedAnchors[k]!;
 	}

@@ -42,10 +42,17 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the bu
 - **Every line carries a content anchor** — a variable-length Base62 marker (2 characters
   covers the first 3,844 lines; the encoding grows only as the file demands). The model
   edits by marker, so it never echoes the code it is replacing.
-- **Edits are verified against what the model actually saw.** Each resolved range is checked
-  against the *served* mirror (anchor + content). A line that changed under the agent is
-  rejected with `[E_STALE]` — and the rejection echoes the current lines **with fresh,
-  immediately usable anchors** (reject-and-serve).
+- **Edits are verified against what the model actually saw.** Each referenced anchor is
+  checked line by line: it must still be live, its line must still hold the content it
+  was minted for, and it must be in *this session's* served set. A line that changed
+  under the agent is refused — and the refusal echoes the failing lines **with real,
+  immediately usable anchors** (reject-and-serve). A changed file checksum is a *remap*
+  signal, not a refusal, so another session touching another line never invalidates yours.
+- **Anchors are shared across sessions in one workspace.** Read a file in one session and
+  edit it from another without re-reading: anchors are a per-workspace identity, while
+  "may I write this line" is answered per session. If the other session *replaced* the
+  line you are holding, you get a refusal and the line's current anchor — not a silent
+  write somewhere else.
 - **One call = one atomic batch.** All anchors in one `edit` resolve against the original
   snapshot; any failure rejects the whole call and writes nothing. Multi-file batches are
   grouped per file, each file all-or-nothing, partial success reported.
@@ -138,14 +145,46 @@ D0:4|export function greet(name: string): string {
 ### Served-state verification (reject-and-serve)
 
 A row becomes **served** when a tool result shows it to the model (`read`, `grep`, edit
-diffs, structural results, LSP rows). `edit` verifies each resolved range against that
-mirror before writing:
+diffs, structural results, LSP rows). Anchors are minted at exactly that moment, through
+**one** entry point, and the mint and the served record commit together — an anchor the
+model was shown is always an anchor some session has "seen", which is what the
+verification below relies on.
+
+**Allocation happens after the response is truncated.** A line cut by the response budget
+is a line the model never saw, so it is neither anchored nor served; it gets its anchor
+when a later call actually shows it. "I hold a marker" therefore always means "I have
+seen that line".
+
+`edit` verifies each referenced anchor **line by line**, against three conditions — all
+of which must hold:
+
+1. the anchor is **live** — it is in the file's anchor state and the line it is bound to
+   still carries the content the anchor was minted for;
+2. the anchor is in **this session's** served set;
+3. the line number the caller reported is **information only** — a mismatch is reported
+   as drift, never a refusal.
+
+**A changed file checksum is not itself a rejection.** It is the signal that the file was
+changed by something else, and it triggers a **remap**: unchanged lines keep their
+anchors at their new line numbers, and only lines whose content actually changed are
+released and re-minted. Refusing on the checksum would make a line uneditable the moment
+someone else touched any other part of the file — which is exactly what cross-session
+anchors exist to avoid.
+
+**Releasing an anchor clears three things together**: the anchor stops being live, it
+leaves the *releasing* session's served set, and it enters that call's release pool so the
+same call cannot hand it to a different line. Anything less leaves the silent
+wrong-line window: an anchor that resolves, verifies and points somewhere new.
+
+Failure is **all-or-nothing** and the code is unchanged:
 
 - anchor unknown → `[E_STALE]`; a range row never served in this session → `[E_RANGE_UNVERIFIED]`;
-- served content differs from disk → `[E_STALE]` / `[E_RANGE_STALE]`;
-- every rejection **echoes the current lines as served rows with fresh anchors**, so the
-  fix is: take the marker from the echo and resubmit. Served rows are also emitted as
-  `fs/observed`, so they can be written with immediately.
+- a changed file checksum → `[E_RANGE_STALE]`, a remap signal rather than a refusal. The host's
+  own `FS_STALE_VERSION` (the write was refused by the file-version guard) maps onto the same code
+  because the remedy is the same — re-read for fresh anchors — and only the first case is a remap signal;
+- every rejection **echoes the failing lines with a little context, as served rows with
+  real anchors**, so the fix is: take the marker from the echo and resubmit. Served rows
+  are also emitted as `fs/observed`, so they can be written with immediately.
 
 There is no `Shift:` block — after an edit, take anchors from the diff rows the response
 just gave you, or re-read.
@@ -278,7 +317,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_OP_INS]` | Informational: `ins` placed lines after the anchor. |
 | `[E_PASTE_DUP]` | Replacement line matches an adjacent file line; kept verbatim. |
 | `[E_SERVED_RECORD]` | Diagnostics: served state could not be persisted (storage failure); the response carries a re-read notice instead of silently losing the rows. |
-| `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. |
+| `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. `E_RANGE_STALE` is also what the host's `FS_STALE_VERSION` is reported as: same remedy (re-read), different cause. |
 | `[E_STALE]` | Anchor no longer matches served content; re-read. |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit`'s replacement would leave the file unparsable; not written. |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | File changed after the edit / undo history could not persist. |

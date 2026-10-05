@@ -21,7 +21,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { getUndo, popUndo, saveUndo, undoDepth } from "../../src/domain/edit/undo-edit.js";
-import { anchorsFor } from "../../src/hashline/session-anchors.js";
+import { anchorsFor } from "../../src/domain/session/anchor-state.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
 import { contentKey } from "../../src/hashline/alloc.js";
 import { withTempDir } from "../support/fixtures.js";

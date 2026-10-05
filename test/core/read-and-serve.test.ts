@@ -8,6 +8,7 @@ import {
 	sessionKeyFor,
 } from "../../src/domain/session/session-view.js";
 import { withTempFile } from "../support/fixtures.js";
+import { withWorkspace } from "../../src/infra/workspace.js";
 
 beforeAll(async () => {
 });
@@ -32,10 +33,10 @@ describe("readAndServe", () => {
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*two$/);
 			expect(lines[3]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*three$/);
 
-			const stored = await loadServed(sessionKey, path);
+			const stored = await withWorkspace(cwd, () => loadServed(sessionKey, path));
 			expect(stored.size).toBe(3);
 			expect([...stored].every((hash) => hash !== null)).toBe(true);
-			expect(await driftReported(sessionKey, path)).toEqual(new Set());
+			expect(await withWorkspace(cwd, () => driftReported(sessionKey, path))).toEqual(new Set());
 		});
 	});
 
@@ -55,7 +56,7 @@ describe("readAndServe", () => {
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*three$/);
 			expect(text).toContain("[Showing lines 2-3 of 4");
 
-			const stored = await loadServed(sessionKey, path);
+			const stored = await withWorkspace(cwd, () => loadServed(sessionKey, path));
 			expect([...stored].filter((hash) => hash !== null)).toHaveLength(2);
 		});
 	});

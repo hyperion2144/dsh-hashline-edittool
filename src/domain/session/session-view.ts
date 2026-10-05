@@ -34,7 +34,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../../infra/fs-bridge.js";
 import { withWorkspace, workspaceCwd } from "../../infra/workspace.js";
 import { hashRe, canon, contentChecksum } from "../../hashline/hash-assign.js";
-import { anchorsFor, allocateForLines } from "../../hashline/session-anchors.js";
+import { anchorsFor } from "./anchor-state.js";
 import { loadHashStore, withStore } from "./hash-store.js";
 import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 // The row shape and the row renderer both come from the resolve engine.
@@ -44,6 +44,7 @@ import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 import type { ServedRow, ResolvedRange } from "../../hashline/anchor-pipeline.js";
 import { fmtServedRows } from "../../hashline/anchor-pipeline.js";
 import { configDir, hashStorePath, resolveTarget } from "../../infra/paths.js";
+import { anchorFor, markReleased } from "./anchor-entry.js";
 
 // --- workspace (owned by infra/workspace, re-exported for this seam's callers) ---
 export { withWorkspace, workspaceCwd };
@@ -102,10 +103,11 @@ export async function recordServedAfterEdit(
   }
 }
 
-export async function loadServed(sessionKey: string, path: string): Promise<Set<string>> {
-  const store = await loadHashStore();
-  return store.getServed(sessionKey, path);
-}
+// Moved to `served.ts`, a leaf both this module and `anchor-entry.ts` can
+// depend on: this module imports the primitives FROM `anchor-entry`, so a
+// shared read must not live here. Re-exported because it is part of this
+// module's vocabulary (the served view).
+export { loadServed } from "./served.js";
 
 export async function recordServed(sessionKey: string, path: string, rows: ServedEntry[], _lineCount?: number): Promise<void> {
   if (rows.length === 0) return;
@@ -176,63 +178,92 @@ export async function recordEchoServes(
  * tools have ONE call to make, instead of a store call they must remember to
  * wrap.
  *
- * @param opts.sessionKey - the session whose mirror to update.
- * @param opts.cwd - the workspace root; the cwd the caller already resolved its path against.
+ * @remarks
+ * Split in two by #223. The minting half is {@link anchorForInWorkspace} and
+ * has to run BEFORE the caller renders its rows (the model must be shown the
+ * anchors it will actually be able to use). This half only OBSERVES — the
+ * served write already happened, inside the minting call's transaction.
+ *
+ * Keeping both halves here rather than at each call site is the point: five
+ * tools used to allocate and serve themselves, and one of them forgetting the
+ * observation makes the rows it just showed unwritable (`[E_NOT_OBSERVED]`).
+ *
+ * **Declaration-only fields**: `sessionKey`, `cwd`, `rows` and `lineCount` are
+ * accepted so a call site READS as "these rows of this session's file were
+ * shown", and are not consumed — the rows were already served by
+ * {@link anchorForInWorkspace}, and the observation needs only the path. They are
+ * optional so a caller with nothing to declare can omit them.
+ *
  * @param opts.absolutePath - the canonical path the rows belong to.
- * @param opts.rows - position/anchor pairs to mark served.
- * @param opts.lineCount - total line count, for truncation bookkeeping.
  * @param opts.exec - the tool execution, for the observation emit.
  * @param opts.io - the filesystem bridge that owns `emitObserved`.
  */
-export async function serveRowsInWorkspace(opts: {
-  sessionKey: string;
-  cwd: string;
+export async function observeServedRows(opts: {
   absolutePath: string;
-  rows: ServedEntry[];
-  lineCount: number;
   exec: ToolExecution;
   io: { emitObserved(path: string, exec: ToolExecution, signal?: AbortSignal): Promise<void> };
+  /** Declaration only — see the note above. */
+  sessionKey?: string;
+  /** Declaration only — see the note above. */
+  cwd?: string;
+  /** Declaration only — see the note above. */
+  rows?: ServedEntry[];
+  /** Declaration only — see the note above. */
+  lineCount?: number;
 }): Promise<void> {
-  await withWorkspace(opts.cwd, async () => {
-    await recordServed(opts.sessionKey, opts.absolutePath, opts.rows, opts.lineCount);
-  });
-  // Observing is not a store write, but it belongs to the same promise:
-  // a served row the policy does not know about is an anchor the model
-  // cannot write with.
+  // No store write, and nothing to re-record: the anchors AND the served rows
+  // were committed by {@link anchorForInWorkspace} in one transaction, and
+  // repeating that here would be a second write of one fact — the split this
+  // pairing exists to remove.
+  //
+  // Observing is not a store write, but it belongs to the same promise: a served
+  // row the policy does not know about is an anchor the model cannot WRITE with
+  // (`[E_NOT_OBSERVED]`).
   await opts.io.emitObserved(opts.absolutePath, opts.exec, opts.exec.signal);
 }
 
 /**
- * Allocate anchors for the rows a tool is about to serve, INSIDE the workspace
- * scope and with the workspace store OPEN.
+ * Mint/reuse anchors for the lines a tool is about to show, and record them as
+ * served — the ONE call a tool makes before rendering its rows (#223).
  *
- * Two traps this closes, both found by a live probe (#171):
- *  - the anchor store is per-project, and a tool without its own
- *    `withWorkspace` body (`ast_grep`, `lsp`) writes the SHARED `$DSH_HOME`
- *    store — where nothing reads it (the same trap
- *    {@link serveRowsInWorkspace} closes on the served side);
- *  - the anchor port writes ONLY to an already-open store (`currentStore()`
- *    never opens one), so an allocation that runs before anything opened this
- *    workspace's store is dropped — the rows render with anchors that were
- *    never persisted, and a restart loses them.
+ * Returns the anchors so the caller can put them in the rows it is about to
+ * render: the model must be shown the anchors it will actually hold. Serving
+ * happens here, in the same transaction as the mint, which is the whole point —
+ * a caller that allocated and then failed to serve left rows the model could
+ * see but no session had "seen".
  *
- * @param cwd - the workspace root for this execution.
- * @param absolutePath - the file the rows belong to.
- * @param content - the file's current normalized text.
- * @param lines - the 1-based lines the tool is about to render.
- * @returns the allocated anchors, aligned with `lines`.
+ * Why this exists rather than each tool calling `anchorFor` directly: `ast_grep`
+ * and `lsp` have no `withWorkspace` body, so they must enter the scope AND open
+ * the store around the write, and one of them forgetting the second half writes
+ * to the SHARED `$DSH_HOME` store where nothing reads it (#171).
+ *
+ * @param opts.cwd - the workspace root for this execution.
+ * @param opts.absolutePath - the file the rows belong to.
+ * @param opts.content - the file's current normalized text.
+ * @param opts.lines - the 1-based lines the tool is about to render.
+ * @param opts.sessionKey - the session these rows are served to.
+ * @returns the anchors, aligned with `opts.lines` (`""` outside the file).
  */
-export async function allocateInWorkspace(
-  cwd: string,
-  absolutePath: string,
-  content: string,
-  lines: number[],
-): Promise<string[]> {
-  return withWorkspace(cwd, async () => {
-    await loadHashStore(cwd);
-    return allocateForLines(absolutePath, content, lines);
+export async function anchorForInWorkspace(opts: {
+  cwd: string;
+  absolutePath: string;
+  content: string;
+  lines: readonly number[];
+  sessionKey: string;
+}): Promise<readonly string[]> {
+  return withWorkspace(opts.cwd, async () => {
+    // No explicit `loadHashStore` here: `anchorFor` loads the store itself
+    // before it writes, so naming it twice only adds a line that can drift.
+    const { anchors } = await anchorFor({
+      path: opts.absolutePath,
+      lines: opts.lines,
+      content: opts.content,
+      sessionKey: opts.sessionKey,
+    });
+    return anchors;
   });
 }
+
 
 /**
  * Open this workspace's store before a tool serves or allocates rows.
@@ -274,6 +305,7 @@ export async function reconcileServed(
   content: string,
 ): Promise<void> {
   const live = new Set(anchorsFor(path, content).filter((anchor) => anchor !== ""));
+  const dropped: string[] = [];
   const store = await loadHashStore();
   withStore(() => {
     const current = store.getServed(sessionKey, path);
@@ -281,11 +313,19 @@ export async function reconcileServed(
     for (const anchor of [...current]) {
       if (!live.has(anchor)) {
         current.delete(anchor);
+        dropped.push(anchor);
         removed = true;
       }
     }
     if (removed) store.upsertServed(sessionKey, path, [...current]);
   });
+  // Every anchor this reconcile just dropped is one the edit RELEASED (it is
+  // no longer live for the file). Put them in this call's release pool — the
+  // third of the three things a release is (#223, contract §4). Without it the
+  // remaining part of the call could mint one of them for another line while
+  // the model still holds the old meaning, which is the silent wrong-line edit
+  // `#217` §1 reproduced.
+  if (dropped.length > 0) markReleased(path, dropped);
 }
 
 export async function recordServedTruncated(sessionKey: string, path: string, rows: ServedEntry[], _lineCount: number, _clearFrom = 0): Promise<void> {

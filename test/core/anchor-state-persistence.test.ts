@@ -1,56 +1,42 @@
-/**
- * Issue #136 — anchor state must be PERSISTED (per cwd + path in the sqlite
- * hash-store); a cache miss may never fall back to a full re-allocation.
- *
- * The field failure: `session-anchors` kept per-path anchor state in a memory
- * LRU (256 paths, no disk). Once a session touched more paths than the cap,
- * the file's state was evicted and the next `anchorsFor` re-ran
- * `assignAnchors` — handing DIFFERENT anchors to lines whose content never
- * changed. The served mirror still held the old anchors, so edits rejected
- * with `[E_RANGE_UNVERIFIED]` ("stale" / "never served") no matter how often
- * the echo re-served them.
- *
- * These tests pin the contract the fix introduces:
- *   1. eviction / restart recovers the state from sqlite (never recomputes);
- *   2. external changes diff-inherit against the PERSISTED state;
- *   3. a state allocated before the store opened is flushed to sqlite once
- *      the store exists (write-behind, at most once per path);
- *   4. a concurrent writer's persisted state invalidates this process's cache;
- *   5. a poisoned stored state heals positionally (keep what exists, allocate
- *      the gaps) instead of recomputing;
- *   6. the anchor_state row family participates in pruning + TTL sweep.
- *
- * @module dsh-hashline-edittool/anchor-state-persistence
- */
-import { describe, expect, it, vi, beforeAll } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "fs/promises";
-import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-import {
-	anchorsFor,
-	allocateForLines,
-	updateAnchorsAfterEdit,
-	ANCHOR_CACHE_LIMIT,
-} from "../../src/hashline/session-anchors.js";
+import { anchorsFor, updateAnchorsAfterEdit } from "../../src/domain/session/anchor-state.js";
+import { anchorFor } from "../../src/domain/session/anchor-entry.js";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
-import { contentChecksum } from "../../src/hashline/hash-assign.js";
 import { assignAnchors, contentKey } from "../../src/hashline/alloc.js";
+import { contentChecksum } from "../../src/hashline/hash-assign.js";
 import { splitLines } from "../../src/infra/utils.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
 
+/**
+ * Anchor state is PERSISTED, and it is the only source.
+ *
+ * These cases used to exercise a per-path in-memory cache: eviction, write-behind
+ * flush, cache invalidation by a concurrent writer. That cache is gone (contract
+ * §3 — the pure layer holds no store-scoped state; §2.3 — a question about an
+ * anchor is answered by `anchor_lines`, not by anything materialised first), so
+ * the cases are re-expressed against the ROWS. What they assert is unchanged:
+ * an unchanged line keeps its anchor across a store reopen, a foreign write is
+ * picked up, corruption is healed locally, and TTL/pruning still apply.
+ */
+
 let tmpHome: string;
-beforeAll(async () => {
-	tmpHome = await mkdtemp(
-		join(await getWritableTempRoot(), "pi-hashline-anchor-state-test-"),
-	);
+
+beforeEach(async () => {
+	tmpHome = await mkdtemp(join(await getWritableTempRoot(), "pi-hashline-anchor-state-"));
 	vi.stubEnv("HOME", tmpHome);
 	vi.stubEnv("USERPROFILE", tmpHome);
-	// Point the harness home at the TEMP home explicitly — see the note in
-	// snapshot-store.test.ts: an EMPTY stub leans on `homedir()/.dsh`, which is
-	// a different directory on Windows (`os.homedir()` reads USERPROFILE).
 	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
 	vi.stubEnv("XDG_CONFIG_HOME", "");
+});
+
+afterEach(async () => {
+	shutdownHashStore();
+	vi.unstubAllEnvs();
+	await rm(tmpHome, { recursive: true, force: true });
 });
 
 // ---- fixtures: repeated blank lines / closing braces, the shapes the field
@@ -77,11 +63,26 @@ function hunkLine5(): { oldStart1: number; oldEnd1: number; finalStart1: number;
 	return { oldStart1: 5, oldEnd1: 5, finalStart1: 5, finalEnd1: 5 };
 }
 
-/** Touch enough distinct paths that ANY earlier path is evicted: two full
- *  cache generations, so even a path cached right before the flood is gone. */
-function floodCache(prefix: string): void {
-	for (let i = 0; i <= ANCHOR_CACHE_LIMIT * 2 + 1; i++) {
-		anchorsFor(`${prefix}-${i}.txt`, "evict\nme\n");
+/**
+ * Serve every line of `content`, the way a read does, and return the view.
+ *
+ * Goes through the ONE allocate entry point (`anchorFor`). It used to call
+ * `allocateForLines`, a second allocation path that has been deleted.
+ */
+async function serveAll(path: string, content: string): Promise<string[]> {
+	await anchorFor({
+		path,
+		content,
+		lines: Array.from({ length: splitLines(content).length }, (_, i) => i + 1),
+		sessionKey: "persist-test",
+	});
+	return anchorsFor(path, content);
+}
+
+/** Touch unrelated paths. There is no cache to evict any more — this is noise. */
+async function touchOtherPaths(prefix: string): Promise<void> {
+	for (let i = 0; i < 5; i++) {
+		await serveAll(`${prefix}-${i}.txt`, "other\nfile\n");
 	}
 }
 
@@ -93,15 +94,7 @@ function sqlitePath(home: string): string {
 	return join(configHome(home), "hash-store.sqlite");
 }
 
-/** Serve every line — the read path's allocation step (LAZY #169). */
-function serveAll(path: string, content: string): string[] {
-	return allocateForLines(
-		path, content,
-		Array.from({ length: splitLines(content).length }, (_, i) => i + 1),
-	);
-}
-
-/** Simulate ANOTHER process writing the sparse anchor rows directly. */
+/** Simulate ANOTHER process writing the anchor rows directly. */
 function plantAnchorState(
 	home: string,
 	path: string,
@@ -136,10 +129,10 @@ function countAnchorRows(home: string, path: string): number {
 }
 
 describe("anchor state persistence (#136)", () => {
-	it("eviction falls back to the persisted state — unchanged lines keep their anchors", async () => {
+	it("other paths being served does not disturb this one", async () => {
 		await loadHashStore();
 		const p = "/proj/evict.ts";
-		const a0 = serveAll(p, C0);
+		const a0 = await serveAll(p, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: p,
 			oldContent: C0,
@@ -150,14 +143,14 @@ describe("anchor state persistence (#136)", () => {
 		expect(a1[4]).not.toBe(a0[4]); // the edited line re-anchors
 		expect(a1[0]).toBe(a0[0]); // untouched lines keep theirs
 
-		floodCache("/flood-evict"); // the old bug: eviction → full recompute
+		await touchOtherPaths("/flood-evict");
 		expect(anchorsFor(p, C1)).toEqual(a1);
 	});
 
 	it("a store reopen (process restart) recovers anchors from sqlite", async () => {
 		const p = "/proj/restart.ts";
 		await loadHashStore();
-		const a0 = serveAll(p, C0);
+		const a0 = await serveAll(p, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: p,
 			oldContent: C0,
@@ -167,14 +160,14 @@ describe("anchor state persistence (#136)", () => {
 		});
 		shutdownHashStore();
 		await loadHashStore();
-		floodCache("/flood-restart");
+		await touchOtherPaths("/flood-restart");
 		expect(anchorsFor(p, C1)).toEqual(a1);
 	});
 
-	it("external change after eviction inherits by diff against the persisted state", async () => {
+	it("an external change inherits by diff — realigned on the ALLOCATE path", async () => {
 		const p = "/proj/external.ts";
 		await loadHashStore();
-		const a0 = serveAll(p, C0);
+		const a0 = await serveAll(p, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: p,
 			oldContent: C0,
@@ -182,8 +175,11 @@ describe("anchor state persistence (#136)", () => {
 			oldAnchors: a0,
 			hunks: [hunkLine5()],
 		});
-		floodCache("/flood-external");
-		const a2 = anchorsFor(p, C2); // line 9 changed externally after the eviction
+		await touchOtherPaths("/flood-external");
+		// Realigning is a WRITE, so it belongs to the allocate path (§2.1 item 1);
+		// `anchorsFor` alone would project the pre-change rows. Serving C2 runs the
+		// realign, and only line 9 (changed externally) re-anchors.
+		const a2 = await serveAll(p, C2);
 		expect(a2.length).toBe(splitLines(C2).length);
 		for (let i = 0; i < a2.length; i++) {
 			if (i === 8) continue;
@@ -192,27 +188,10 @@ describe("anchor state persistence (#136)", () => {
 		expect(a2[8]).not.toBe(a1[8]); // only the changed line re-anchors
 	});
 
-	it("a state allocated before the store opened is flushed once the store exists", async () => {
-		const q = "/proj/late-open.ts";
-		// No store open in this workspace yet: first serve is memory-only.
-		const b0 = serveAll(q, C0);
-		const b1 = updateAnchorsAfterEdit({
-			path: q,
-			oldContent: C0,
-			newContent: C1,
-			oldAnchors: b0,
-			hunks: [hunkLine5()],
-		});
-		await loadHashStore();
-		anchorsFor(q, C1); // probe miss → flush the memory state to sqlite
-		floodCache("/flood-late");
-		expect(anchorsFor(q, C1)).toEqual(b1);
-	});
-
-	it("a concurrent writer's persisted state invalidates this process's cache", async () => {
+	it("a foreign writer's rows are what the next read sees", async () => {
 		const r = "/proj/shared.ts";
 		await loadHashStore();
-		const a0r = serveAll(r, C0);
+		const a0r = await serveAll(r, C0);
 		updateAnchorsAfterEdit({
 			path: r,
 			oldContent: C0,
@@ -220,7 +199,8 @@ describe("anchor state persistence (#136)", () => {
 			oldAnchors: a0r,
 			hunks: [hunkLine5()],
 		});
-		// Another process moves the shared state to C2 with its own allocation:
+		// Another process moves the shared state to C2 with its own allocation.
+		// There is no cache to invalidate: the rows ARE the state.
 		const foreignAnchors = assignAnchors(splitLines(C2));
 		plantAnchorState(
 			tmpHome,
@@ -235,9 +215,8 @@ describe("anchor state persistence (#136)", () => {
 	it("a partially-served state is legal — survivors keep their anchors, gaps stay unallocated", async () => {
 		const s = "/proj/partial.ts";
 		await loadHashStore();
-		const p0 = serveAll(s, C0);
-		// Simulate a state where only lines 1..4 were ever served (the sparse
-		// analog of the old partial-write shape — legal now, not corruption):
+		const p0 = await serveAll(s, C0);
+		// Only lines 1..4 were ever served: the sparse shape, legal, not corruption.
 		plantAnchorState(
 			tmpHome,
 			s,
@@ -245,11 +224,11 @@ describe("anchor state persistence (#136)", () => {
 			p0.slice(0, 4),
 			splitLines(C0).map(contentKey),
 		);
-		floodCache("/flood-partial");
+		await touchOtherPaths("/flood-partial");
 		const view = anchorsFor(s, C0);
 		expect(view.slice(0, 4)).toEqual(p0.slice(0, 4)); // survivors keep theirs
 		expect(view.slice(4).every((a) => a === "")).toBe(true); // gaps unallocated
-		const served = serveAll(s, C0);
+		const served = await serveAll(s, C0);
 		expect(served.slice(0, 4)).toEqual(p0.slice(0, 4)); // still stable after serving
 	});
 
@@ -263,7 +242,7 @@ describe("anchor state persistence (#136)", () => {
 		// reported from a live session as "an anchor I just read no longer exists".
 		const s = "/proj/dup-state.ts";
 		await loadHashStore();
-		const p0 = serveAll(s, C0);
+		const p0 = await serveAll(s, C0);
 		// Plant a row whose anchors repeat p0[0] at position 2:
 		plantAnchorState(
 			tmpHome,
@@ -272,9 +251,9 @@ describe("anchor state persistence (#136)", () => {
 			[p0[0]!, p0[1]!, p0[0]!, ...p0.slice(3)],
 			splitLines(C0).map(contentKey),
 		);
-		floodCache("/flood-dup");
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		const view = anchorsFor(s, C0);
+		// The heal lives on the state-entry gate, i.e. the allocate path.
+		const view = await serveAll(s, C0);
 		const healedLoud = errSpy.mock.calls.length > 0;
 		const message = String(errSpy.mock.calls[0]?.[0] ?? "");
 		errSpy.mockRestore();
@@ -288,14 +267,14 @@ describe("anchor state persistence (#136)", () => {
 		expect(healedLoud).toBe(true);
 		expect(message).toContain("dropped 1 duplicate row");
 		// The repaired projection is what the next process loads.
-		floodCache("/flood-dup-again");
+		await touchOtherPaths("/flood-dup-again");
 		expect(anchorsFor(s, C0)[1]).toBe(p0[1]);
 	});
 
-	it("undo needs no seed — the lazy state self-corrects on the reverted content", async () => {
+	it("undo needs no seed — the realign self-corrects on the reverted content", async () => {
 		const t = "/proj/undo-lazy.ts";
 		await loadHashStore();
-		const a0 = serveAll(t, C0);
+		const a0 = await serveAll(t, C0);
 		const a1 = updateAnchorsAfterEdit({
 			path: t,
 			oldContent: C0,
@@ -306,8 +285,8 @@ describe("anchor state persistence (#136)", () => {
 		expect(a1[4]).not.toBe(a0[4]); // the edited line re-anchored
 		// The revert: the file goes back to C0. No seed — the next serve realigns
 		// against the reverted content and hands back stable anchors.
-		floodCache("/flood-undo");
-		const a2 = serveAll(t, C0);
+		await touchOtherPaths("/flood-undo");
+		const a2 = await serveAll(t, C0);
 		for (let i = 0; i < a2.length; i++) {
 			if (i === 4) continue;
 			expect(a2[i]).toBe(a0[i]); // unchanged lines keep their anchors
@@ -318,7 +297,7 @@ describe("anchor state persistence (#136)", () => {
 	it("anchor rows are pruned when the file no longer exists", async () => {
 		const gone = "/gone/no-such-file.ts";
 		await loadHashStore();
-		serveAll(gone, C0);
+		await serveAll(gone, C0);
 		expect(countAnchorRows(tmpHome, gone)).toBe(splitLines(C0).length); // one row per SERVED line
 		const store = await loadHashStore();
 		await store.pruneMissing();
@@ -329,8 +308,8 @@ describe("anchor state persistence (#136)", () => {
 		const old = "/proj/ttl-old.ts";
 		const fresh = "/proj/ttl-fresh.ts";
 		await loadHashStore();
-		serveAll(old, C0);
-		serveAll(fresh, C0);
+		await serveAll(old, C0);
+		await serveAll(fresh, C0);
 		// Age one row past the TTL directly, then reopen (the sweep runs on open).
 		shutdownHashStore();
 		{

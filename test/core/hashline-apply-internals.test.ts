@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyEdit,
-  lineHashes,
   resEdit,
 } from "../../src/hashline/index.js";
+import { servedAnchors } from "../support/anchor-serve.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -11,7 +11,7 @@ const home = useTestHome();
 describe("resAnchor (via applyEdit)", () => {
   it("resolves a hash that exists exactly once", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nY" },
@@ -48,7 +48,7 @@ resEdit(
 describe("checkBoundaryDup (via applyEdit) — detection (issue #66/B7: warning-only)", () => {
   it("detects trailing duplication but keeps the row, with a warning", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nd" },
@@ -61,7 +61,7 @@ resEdit(
 
   it("auto-fixes leading duplication", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "a\nX" },
@@ -72,7 +72,7 @@ resEdit(
 
   it("does not auto-fix when replacement does not duplicate adjacent lines", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nY" },
@@ -82,7 +82,7 @@ resEdit(
 
   it("does not auto-fix when replacement edge is empty string", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "" },
@@ -92,7 +92,7 @@ resEdit(
 
   it("auto-fixes trailing duplication when content_lines has trailing empty lines", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `X\nd\n` },
@@ -103,7 +103,7 @@ resEdit(
 
   it("auto-fixes leading duplication when content_lines has leading empty lines", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `\na\nX` },
@@ -115,7 +115,7 @@ resEdit(
 
   it("auto-fixes both trailing and leading in one edit", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "a\nd" },
@@ -127,7 +127,7 @@ resEdit(
 
   it("keeps a non-unique adjacent duplicate row (old auto-fix case) with a warning", async () => {
     const content = "if (a) {\n  x();\n}\nif (b) {\n  y();\n}\n";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, resEdit(
       { remove_from: `${hashes[3]!}`, remove_to: `${hashes[4]!}`, replacement_text: "if (b) {\n  yNew();\n}" },
     ));
@@ -141,7 +141,7 @@ resEdit(
 describe("resToSpan (via applyEdit)", () => {
   it("branch: non-empty replacement in middle of file", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nY" },
@@ -151,7 +151,7 @@ resEdit(
 
   it("branch: empty replacement (deletion) in middle of file", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "" },
@@ -161,7 +161,7 @@ resEdit(
 
   it("branch: empty replacement covering entire file", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     expect(() =>
       applyEdit(content, 
 resEdit(
@@ -172,7 +172,7 @@ resEdit(
 
   it("branch: empty replacement ending at last line (not full file)", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[2]!}`, remove_to: `${hashes[4]!}`, replacement_text: "" },
@@ -182,7 +182,7 @@ resEdit(
 
   it("branch: noop detection returns noop span", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[1]!}`, replacement_text: "b" },
@@ -192,7 +192,7 @@ resEdit(
 
   it("branch: replacement at first line", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[0]!}`, remove_to: `${hashes[0]!}`, replacement_text: "X" },
@@ -202,7 +202,7 @@ resEdit(
 
   it("branch: replacement at last line", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[2]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X" },
@@ -212,7 +212,7 @@ resEdit(
 
   it("branch: deletion of first line only", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[0]!}`, remove_to: `${hashes[0]!}`, replacement_text: "" },
@@ -222,7 +222,7 @@ resEdit(
 
   it("branch: deletion of last line only", async () => {
     const content = "a\nb\nc";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[2]!}`, remove_to: `${hashes[2]!}`, replacement_text: "" },
@@ -234,7 +234,7 @@ resEdit(
 describe("assemble (via applyEdit)", () => {
   it("applies a single edit in the middle", async () => {
     const content = "a\nb\nc\nd\ne";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[0]!}`, remove_to: `${hashes[0]!}`, replacement_text: "A" },
@@ -246,7 +246,7 @@ resEdit(
 describe("auto-fix via applyEdit — legacy cases under #66/B7 warning-only contract", () => {
   it("auto-fixes trailing duplication", async () => {
     const content = "before\nold one\nold two\nafter";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `new one\nnew two\nafter` },
@@ -258,7 +258,7 @@ resEdit(
 
   it("auto-fixes leading duplication", async () => {
     const content = "before\nold one\nold two\nafter";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: `before\nnew one\nnew two` },
@@ -270,7 +270,7 @@ resEdit(
 
   it("auto-fixes both leading and trailing in one edit", async () => {
     const content = "ctx1\nctx2\nold1\nold2\nctx3\nctx4";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[2]!}`, remove_to: `${hashes[3]!}`, replacement_text: `ctx2\ndup\ndup\nctx3` },
@@ -283,7 +283,7 @@ resEdit(
 describe("boundary-dup detection (issue #66/B7 — warning-only, content preserved)", () => {
   it("keeps a replacement line that matches the line after the range, with a warning", async () => {
     const content = "a\nb\nc\nd";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "X\nd" },
@@ -296,7 +296,7 @@ resEdit(
 
   it("keeps an edge-duplicated full-range replacement and reports a noop with a warning", async () => {
     const content = "class A {\n  x = 1;\n\n  constructor() {}\n}\n";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[0]!}`, remove_to: `${hashes[2]!}`, replacement_text: "class A {\n  x = 1;\n\n  constructor() {}\n}" },
@@ -311,7 +311,7 @@ resEdit(
 
   it("keeps a leading boundary duplicate (noop) instead of stripping it", async () => {
     const content = "foo();\nbar();\nbaz();\n";
-    const hashes = await lineHashes(content, home.testPath);
+    const hashes = await servedAnchors(content, home.testPath);
     const result = applyEdit(content, 
 resEdit(
       { remove_from: `${hashes[1]!}`, remove_to: `${hashes[2]!}`, replacement_text: "bar();\nbaz();\nfoo();" },

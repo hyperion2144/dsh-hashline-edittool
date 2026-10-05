@@ -7,12 +7,16 @@
  * uniqueness (identical content is a "conflict" like any hash collision — the
  * second occurrence probes onward).
  *
- * The module is a pure function of (used-set, canonical content): no state,
- * no IO. Session state lives in session-anchors.ts, which calls allocate /
- * assignAnchors.
+ * The module is a pure function of (used-set, canonical content). It owns the
+ * allocator AND the per-file sparse state it walks (`SparseState` /
+ * `allocateInto`): both take values and return values, with no state of their
+ * own. Everything that touches the store — the persistence port, the
+ * transaction, served — lives in `domain/session/anchor-state.ts`, which calls
+ * these.
  *
  * @module dsh-hashline-edittool/hashline/alloc
  */
+import { splitLines } from "../infra/utils.js";
 /**
  * cyrb53 — canonical implementation kept in sync with hash-assign.ts::cyrb53
  * (the two must stay identical for deterministic recomputation; the duplicate
@@ -162,7 +166,7 @@ export function allocateAnchor(
  * Deterministic full-file allocation: same content, same order → same anchors.
  * Used ONLY for a path's true first serve and for poisoned-snapshot rebuilds.
  * Rewrites and external (non-tool) changes do NOT run this — they inherit via
- * session-anchors' diff alignment (unchanged lines keep their anchors); the
+ * anchor-state's diff alignment (unchanged lines keep their anchors); the
  * tests in anchor-lifecycle-invariants pin that contract.
  */
 export function assignAnchors(lines: string[]): string[] {
@@ -181,4 +185,110 @@ export function assignAnchors(lines: string[]): string[] {
 		anchors[i] = anchor;
 	}
 	return anchors;
+}
+
+// ---- the per-file sparse state, and allocation INTO it ----------------------
+//
+// These live here, not in `domain/session/`, because they are PURE: the input
+// is a value (rows + content + the lines to mint) and the output is anchors.
+// No store, no scope, no session, no state of its own — the caller owns the
+// persistence port and the transaction (contract §3).
+
+/** One allocated line: its anchor and the content key it was minted for. */
+export interface AnchorEntry {
+	anchor: string;
+	contentKey: number;
+}
+
+/**
+ * The working value the allocator walks for ONE file.
+ *
+ * `entries` holds only ALLOCATED lines (#169: lazy, sparse) — a line the model
+ * has never seen has no entry and costs nothing.
+ */
+export interface SparseState {
+	checksum: string;
+	lineCount: number;
+	/** line (1-based) → {anchor, contentKey} for every ALLOCATED line. */
+	entries: Map<number, AnchorEntry>;
+}
+
+/**
+ * Get-or-allocate against a GIVEN state (no load, no persist).
+ *
+ * `used` is supplied by the caller so the used-set can carry sources a pure
+ * function cannot see — the session layer adds the CURRENT CALL's release pool,
+ * which is what stops a call from releasing an anchor and handing it straight
+ * to another line (§4.1 / #223). Omitting it keeps the old behaviour: every
+ * anchor the file currently has live.
+ *
+ * @param state - the sparse state to allocate into (mutated).
+ * @param content - the file's current normalized text.
+ * @param lines - 1-based lines to mint or reuse anchors for.
+ * @param used - anchors to avoid; defaults to the state's own live set.
+ * @returns one anchor per line, `""` outside the file's range.
+ */
+export function allocateInto(
+	state: SparseState,
+	content: string,
+	lines: number[],
+	used?: Set<string>,
+): string[] {
+	const currentLines = splitLines(content);
+	const avoid = used ?? new Set<string>();
+	if (used === undefined) {
+		for (const [, entry] of state.entries) avoid.add(entry.anchor);
+	}
+	// Per-content probe continuity (same design as assignAnchors): a run of
+	// identical lines probes CONTIGUOUSLY instead of re-walking the used set
+	// for every copy — without the cursor, a long duplicate run degenerates to
+	// O(k²) probes and can exhaust the probe cap.
+	const cursorByKey = new Map<number, { offsets: Record<number, number> }>();
+	const out: string[] = [];
+	for (const line of [...new Set(lines)].sort((a, b) => a - b)) {
+		if (line < 1 || line > currentLines.length) {
+			out.push("");
+			continue;
+		}
+		const text = currentLines[line - 1]!;
+		const key = contentKey(text);
+		const existing = state.entries.get(line);
+		if (existing && existing.contentKey === key) {
+			out.push(existing.anchor);
+			continue;
+		}
+		// The line's content changed (or it was never served): mint a fresh
+		// anchor. The OLD one is deliberately NOT freed for reuse inside this
+		// call — it stays in `avoid` even though its line is gone. Reusing it a
+		// few lines later would hand the model an anchor that still carries the
+		// meaning it had when it was served (#217 §1), and the model cannot tell
+		// the two apart. The caller may put it in the release pool; either way it
+		// is available again on the NEXT call.
+		let gc = cursorByKey.get(key);
+		if (!gc) {
+			gc = { offsets: {} };
+			cursorByKey.set(key, gc);
+		}
+		const { anchor } = allocateAnchor(avoid, text, gc);
+		avoid.add(anchor);
+		state.entries.set(line, { anchor, contentKey: key });
+		out.push(anchor);
+	}
+	return out;
+}
+
+/**
+ * Whole-content allocation for callers without a path (tests, previews).
+ * Never persists — the caller's anchors are transient.
+ */
+export function anchorsPure(content: string): string[] {
+	const lines = splitLines(content);
+	const used = new Set<string>();
+	const out: string[] = [];
+	for (const text of lines) {
+		const { anchor } = allocateAnchor(used, text);
+		used.add(anchor);
+		out.push(anchor);
+	}
+	return out;
 }

@@ -28,10 +28,23 @@ export {
 	 contentChecksum,
 } from "./hash-assign.js";
 
-export { assignAnchors, allocateAnchor, probeStep, MIN_ANCHOR_DEPTH, PROBE_LIMIT } from "./alloc.js";
-export { anchorsFor, anchorsPure, allocateForLines, updateAnchorsAfterEdit } from "./session-anchors.js";
+export {
+	assignAnchors,
+	allocateAnchor,
+	allocateInto,
+	anchorsPure,
+	probeStep,
+	MIN_ANCHOR_DEPTH,
+	PROBE_LIMIT,
+	type AnchorEntry,
+	type SparseState,
+} from "./alloc.js";
+// NOT re-exported here: `anchorsFor` and `updateAnchorsAfterEdit` read and
+// write `anchor_lines` through the store's scope and transaction, so they
+// belong to `domain/session/anchor-state.ts`. Import them from there — a
+// barrel that hands out the store-coupled half is what let `tools/` reach
+// across a layer in the first place.
 
-export { lineHashes } from "./hash.js";
 
 export { encodeText, parseHashRef, parseText } from "./anchor-pipeline.js";
 export type { Anchor } from "./anchor-pipeline.js";

@@ -52,7 +52,14 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 		});
 	});
 
-	it("oversized single-line matches pointer-ize into the first response — never refused", async () => {
+	// An explicit timeout, for the reason `hashline-limit` documents: this case is
+	// genuinely large work (many oversized files through grep + read), and the 5s
+	// default is what it fails on under a full parallel run while passing
+	// comfortably alone. Since the anchor layer stopped caching state and reads
+	// `anchor_lines` per call (the whole point of the single-source design), that
+	// work costs real DB reads — so the budget has to describe the work, not the
+	// machine's load.
+	it("oversized single-line matches pointer-ize into the first response — never refused", { timeout: 30_000 }, async () => {
 		await withTempDir("grep-budget-only-", async (cwd) => {
 			const harness = setupIntegrationTest(cwd);
 			// Every file MATCHES, so the ripgrep pre-filter keeps them all and the READS

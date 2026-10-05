@@ -26,8 +26,8 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashStorePath } from "../../infra/paths.js";
 import { workspaceCwd } from "../../infra/workspace.js";
-import { errCode, splitLines } from "../../infra/utils.js";
-import { contentChecksum, hashRe } from "../../hashline/hash-assign.js";
+import { errCode } from "../../infra/utils.js";
+import { hashRe } from "../../hashline/hash-assign.js";
 import {
 	HASH_STORE_VERSION,
 	HASH_STORE_BUSY_TIMEOUT,
@@ -44,19 +44,16 @@ import {
 	UNDO_MAX_PATH_BYTES,
 } from "../../infra/constants.js";
 import {
+	anchorsFor,
 	registerAnchorPersistence,
 	type PersistedAnchorState,
 	type PersistedAnchorLine,
-} from "../../hashline/session-anchors.js";
+	type AnchorStatePersistence,
+} from "./anchor-state.js";
+import { registerAnchorReader } from "../../hashline/anchor-pipeline.js";
 import { storeBudgetLimits } from "./store-budget.js";
 import { decodeServedAnchors, encodeServedAnchors } from "./served-codec.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
-
-/** The legacy JSON snapshot shape (pre-sqlite stores). */
-export interface LegacySnapshot {
-	content: string;
-	hashes: string[];
-}
 
 export function isValidHashList(value: unknown): value is string[] {
 	if (!Array.isArray(value)) return false;
@@ -70,12 +67,9 @@ export function isValidHashList(value: unknown): value is string[] {
 	return true;
 }
 
-export function isValidSnapshot(value: unknown): value is LegacySnapshot {
-	if (typeof value !== "object" || value === null) return false;
-	const v = value as Record<string, unknown>;
-	if (typeof v.content !== "string") return false;
-	return isValidHashList(v.hashes);
-}
+// `LegacySnapshot` + `isValidSnapshot` lived here. They validated the legacy
+// JSON's `{content, hashes}` rows, and went with that payload: `snapshots` is
+// deleted (contract §8) and so is the importer that consumed them.
 
 /** A served-row array: per-position hash, or null for never-served slots. */
 export function isValidServedList(value: unknown): value is (string | null)[] {
@@ -153,11 +147,9 @@ export interface SweepReport {
 type SqlParams = (string | number)[];
 
 interface Prepared {
-	get: (...params: SqlParams) => Record<string, unknown> | undefined;
 	allPaths: (...params: SqlParams) => Record<string, unknown>[];
-	allHashes: (...params: SqlParams) => Record<string, unknown>[];
-	deleteOne: (...params: SqlParams) => void;
-	upsert: (...params: SqlParams) => void;
+	/** Paths whose live anchors contain every anchor in the JSON array (twice). */
+	pathsByAnchors: (...params: SqlParams) => Record<string, unknown>[];
 	undoPush: (...params: SqlParams) => void;
 	undoPop: (...params: SqlParams) => void;
 	undoGet: (...params: SqlParams) => Record<string, unknown> | undefined;
@@ -180,6 +172,7 @@ interface Prepared {
 	anchorLineGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	anchorLineUpsert: (...params: SqlParams) => void;
 	anchorLinesDeletePath: (...params: SqlParams) => void;
+	anchorLineDelete: (...params: SqlParams) => void;
 	anchorPruneOlderThan: (...params: SqlParams) => number;
 	// ---- budget / maintenance (#180) ----
 	storeBytes: () => number;
@@ -202,26 +195,16 @@ interface Prepared {
 export interface HashStore {
 	readonly engine: "node:sqlite";
 
-	// ---- hash snapshots (stable anchors keyed by path+checksum+line count) ----
-	/** The stored hashes for a path+content, or undefined on a miss; a corrupt row is deleted (when deleteCorrupt) and treated as a miss. */
-	getSnapshot(
-		path: string,
-		content: string,
-		deleteCorrupt?: boolean,
-	): string[] | undefined;
-	upsertSnapshot(
-		path: string,
-		checksum: string,
-		lineCount: number,
-		hashes: string[],
-	): void;
-	/** Every path referenced by any row family (snapshots ∪ undo ∪ served). */
+	/** Every path referenced by any row family (undo ∪ served ∪ anchor_meta). */
 	allKnownPaths(): { path: string }[];
-	/** Every snapshot's path and raw hashes JSON (for path-by-hash scans). */
-	allSnapshotHashes(): { path: string; hashes: string }[];
-	deleteSnapshot(path: string): void;
-	/** Paths whose stored snapshot hashes contain every given anchor. */
-	findSnapshotPaths(hashes: string[]): string[];
+	/**
+	 * Paths whose LIVE anchors contain every given anchor (contract §2.1).
+	 *
+	 * Replaces the old `snapshots`-backed scan: `anchor_lines` holds the same
+	 * fact (one row per line, with the anchor), and the existing
+	 * `(path, anchor)` index answers this without a table of its own.
+	 */
+	findPathsByAnchors(anchors: readonly string[]): string[];
 
 	// ---- undo entries (a bounded stack per path, newest first) --------------
 	/** The NEWEST undo row for a path, healing a corrupt row (parse → validate → clear). */
@@ -411,10 +394,37 @@ const UNDO_TABLE_DDL =
  * Run one statement group inside a single transaction, retrying the WHOLE group
  * on a busy lock (a rolled-back transaction is safe to replay). A failure inside
  * rolls back, so a multi-statement move is never half-applied.
+ *
+ * NESTING IS HONOURED, and that is load-bearing rather than tidy: `withStore`
+ * may already hold a transaction for this database (the primitives wrap their
+ * whole read → decide → write in one), and SQLite has no nested `BEGIN`.
+ * Joining instead of opening a second one is what lets the port's writes be
+ * part of the CALLER's unit of work — which is the entire reason a caller wraps
+ * anything at all. Before this, each port write opened its own transaction, so
+ * `persistAnchorState`'s "one transaction" was three: a failure between them
+ * left a file's meta row ahead of its line rows, a state neither the pre- nor
+ * the post-write world can explain. Measured: wrapping `anchorFor` in a
+ * transaction turned that into `cannot start a transaction within a
+ * transaction` — the latent split, made loud.
+ *
+ * @param db - the database the group writes to.
+ * @param path - its store key, which identifies the open transaction.
+ * @param fn - the statement group.
  */
-function withTransaction(db: DatabaseSync, fn: () => void): void {
+function withTransaction(db: DatabaseSync, path: string, fn: () => void): void {
+	const depth = txnDepth.get(path) ?? 0;
+	if (depth > 0) {
+		txnDepth.set(path, depth + 1);
+		try {
+			fn();
+		} finally {
+			txnDepth.set(path, depth);
+		}
+		return;
+	}
 	withBusyRetry(() => {
 		db.exec("BEGIN IMMEDIATE");
+		txnDepth.set(path, 1);
 		try {
 			fn();
 			db.exec("COMMIT");
@@ -426,10 +436,11 @@ function withTransaction(db: DatabaseSync, fn: () => void): void {
 				// the one worth reporting.
 			}
 			throw error;
+		} finally {
+			txnDepth.delete(path);
 		}
 	});
 }
-
 /** Batched DELETE for the TTL phase. Each iteration removes up to `limit`
  *  rows matching `updated_at < cutoff`, so a huge stale backlog is paid down
  *  one page at a time instead of holding the writer for seconds. */
@@ -438,15 +449,27 @@ const TTL_BATCH_LIMIT = 5000;
 function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec("PRAGMA synchronous = NORMAL");
-	db.exec(
-		"CREATE TABLE IF NOT EXISTS snapshots (" +
-			"path TEXT PRIMARY KEY, " +
-			"checksum TEXT NOT NULL, " +
-			"line_count INTEGER NOT NULL, " +
-			"hashes TEXT NOT NULL, " +
-			"updated_at INTEGER NOT NULL" +
-			")",
-	);
+	// `snapshots` IS GONE, and this DROP is the migration (contract §8 / #215 结论 A:
+	// "`snapshots` 表删除 —— 与 `anchor_meta` 重复").
+	//
+	// `snapshots` held `(path, checksum, line_count, hashes)` — the anchor array for
+	// a whole file. Every field is derivable: `anchor_meta` has the checksum and
+	// line count, and `anchor_lines` has the per-line anchors. Keeping both meant
+	// two writers for one fact, and the second one fell out of use the moment
+	// `anchor_lines` became the served surface — leaving a table that still had
+	// readers and no writers. Its one live consumer (look up which file holds these
+	// anchors) is now answered by `anchor_lines` itself, off the existing
+	// `(path, anchor)` index.
+	//
+	// DROP rather than a version bump, following the idiom above: a version change
+	// wipes every anchor the model currently holds, and removing a redundant table
+	// is not worth invalidating a workspace's whole anchor set.
+	//
+	// The legacy JSON importer loses its `snapshots` payload with it: the JSON has
+	// no per-line CONTENT KEYS, and an `anchor_lines` row without one could not
+	// answer the §2.2 verdict — importing it would manufacture rows that are live
+	// but permanently unverifiable.
+	db.exec("DROP TABLE IF EXISTS snapshots");
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS meta (" +
 			"key TEXT PRIMARY KEY, " +
@@ -552,11 +575,27 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	const versionChanged =
 		versionRow !== undefined &&
 		versionRow.value !== String(HASH_STORE_VERSION);
+	// The wipe is deliberate and total: nothing is migrated (map #214 / decision
+	// #222 — "不迁移任何数据"). A set written under the old rules cannot be
+	// trusted to answer the new per-line verdict, and every anchor the model
+	// still holds has to be re-read either way.
+	//
+	// Only the ANCHOR STATE is touched. `meta` is left alone on purpose: the
+	// operational keys (`clean_shutdown`, `last_open_integrity_check`,
+	// `last_rebuild_at`) describe the STORE's health, not the anchors in it, and
+	// wiping them would make the next launch look like an unclean shutdown and
+	// defeat the 24h rebuild throttle.
 	if (versionChanged) {
-		db.exec("DELETE FROM snapshots");
 		db.exec("DELETE FROM undo");
 		db.exec("DELETE FROM anchor_meta");
 		db.exec("DELETE FROM anchor_lines");
+		// One of the two rebuild wordings (contract §8 / decision #222): a version
+		// upgrade is a ONE-OFF, not a symptom. The capacity-triggered rebuild says
+		// something else entirely ("the store grew too large"), and telling the user
+		// the alarming one when the cause is routine would train them to ignore it.
+		setRebuildWarning(
+			"本工作区锚点库已按新版本重建（一次性，非异常），旧锚点作废，请重新 read。",
+		);
 	}
 	const servedColumns = db.prepare("PRAGMA table_info(served)").all() as {
 		name: string;
@@ -581,17 +620,22 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"INSERT INTO meta (key, value) VALUES ('version', ?) " +
 			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 	).run(String(HASH_STORE_VERSION));
-	const getStmt = db.prepare(
-		"SELECT hashes FROM snapshots WHERE path = ? AND checksum = ? AND line_count = ?",
-	);
 	const allStmt = db.prepare(
-		"SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta",
+		"SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta",
 	);
-	const allHashesStmt = db.prepare("SELECT path, hashes FROM snapshots");
-	const delStmt = db.prepare("DELETE FROM snapshots WHERE path = ?");
-	const upsertStmt = db.prepare(
-		"INSERT INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?) " +
-			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, line_count = excluded.line_count, hashes = excluded.hashes, updated_at = excluded.updated_at",
+	// "Which file holds all of these anchors?" — the query the deleted `snapshots`
+	// table used to answer. `anchor_lines` holds one row per (path, line, anchor),
+	// and `anchor_lines_by_anchor` is exactly the index for this: select the
+	// candidate paths by anchor, then keep those that matched EVERY anchor. The
+	// HAVING clause compares against the parameter count, so it stays a single
+	// indexed pass rather than a per-path scan.
+	//
+	// Anchors are unique per file (the allocator guarantees it, contract §2.1), so
+	// no DISTINCT is needed on the inner select.
+	const pathsByAnchorsStmt = db.prepare(
+		"SELECT path FROM anchor_lines WHERE anchor IN (" +
+			"SELECT value FROM json_each(?)" +
+			") GROUP BY path HAVING COUNT(*) = json_array_length(?)",
 	);
 	// The newest entry is the one with the HIGHEST depth. `depth` is an append
 	// counter, never renumbered: renumbering on push/pop collided with the
@@ -668,6 +712,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"ON CONFLICT(path, line) DO UPDATE SET anchor = excluded.anchor, content_key = excluded.content_key, updated_at = excluded.updated_at",
 	);
 	const anchorLinesDeletePathStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ?");
+	const anchorLineDeleteStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ? AND line = ?");
 	const anchorMetaDeleteStmt = db.prepare("DELETE FROM anchor_meta WHERE path = ?");
 	const anchorPruneOlderThanStmt = db.prepare(
 		"DELETE FROM anchor_meta WHERE rowid IN (SELECT rowid FROM anchor_meta WHERE updated_at < ? LIMIT " + TTL_BATCH_LIMIT + ")",
@@ -685,14 +730,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"FROM pragma_page_count(), pragma_page_size(), pragma_freelist_count()",
 	);
 	const anchorRowCountStmt = db.prepare("SELECT COUNT(*) AS n FROM anchor_lines");
-	const anchorPathCountStmt = db.prepare("SELECT COUNT(*) AS n FROM (SELECT path FROM snapshots UNION SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta)");
+	const anchorPathCountStmt = db.prepare("SELECT COUNT(*) AS n FROM (SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta)");
 	// One row per path, oldest first: the LRU order across every row family that
 	// outlives a session (served is per-session, but still ages the path).
 	const pathRecencyStmt = db.prepare(
 		"SELECT path, MAX(ts) AS ts FROM (" +
 			"SELECT path, updated_at AS ts FROM anchor_meta " +
 			"UNION ALL SELECT path, updated_at FROM undo " +
-			"UNION ALL SELECT path, updated_at FROM snapshots " +
 			"UNION ALL SELECT path, updated_at FROM served) " +
 			"GROUP BY path ORDER BY ts ASC",
 	);
@@ -713,28 +757,17 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"DELETE FROM anchor_lines WHERE path NOT IN (SELECT path FROM anchor_meta)",
 	);
 	const stmts: Prepared = {
-		get: (...params) =>
-			getStmt.get(...params) as Record<string, unknown> | undefined,
 		allPaths: (...params) =>
 			allStmt.all(...params) as Record<string, unknown>[],
-		allHashes: (...params) =>
-			allHashesStmt.all(...params) as Record<string, unknown>[],
-		deleteOne: (...params) => {
-			withBusyRetry(() => {
-				delStmt.run(...params);
-			});
-		},
-		upsert: (...params) => {
-			withBusyRetry(() => {
-				upsertStmt.run(...params);
-			});
-		},
+		pathsByAnchors: (...params) =>
+			pathsByAnchorsStmt.all(...params) as Record<string, unknown>[],
 		undoPush: (...params) => {
 			// `params` = [path, content, bom, ending, hashesJson, resultContent, updatedAt];
 			// the path appears TWICE in the INSERT — once for the row, once for the
 			// MAX(depth) that numbers it. Insert and prune are ONE move: a crash between
 			// them would leave the stack one deeper than advertised.
-			withTransaction(db, () => {
+			// `params[0]` is the path — the same key `withStore` would hold.
+			withTransaction(db, params[0] as string, () => {
 				undoPushStmt.run(params[0], ...params);
 				const top = topDepth(params[0]) ?? 0;
 				undoPruneStmt.run(params[0], top - UNDO_STACK_DEPTH + 1);
@@ -744,7 +777,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			// Read the top depth FIRST, then delete exactly that row: a
 			// `depth = (SELECT MAX(depth) …)` in the DELETE re-evaluates as rows go
 			// and would walk the whole stack out.
-			withTransaction(db, () => {
+			withTransaction(db, params[0] as string, () => {
 				const top = topDepth(params[0]);
 				if (top === undefined) return;
 				undoPopStmt.run(params[0], top);
@@ -814,6 +847,11 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		anchorLineUpsert: (...params) => {
 			withBusyRetry(() => {
 				anchorLineUpsertStmt.run(...params);
+			});
+		},
+		anchorLineDelete: (...params) => {
+			withBusyRetry(() => {
+				anchorLineDeleteStmt.run(...params);
 			});
 		},
 		anchorLinesDeletePath: (...params) => {
@@ -939,7 +977,6 @@ function makeDomainStore(
 		let trimmedUndo = 0;
 
 		const deletePathCascade = (path: string) => {
-			stmts.deleteOne(path);
 			stmts.undoDelete(path);
 			stmts.servedDeletePath(path);
 			stmts.anchorMetaDelete(path);
@@ -1037,53 +1074,28 @@ function makeDomainStore(
 	const store: HashStore = {
 		engine: "node:sqlite",
 
-		getSnapshot(path, content, deleteCorrupt = true) {
-			const checksum = contentChecksum(content);
-			const lineCount = splitLines(content).length;
-			const row = stmts.get(path, checksum, lineCount);
-			if (!row) return undefined;
-			try {
-				const parsed = JSON.parse(row.hashes as string);
-				if (isValidHashList(parsed)) return parsed;
-				if (deleteCorrupt) stmts.deleteOne(path);
-				return undefined;
-			} catch {
-				if (deleteCorrupt) stmts.deleteOne(path);
-				return undefined;
-			}
-		},
-		upsertSnapshot(path, checksum, lineCount, hashes) {
-			stmts.upsert(
-				path,
-				checksum,
-				lineCount,
-				JSON.stringify(hashes),
-				Date.now(),
-			);
-			maybeSweepAfterWrite();
-		},
+		// `getSnapshot` / `upsertSnapshot` / `allSnapshotHashes` / `deleteSnapshot` /
+		// `findSnapshotPaths` lived here and are gone with the `snapshots` table
+		// (contract §8). `getSnapshot` had no caller at all outside the tests, and
+		// `upsertSnapshot` had no PRODUCTION caller — which is why the table could
+		// still be read and never written. The one caller that mattered ("which file
+		// holds these anchors?") is `findPathsByAnchors` below, now answered from
+		// `anchor_lines`.
 		allKnownPaths() {
 			return stmts.allPaths() as { path: string }[];
 		},
-		allSnapshotHashes() {
-			return stmts.allHashes() as { path: string; hashes: string }[];
-		},
-		deleteSnapshot(path) {
-			stmts.deleteOne(path);
-		},
-		findSnapshotPaths(hashes) {
-			const rows = stmts.allHashes() as { path: string; hashes: string }[];
-			const matches: string[] = [];
-			for (const row of rows) {
-				try {
-					const parsed = JSON.parse(row.hashes) as unknown;
-					if (!isValidHashList(parsed)) continue;
-					if (hashes.every((h) => parsed.includes(h))) matches.push(row.path);
-				} catch {
-					// unparseable row → skip it
-				}
-			}
-			return matches;
+		/**
+		 * Paths whose live anchors contain every given anchor (contract §2.1).
+		 *
+		 * One indexed pass: the IN list narrows to candidate paths, and the HAVING
+		 * keeps only those that matched all of them. Anchors are unique within a
+		 * file, so a path matching N anchors is exactly a path holding all N.
+		 */
+		findPathsByAnchors(anchors) {
+			if (anchors.length === 0) return [];
+			const json = JSON.stringify([...anchors]);
+			const rows = stmts.pathsByAnchors(json, json) as { path: string }[];
+			return rows.map((row) => row.path);
 		},
 
 		getUndo(path) {
@@ -1223,7 +1235,6 @@ function makeDomainStore(
 			if (missing.length === 0) return;
 			withStore(() => {
 				for (const path of missing) {
-					stmts.deleteOne(path);
 					stmts.undoDelete(path);
 					stmts.servedDeletePath(path);
 					stmts.anchorMetaDelete(path);
@@ -1612,7 +1623,7 @@ export function loadHashStore(cwd?: string): Promise<HashStore> {
 
 /** The cached store entry for the active workspace (or the shared-home fallback), if open. */
 function currentStore():
-	| { db: DatabaseSync; stmts: Prepared; store: HashStore; budget: SweepBudget }
+	| { db: DatabaseSync; stmts: Prepared; store: HashStore; budget: SweepBudget; path: string }
 	| undefined {
 	const entry = stores.get(storePathFor());
 	return entry?.db.isOpen ? entry : undefined;
@@ -1625,18 +1636,51 @@ export function shutdownHashStore(): void {
 	}
 	stores.clear();
 	openings.clear();
+	// Nothing to invalidate on the anchor side any more: it holds no cache (it
+	// reads `anchor_lines` per call), and the port resolves the store lazily, so
+	// with the store gone its reads answer "nothing allocated" and its writes are
+	// no-ops until the next open. The cache-invalidation dance this used to do
+	// existed only because a cache could sit AHEAD of the database.
 }
+
+/**
+ * How deep the active store's transaction nesting is, per store path.
+ *
+ * SQLite has no nested `BEGIN`, so a second `withStore` inside a first must
+ * JOIN the open transaction rather than try to start another. The counter is
+ * keyed by path and cleared with the transaction, so it can never outlive the
+ * BEGIN it belongs to.
+ */
+const txnDepth = new Map<string, number>();
 
 /**
  * Run `fn` inside one BEGIN IMMEDIATE transaction on the active workspace's
  * store. Without an open store for this context the call runs bare (the
  * caller has already loaded the store in every in-process path).
+ *
+ * **Nestable.** A call made while a transaction is already open on this store
+ * joins it: SQLite has no nested `BEGIN`, and a caller that wants several
+ * primitives to commit together (contract §7 — "one transaction per file")
+ * must be able to compose them without each one trying to open its own.
+ * Only the OUTERMOST call commits or rolls back.
  */
 export function withStore(fn: () => void): void {
 	const store = currentStore();
 	if (store) {
+		const depth = txnDepth.get(store.path) ?? 0;
+		if (depth > 0) {
+			// Join the open transaction: no BEGIN, no COMMIT, no ROLLBACK here.
+			txnDepth.set(store.path, depth + 1);
+			try {
+				fn();
+			} finally {
+				txnDepth.set(store.path, depth);
+			}
+			return;
+		}
 		withBusyRetry(() => {
 			store.db.exec("BEGIN IMMEDIATE");
+			txnDepth.set(store.path, 1);
 			try {
 				fn();
 				store.db.exec("COMMIT");
@@ -1647,11 +1691,96 @@ export function withStore(fn: () => void): void {
 					// best-effort rollback; the original error propagates
 				}
 				throw e;
+			} finally {
+				txnDepth.delete(store.path);
 			}
 		});
 	} else {
 		fn();
 	}
+}
+
+/**
+ * `withStore` for an ASYNC body — same transaction, same nesting rules.
+ *
+ * Needed because the primitives' write halves are `async` (they await the
+ * store handle), so composing several of them into one transaction — which is
+ * what contract §7 asks for, "one transaction per file" — cannot be done with
+ * the sync form.
+ *
+ * **The body must not perform real I/O.** A transaction is held open across
+ * its awaits, so a body that awaits anything other than an already-resolved
+ * handle would let unrelated work join this transaction (see `withStore`,
+ * which nests) and be committed or rolled back with it. Every caller here
+ * awaits handles that are already open, so the window spans microtasks only.
+ */
+export async function withStoreAsync(fn: () => Promise<void>): Promise<void> {
+	const store = currentStore();
+	if (!store) {
+		await fn();
+		return;
+	}
+	const depth = txnDepth.get(store.path) ?? 0;
+	if (depth > 0) {
+		txnDepth.set(store.path, depth + 1);
+		try {
+			await fn();
+		} finally {
+			txnDepth.set(store.path, depth);
+		}
+		return;
+	}
+	await withBusyRetryAsync(async () => {
+		store.db.exec("BEGIN IMMEDIATE");
+		txnDepth.set(store.path, 1);
+		try {
+			await fn();
+			store.db.exec("COMMIT");
+		} catch (e) {
+			try {
+				store.db.exec("ROLLBACK");
+			} catch {
+				// best-effort rollback; the original error propagates
+			}
+			throw e;
+		} finally {
+			txnDepth.delete(store.path);
+		}
+	});
+}
+
+/**
+ * The async twin of `withBusyRetry`: same policy, awaits the body.
+ *
+ * **A REPLAYED BODY MUST BE IDEMPOTENT**, because a busy lock replays it — that
+ * is what the retry buys, and it is the part callers forget. Every effect the
+ * primitives have, in-memory ones included, is idempotent BY CONSTRUCTION, and
+ * this note is the reason each one is:
+ *
+ *  - the release pool (`markReleased`): a Set add, so adding twice is adding
+ *    once; and it is per CALL, discarded when the call ends;
+ *  - `anchorFor`: re-reads the rows, and allocation is a deterministic function
+ *    of (rows, content, used-set) — the rolled-back attempt left no row behind,
+ *    so attempt 2 mints exactly what attempt 1 did;
+ *  - the alignment notice (`noteAlignmentDegraded`): keyed by path, so the
+ *    second write replaces the first with the same string.
+ *
+ * Anything added later that mutates memory — a counter, an accumulator, a push
+ * — breaks this without breaking the retry, which is the worst way for it to
+ * break. Keep it idempotent, or move it outside the transaction.
+ */
+async function withBusyRetryAsync(fn: () => Promise<void>): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt <= BUSY_RETRIES; attempt++) {
+		try {
+			return await fn();
+		} catch (error) {
+			lastError = error;
+			if (!isBusyError(error) || attempt === BUSY_RETRIES) throw error;
+			await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_DELAY_MS));
+		}
+	}
+	throw lastError;
 }
 
 async function migrateLegacy(db: DatabaseSync, storePath: string): Promise<void> {
@@ -1676,38 +1805,28 @@ async function migrateLegacy(db: DatabaseSync, storePath: string): Promise<void>
 		return;
 	}
 
-	const raw = parsed.snapshots;
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
-
-	const rows: [string, string, number, string, number][] = [];
-	for (const [key, value] of Object.entries(raw)) {
-		if (!isValidSnapshot(value)) continue;
-		if (new Set(value.hashes).size !== value.hashes.length) {
-			console.warn(
-				`Skipped legacy snapshot with duplicate hashes for ${key}; it will be re-hashed on next read.`,
-			);
-			continue;
-		}
-		rows.push([
-			key,
-			contentChecksum(value.content),
-			splitLines(value.content).length,
-			JSON.stringify(value.hashes),
-			Date.now(),
-		]);
-	}
-	if (rows.length > 0) {
-		db.exec("BEGIN IMMEDIATE");
-		try {
-			const stmt = db.prepare(
-				"INSERT OR REPLACE INTO snapshots (path, checksum, line_count, hashes, updated_at) VALUES (?, ?, ?, ?, ?)",
-			);
-			for (const row of rows) stmt.run(...row);
-			db.exec("COMMIT");
-		} catch (e) {
-			db.exec("ROLLBACK");
-			throw e;
-		}
+	// The legacy payload is NOT imported any more, and nothing is lost by that.
+	//
+	// The file held `{snapshots: {path: {content, hashes}}}` — whole-file anchor
+	// arrays. Anchors are a DETERMINISTIC function of content (`anchorsPure`), so
+	// the next read of each file re-derives exactly the same array; the JSON was a
+	// cache, never a source of truth.
+	//
+	// It cannot be imported into the table that replaced it: `anchor_lines` needs a
+	// per-line `content_key`, and the JSON stores no such thing. Writing rows
+	// without one would manufacture anchors that are live but can never pass the
+	// §2.2 verdict — worse than no row at all.
+	//
+	// The file is still renamed below so it is not re-examined on every open;
+	// `.bak` (not deletion) keeps it as the historical record.
+	const legacyKeys =
+		parsed.snapshots && typeof parsed.snapshots === "object" && !Array.isArray(parsed.snapshots)
+			? Object.keys(parsed.snapshots).length
+			: 0;
+	if (legacyKeys > 0) {
+		console.warn(
+			`[hash-store] legacy hash-store.json carried ${legacyKeys} anchor snapshots; not imported (they are re-derived from content on the next read).`
+		);
 	}
 
 	try {
@@ -1719,35 +1838,36 @@ async function migrateLegacy(db: DatabaseSync, storePath: string): Promise<void>
 
 // ---- async convenience helpers (load the active store, then delegate) ------
 
-/** Find files whose stored snapshot hashes contain every given anchor. */
-export async function findSnapshotPathsByHashes(
-	hashes: string[],
-): Promise<string[]> {
+/**
+ * Files whose LIVE anchors contain every given anchor (contract §2.1).
+ *
+ * Served from `anchor_lines` — the authoritative mapping — instead of the
+ * deleted `snapshots` table. This is also why the missing-`path` autocorrect
+ * works again: `snapshots` had no PRODUCTION writer left, so the lookup could
+ * only ever match rows from before the anchor refactor and silently resolved
+ * nothing for a file read since.
+ */
+export async function findPathsByAnchors(anchors: readonly string[]): Promise<string[]> {
+	if (anchors.length === 0) return [];
 	const store = await loadHashStore();
-	return store.findSnapshotPaths(hashes);
+	return store.findPathsByAnchors(anchors);
 }
-
-/** Persist a hash snapshot for one path (async over the active store). */
-export async function upsertSnapshotFor(
-	path: string,
-	checksum: string,
-	lineCount: number,
-	hashes: string[],
-): Promise<void> {
-	const store = await loadHashStore();
-	store.upsertSnapshot(path, checksum, lineCount, hashes);
-}
-
 // ---- anchor-state persistence adapter (issue #136) -------------------------
 //
-// session-anchors (hashline layer) owns the anchor lifecycle; this module owns
-// the sqlite rows. The adapter keeps the layering one-way: hashline defines
-// the port, the domain wires it. Every call resolves the ACTIVE workspace's
+// `domain/session/anchor-state.ts` owns the anchor state — the port, the
+// transaction, the read/write of `anchor_lines`. This module owns the sqlite
+// rows. The adapter keeps the layering one-way: the state module defines the
+// port, the domain wires it. Every call resolves the ACTIVE workspace's
 // already-open store — never opening one — so store-less contexts (pure unit
-// tests, the window before a tool call opens the db) simply run memory-only
-// in session-anchors, and its write-behind flush persists the state on the
-// first call after a store exists.
-registerAnchorPersistence({
+// tests, the window before a tool call opens the db) simply see no rows.
+//
+// The RESOLVE engine (`hashline/anchor-pipeline.ts`) needs the same read but
+// lives in the pure layer, so it takes the reader as an injected port rather
+// than importing down a layer. The reader is stateless — it goes through the
+// port above, which answers "nothing allocated" when no store is open — so
+// there is nothing to unwire at shutdown.
+registerAnchorReader(anchorsFor);
+const anchorStateAdapter: AnchorStatePersistence = {
 	probe(path) {
 		const entry = currentStore();
 		if (!entry) return undefined;
@@ -1782,7 +1902,7 @@ registerAnchorPersistence({
 	put(path, state) {
 		const entry = currentStore();
 		if (!entry) return; // no store yet: memory-only; flushed on the next wired call
-		withTransaction(entry.db, () => {
+		withTransaction(entry.db, entry.path, () => {
 			entry.stmts.anchorMetaUpsert(path, state.checksum, state.lineCount, Date.now());
 			entry.stmts.anchorLinesDeletePath(path);
 			for (const line of state.lines) {
@@ -1805,4 +1925,35 @@ registerAnchorPersistence({
 		}
 		entry.budget.writeCounter++;
 	},
-});
+	putMeta(path, checksum, lineCount, dropLine) {
+		const entry = currentStore();
+		if (!entry) return; // memory-only until a store exists (same contract as put)
+		// Deliberately NOT wrapped in withTransaction: the caller
+		// (`anchorFor`) already opened one and commits it with the served
+		// write. `withBusyRetry` is transaction-agnostic — on a busy lock the
+		// whole outer group is replayed by its owner.
+		withBusyRetry(() => {
+			entry.stmts.anchorMetaUpsert(path, checksum, lineCount, Date.now());
+			if (dropLine !== undefined) entry.stmts.anchorLineDelete(path, dropLine);
+		});
+		entry.budget.writeCounter++;
+	},
+};
+// THE KEY IS THE CALLER'S SPELLING — the store treats a path as opaque, and
+// that is a decision, not an oversight.
+//
+// It was tempting to `normalize()` here so that two spellings of one file would
+// share one anchor set. Measured against CI: that rewrite FIXED one Windows
+// failure and BROKE six, because it also rewrites keys that were never
+// filesystem paths — `/proj/partial.ts` becomes `\proj\partial.ts` on Windows,
+// and a caller that keyed by the value it passed no longer finds its rows.
+//
+// What actually keeps the keys canonical is upstream: every tool resolves its
+// path (`toCwd` / `resolveTarget` / `path.resolve`) BEFORE it touches the store,
+// so the spellings never diverge in production. The one place they did was a
+// test that interpolated `${dir}/f.ts` while the tool had stored the resolved
+// one — fixed in the test, where the mistake was.
+//
+// So: a caller owns its own path spelling. Pass a resolved path, as every tool
+// does; do not expect the store to guess which spelling you meant.
+registerAnchorPersistence(anchorStateAdapter);

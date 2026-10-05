@@ -20,7 +20,7 @@ import {
 	noteAlignmentDegraded,
 	resetAlignmentNotices,
 	takeAlignmentNotice,
-} from "../../src/hashline/session-anchors.js";
+} from "../../src/domain/session/anchor-state.js";
 import {
 	resetEffectiveDpBudgetForTests,
 	setEffectiveDpBudgetForTests,

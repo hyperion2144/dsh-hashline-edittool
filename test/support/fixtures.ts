@@ -369,7 +369,7 @@ export async function makeTag(
 	// SAME array its no-path fallback uses (lineHashesPure), so the helper is
 	// hermetic — no cross-test session pollution, no inheritance drift.
 	// (Callers `await` the result; a resolved plain value is transparent.)
-	const { anchorsPure } = await import("../../src/hashline/session-anchors.js");
+ 	const { anchorsPure } = await import("../../src/hashline/alloc.js");
 	const hashes = anchorsPure(content);
 	// v2.0: anchors are {anchor, line?} — the line is an optional positional
 	// hint, never the identity. Return the bare anchor form.

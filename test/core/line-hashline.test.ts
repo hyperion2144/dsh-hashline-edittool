@@ -17,7 +17,6 @@ import {
 	parseHashRef,
 	fmtRegion,
 	lineHashesPure,
-	lineHashes,
 } from "../../src/hashline/index.js";
 
 beforeAll(async () => {
@@ -106,9 +105,9 @@ describe("edit — no Shift block in v2.0", () => {
 
 describe("stale anchor echo — read format", () => {
 	it("emits the resolved anchor's line in read format with ±3 context", async () => {
-		const { applyEdit, resEdit, lineHashes } = await import("../../src/hashline/index.js");
+		const { applyEdit, resEdit, lineHashesPure } = await import("../../src/hashline/index.js");
 		const content = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n";
-		const hashes = await lineHashes(content);
+		const hashes = lineHashesPure(content);
 		// Resolve one anchor (l3's hash) and pair it with a stale anchor to
 		// force the not-found branch to render the read-format echo.
 		let caught: Error | undefined;
