@@ -47,17 +47,20 @@ describe("readAndServe", () => {
 		await withTempFile("b.txt", "one\ntwo\nthree\nfour\n", async ({ cwd, path }) => {
 			const sessionKey = sessionKeyFor("session-2");
 
-			const { text } = await readAndServe(localIO(), "b.txt", cwd, {
+			const result = await readAndServe(localIO(), "b.txt", cwd, {
 				sessionKey,
 				offset: 2,
 				limit: 2,
 			});
+			const { text } = result;
 
 			const lines = text.split("\n");
 			expect(lines[0]).toMatch(/^ANCHOR:LINE/);
 			expect(lines[1]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*two$/);
 			expect(lines[2]).toMatch(/^[A-Za-z0-9]{2,8}:\d+:\s*three$/);
-			expect(text).toContain("[Showing lines 2-3 of 4");
+			// #245: the renderer stops at the bound and reports it; the closing
+			// "how to continue" sentence belongs to the tool layer.
+			expect(text).not.toContain("[Showing lines");
 
 			const stored = await withWorkspace(cwd, () => loadServed(sessionKey, path));
 			expect([...stored].filter((hash) => hash !== null)).toHaveLength(2);

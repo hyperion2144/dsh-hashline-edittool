@@ -27,8 +27,9 @@ import { fmtRegion, hashSep } from "../../hashline/index.js";
 import { anchorsFor } from "./anchor-state.js";
 import { anchorForInWorkspace, workspaceCwd } from "./session-view.js";
 import { fmtMarker, hashlineHeader, canon, contentChecksum } from "../../hashline/hash-assign.js";
-import { visLines, abortIf, errCode } from "../../infra/utils.js";
+import { splitLines, abortIf, errCode } from "../../infra/utils.js";
 import { lineNumbersEnabled } from "../../infra/settings.js";
+import { EMPTY_FILE_NOTE, formatNoLinesSummary } from "./read-window.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "../../render/edit-diff.js";
 import { resolveTarget, toCwd } from "../../infra/paths.js";
 import type { FileIO } from "../../infra/fs-bridge.js";
@@ -453,17 +454,6 @@ function normPosInt(
   return value;
 }
 
-export function formatPaginationHint(
-  startLine: number,
-  endLine: number,
-  totalLines: number,
-  nextOffset: number,
-  byteLimit?: number,
-): string {
-  const sizeSuffix =
-    byteLimit !== undefined ? ` (${formatSize(byteLimit)} limit)` : '';
-  return `[Showing lines ${startLine}-${endLine} of ${totalLines}${sizeSuffix}. Use offset=${nextOffset} to continue.]`;
-}
 
 export async function fmtReadPreview(
   text: string,
@@ -508,10 +498,12 @@ export async function fmtReadPreview(
   /** The window's anchors, patched in place (#169) — callers rebuild rows from it. */
   hashes: string[];
 }> {
-  const allLines = visLines(text);
+  // #245: one splitter for the whole tool — an empty file is ONE line, so the
+  // window summary, the JSON view and the text view agree on `totalLines`.
+  const allLines = splitLines(text);
   const totalLines = allLines.length;
   const startLine = normPosInt(options.offset, 'offset') ?? 1;
-  if (totalLines === 0) {
+  if (text.length === 0) {
     if (startLine === 1) {
       const allHashes = precomputedHashes ?? (path ? anchorsFor(path, text) : []);
       // LAZY (#169): the one visible row of an empty file IS the serve.
@@ -530,21 +522,21 @@ export async function fmtReadPreview(
         if (allocated !== undefined && allocated !== "") emptyLineHash = allocated;
       }
       return {
-		text: `${hashlineHeader(false)}\n${emptyLineHash}${hashSep()}\n[File is empty. Use edit to insert content.]`,
+		text: `${hashlineHeader(false)}\n${emptyLineHash}${hashSep()}\n${EMPTY_FILE_NOTE}`,
 		hashes: allHashes,
 		shownEnd: 1,
 		served: [{ position: 0, anchor: emptyLineHash, contentKey: contentChecksum(canon("")) }],
       };
     }
     return {
-      text: `Offset ${startLine} is beyond end of file (0 lines total). The file is empty. Use edit to insert content.`,
+      text: formatNoLinesSummary(startLine, 0, true),
       hashes: [],
       served: [],
     };
   }
   if (startLine > totalLines) {
     return {
-      text: `Offset ${startLine} is beyond end of file (${totalLines} lines total). Use offset=1 to read from the start, or offset=${totalLines} to read the last line.`,
+      text: formatNoLinesSummary(startLine, totalLines),
       hashes: [],
       served: [],
     };
@@ -642,10 +634,13 @@ export async function fmtReadPreview(
       (skippedTruncation.truncated || lastShownLine < totalLines)
     ) {
       nextOffset = lastShownLine + 1;
-	      preview = `${hashlineHeader(options.lineNumbers ?? lineNumbersEnabled())}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
-    } else {
-	      preview = `${hashlineHeader(options.lineNumbers ?? lineNumbersEnabled())}\n${preview}\n\n${warning}`;
-}
+      preview = `${hashlineHeader(options.lineNumbers ?? lineNumbersEnabled())}\n${preview}`;
+    }
+    if (oversized.length > 0) {
+      // #245: the page hint belongs to the tool layer now, but the bash
+      // fallback for the lines this preview could not carry is content.
+      preview = `${preview}\n\n${warning}`;
+    }
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {
       if (rowSizes[index]!.bytes <= maxBytes) {
@@ -678,17 +673,13 @@ export async function fmtReadPreview(
   let preview = `${headerLine}\n${truncation.content}`;
   let nextOffset: number | undefined;
   if (truncation.truncated) {
-    const endLineDisplay = startLine + truncation.outputLines - 1;
-    nextOffset = endLineDisplay + 1;
-    if (truncation.truncatedBy === 'lines') {
-      preview += `\n\n${formatPaginationHint(startLine, endLineDisplay, totalLines, nextOffset)}`;
-    } else {
-      preview += `\n\n${formatPaginationHint(startLine, endLineDisplay, totalLines, nextOffset, truncation.maxBytes)}`;
-    }
+    // #245: the page hint is gone — the tool layer ends every read with ONE
+    // window sentence (and mints the resume token when the budget cut it).
+    nextOffset = startLine + truncation.outputLines;
   } else if (endIdx < totalLines) {
+    // A user `limit` cut sets the render bound WITHOUT minting a token.
     nextOffset = endIdx + 1;
-    preview += `\n\n${formatPaginationHint(startLine, endIdx, totalLines, nextOffset)}`;
-}
+  }
   const served: ServedRow[] = [];
   for (let index = 0; index < truncation.outputLines; index++) {
     served.push({

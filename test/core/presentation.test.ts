@@ -75,7 +75,7 @@ describe("tool-read structured presentation", () => {
 			expect(value.modelText).not.toContain("<type>file</type>");
 			expect(value.lines.length).toBeGreaterThan(0);
 			expect(value.lines.length).toBeLessThan(2500);
-			expect(value.modelText).toMatch(/\(Omitted \d+ lines\. Use read \{resume: "rs-[0-9a-f]{32}"\} to continue\.\)$/);
+			expect(value.modelText).toMatch(/\[Lines \d+-\d+ of \d+\. Omitted \d+ lines\. Use read \{resume: "rs-[0-9a-f]{32}"\} to continue\.\]$/);
 		});
 	});
 });

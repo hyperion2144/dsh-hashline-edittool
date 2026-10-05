@@ -98,8 +98,20 @@ export interface ResumeSidecar {
 	createdAt: number;
 }
 
+/**
+ * The three refusal codes, spelled out as literals so `test/core/error-codes`
+ * (and anyone grepping for a code) can see them. A code interpolated between
+ * brackets is invisible to that interlock, which is how three real codes stayed
+ * out of the README error table (#245).
+ */
+const RESUME_CODE_TAG = {
+	E_RESUME_GONE: "[E_RESUME_GONE]",
+	E_RESUME_BAD: "[E_RESUME_BAD]",
+	E_RESUME_TOOL: "[E_RESUME_TOOL]",
+} as const;
+
 export function resumeError(code: "E_RESUME_GONE" | "E_RESUME_BAD" | "E_RESUME_TOOL", message: string): Error {
-	return new Error(`[${code}] ${message}`);
+	return new Error(`${RESUME_CODE_TAG[code]} ${message}`);
 }
 
 function registerExitCleanup(dir: string): void {

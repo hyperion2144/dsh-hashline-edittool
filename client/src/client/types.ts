@@ -68,6 +68,12 @@ export interface ReadMetaHashline extends ReadMetaLine {
 	hash: string;
 }
 
+/** #245 — the lines one read actually served, and the file's total. */
+export interface ReadWindowMeta {
+	start: number;
+	end: number;
+	totalLines: number;
+}
 /** The hashline read tool's persisted presentation projection (meta). */
 export interface ReadPresentation {
 	path: string;
@@ -76,6 +82,7 @@ export interface ReadPresentation {
 	totalLines: number;
 	hashlines?: ReadMetaHashline[] | undefined;
 	lang?: string | undefined;
+	window?: ReadWindowMeta | undefined;
 }
 
 /** One applied hunk as persisted by the hashline edit tool (meta.diffs[]). */
@@ -116,6 +123,8 @@ export interface ReadCardModel {
 	readonly rows: readonly ReadCardRow[];
 	readonly totalLines: number;
 	readonly lang?: string | undefined;
+	/** #245 — the host's window, when this read carried one. */
+	readonly window?: ReadWindowMeta | undefined;
 }
 
 /** Props accepted by the primitives' DiffBlock. */

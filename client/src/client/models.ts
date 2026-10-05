@@ -34,6 +34,7 @@ import type {
 	ReadCardModel,
 	ReadMetaHashline,
 	ReadMetaLine,
+	ReadWindowMeta,
 	ReadPresentation,
 	ToolCallBlock,
 	ToolRowModel,
@@ -305,6 +306,16 @@ export function errorCardModel(block: ToolCallBlock): ErrorCardModel | null {
 
 //#region read card (mirror of shipped readCardModel + hashline gutter)
 
+/**
+ * #245 — `offset`/`limit` take a positive integer OR an anchor string.
+ * @param value - the raw argument.
+ * @returns whether the card should still wear its read shape.
+ */
+function isCursorArg(value: unknown): boolean {
+	if (typeof value === "string") return value.trim() !== "";
+	return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
 function validReadCall(block: ToolCallBlock): boolean {
 	const call = parsedToolCall(block);
 	// `lsp` wears the read card: its symbols/diagnostics answers are line-anchored
@@ -316,8 +327,8 @@ function validReadCall(block: ToolCallBlock): boolean {
 	const path = declared ?? named;
 	const { offset, limit } = call.args;
 	if (typeof path !== "string" || path.trim() === "") return false;
-	if (offset !== undefined && (typeof offset !== "number" || !Number.isInteger(offset) || offset < 1)) return false;
-	if (limit !== undefined && (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1)) return false;
+	if (offset !== undefined && !isCursorArg(offset)) return false;
+	if (limit !== undefined && !isCursorArg(limit)) return false;
 	return true;
 }
 
@@ -331,6 +342,14 @@ function isMetaHashline(line: unknown): line is ReadMetaHashline {
 	if (!isMetaLine(line)) return false;
 	return typeof (line as unknown as Record<string, unknown>).hash === "string";
 }
+/** #245 — `window: {start, end, totalLines}` when the read carried one. */
+function readWindowMeta(value: unknown): ReadWindowMeta | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const { start, end, totalLines } = value as Record<string, unknown>;
+	if (![start, end, totalLines].every((n) => typeof n === "number" && Number.isInteger(n) && n >= 1)) return undefined;
+	return { start: start as number, end: end as number, totalLines: totalLines as number };
+}
+
 
 /**
  * Soft-validate the persisted read meta, mirroring the shipped readMeta plus
@@ -339,7 +358,7 @@ function isMetaHashline(line: unknown): line is ReadMetaHashline {
 export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
 	const value = meta as Record<string, unknown>;
-	const { path, offset, totalLines, lang } = value;
+	const { path, offset, totalLines, lang, window: rawWindow } = value;
 	if (typeof path !== "string") return null;
 	if (typeof offset !== "number" || !Number.isInteger(offset) || offset < 1) return null;
 	if (typeof totalLines !== "number" || !Number.isInteger(totalLines) || totalLines < 0) return null;
@@ -348,6 +367,8 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 		if (!Array.isArray(value.hashlines) || !value.hashlines.every(isMetaHashline)) return null;
 	}
 	if (lang !== undefined && typeof lang !== "string") return null;
+	const windowMeta = rawWindow === undefined ? undefined : readWindowMeta(rawWindow);
+	if (rawWindow !== undefined && windowMeta === undefined) return null;
 	const lines = value.lines as ReadMetaLine[];
 	let previous = offset - 1;
 	for (const { number } of lines) {
@@ -361,6 +382,7 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 		totalLines,
 		...(value.hashlines !== undefined ? { hashlines: value.hashlines as ReadMetaHashline[] } : {}),
 		...(lang !== undefined ? { lang: lang as string } : {}),
+		...(windowMeta !== undefined ? { window: windowMeta } : {}),
 	};
 }
 
@@ -402,6 +424,7 @@ export function readCardModel(
 		}),
 		totalLines: meta.totalLines,
 		...(meta.lang !== undefined ? { lang: meta.lang } : {}),
+		...(meta.window !== undefined ? { window: meta.window } : {}),
 	};
 }
 

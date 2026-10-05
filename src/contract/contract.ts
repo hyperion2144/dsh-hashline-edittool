@@ -128,8 +128,14 @@ export interface EditParams {
 
 export interface ReadParams {
 	path: string;
-	offset?: number;
-	limit?: number;
+	/**
+	 * Line number (1-indexed) or an ANCHOR to start at (#245, ADR-0014): an
+	 * anchor's line is the window's first line. Which one it is, and whether the
+	 * anchor is still usable, is decided against the served ledger at call time.
+	 */
+	offset?: number | string;
+	/** Row count, or the ANCHOR of the window's last line (#245). */
+	limit?: number | string;
 	/** ADR-0013: continuation token from a previous truncated call. */
 	resume?: string;
 	// No `symbol` / `kind` / `anchor` / `references` / `include`.

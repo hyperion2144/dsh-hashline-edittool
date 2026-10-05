@@ -141,6 +141,24 @@ describe("readCardModel", () => {
 		).toBeNull();
 	});
 
+	it("carries the host's window, and rejects a malformed one (#245)", () => {
+		const lines = [
+			{ number: 5, text: "const a = 1;" },
+			{ number: 6, text: "const b = 2;" },
+		];
+		const window = { start: 5, end: 6, totalLines: 300 };
+		const meta = { path: "/w/src/a.ts", offset: 5, totalLines: 300, lines, window };
+		expect(readCardModel(settledRead({ meta }), undefined, undefined)?.window).toEqual(window);
+		expect(
+			readCardModel(settledRead({ meta: { ...meta, window: { start: 0, end: 6, totalLines: 300 } } }), undefined, undefined),
+		).toBeNull();
+	});
+
+	it("keeps the read card when the cursors are anchors, not numbers (#245)", () => {
+		const argsRaw = JSON.stringify({ path: "/w/src/a.ts", offset: "zZ", limit: "9N" });
+		expect(readCardModel(settledRead({ argsRaw }), undefined, undefined)).not.toBeNull();
+	});
+
 	it("returns null when hashlines is malformed (defends against foreign meta)", () => {
 		const card = readCardModel(
 			settledRead({
