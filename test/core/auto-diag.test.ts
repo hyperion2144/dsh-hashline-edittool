@@ -27,7 +27,7 @@ import {
 	type AfterWriteInput,
 	type FileDiagnostics,
 } from "../../src/lsp/auto-diag.js";
-import { applyEffective, getEffectiveConfig, isAutoDiagnosticsEnabled, parseSettingsYaml } from "../../src/config.js";
+import { applyEffective, getEffectiveConfig, isAutoDiagnosticsEnabled } from "../../src/config.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
@@ -454,13 +454,8 @@ describe("the JSON projection — marker-keyed, diff-aligned (#131 field feedbac
 });
 
 describe("the config toggle (seam 3)", () => {
-	it("parses `lsp.auto_diagnostics` from settings.yaml", () => {
-		const settings = parseSettingsYaml(
-			"hashline:\n  lsp:\n    servers:\n      typescript: tsserver\n    auto_diagnostics: false\n",
-		);
-		expect(settings.lsp?.servers).toEqual({ typescript: "tsserver" });
-		expect(settings.lsp?.auto_diagnostics).toBe(false);
-		applyEffective(settings);
+	it("reads `lsp.auto_diagnostics` from the nested lsp sub-tree", () => {
+		applyEffective({ lsp: { servers: { typescript: "tsserver" }, auto_diagnostics: false } });
 		expect(isAutoDiagnosticsEnabled()).toBe(false);
 	});
 

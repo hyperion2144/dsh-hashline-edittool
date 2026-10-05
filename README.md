@@ -276,9 +276,10 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
       auto_diagnostics: true # deliver server diagnostics inline after writes
 ```
 
-Migrating from 0.1.6? A pre-0.1.7 `~/.dsh/settings.yaml` with a `hashline:` section is
-imported into this configuration **once**, automatically, on the plugin's first boot — unless
-you had already configured the entry yourself (your newer values win).
+Migrating from 0.1.6? A pre-0.1.7 `~/.dsh/settings.yaml` is imported **by dsh itself**
+during the upgrade. The plugin no longer reads, migrates, or writes any settings file —
+the entry configuration on this page is the only source of truth. If an old `hashline:`
+key did not carry over, set it in the form above.
 
 ### Per-preset guidance
 
