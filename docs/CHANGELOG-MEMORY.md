@@ -248,7 +248,7 @@ ADR-0013 rather than left in issues.
 ### 未做（留给后续票）
 
 - write 的自动预览 / grep / `ast_edit` 的尾部仍是各自形态 → #246。
-- 遗留文件通道清理（`settings.yaml` 直读、`parseSettingsYaml`、`dev-diag`、README 旧措辞）→ #237。
+- ~~遗留文件通道清理（`settings.yaml` 直读、`parseSettingsYaml`、`dev-diag`、README 旧措辞）~~ → **已完成**（#237，2026-10-05；见本文档末尾条目）。
 
 ---
 
@@ -277,3 +277,26 @@ ADR-0013 rather than left in issues.
 - 失败项形状 = `ErrorMeta` + 必填 `path`，`code` 可选（取自内层失败的**头部**字面量、去方括号）。`fail[]` 仍按 ADR-0004 保留方括号 —— 两者同码不同形，测试同时钉住两边。
 - 卡片：失败与成功同列 tab、横幅独占 `role="alert"`、行状态仍成功；计数文案由客户端从两个数组长度推导（不是宿主发的字段）。
 - 事实备注（写给下一个改这块的人）：`edit` 的 `presentationMeta` 只能从 canonical value 的 `v.success`/`v.fail` 出发投射，`failures` 因而与成功侧**同一个分支**计算；把它嵌回「有 diff 才投射」的老分支，no-op 场景会再次静默丢失败。
+
+---
+
+## 2026-10-05 — 设置文件通道整体删除：插件不再自己读写设置文件 (#237)
+
+**Type:** refactor + documentation
+**Confidence:** High
+**Evidence:** 地图 [#234](https://github.com/hyperion2144/dsh-hashline-edittool/issues/234) 的 A2 研究 [#236](https://github.com/hyperion2144/dsh-hashline-edittool/issues/236)（运行时自己导入 + 服务面没有私下通道）、A3 处置票 [#237](https://github.com/hyperion2144/dsh-hashline-edittool/issues/237)；`npm run typecheck` 与 `npm test`、`npm run typecheck -w client` 与 `npm test -w client` 全绿。
+
+### Why
+设置只剩一条路：profile 的插件配置（`Config` + `apply(ctx, config)` 活引用 + `settings/document-updated`）。旧模块的前提在 0.2.1 已不成立 —— `settings.yaml` 的 `hashline:` 节由运行时自己导入，而设置服务面（`describe/update/replace/mutate/configure/prepareDocument/writable/documentPath`）没有任何 API 能把遗留文档交给插件（`importLegacyDocument` 私有）；留着它只会与运行时并发写同一份配置，并且是全仓唯一一处「插件自己读写用户设置文件」——那正是用户硬约束禁止的事。
+
+### Path / Affected typed relationships
+- 删除整个模块：`src/infra/legacy-migration.ts`、`src/index.ts` 的 import 与 fire-and-forget 调用、`test/core/legacy-migration.test.ts`。
+- `src/config.ts`：`settingsYamlPath()`（连同只被它用的 `node:os` / `node:path` import）与手写 `parseSettingsYaml()`（约 145 行）删除；文件头与 `HASHLINE_ENTRY_ID`、store-budget 注释里「直读 settings.yaml / 手写文件」的措辞改写为「条目配置」。
+- `scripts/dev-diag.mjs`：自读 settings.yaml 打印原始段的那一段、以及第 4 段里 require `parseSettingsYaml` 的三行删除，改为 `applyEffective(undefined)`；`scripts/dev-verify.mjs` 整文件重写为 Config 缝的冒烟脚本（双挂载 + 有效快照断言），不再读文件，也不再要求 `ctx.get("settings")`（Config 缝下它必然 absent，原脚本因此必然 exit 1）。
+- 测试：`ast-settings.test.ts` 的解析型用例改为 schema + `applyEffective` + `lspConfiguredServers()`（保留「嵌套而非平铺」「空命令被丢」「两棵子树共存」三个真行为）；`auto-diag.test.ts` 的 `lsp.auto_diagnostics` 用例同理。
+- 文档：`README.md` / `README.zh.md` 的迁移段改写为「导入由 dsh 自己做、插件不再碰任何设置文件」；`client/src/client/settings-card.tsx` 的「已覆盖」提示不再点名文件（`settings.yaml` → 配置）。
+
+### 本轮定案（复核时照此）
+- `cordis.patch.yml` 的说法**不是**过时措辞：本机 `~/.dsh/profiles/{desktop,web}/cordis.patch.yml` 实测仍在 → README 只改迁移段，路径句保留（票面把它当「过时措辞」是证据不足）。
+- 事实备注（工具教训）：在运行时目录里 grep `cordis\.patch` 得到 no matches **不能**当作「文件不存在」的证据 —— grep 工具跳过 `node_modules`；要查磁盘就 glob。
+- `hash_length` 的 schema 容忍（legacy 键）属于 schema 形状，不在本票范围；`src/infra/paths.ts` 的 `legacyHashStorePath()` 是哈希库路径，不是设置文件。
