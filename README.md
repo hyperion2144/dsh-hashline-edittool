@@ -53,9 +53,10 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the bu
   "may I write this line" is answered per session. If the other session *replaced* the
   line you are holding, you get a refusal and the line's current anchor — not a silent
   write somewhere else.
-- **One call = one atomic batch.** All anchors in one `edit` resolve against the original
-  snapshot; any failure rejects the whole call and writes nothing. Multi-file batches are
-  grouped per file, each file all-or-nothing, partial success reported.
+- **One atomic batch per file.** Every anchor in one `edit` resolves against the original
+  snapshot, so all items use ORIGINAL anchors. Within one file the edits are all-or-nothing:
+  a failure rejects that file's batch (`[E_BATCH_ABORT]`) and writes nothing for it. Files are
+  independent — a multi-file call reports partial success per file, each failure with its own code.
 - **Everything is a card.** The bundled client plugin renders read / diff / grep / undo /
   write / structural / LSP cards in the dsh web UI from structured `presentationMeta` —
   the model text and the UI never have to agree by string parsing.
@@ -214,7 +215,7 @@ Mixing anchor fields with the wrong op is `[E_BAD_SHAPE]`.
 
 When `hashline.require_line_content` is on, every anchor becomes a
 `{ anchor, line }` pair — `line` is your declaration of that row's **current full text**.
-Declarations are verified after the stale-anchor check; a mismatch rejects the call with
+Declarations are verified after the stale-anchor check; a mismatch rejects that file's batch with
 `[E_CONTENT_MISMATCH]` and echoes where your declared content actually lives.
 
 ### `grep_respect_gitignore` (default on)
@@ -293,14 +294,14 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | Code | Meaning |
 | --- | --- |
 | `[E_ACCESS]` | File exists but is not readable/writable. |
-| `[E_ANCHOR_AMBIGUOUS]` | The anchor is live on multiple lines (a freed anchor was re-allocated while the model still held the old binding) — refused; re-read. Nothing was written. |
+| `[E_ANCHOR_AMBIGUOUS]` | The anchor is live on multiple lines (a freed anchor was re-allocated while the model still held the old binding) — refused; re-read. Nothing was written for that file. |
 | `[E_ANCHOR_STATE_DUP]` | The file's anchor state has duplicate anchors (corruption). The state is rebuilt; the edit is refused — re-read to get fresh anchors. Nothing was written. |
 | `[E_AST_DISABLED]` / `[E_AST_PATTERN]` / `[E_AST_TOO_LARGE]` | AST capability off for the language / pattern did not parse as one node / file exceeds the AST size cap. |
 | `[E_AST_WORKER_ABORTED]` / `[E_AST_WORKER_FAILED]` | The tree-sitter worker was aborted / failed. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when reversed). |
 | `[E_BAD_REF]` | Anchor field is not a marker copied from a row's leftmost column. |
 | `[E_BAD_SHAPE]` | Request/field shape wrong (unknown fields, wrong anchor field for the op, …). |
-| `[E_BATCH_ABORT]` | A batch item failed; nothing was written. |
+| `[E_BATCH_ABORT]` | A batch item failed; that file's batch was rejected and nothing was written for it. |
 | `[E_BATCH_CONFLICT]` | Two items' ranges overlap on the same snapshot. |
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row was pasted into `lines`; stripped with a warning. |
 | `[E_CONTENT_MISMATCH]` | A declared `line` (require_line_content) does not match. |
