@@ -2,6 +2,11 @@
 
 > **Status**: Accepted (2026-10-03; decisions #204/#205, specs #209/#210, map #201; implementation tracked as #207)
 
+> **See also**: ADR-0014 (2026-10-05) — a read's line window now takes anchors as
+> `offset`/`limit`, and a request that carries BOTH a `resume` token and either
+> cursor is `[E_RESUME_CONFLICT]`. Segments and line windows are separate axes;
+> this ADR's decisions on tokens, spilling and budgets stand unchanged.
+
 ## Problem Statement
 
 The #167 read budget charged every candidate file's GROSS byte size against a
