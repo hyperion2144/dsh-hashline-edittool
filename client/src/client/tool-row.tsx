@@ -183,6 +183,18 @@ function ToolRow({
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
 	const diffBody = diff ?? null;
+	// #247: a PARTIALLY failed multi-file call still renders the diff card and
+	// the row still counts as a success — these three facts are what the row
+	// borrows from the failure list: the first failing file's name, how many
+	// failed, and how many files the call touched in total.
+	const failures = diffBody?.failures ?? null;
+	const failureGroups =
+		diffBody !== null && diffBody.rowGroups !== undefined ? diffBody.rowGroups : null;
+	const firstFailurePath = failures !== null && failures.length > 0 ? failures[0]!.path : null;
+	const partialStat =
+		failures !== null && failures.length > 0 && failureGroups !== null
+			? `${failures.length} of ${failures.length + failureGroups.length} files failed`
+			: null;
 	const outputText = output ?? null;
 	// `error` first: a failed call leads with the structured failure card.
 	// `lsp` next: it owns its body outright (frame included), so the read body
@@ -196,7 +208,7 @@ function ToolRow({
 	);
 	const status = stateStatus(state, t);
 	const failureLine = state === "error" ? (errorSummary ?? null) : null;
-	const summaryText = failureLine ?? summary;
+	const summaryText = failureLine ?? firstFailurePath ?? summary;
 	// The diagnostics stat, shaped like the diff stat next to it (`+3 -1`): the
 	// count comes from the severity CODES the host put beside each message, never
 	// from parsing an "error: …" label back apart.
@@ -269,9 +281,11 @@ function ToolRow({
 	// a folded row that hides a fresh error made the reader expand to learn it.
 	// `summarySuffix` (anchor hints) used to sit to the left of the `??` — a prop
 	// with no producer is a switch the next change can flip back on (issue #127).
+	// #247 adds the failure count when a file of the call failed: the row keeps
+	// its success state but says `+1 -1 · 1 of 3 files failed`.
 	const suffix =
 		failureLine === null
-			? [diffStat, lspStat ?? diagStat].filter((part) => part !== null).join(" · ") || null
+			? [diffStat, partialStat, lspStat ?? diagStat].filter((part) => part !== null).join(" · ") || null
 			: null;
 	const fileLink = filePath !== undefined && onOpenFile !== undefined && failureLine === null;
 	const toggleExpand = () => {
@@ -297,7 +311,7 @@ function ToolRow({
 				leadingClassName: css.leading,
 				titleClassName: css.title,
 				chevronClassName: css.chevron,
-				icon: leadingFor(state, icon),
+				icon: leadingFor(partialStat !== null ? "error" : state, icon),
 				title,
 				open,
 				expandable,
@@ -343,6 +357,7 @@ function ToolRow({
 										path: diffBody.path,
 										rows: diffBody.rowGroups[0]?.rows ?? [],
 										groups: diffBody.rowGroups,
+										failures: diffBody.failures,
 										tablistLabel: title,
 										labels: diffLabels,
 										maxLines: 8,

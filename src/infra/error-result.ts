@@ -30,6 +30,19 @@ export interface ErrorMeta {
 	hint?: string;
 }
 
+/**
+ * One failed file inside a multi-file `edit` call (#247 / ADR-0015): the
+ * persisted error shape with its `path` guaranteed and its `code` optional —
+ * the whole-call error always knows its code, a per-file text may carry none.
+ * Declared ONCE: a whole-call error and a per-file failure render through the
+ * same card.
+ */
+export interface FileFailureMeta extends Omit<ErrorMeta, "code"> {
+	/** The `[E_*]` vocabulary code, WITHOUT the brackets, when the failure had one. */
+	code?: string;
+	path: string;
+}
+
 /** The minimal canonical value of a failed call: what the model reads + the card's data. */
 export interface ErrorResultValue {
 	modelText: string;
@@ -79,6 +92,25 @@ export function pathFromArgs(args: unknown): string | undefined {
 	if (typeof a.path === "string") return a.path;
 	if (typeof a.file_path === "string") return a.file_path;
 	return undefined;
+}
+
+/**
+ * Split a domain error's post-code head into `message` + the optional `context`
+ * (the echo / per-item block).
+ *
+ * Shared by the whole-call projection ({@link thrownErrorResult}) and the
+ * per-file one (a partially failed multi-file `edit` projects `failures`,
+ * #247 / ADR-0015), so both channels fold the same way: the echo header opens
+ * the ±context rows block a rejection appends, the composers indent it
+ * differently, so the marker phrase — not its whitespace — is the seam;
+ * absent a marker, the first blank line opens the block.
+ */
+export function splitErrorText(head: string): { message: string; context?: string } {
+	const echoAt = ECHO_MARKERS.map((marker) => head.indexOf(marker)).find((at) => at !== -1) ?? -1;
+	const split = echoAt !== -1 ? echoAt : head.indexOf("\n\n");
+	const message = split === -1 ? head : head.slice(0, split).replace(/\s+$/, "");
+	const context = split === -1 ? undefined : head.slice(split).replace(/^\s+/, "");
+	return { message, ...(context !== undefined && context.trim() !== "" ? { context } : {}) };
 }
 
 /**
@@ -133,20 +165,12 @@ export function thrownErrorResult(err: unknown, opts?: { path?: string }): Error
 	const match = E_CODE.exec(message);
 	if (match === null) throw err;
 	const code = match[1]!;
-	const head = message.slice(match.index + match[0].length).replace(/^ /, "");
-	// The echo header opens the ±context rows block a rejection attaches; the
-	// composers indent it differently, so the marker phrase — not its whitespace
-	// — is the seam. Any of the known phrases opens the block.
-	const echoAt =
-		ECHO_MARKERS.map((marker) => head.indexOf(marker)).find((at) => at !== -1) ?? -1;
-	const split = echoAt !== -1 ? echoAt : head.indexOf("\n\n");
-	const body = split === -1 ? head : head.slice(0, split).replace(/\s+$/, "");
-	const context = split === -1 ? undefined : head.slice(split).replace(/^\s+/, "");
+	const parts = splitErrorText(message.slice(match.index + match[0].length).replace(/^ /, ""));
 	const error: ErrorMeta = {
 		code,
-		message: body,
+		message: parts.message,
 		...(opts?.path !== undefined ? { path: opts.path } : {}),
-		...(context !== undefined && context.trim() !== "" ? { context } : {}),
+		...(parts.context !== undefined ? { context: parts.context } : {}),
 	};
 	return {
 		modelText:

@@ -15,15 +15,17 @@ const CONTEXT_MAX_LINES = 16;
 
 /**
  * One structured failure, whole. `role="alert"` so a screen reader announces
- * the failure the folded row only dots.
+ * the failure the folded row only dots — `announce: false` drops the role for
+ * the multi-file partial-failure card (#247), whose failure BANNER already owns
+ * the one alert: a tab switch must not re-announce the same failure.
  */
-export function ErrorCard({ model, className }: { model: ErrorCardModel; className?: string }): ReactNode {
+export function ErrorCard({ model, className, announce = true }: { model: ErrorCardModel; className?: string; announce?: boolean }): ReactNode {
 	const contextLines = model.context === undefined ? [] : model.context.split("\n");
 	const overflow = contextLines.length - CONTEXT_MAX_LINES;
 	const visible = overflow > 0 ? contextLines.slice(0, CONTEXT_MAX_LINES) : contextLines;
 	return jsx_("div", {
 		className: className === undefined ? css.errorCard : `${css.errorCard} ${className}`,
-		role: "alert",
+		...(announce ? { role: "alert" } : {}),
 		children: [
 			jsx_("div", {
 				className: css.errorHead,

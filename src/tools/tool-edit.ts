@@ -40,7 +40,14 @@ import {
 } from "../contract/contract.js";
 import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
-import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
+import {
+	errorFieldSchema,
+	pathFromArgs,
+	splitErrorText,
+	thrownErrorResult,
+	type ErrorMeta,
+	type FileFailureMeta,
+} from "../infra/error-result.js";
 // Marker parsing, not symbol reading: `lineHintOf` moved beside the other
 // `<line>:<anchor>` handling when the block-op path was removed.
 import { lineHintOf } from "../hashline/declaration.js";
@@ -188,6 +195,18 @@ export function buildPreparedItem(
 }
 
 /**
+ * The FIRST bracketed `[E_*]` marker of a text, brackets included, or undefined.
+ *
+ * The head rule is load-bearing (#247): a per-file failure string keeps its ±3
+ * echo verbatim, and this repo's own bodies carry `[E_*]` literals inside those
+ * echoed lines — taking the LAST match let an echoed source line hijack the
+ * code the web card shows.
+ */
+function headCode(text: string): string | undefined {
+	return /\[(E_[A-Z_]+)\]/.exec(text)?.[0];
+}
+
+/**
  * Extract the root-cause error code + the single-file error text verbatim
  * from a per-file batch failure string.
  *
@@ -200,20 +219,48 @@ export function buildPreparedItem(
  * batch wrapper prefix and the batch-abort tail — never the echo.
  */
 function extractFailure(message: string): { code: string; message: string } {
-	// Last error code wins: E_BATCH_ABORT wraps the inner cause.
-	const codes = message.match(/\[(E_[A-Z_]+)\]/g) ?? [];
-	const code = codes.length > 0 ? codes[codes.length - 1]! : "[E_INVALID_PATCH]";
 	// Inner full message: strip the batch wrapper prefix and the batch tail;
 	// keep everything else verbatim (echo block, fresh-marker hint included).
 	let inner = message
 		.replace(/^\[E_BATCH_ABORT\]\s*edits\[\d+\]\s*\([^)]*\)\s*failed:\s*/i, "")
 		.replace(/\nThe whole batch was rejected[\s\S]*$/, "")
 		.trim();
+	if (inner.length === 0) inner = message.trim();
+	// The code is the HEAD of the inner message, never the last bracket match:
+	// `[E_BATCH_ABORT]` is the wrapper's own code, the inner head is the cause.
+	// An inner message with no code at all falls back to the wrapper's marker,
+	// then to the historical `[E_INVALID_PATCH]`.
+	const code = headCode(inner) ?? headCode(message) ?? "[E_INVALID_PATCH]";
 	// The inner error repeats the code at its head (`[E_STALE] 2 stale...`);
 	// the fail block composes "Edit for <path> failed: <code> <message>", so drop
 	// the leading code from message to avoid duplicating it.
 	if (inner.startsWith(code)) inner = inner.slice(code.length).trim();
 	return { code, message: inner.length > 0 ? inner : message };
+}
+
+/**
+ * The card-facing failure list of a PARTIALLY failed multi-file call (#247 /
+ * ADR-0015), in input order: one entry per failed file, in the persisted error
+ * shape — the same `ErrorCard` renders a whole-call error and one of these.
+ * `code` is normalized without brackets exactly like the aggregate
+ * `error.code`; the single-file text is split the way the whole-call projection
+ * splits it, so the echoed rows land in `context` (the card's `<pre>`) instead
+ * of inflating `message`.
+ */
+function fileFailures(raw: unknown): FileFailureMeta[] {
+	if (!Array.isArray(raw)) return [];
+	const items: FileFailureMeta[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const f = entry as { path?: unknown; code?: unknown; message?: unknown };
+		if (typeof f.path !== "string" || typeof f.message !== "string") continue;
+		items.push({
+			path: f.path,
+			...(typeof f.code === "string" ? { code: f.code.replace(/^\[/, "").replace(/\]$/, "") } : {}),
+			...splitErrorText(f.message),
+		});
+	}
+	return items;
 }
 
 /**
@@ -367,14 +414,32 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				if (Array.isArray(v.success) || Array.isArray(v.fail)) {
 					const md = v.multiDiffs;
 					const mdrGroups = v.multiDiffRowGroups;
+					// #247 / ADR-0015: a call where SOME file failed is still a success —
+					// the failed files ride the SAME meta object as the success side, in
+					// input order, and no `error` key exists (the zero-changes case
+					// returned above). The list is deliberately NOT nested in the
+					// "success side produced hunks" branch: when the only successful file
+					// was a whole-file no-op there are no diffs at all, and nesting would
+					// make the failures vanish with them.
+					const failures =
+						Array.isArray(v.success) && v.success.length > 0 ? fileFailures(v.fail) : [];
+					const failureKey = failures.length > 0 ? { failures } : {};
 					if (Array.isArray(md) && md.length > 0) {
 						return {
 							diffs: md as FileDiff[],
 							...(Array.isArray(mdrGroups) && mdrGroups.length > 0 ? { diffRowGroups: mdrGroups } : {}),
 							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+							...failureKey,
 						} as never;
 					}
-					return { diffs: [], ...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}) } as never;
+					// The no-op case keeps its (zero-row) group too: the file succeeded, so
+					// its tab must not vanish just because nothing changed inside it.
+					return {
+						diffs: [],
+						...(Array.isArray(mdrGroups) && mdrGroups.length > 0 ? { diffRowGroups: mdrGroups } : {}),
+						...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+						...failureKey,
+					} as never;
 				}
 				if (v.noop) return { diffs: [] } as never;
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);

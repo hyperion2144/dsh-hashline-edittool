@@ -4,9 +4,11 @@ import {
 	diffCardModel,
 	grepPresentationMeta,
 	writeCardModel,
+	hasMetaError,
 	metaDiffRows,
 	diffCardGroups,
 	metaDiffRowGroups,
+	metaFileFailures,
 	narrowDiffs,
 	readCardModel,
 	toolRowModel,
@@ -577,5 +579,91 @@ describe("grep card outline flag (#131 BUG-3)", () => {
 			total: 1,
 		});
 		expect(model?.outline).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #247: a partially failed multi-file edit — the `failures` channel.
+// ---------------------------------------------------------------------------
+
+describe("partial failure (#247): the failures channel survives narrowing", () => {
+	const failure = { path: "b.txt", code: "E_STALE", message: "anchor is gone" };
+	const row = { kind: "+" as const, lineNumber: 1, hash: "a1", text: "new" };
+	const editBlock = (meta: unknown) =>
+		settled({ call: { name: "edit", argsRaw: "{}" }, content: [{ type: "text", text: "ok" }], meta }) as Extract<
+			ToolCallBlock,
+			{ kind: "tool-result" }
+		>;
+
+	it("keeps well-formed entries and drops only the malformed halves", () => {
+		expect(metaFileFailures({ failures: [failure] })).toEqual([failure]);
+		expect(
+			metaFileFailures({
+				failures: [
+					failure,
+					{ path: "c.txt" }, // no message
+					{ path: 7, message: "x" }, // no path
+					{ path: "d.txt", message: "x", code: 3 }, // a code that is not a string
+				],
+			}),
+		).toEqual([failure, { path: "d.txt", message: "x" }]);
+		expect(metaFileFailures({ diffs: [] })).toEqual([]);
+		expect(metaFileFailures(null)).toEqual([]);
+	});
+
+	it("keeps a ZERO-ROW group instead of nulling every tab (trap 2)", () => {
+		// A whole-file no-op still touches a file; refusing its group here used to
+		// null the WHOLE array, which took every tab of the card with it.
+		const groups = metaDiffRowGroups({
+			diffRowGroups: [
+				{ path: "a.txt", rows: [] },
+				{ path: "b.txt", rows: [row] },
+			],
+		});
+		expect(groups).toHaveLength(2);
+		expect(groups![0]!.rows).toEqual([]);
+		expect(groups![1]!.rows).toEqual([row]);
+		// A genuinely malformed ROW still refuses the array — degradation, not a crash.
+		expect(metaDiffRowGroups({ diffRowGroups: [{ path: "a.txt", rows: [{ kind: "x" }] }] })).toBeNull();
+	});
+
+	it("carries the failure list next to the success side", () => {
+		const card = diffCardModel(
+			editBlock({
+				diffs: [{ path: "a.txt", oldText: "old", newText: "new" }],
+				diffRowGroups: [{ path: "a.txt", rows: [row] }],
+				failures: [failure],
+			}),
+		);
+		expect(card?.failures).toEqual([failure]);
+		expect(card?.rowGroups).toHaveLength(1);
+		expect(card?.diffs).toHaveLength(1);
+	});
+
+	it("keeps the card when the ONLY success was a whole-file no-op (trap 1)", () => {
+		const card = diffCardModel(
+			editBlock({ diffs: [], diffRowGroups: [{ path: "a.txt", rows: [] }], failures: [failure] }),
+		);
+		expect(card).not.toBeNull();
+		expect(card?.diffs).toEqual([]);
+		expect(card?.rowGroups).toHaveLength(1);
+		expect(card?.failures).toEqual([failure]);
+	});
+
+	it("stays a SUCCESS for the row — the state rule reads `isError || hasMetaError`", () => {
+		const block = editBlock({
+			diffs: [{ path: "a.txt", oldText: "old", newText: "new" }],
+			failures: [failure],
+		});
+		expect(block.isError ?? false).toBe(false);
+		expect(hasMetaError(block.meta)).toBe(false);
+	});
+
+	it("omits the channel entirely when every file succeeded", () => {
+		const card = diffCardModel(
+			editBlock({ diffs: [{ path: "a.txt", oldText: "old", newText: "new" }] }),
+		);
+		expect(card?.failures).toBeUndefined();
+		expect("failures" in (card ?? {})).toBe(false);
 	});
 });

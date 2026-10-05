@@ -237,6 +237,19 @@ export interface ErrorCardModel {
 	hint?: string;
 }
 
+/**
+ * One failed file of a partially failed multi-file `edit` call (#247, the host's
+ * `FileFailureMeta`): the persisted error shape with its `path` guaranteed and
+ * its `code` optional, so the SAME `ErrorCard` renders it.
+ */
+export interface FileFailureMeta {
+	path: string;
+	code?: string | undefined;
+	message: string;
+	context?: string | undefined;
+	hint?: string | undefined;
+}
+
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
 	variant: "read" | "edit" | "write" | "grep";
