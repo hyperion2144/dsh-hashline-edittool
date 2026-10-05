@@ -34,6 +34,7 @@ import {
 	canon,
 	contentChecksum,
 } from "../hashline/hash-assign.js";
+import { lineNumbersEnabled } from "../infra/settings.js";
 // A row the echo will serve. Type-only: the row SHAPE belongs to the resolve
 // engine, and importing it from the `hashline/served` shim (which re-exports
 // that engine) is what made this module part of the barrel cycle.
@@ -80,7 +81,7 @@ export function stripBOM(content: string): { bom: string; text: string } {
  * @param lineNumber - the 1-based line, when the caller wants the hint carried.
  * @param lineNumbers - false drops the `:line` part, matching text rows.
  */
-export function formatRowMarker(anchor: string, lineNumber: number, lineNumbers = true): string {
+export function formatRowMarker(anchor: string, lineNumber: number, lineNumbers = lineNumbersEnabled()): string {
 	return lineNumbers ? `${anchor}:${lineNumber}` : anchor;
 }
 
@@ -112,7 +113,7 @@ export function genDiff(
 	contextLines = contextLinesCfg(),
 	newContentHashes?: string[],
 	oldContentHashes?: string[],
-	lineNumbers = true,
+	lineNumbers = lineNumbersEnabled(),
 	partsFor?: (oldText: string, newText: string) => LineDiffPart[],
 	/**
 	 * The original-file ranges this render's hunks covered, ascending. Their lines are

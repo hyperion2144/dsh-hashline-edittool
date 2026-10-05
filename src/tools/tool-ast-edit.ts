@@ -437,7 +437,7 @@ async function runAstEdit(
 	// success line) and the JSON mode is the pure edit envelope. Returning
 	// the rewritten body instead told the model nothing about the change and
 	// made it re-read what it had just written.
-	const canonical = buildCanonicalFromFileResult(result, args.path, true);
+	const canonical = buildCanonicalFromFileResult(result, args.path);
 	const modelText0 = isJsonOutput()
 		? JSON.stringify({
 				...buildEditJson(result, args.path),

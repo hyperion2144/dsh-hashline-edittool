@@ -100,6 +100,7 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			outputFormat: "text",
 			contextLines: 3,
 			requireLineContent: false,
+			lineNumbers: false,
 			astEnabled: false,
 			astLanguages: new Set<string>(),
 			lspServers: new Map<string, string>(),

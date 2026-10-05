@@ -3,6 +3,7 @@
 **Status**：定案（2026-08-31）。来源：wayfinder map 讨论定案（#57 哈希与分配算法实测、#58 变长锚点分配机制定案、#59 锚点格式与契约定案）与 spec issue（#63）。
 **Supersedes**：[`docs/dynamic-hashline.md`](./dynamic-hashline.md)（v1.0 设计稿）。v1.0 保留为历史稿，其中与本文冲突之处以本文为准。
 **适用场景**：AI Agent 文件行级读写/编辑工具（HashLine）。
+**Errata（#244，2026-10-05）**：本文 §3 与 §6 把行号写成「可选**输出参数**（per-call boolean，默认 false）」。它现在是**用户在设置卡片里的开关**（**行号 / Show line numbers**，默认关）；`read` / `edit` / `grep` / `undo_last_edit` 的 `line_numbers` 参数已删除，仍带该字段的调用一律 `[E_BAD_SHAPE]` 拒绝，提示指向设置位置。渲染语义不变（`<anchor>:<line>` 与裸锚点两态、行号只作位置提示），改变的是**由谁决定**：行号决定的是「读者被告知多少文件结构」，所以旋钮归读者。本文保留为历史稿、不逐处改写；现行契约见 `src/contract/contract.ts` 与 README。
 
 ---
 

@@ -19,7 +19,10 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/fixtures.js";
+import { getWritableTempRoot, setupIntegrationTest, getText, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import { anchorsFor } from "../../src/domain/session/anchor-state.js";
 import { serveLines } from "../support/anchor-serve.js";
 import { withWorkspace, openWorkspaceStore } from "../../src/domain/session/session-view.js";

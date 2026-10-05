@@ -30,7 +30,10 @@ import { localIO } from "../../src/infra/fs-bridge.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
-import { withTempDir } from "../support/fixtures.js";
+import { useNumberedRows, withTempDir } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 // `join`, NOT template interpolation: on Windows `dir` carries backslashes, so
 // `${dir}/f.ts` is a MIXED-separator string that no longer equals the path the
 // tool resolved with `path.resolve` — and the anchor rows are keyed by that

@@ -6,6 +6,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Changed
 
+- **⚠️ BREAKING：`line_numbers` 从工具参数变成用户设置（#244）**：`read` / `edit` / `grep` / `undo_last_edit` 不再接受该参数 —— 现在是设置卡片里的一个开关（**行号 / Show line numbers**，**默认关闭**），决定模型侧每一行是 `<anchor>:<line>` 还是裸 `<anchor>`。行号不该由被观察的一方决定自己看到多少文件结构，这个旋钮属于读者。**默认值同时从「开」翻成「关」**，所以仍带该字段的调用一律 `[E_BAD_SHAPE]` 硬拒绝（静默忽略等于用旧语义回答新问题），提示直接指向设置位置。开关只作用于**模型侧行渲染**：text 行与 JSON 的 `{"<marker>": content}` 键同源，read 的表头图例与 `ANCHOR:LINE|CONTENT` 形态一并跟随；web 卡片读结构化 `presentationMeta`（整数 `lineNumber`），因而不受开关影响。覆盖 read / grep / edit 文本 diff / undo / ast_grep / write 的自动预览 / lsp —— 全部经同一个标记落点 `fmtMarker`。新增 `test/core/line-numbers-switch.test.ts`（8 例）钉住开关两态与四工具的拒绝路径。
 - **ADR-0013**: refusals by size are retired — all tools stream oversized results in segments (per-response char budget, default 48,000) with resume tokens instead of refusing. `GREP_MAX_TOTAL_BYTES` and the 100 MiB read gate are gone. `grep` never returns "No matches" for a file it hasn't searched.
 - **grep default context** is now `context_lines` (3) instead of 0 — text and JSON contracts are aligned.
 - **锚点事实回归唯一持久化真相源（契约 §3/§8）**：`hashline/session-anchors.ts` 里那个 `Map<string, SparseState>` + LRU **整体删除**（连同 `ANCHOR_CACHE_LIMIT`、`dropAllAnchorState`、`applyEditToState`）。它让纯域层持有 store 作用域的可变状态，并把两个**只应由库回答**的问题从内存回答：「该文件已分配了哪些锚点」（§2.1 第3条）与「这个锚点还活着吗」（§2.2 条件1）。现在 `ensureState` 每次都读 `anchor_lines`，`anchorsFor` 是**纯读**（不再 realign、不再写库）。

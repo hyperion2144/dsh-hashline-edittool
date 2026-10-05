@@ -18,7 +18,10 @@ import { describe, expect, it } from "vitest";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setRebuildWarning } from "../../src/domain/session/hash-store.js";
-import { setupIntegrationTest, getText, withTempDir } from "../support/fixtures.js";
+import { setupIntegrationTest, getText, withTempDir, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 const NOTICE = "[hash-store] rebuild: every anchor for this workspace is invalidated — re-read files before editing.";
 

@@ -28,6 +28,7 @@ import { anchorsFor } from "./anchor-state.js";
 import { anchorForInWorkspace, workspaceCwd } from "./session-view.js";
 import { fmtMarker, hashlineHeader, canon, contentChecksum } from "../../hashline/hash-assign.js";
 import { visLines, abortIf, errCode } from "../../infra/utils.js";
+import { lineNumbersEnabled } from "../../infra/settings.js";
 import { detectEnding, toLF, stripBOM, type LineEnding } from "../../render/edit-diff.js";
 import { resolveTarget, toCwd } from "../../infra/paths.js";
 import type { FileIO } from "../../infra/fs-bridge.js";
@@ -471,7 +472,7 @@ export async function fmtReadPreview(
 		limit?: number;
 		/** ADR-0013: char budget for the returned window (whole-line assembly). */
 		maxChars?: number;
-		/** v2.0: prefix every row marker with `<line>:<anchor>`. */
+		/** The user's line-number switch (#244): a row marker becomes `<anchor>:<line>` when on. */
 		lineNumbers?: boolean;
 		/**
 		 * The session this read serves (#223). The renderer mints its own window,
@@ -597,7 +598,7 @@ export async function fmtReadPreview(
 		}
 	}
   const selectedHashes = allHashes.slice(startLine - 1, endIdx);
-		const formatted = `${hashlineHeader(options.lineNumbers !== false)}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: options.lineNumbers !== false })}`;
+		const formatted = `${hashlineHeader(options.lineNumbers ?? lineNumbersEnabled())}\n${fmtRegion(selectedHashes, selected, startLine, { lineNumbers: (options.lineNumbers ?? lineNumbersEnabled()) })}`;
   const maxBytes = maxLineBytes;
   const rowSizes = selected.map((line, index) => ({
     lineNumber: startLine + index,
@@ -615,7 +616,7 @@ export async function fmtReadPreview(
     const rows = rowSizes.map((row, index) =>
       row.bytes > maxBytes
         ? `[Line ${row.lineNumber} is ${formatSize(row.bytes)}, exceeds ${formatSize(maxBytes)}; content not shown. Use bash: sed -n '${row.lineNumber}p' <path> | head -c ${maxBytes}]`
-        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber, { lineNumbers: options.lineNumbers !== false }),
+        : fmtRegion([selectedHashes[index]!], [selected[index]!], row.lineNumber, { lineNumbers: (options.lineNumbers ?? lineNumbersEnabled()) }),
     );
     const skippedTruncation = truncateHead(rows.join('\n'), {
       maxBytes,
@@ -641,9 +642,9 @@ export async function fmtReadPreview(
       (skippedTruncation.truncated || lastShownLine < totalLines)
     ) {
       nextOffset = lastShownLine + 1;
-	      preview = `${hashlineHeader(options.lineNumbers !== false)}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
+	      preview = `${hashlineHeader(options.lineNumbers ?? lineNumbersEnabled())}\n${preview}\n\n${warning}\n${formatPaginationHint(startLine, lastShownLine, totalLines, nextOffset, skippedTruncation.truncated ? skippedTruncation.maxBytes : undefined)}`;
     } else {
-	      preview = `${hashlineHeader(options.lineNumbers !== false)}\n${preview}\n\n${warning}`;
+	      preview = `${hashlineHeader(options.lineNumbers ?? lineNumbersEnabled())}\n${preview}\n\n${warning}`;
 }
     const served: ServedRow[] = [];
     for (let index = 0; index < shownRowCount; index++) {
@@ -728,7 +729,7 @@ export interface FileView {
 }
 
 export interface PreviewOpts {
-	/** v2.0: prefix every read/diff row marker with `<line>:<anchor>`. */
+	/** The user's line-number switch (#244): a read/diff marker becomes `<anchor>:<line>` when on. */
 	/** ADR-0013: per-response char budget for the returned window. */
 	maxChars?: number;
 	lineNumbers?: boolean;
@@ -784,7 +785,7 @@ export async function readView(
     });
 	const r = await fmtReadPreview(
 		normalized,
-			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers !== false, maxChars: opts.maxChars, sessionKey: opts.sessionKey, cwd }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget; #223: sessionKey is what lets the renderer mint through the one entry point
+			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers ?? lineNumbersEnabled(), maxChars: opts.maxChars, sessionKey: opts.sessionKey, cwd }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget; #223: sessionKey is what lets the renderer mint through the one entry point
 			undefined, // LAZY (#169): the renderer fetches the view and allocates the window itself; a provided precomputed array means REAL hashes (write shadow) and is never re-allocated
 		absolutePath,
 	);

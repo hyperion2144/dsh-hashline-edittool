@@ -10,6 +10,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { applyEffective } from "../../src/config.js";
+import { NUMBERED } from "../support/fixtures.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildLspTool } from "../../src/tools/tool-lsp.js";
@@ -147,10 +148,10 @@ describe("lsp — symbols", () => {
 		});
 		// Text mode lists the anchored rows; JSON mode keys them by the SAME
 		// marker, so a symbol line is editable straight from either answer.
-		applyEffective({ output_format: "text" });
+		applyEffective({ ...NUMBERED, output_format: "text" });
 		const text = await run({ operation: "symbols" });
 		expect(String(text.modelText)).toMatch(/[A-Za-z0-9]{2,8}:1: export function alpha/);
-		applyEffective({ output_format: "json" });
+		applyEffective({ ...NUMBERED, output_format: "json" });
 		const json = await run({ operation: "symbols" });
 		const parsed = JSON.parse(String(json.modelText)) as { hashlines: Record<string, string> };
 		const keys = Object.keys(parsed.hashlines);
@@ -161,7 +162,7 @@ describe("lsp — symbols", () => {
 		// session even though every body-level assertion passes.
 		const tool = buildLspTool(io);
 		for (const mode of ["text", "json"] as const) {
-			applyEffective({ output_format: mode });
+			applyEffective({ ...NUMBERED, output_format: mode });
 			const value = await tool.execute({ operation: "symbols", path: FILE }, exec);
 			expect(schemaViolations(outputSchemaOf(tool), value), mode).toEqual([]);
 		}
@@ -178,7 +179,7 @@ describe("lsp — symbols", () => {
 				"textDocument/documentSymbol": [{ name: "alpha", kind: 12, location: { range: { start: { line: 0 } } } }],
 			},
 		});
-		applyEffective({ output_format: "text", separator: "|" });
+		applyEffective({ ...NUMBERED, output_format: "text", separator: "|" });
 		const text = String((await run({ operation: "symbols" })).modelText);
 		expect(text).toMatch(/[A-Za-z0-9]{2,8}:1\| export function alpha/);
 		expect(text).not.toMatch(/[A-Za-z0-9]{2,8}:1: /);

@@ -7,7 +7,10 @@ import {
 	driftReported,
 	sessionKeyFor,
 } from "../../src/domain/session/session-view.js";
-import { withTempFile } from "../support/fixtures.js";
+import { useNumberedRows, withTempFile } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import { withWorkspace } from "../../src/infra/workspace.js";
 
 beforeAll(async () => {

@@ -19,6 +19,7 @@ import { buildAstEditTool } from "../../src/tools/tool-ast-edit.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { applyEffective } from "../../src/config.js";
+import { NUMBERED } from "../support/fixtures.js";
 
 function inProcessWorker(): WorkerLike {
 	let respond: ((response: AstWorkerResponse) => void) | undefined;
@@ -56,7 +57,7 @@ beforeEach(async () => {
 	// AST is OFF by default, and these tools now honour the switch — so the tests
 	// that exercise them have to turn it on. That is the gate working, and the
 	// refusal it produces has its own test below.
-	applyEffective({ ast: { enabled: true } });
+	applyEffective({ ...NUMBERED, ast: { enabled: true } });
 	dir = await mkdtemp(join(tmpdir(), "tool-ast-"));
 	file = join(dir, "a.ts");
 	await writeFile(file, SOURCE, "utf-8");
@@ -92,7 +93,7 @@ describe("ast_grep", () => {
 		const tool = buildAstGrepTool(localIO());
 		for (const args of [{ pat: "export function $N() { $$$B }" }, {}]) {
 			for (const mode of ["text", "json"] as const) {
-				applyEffective({ ast: { enabled: true }, output_format: mode });
+				applyEffective({ ...NUMBERED, ast: { enabled: true }, output_format: mode });
 				const value = await tool.execute({ path: file, ...args }, exec(dir)(args));
 				expect(
 					schemaViolations(outputSchemaOf(tool), value),
@@ -104,12 +105,12 @@ describe("ast_grep", () => {
 
 	it("carries BOTH output modes, both keyed `<anchor>:<line>`", async () => {
 		// Text mode: rendered rows the caller can act on directly.
-		applyEffective({ ast: { enabled: true }, output_format: "text" });
+		applyEffective({ ...NUMBERED, ast: { enabled: true }, output_format: "text" });
 		const text = await run({ pat: "export function $N() { $$$B }" });
 		expect(text.modelText).toMatch(/\s[A-Za-z0-9]{2,8}:\d+: export function alpha\(\) \{/);
 		// JSON mode: the same rows, keyed by that same marker — one projection,
 		// two channels, so a key pasted back into `edit` names the same line.
-		applyEffective({ ast: { enabled: true }, output_format: "json" });
+		applyEffective({ ...NUMBERED, ast: { enabled: true }, output_format: "json" });
 		const json = await run({ pat: "export function $N() { $$$B }" });
 		const parsed = JSON.parse(json.modelText!) as {
 			total: number;
@@ -159,13 +160,13 @@ describe("ast_grep", () => {
 		expect(single.modelText).not.toContain("covering");
 
 		// JSON mode names BOTH counts, so the confusion cannot survive there either.
-		applyEffective({ ast: { enabled: true }, output_format: "json" });
+		applyEffective({ ...NUMBERED, ast: { enabled: true }, output_format: "json" });
 		const json = JSON.parse(String((await run({ pat: "export function $N() { $$$B }" })).modelText)) as {
 			matchCount: number;
 			total: number;
 		};
 		expect(json).toMatchObject({ matchCount: 2, total: 12 });
-		applyEffective({ ast: { enabled: true } });
+		applyEffective({ ...NUMBERED, ast: { enabled: true } });
 	});
 
 	it("finds imports by SHAPE, with no kind table involved", async () => {
@@ -227,7 +228,7 @@ describe("ast_edit", () => {
 		// legend, the `-`/`+` rows with their fresh anchors, the success line.
 		// Returning the rewritten body instead told the model nothing about the
 		// change and made it re-read what it had just written.
-		applyEffective({ ast: { enabled: true }, output_format: "text" });
+		applyEffective({ ...NUMBERED, ast: { enabled: true }, output_format: "text" });
 		const value = await run({ pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" });
 		const text = String((value as unknown as { modelText: string }).modelText);
 		expect(text).toContain("Diff rows:");
@@ -239,7 +240,7 @@ describe("ast_edit", () => {
 		// The file is reset first: the run above already applied the change, and
 		// a second identical edit would be a noop with an empty diff.
 		await writeFile(file, SOURCE, "utf-8");
-		applyEffective({ ast: { enabled: true }, output_format: "json" });
+		applyEffective({ ...NUMBERED, ast: { enabled: true }, output_format: "json" });
 		const json = await run({ pat: "const $NAME = f($$$ARGS);", out: "const $NAME = g($$$ARGS);" });
 		const parsed = JSON.parse(String((json as unknown as { modelText: string }).modelText)) as {
 			ok: boolean;

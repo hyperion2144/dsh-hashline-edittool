@@ -33,6 +33,7 @@ import {
 	lastNonEmptyIndex,
 	clipLine,
 } from "../infra/utils.js";
+import { lineNumbersEnabled } from "../infra/settings.js";
 import {
 	canon,
 	contentChecksum,
@@ -296,9 +297,9 @@ function fmtMismatchWithServes(
 	opts?: { lineNumbers?: boolean },
 ): { message: string; servedRows: ServedRow[] } {
 	assertAligned(fileLines, fileAnchors, "fmtMismatch");
-	// Echo rows carry `<line>:<anchor>` markers unless the caller turned line
-	// numbers off — the same switch `read` and `grep` honour.
-	const lineNumbers = opts?.lineNumbers !== false;
+	// Echo rows carry `<anchor>:<line>` markers while the line-number setting is
+	// on — the same switch `read` and `grep` honour.
+	const lineNumbers = opts?.lineNumbers ?? lineNumbersEnabled();
 
 	const out: string[] = [];
 	const servedRows: ServedRow[] = [];
@@ -1811,7 +1812,7 @@ export function fmtRegion(
 			`fmtRegion: startLine (${startLine}) must be a positive integer.`,
 		);
 	}
-	const lineNumbers = opts?.lineNumbers !== false;
+	const lineNumbers = opts?.lineNumbers ?? lineNumbersEnabled();
 	const markers = lines.map((_, index) =>
 		// The line-number half is FIXED positional syntax, `<anchor>:<line>` —
 		// the configurable separator only separates the marker from the content

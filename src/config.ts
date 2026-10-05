@@ -51,6 +51,14 @@ export interface HashlineSettings {
 	context_lines?: number;
 	/** When true, edit anchors are `{ anchor, line }` declaration pairs (default false). */
 	require_line_content?: boolean;
+	/**
+	 * Whether model-facing rows carry the file line number (`<anchor>:<line>`).
+	 *
+	 * The USER'S switch (#244) — deliberately NOT a tool parameter: the agent
+	 * cannot ask for its own line numbers. Default false; the card renders it
+	 * as 显示行号 in the 输出 group of the plugin page.
+	 */
+	line_numbers?: boolean;
 	/** Per-response char budget (ADR-0013, #205): default 48,000, clamped in resolve. */
 	max_response_chars?: number;
 	/**
@@ -123,6 +131,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		output_format: z.union(["text", "json"]).volatile(),
 		context_lines: z.number().min(0).max(20).volatile(),
 		require_line_content: z.boolean().volatile(),
+		line_numbers: z.boolean().volatile(),
 		grep_respect_gitignore: z.boolean().volatile(),
 		max_response_chars: z.number().volatile(),
 		// The volatile mark sits on the OUTERMOST node of each live-editable
@@ -300,6 +309,7 @@ export {
 	lspConfiguredServers,
 	isAutoDiagnosticsEnabled,
 	isJsonOutput,
+	lineNumbersEnabled,
 } from "./infra/settings.js";
 export type { EffectiveHashlineConfig, OutputFormat } from "./infra/settings.js";
 import {
@@ -389,6 +399,8 @@ const sep =
 		typeof settings?.require_line_content === "boolean"
 			? settings.require_line_content
 			: defaults.requireLineContent;
+	const lineNumbers =
+		typeof settings?.line_numbers === "boolean" ? settings.line_numbers : defaults.lineNumbers;
 	const grepRespectGitignore =
 		typeof settings?.grep_respect_gitignore === "boolean"
 			? settings.grep_respect_gitignore
@@ -426,6 +438,7 @@ const sep =
 		outputFormat: fmt,
 		contextLines: nctx,
 		requireLineContent: requireLine,
+		lineNumbers,
 		maxResponseChars:
 			typeof settings?.max_response_chars === "number" && Number.isInteger(settings.max_response_chars)
 				? settings.max_response_chars
@@ -588,6 +601,10 @@ export function parseSettingsYaml(text: string): HashlineSettings {
 		else if (key === "require_line_content") {
 			if (value === "true") out.require_line_content = true;
 			else if (value === "false") out.require_line_content = false;
+		}
+		else if (key === "line_numbers") {
+			if (value === "true") out.line_numbers = true;
+			else if (value === "false") out.line_numbers = false;
 		}
 		else if (key === "grep_respect_gitignore") {
 			if (value === "true") out.grep_respect_gitignore = true;

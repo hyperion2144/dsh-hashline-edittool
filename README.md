@@ -91,9 +91,10 @@ semantic results are directly editable.
 **Diagnostics on write.** After an edit/write lands, the plugin baselines the language server with the pre-write text, pulls diagnostics, and delivers them per written file — an inline, severity-tinted capsule under the card within a short window, with bounded async delivery at the model's next natural step, riding both the JSON envelope and the text channel. One switch (`lsp.auto_diagnostics`) turns it off.
 
 **A settings panel rendered by the plugin itself.** The bundled `HashlineSettingsCard` is
-a full settings UI in the web: separator, output format, context lines,
-require_line_content, the AST master switch plus per-language toggles, named LSP servers,
-auto-diagnostics. Edit, commit, done — no YAML editing required.
+a full settings UI in the web: separator, output format, context lines, line numbers
+(the model-facing marker shape — the user's call, not the agent's), require_line_content,
+the AST master switch plus per-language toggles, named LSP servers, auto-diagnostics.
+Edit, commit, done — no YAML editing required.
 
 **Hot switching, everywhere.** A committed settings change takes effect on the **next
 tool call** — output format, separator, context lines, AST/LSP toggles (verified live:
@@ -229,7 +230,7 @@ search what the plugin's own walk sees (the whole tree minus hidden entries and
 
 | Tool | What it does |
 | --- | --- |
-| `read` | File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers (set `line_numbers: false` for bare anchors). `offset` (1-based) / `limit` paging; oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. |
+| `read` | File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers, or the bare `<anchor>` — that shape is the user's `line_numbers` setting (off by default), no longer a tool parameter, and a call still carrying it is `[E_BAD_SHAPE]`. `offset` (1-based) / `limit` paging; oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. |
 | `edit` | One or more range edits via `{ path?, edits: [{ op, … }, …] }` — the full contract is [above](#the-anchor-contract). Replaces the legacy `batch_edit`. |
 | `write` | Fully shadowed: creates/overwrites a file and returns the write **plus an auto-read preview** with fresh anchors, so the next edit never needs a separate read. |
 | `grep` | JavaScript-flavre regex search (or `regex: false` for literal) across a path tree, one section per file under the same header, full lines only. The tree comes from ripgrep, so `.gitignore`d paths are skipped by default (see `grep_respect_gitignore`). `-C N` echoes context rows; hits are served → directly editable. |
@@ -266,6 +267,7 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
     context_lines: 3         # context rows around stale echoes / diffs (0..20)
     max_response_chars: 48000 # per-response char budget (default 48000, clamp [8000, 49984])
     require_line_content: false
+    line_numbers: false     # model-facing rows: `<anchor>:<line>` (true) or the bare anchor (false)
     ast:
       enabled: true
       languages: {}          # per-language { <id>: { enabled: false } } narrowing

@@ -15,7 +15,10 @@
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getWritableTempRoot, setupIntegrationTest, getText, makeExec } from "../support/fixtures.js";
+import { getWritableTempRoot, setupIntegrationTest, getText, makeExec, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildGrepTool } from "../../src/tools/tool-grep.js";

@@ -33,7 +33,10 @@ import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
-import { withTempDir } from "../support/fixtures.js";
+import { useNumberedRows, withTempDir } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { LspSession } from "../../src/lsp/session.js";
 

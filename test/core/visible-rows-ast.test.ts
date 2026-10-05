@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { getWritableTempRoot, makeExec } from "../support/fixtures.js";
+import { getWritableTempRoot, makeExec, NUMBERED } from "../support/fixtures.js";
 import { loadHashStore } from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
 import { buildAstGrepTool } from "../../src/tools/tool-ast-grep.js";
@@ -44,7 +44,7 @@ beforeAll(async () => {
 	vi.stubEnv("HOME", tmpHome);
 	vi.stubEnv("USERPROFILE", tmpHome);
 	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
-	applyEffective({ ast: { enabled: true } });
+	applyEffective({ ...NUMBERED, ast: { enabled: true } });
 	const { AstClient } = (await import("../../src/ast/client.js")) as unknown as {
 		AstClient: new (opts: { spawn: () => WorkerLike; idleMs: number }) => Parameters<typeof setAstClient>[0];
 	};

@@ -5,7 +5,12 @@ import {
 	withTempFile,
 	setupIntegrationTest,
 	getText,
+	NUMBERED,
+	useNumberedRows,
 } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 const BLOCK10 = Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join("\n");
 
@@ -193,7 +198,7 @@ describe("exact line-count edit contract", () => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
 			const by = (c: string) => served.find((r) => r.content === c)!;
-			applyEffective({ output_format: "json" });
+			applyEffective({ ...NUMBERED, output_format: "json" });
 			const res = await editTool(harness).execute("edit", {
 				path: "t.txt",
 				edits: [

@@ -24,7 +24,7 @@ import type { FileIO } from "../infra/fs-bridge.js";
 import { anchorWidth, fmtHashlineRow, fmtMarker, hashlineHeader, lineHashesPure } from "../hashline/hash-assign.js";
 // tools emit the SAME `files` shape precisely so one cap governs both.
 import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
-import { getEffectiveConfig, isJsonOutput } from "../config.js";
+import { getEffectiveConfig, isJsonOutput, lineNumbersEnabled } from "../config.js";
 import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import { observeServedRows, anchorForInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
@@ -551,7 +551,7 @@ export function buildAstGrepTool(io: FileIO) {
 					const anchor = anchors[line - 1] ?? "";
 					const text = lines[line - 1] ?? "";
 					body.push(fmtHashlineRow(fmtMarker(anchor, line), text, width));
-					if (anchor !== "") dict[`${anchor}:${line}`] = text;
+					if (anchor !== "") dict[lineNumbersEnabled() ? `${anchor}:${line}` : anchor] = text;
 				}
 				dicts.push(dict);
 				return {

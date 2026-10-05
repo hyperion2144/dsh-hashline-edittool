@@ -17,7 +17,10 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
+import { withTempFile, setupIntegrationTest, getText, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 beforeAll(async () => {
 });

@@ -27,6 +27,17 @@ export interface EffectiveHashlineConfig {
 	contextLines: number;
 	/** Declared line-content mode: edit anchors are `{ anchor, line }` pairs. */
 	requireLineContent: boolean;
+	/**
+	 * Whether model-facing rows carry the file line number (`<anchor>:<line>`).
+	 *
+	 * The USER'S switch (issue #244): it lives in the plugin's settings card, not
+	 * in a tool parameter, so the agent can never turn its own line numbers on.
+	 * It governs every row the model reads — read / grep / edit /
+	 * undo_last_edit, plus the write preview, `ast_grep` and `lsp`. Default
+	 * OFF: the anchor alone is the address, and the line number is a hint the
+	 * user asks for when they want to see it.
+	 */
+	lineNumbers: boolean;
 	/** Per-response char budget (ADR-0013): see `RESPONSE_BUDGET_*`. */
 	maxResponseChars: number;
 	/**
@@ -60,6 +71,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	outputFormat: "text",
 	contextLines: 3,
 	requireLineContent: false,
+	lineNumbers: false,
 	astEnabled: false,
 	astLanguages: new Set<string>(),
 	lspServers: new Map<string, string>(),
@@ -147,6 +159,18 @@ export function responseBudget(): number {
 		return clamped;
 	}
 	return v;
+}
+
+/**
+ * Whether row markers carry the file line number (the user's `line_numbers`
+ * setting; default OFF).
+ *
+ * The single entry every renderer reads. The tool parameter that used to
+ * steer this was removed in #244 — a call still carrying `line_numbers` is
+ * rejected as an unknown field, with a hint pointing at the setting.
+ */
+export function lineNumbersEnabled(): boolean {
+	return effective.lineNumbers;
 }
 export function isJsonOutput(): boolean {
 	return effective.outputFormat === "json";

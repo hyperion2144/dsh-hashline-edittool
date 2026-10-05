@@ -27,6 +27,7 @@
  */
 import { splitLines } from "../infra/utils.js";
 import { assignAnchors } from "./alloc.js";
+import { lineNumbersEnabled } from "../infra/settings.js";
 
 // --- alphabet ---
 export const ALPH =
@@ -180,7 +181,7 @@ export function rowMarkerParts(match: RegExpMatchArray | RegExpExecArray): {
 	const line = match[3] ?? match[4];
 	return line === undefined ? { diff, anchor } : { diff, anchor, line };
 }
-export function hashlineHeader(lineNumbers = true): string {
+export function hashlineHeader(lineNumbers = lineNumbersEnabled()): string {
 	return getCompiled().headerFor(lineNumbers);
 }
 
@@ -274,7 +275,7 @@ export function lineHashesPure(content: string): string[] {
 export function fmtMarker(
 	anchor: string,
 	line: number | undefined,
-	lineNumbers = true,
+	lineNumbers = lineNumbersEnabled(),
 ): string {
 	return lineNumbers && line !== undefined ? `${anchor}:${line}` : anchor;
 }

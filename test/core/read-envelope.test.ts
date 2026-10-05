@@ -14,7 +14,10 @@ import { describe, expect, it, afterEach } from "vitest";
 import { applyEffective } from "../../src/config.js";
 import { DSH_READ_ENVELOPE_RE, extractReadBody } from "../../src/render/read-card.js";
 import { hashlineHeader } from "../../src/hashline/hash-assign.js";
-import { withTempFile, makeExec } from "../support/fixtures.js";
+import { withTempFile, makeExec, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import { localIO } from "../../src/infra/fs-bridge.js";
 
 afterEach(() => {

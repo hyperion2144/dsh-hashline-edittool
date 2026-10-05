@@ -124,8 +124,6 @@ export interface EditParams {
 	 */
 	path?: string;
 	edits: EditItemParams[];
-	/** Optional: render diff rows with `<line>:<anchor>` markers (default false). */
-	line_numbers?: boolean;
 }
 
 export interface ReadParams {
@@ -134,8 +132,6 @@ export interface ReadParams {
 	limit?: number;
 	/** ADR-0013: continuation token from a previous truncated call. */
 	resume?: string;
-	/** Optional: render rows with `<line>:<anchor>` markers (default false). */
-	line_numbers?: boolean;
 	// No `symbol` / `kind` / `anchor` / `references` / `include`.
 	//
 	// They were the AST fold: selectors that made a LINE reader need a grammar
@@ -147,8 +143,6 @@ export interface ReadParams {
 
 export interface UndoParams {
 	path: string;
-	/** Optional: render restored diff rows with `<line>:<anchor>` markers (default false). */
-	line_numbers?: boolean;
 }
 
 // ---- field sets (derived — the schema is the single authority) --------------
@@ -163,7 +157,6 @@ export interface UndoParams {
 const EDIT_KS = new Set([
 	"path",
 	"edits",
-	"line_numbers",
 	"sandbox_permissions",
 	"justification",
 ]);
@@ -186,7 +179,6 @@ const READ_KS = new Set([
 	"path",
 	"offset",
 	"limit",
-	"line_numbers",
 	"resume",
 ]);
 
@@ -430,7 +422,7 @@ export function assertEditRequest(
 		throw new Error("[E_BAD_SHAPE] Edit request must be an object.");
 	}
 
-	rejectUnknownFields(request, EDIT_KS, "Edit request");
+	rejectUnknownFields(request, EDIT_KS, "Edit request", LINE_NUMBERS_HINT);
 
 	const topLevelPath = request.path;
 	const hasTopLevelPath = typeof topLevelPath === "string" && topLevelPath.length > 0;
@@ -459,7 +451,7 @@ export function assertReadRequest(
 	if (!isRec(request)) {
 		throw new Error("[E_BAD_SHAPE] Read request must be an object.");
 	}
-	rejectUnknownFields(request, READ_KS, "Read request");
+	rejectUnknownFields(request, READ_KS, "Read request", LINE_NUMBERS_HINT);
 	if (typeof request.path !== "string" || request.path.length === 0) {
 		throw new Error(
 			'[E_BAD_SHAPE] Read request requires a non-empty "path" string.',
@@ -481,12 +473,39 @@ export function assertUndoRequest(
 	if (!isRec(request)) {
 		throw new Error("[E_BAD_SHAPE] undo_last_edit request must be an object.");
 	}
+	assertNoRetiredLineNumbers(request, "undo_last_edit request");
 	normalizeFilePath(request);
 	if (typeof request.path !== "string" || request.path.length === 0) {
 		throw new Error(
 			'[E_BAD_SHAPE] undo_last_edit request requires a non-empty "path" string.',
 		);
 	}
+}
+
+/**
+ * `line_numbers` was a per-call parameter until #244 made line numbers a USER
+ * setting (a switch in the plugin's settings card, off by default). Every tool
+ * must FAIL on it rather than ignore it: the default flipped, so a call still
+ * asking for numbering is answered differently than it asked — and who owns the
+ * switch now is the one honest thing left to say.
+ */
+const LINE_NUMBERS_HINT =
+	"`line_numbers` is not a tool parameter anymore: line numbers are the user's setting (\"显示行号 / Show line numbers\" in this plugin's settings, off by default). Re-send the call without it; if the numbering is really needed, ask the user to turn the setting on.";
+
+/**
+ * Retired-field guard for the tools whose requests have no unknown-field
+ * whitelist of their own (`grep`, `undo_last_edit`). `read`/`edit` reject every
+ * unknown field already and hand it the same hint; these two would otherwise
+ * silently ignore the stale parameter and answer a different question.
+ */
+export function assertNoRetiredLineNumbers(
+	request: Record<string, unknown>,
+	label: string,
+): void {
+	if (!("line_numbers" in request)) return;
+	throw new Error(
+		`[E_BAD_SHAPE] ${label} no longer accepts \`line_numbers\`. ${LINE_NUMBERS_HINT}`
+	);
 }
 
 // ---- shared JSON Schema literals (co-located with field sets) ---------------
@@ -651,12 +670,6 @@ export const readFilePathSchema = {
 } as const;
 
 
-/** Optional line-number output toggle shared by read/grep/edit/undo. */
-export const lineNumbersSchema = {
-	type: "boolean",
-	description:
-		"When true, each output row's marker carries its 1-indexed line as `<anchor>:<line>` — the anchor first (the token to copy), its line number trailing as a positional hint. The anchor is authoritative and either half may be sent back. Default true — pass `false` for bare `<anchor>` rows.",
-} as const;
 
 /** @deprecated — kept for backward compat with the pre-0.4 contract. */
 export const replacementTextSchema = {

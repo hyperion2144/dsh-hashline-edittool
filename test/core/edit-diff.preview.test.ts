@@ -33,7 +33,7 @@ describe("genDiff", () => {
 			0,
 			undefined,
 			["H1", "H2", "H3", "H4"],
-			undefined,
+			true,
 		);
 		expect(diff).toMatch(/-H2:\d+:b/);
 		expect(diff).toMatch(/-H3:\d+:c/);
