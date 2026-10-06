@@ -148,11 +148,15 @@ D0:4|export function greet(name: string): string {
 
 ### 批量语义
 
-- `edits[]` **按序作用于同一快照**；范围重叠是 `[E_BATCH_CONFLICT]`；任何失败是
-  `[E_BATCH_ABORT]` —— 什么都不写。
+- `edits[]` **按序作用于同一快照**；范围重叠是 `[E_BATCH_CONFLICT]`；该文件批次内任何失败是
+  `[E_BATCH_ABORT]`，该文件一个字都不写。
 - 使用逐条 `path`（或每条都带 `path`）时，条目按文件分组，每个文件**独立
   all-or-nothing**；结果聚合为 `success[]` / `fail[]`（多文件形态）。
   `item.path === topLevelPath` 自动折叠为缺省。
+- **部分失败现在是可见的**：一个文件成功、另一个失败时，这次调用**不算失败** —— 每个失败文件
+  各自带错误码与补救提示，网页卡片给出 `N of M files failed` 横幅，并为每个失败文件开一个
+  tab（tab 条上标出）。聚合的 `[E_BATCH_ABORT]` 文案、连同它的「什么都没写」，只属于
+  **每个文件都失败**的调用。
 - 每次调用最多 32 条编辑。
 
 ### `op` 语义
@@ -184,7 +188,7 @@ D0:4|export function greet(name: string): string {
 
 | 工具 | 功能 |
 | --- | --- |
-| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset`（1 起）/ `limit` 分页；超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。 |
+| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset` 收 1 起的行号**或锚点**（含该行）；`limit` 收行数**或锚点**（含该行）—— 关掉行号后，锚点是你唯一能看到的游标。text 模式的每个窗口都以一句话收尾：正文被截断时是 `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]`，否则 `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`（纯行号游标则是 `offset=N`），读到底则 `[Lines X-Y of N. End of file.]`。超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。 |
 | `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。 |
 | `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加带新鲜锚点的自动 read 预览**，下一次编辑不再需要单独 read。 |
 | `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。清单由 ripgrep 出，因此 `.gitignore` 的路径默认跳过（见 `grep_respect_gitignore`）。`-C N` 回显上下文行；命中即 served → 可直接编辑。 |
