@@ -2,6 +2,11 @@
 
 > **Status**: Accepted (2026-10-05; decisions #238/#239, spec #245, map #234)
 
+> **Amendment** (2026-10-05, #246): the window sentence is not read's alone.
+> `write`'s auto-read preview is a file window and closes with it too; its JSON
+> mode carries `window` and `continuation` inside the payload rather than
+> appending prose after the JSON.
+
 ## Problem Statement
 
 The `line_numbers` switch (#244) can strip the `:lineNumber` suffix

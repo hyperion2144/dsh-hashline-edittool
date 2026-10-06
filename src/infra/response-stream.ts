@@ -281,6 +281,36 @@ export function stampChanged(
 /** Best-effort stat of a spill dir — used by tests and diagnostics. */
 
 /**
+ * The one sentence that says "there is more" to the model (#246, ADR-0013).
+ *
+ * The spill family's single spelling: {@link spillModelTextOverflow} (the edit,
+ * undo, ast_grep, ast_edit and lsp reports), grep's two spill branches and
+ * read's continued-report footer all call it, so the wording cannot drift
+ * apart. `omittedChars` is included only when the caller already knows the
+ * spilled bytes — it is never invented here.
+ *
+ * `read`'s own budget cut does NOT use this: a file window knows where it
+ * stopped and says so with the window summary in `domain/session/read-window`
+ * (ADR-0014). The write tool's auto-read preview is a file window too, so it
+ * speaks that sentence instead.
+ *
+ * @param opts - the omitted amount, the consumer tool and its resume token.
+ * @returns the parenthesized continuation notice.
+ */
+export function formatOmittedNotice(opts: {
+	omittedLines: number;
+	omittedChars?: number | undefined;
+	consumer: string;
+	token: string;
+}): string {
+	const amount =
+		opts.omittedChars === undefined
+			? `${opts.omittedLines} lines`
+			: `${opts.omittedLines} lines (~${opts.omittedChars} chars)`;
+	return `(Omitted ${amount}. Use ${opts.consumer} {resume: "${opts.token}"} to continue.)`;
+}
+
+/**
  * Split an oversized text model response: the head stays inline, the tail
  * spills to a resume file. Lines are never cut. Returns the model text with
  * the continuation footer appended, plus the continuation field.
@@ -305,7 +335,7 @@ export async function spillModelTextOverflow(opts: {
 	});
 	const omittedChars = overflow.reduce((acc, line) => acc + codeUnits(line), 0);
 	return {
-		modelText: `${included.join("\n")}\n\n(Omitted ${overflow.length} lines (~${omittedChars} chars). Use ${opts.consumer} {resume: "${token}"} to continue.)`,
+		modelText: `${included.join("\n")}\n\n${formatOmittedNotice({ omittedLines: overflow.length, omittedChars, consumer: opts.consumer, token })}`,
 		continuation: { resume: token, remaining: omittedChars },
 	};
 }

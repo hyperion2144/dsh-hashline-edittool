@@ -34,6 +34,7 @@ import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.
 import {
 	codeUnits,
 	createResume,
+	formatOmittedNotice,
 	loadResume,
 	readSpillRows,
 	advanceResume,
@@ -430,7 +431,12 @@ export function buildGrepTool(io: FileIO) {
 						});
 						continuation = { resume: next.token, remaining: overflow.length };
 						parts.push(
-							`(Omitted ${overflow.length} lines (~${overflow.reduce((a, r) => a + codeUnits(r.content), 0)} chars). Use grep {resume: "${next.token}"} to continue.)`,
+							formatOmittedNotice({
+								omittedLines: overflow.length,
+								omittedChars: overflow.reduce((a, r) => a + codeUnits(r.content), 0),
+								consumer: "grep",
+								token: next.token,
+							}),
 						);
 					}
 					const modelText = parts.join("\n");
@@ -634,7 +640,12 @@ export function buildGrepTool(io: FileIO) {
 					});
 					const omittedChars = spillRows.reduce((acc, row) => acc + codeUnits(row.content), 0);
 					continuation = { resume: token, remaining: spillRows.length };
-					noticeText = `(Omitted ${spillRows.length} lines (~${omittedChars} chars). Use grep {resume: "${token}"} to continue.)`;
+					noticeText = formatOmittedNotice({
+						omittedLines: spillRows.length,
+						omittedChars,
+						consumer: "grep",
+						token,
+					});
 				}
 
 				if (fileSections.length === 0 && spillRows.length === 0) {

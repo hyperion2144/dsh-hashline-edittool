@@ -112,7 +112,7 @@ export const READ_GUIDANCE: ToolGuidance = {
 		"`read`: the ANCHOR comes first; a line number, when present, is that line's number, informational only. Either half works as the anchor field (the whole `<anchor>:<line>` marker or the bare anchor both parse — and a bare line number alone is accepted too, resolved to that served line), but the anchor is authoritative.",
 		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
 		"`read`: binary/directory rejects; page large files with offset/limit.",
-		'`read`: results over the per-response char budget (default 48,000) return a segment + `(Omitted N lines. Use read {resume: "TOKEN"} to continue.)` — pass the token back via `resume` to keep reading. `offset`/`limit` also still work.',
+		'`read`: results over the per-response char budget (default 48,000) stop mid-file and end with ONE window sentence — `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` — pass the token back via `resume` to keep reading (a report token answers with a `[Continued report]` segment). `offset`/`limit` also still work.',
 	],
 };
 
@@ -144,6 +144,6 @@ export const GREP_GUIDANCE: ToolGuidance = {
 		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with a header line and lists matches in file order.",
 		"`grep`: every file read is recorded as observed, so the matches can be edited without a separate `read` call.",
 		"`grep`: use `limit` to cap matches per file when probing a noisy file; the cap applies per file, not globally.",
-		'`grep`: results over the per-response char budget (default 48,000) spill to a resume file. The footer `(Omitted N lines. Use grep {resume: "TOKEN"} to continue.)` tells you the token — pass it via `resume` to get the next segment.'
+		'`grep`: results over the per-response char budget (default 48,000) spill to a resume file. The footer `(Omitted N lines (~C chars). Use grep {resume: "TOKEN"} to continue.)` tells you the token — pass it via `resume` to get the next segment.'
 	],
 };

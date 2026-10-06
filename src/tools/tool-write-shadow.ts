@@ -31,6 +31,7 @@ import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js"
 import { execCwd, execSessionKey, openWorkspaceStore, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { createResume, responseBudgetChars } from "../infra/response-stream.js";
 import { withWorkspace } from "../domain/session/session-view.js";
+import { formatWindowSummary } from "../domain/session/read-window.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
@@ -261,40 +262,13 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					exec,
 				}).catch(() => undefined);
 
-					served === undefined
-						? `Wrote ${rawPath} (${operation}).`
-						: isJsonOutput() &&
-							  served.normalized !== undefined &&
-							  served.hashes !== undefined
-							? JSON.stringify(
-									buildReadJson(
-										served.normalized,
-										served.hashes,
-										1,
-										served.hashes.length,
-										rawPath,
-									),
-								)
-						: `${AUTO_READ_HEADING}\n${served.text}`;
-				// ADR-0013: a truncated auto-read preview carries a resume token —
-				// consumed with `read {resume}` (file-window), never by re-writing.
+				// ADR-0013 / #245 / #246: a truncated auto-read preview carries a resume
+				// token — consumed with `read {resume}` (file-window), never by re-writing.
+				// Its tail is read's ONE window sentence: the preview IS a file window
+				// (1..K of N), so it must not invent a fourth spelling of "there is more".
 				let continuation: { resume: string; remaining: number } | undefined;
-				let baseText =
-					served === undefined
-						? `Wrote ${rawPath} (${operation}).`
-						: isJsonOutput() &&
-							  served.normalized !== undefined &&
-							  served.hashes !== undefined
-						  ? JSON.stringify(
-								buildReadJson(
-									served.normalized,
-									served.hashes,
-									1,
-									served.hashes.length,
-									rawPath,
-								),
-						  )
-						  : `${AUTO_READ_HEADING}\n${served.text}`;
+				let previewWindow: { start: number; end: number; totalLines: number } | undefined;
+				let windowSentence: string | undefined;
 				if (served?.nextOffset !== undefined && served.hashes !== undefined) {
 					const total = served.hashes.length;
 					if (served.nextOffset <= total) {
@@ -306,11 +280,27 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 							rows: [],
 							meta: { path: served.absolutePath, nextOffset: served.nextOffset },
 						});
-						const omitted = total - (served.nextOffset - 1);
-						continuation = { resume: token, remaining: omitted };
-						baseText = `${baseText}\n\n(Omitted ${omitted} lines. Use read {resume: "${token}"} to continue.)`;
+						const shownEnd = served.shownEnd ?? served.nextOffset - 1;
+						previewWindow = { start: 1, end: shownEnd, totalLines: total };
+						continuation = { resume: token, remaining: Math.max(0, total - shownEnd) };
+						windowSentence = formatWindowSummary(previewWindow, { resumeToken: token });
 					}
 				}
+				// JSON mode stays PURE JSON — the read envelope's rule: the window and the
+				// token ride INSIDE the payload instead of being appended as prose, which
+				// used to leave `modelText` unparseable (and threw when diagnostics were
+				// merged into it below).
+				const baseText =
+					served === undefined
+						? `Wrote ${rawPath} (${operation}).`
+						: isJsonOutput() && served.normalized !== undefined && served.hashes !== undefined
+							? JSON.stringify({
+									// The shared read payload already knows how to carry a window;
+									// the token is the one field it does not take, so it is added.
+									...buildReadJson(served.normalized, served.hashes, 1, served.hashes.length, rawPath, undefined, previewWindow),
+									...(continuation === undefined ? {} : { continuation }),
+								})
+							: `${AUTO_READ_HEADING}\n${served.text}${windowSentence === undefined ? "" : `\n\n${windowSentence}`}`;
 				// #131: diagnostics ride BOTH channels — a field in the JSON envelope,
 				// an appended section in text mode. The envelope stays parseable.
 				// The JSON envelope carries the marker-keyed projection (diff-aligned);
