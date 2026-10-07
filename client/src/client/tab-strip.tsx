@@ -40,6 +40,10 @@ const CSS_TEXT = [
 	".dshl-tabstrip-more:focus-visible{outline:1px solid var(--dsw-alias-border-l3);outline-offset:-2px}",
 	".dshl-tabstrip-copy{flex:none;background-color:transparent;border:none;padding:0 12px 6px;margin:0;color:var(--dsw-alias-label-secondary);cursor:pointer;font:var(--dsw-font-xs-13)}",
 	".dshl-tabstrip-copy:hover{color:var(--dsw-alias-label-primary)}",
+	// #247: a failed file's tab carries the error tone — red label + red dot —
+	// while keeping the strip's own active/hover states.
+	".dshl-tabstrip-tab[data-tone=error]{color:var(--dsw-alias-state-error-primary)}",
+	".dshl-tabstrip-tab[data-tone=error]::before{content:\"\";width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-error-primary);display:inline-block;margin-right:6px;vertical-align:middle}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/tab-strip.css";
@@ -82,6 +86,12 @@ export interface TabStripLabels {
 export interface TabStripProps {
 	/** One tab per file, in display order; labels are these paths. */
 	paths: readonly string[];
+	/**
+	 * Indexes of tabs whose file FAILED (#247): the strip draws them with the
+	 * error tone (a red dot and the error label colour) so one bad file reads at
+	 * a glance without opening anything.
+	 */
+	errorIndexes?: readonly number[] | undefined;
 	/** Index of the tab being shown (owned by the card). */
 	activeIndex: number;
 	/** Tab selection; the card switches its body and resets its own state. */
@@ -109,6 +119,7 @@ export interface TabStripProps {
  */
 export function TabStrip({
 	paths,
+	errorIndexes,
 	activeIndex,
 	onSelect,
 	labels,
@@ -231,6 +242,7 @@ export function TabStrip({
 						"aria-controls": panelId,
 						tabIndex: index === activeIndex ? 0 : -1,
 						onClick: () => onSelectIndex(index),
+						"data-tone": errorIndexes?.includes(index) === true ? "error" : undefined,
 						children: path,
 					});
 				}),

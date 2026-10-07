@@ -23,11 +23,12 @@ import { useCallback, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
+import { ErrorCard } from "./error-card.js";
 import { diffCardGroups } from "./models.js";
 import { markerColumnCh } from "./read-meta.js";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { DiffBlockLabels } from "./labels.js";
-import type { DiffRowGroup, DiffRowMeta } from "./types.js";
+import type { DiffRowGroup, DiffRowMeta, ErrorCardModel, FileFailureMeta } from "./types.js";
 
 interface FoldLabels {
 	collapseAria: string;
@@ -81,6 +82,18 @@ const CSS_TEXT = [
 	".dshl-diff-expand{flex:1 1 auto;display:block;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-diff-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	// #247: the partial-failure banner + the failure tab's panel. The banner is
+	// the card's ONE alert; the error card inside a failure tab is the same
+	// component the whole-call failure uses, with its role dropped (announce).
+	".dshl-diff-failBanner{margin:12px 14px 0;border:.5px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 35%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 6%,transparent);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}",
+	".dshl-diff-failHead{color:var(--dsw-alias-state-error-primary);font:var(--dsw-font-xs-13)}",
+	".dshl-diff-failRow{align-items:center;gap:6px;display:flex;flex-wrap:wrap;min-width:0}",
+	".dshl-diff-failDot{border-radius:50%;background:var(--dsw-alias-state-error-primary);width:7px;height:7px;flex:none}",
+	".dshl-diff-failCode{font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);border-radius:4px;padding:1px 6px}",
+	".dshl-diff-failPath{background:transparent;border:none;padding:0;font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);cursor:pointer;text-decoration:underline;text-decoration-style:dotted}",
+	".dshl-diff-failPath:hover{color:var(--dsw-alias-label-primary)}",
+	".dshl-diff-failMessage{color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xs-13);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}",
+	".dshl-diff-panel{padding:12px 14px}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -109,6 +122,14 @@ const css = {
 	ctx: "dshl-diff-ctx",
 	expand: "dshl-diff-expand",
 	footer: "dshl-diff-footer",
+	panel: "dshl-diff-panel",
+	failBanner: "dshl-diff-failBanner",
+	failHead: "dshl-diff-failHead",
+	failRow: "dshl-diff-failRow",
+	failDot: "dshl-diff-failDot",
+	failCode: "dshl-diff-failCode",
+	failPath: "dshl-diff-failPath",
+	failMessage: "dshl-diff-failMessage",
 } as const;
 
 /** Localized chrome (DiffBlockLabels shape). */
@@ -186,6 +207,29 @@ function copyText(rows: readonly DisplayRow[]): string {
 		.join("\n");
 }
 
+/** One tab of the strip: a successful file's rows, or a failed file's error. */
+type DiffTab =
+	| { kind: "diff"; path: string; rows: readonly DiffRowMeta[] }
+	| { kind: "error"; path: string; failure: FileFailureMeta };
+
+/** The rows a failure tab would have had — it draws an error card instead. */
+const EMPTY_ROWS: readonly DiffRowMeta[] = [];
+
+/**
+ * A failure entry as the error card's model. `code` is optional in the persisted
+ * shape but the card's chip is not: an entry without one shows the same literal
+ * the LEGACY synthesis path uses ("ERROR") rather than inventing a code.
+ */
+function errorCardOf(failure: FileFailureMeta): ErrorCardModel {
+	return {
+		code: failure.code ?? "ERROR",
+		message: failure.message,
+		path: failure.path,
+		...(failure.context !== undefined ? { context: failure.context } : {}),
+		...(failure.hint !== undefined ? { hint: failure.hint } : {}),
+	};
+}
+
 export interface DiffRowsBlockProps {
 	path: string;
 	rows: readonly DiffRowMeta[];
@@ -196,6 +240,13 @@ export interface DiffRowsBlockProps {
 	 * since historical single-file metas carry no `diffRowGroups` at all.
 	 */
 	groups?: readonly DiffRowGroup[] | undefined;
+	/**
+	 * Failed files of a PARTIALLY failed multi-file call (#247): each one gets
+	 * its own tab after the successful files, plus a row in the banner above the
+	 * strip. The count summary is derived from these — the host adds no derived
+	 * field to the persisted meta.
+	 */
+	failures?: readonly FileFailureMeta[] | undefined;
 	/** Accessible name of the tab list (the owning tool's title). */
 	tablistLabel: string;
 	labels: DiffRowsLabels;
@@ -213,6 +264,7 @@ export function DiffRowsBlock({
 	path,
 	rows,
 	groups,
+	failures,
 	tablistLabel,
 	labels,
 	maxLines = 16,
@@ -228,9 +280,23 @@ export function DiffRowsBlock({
 		() => diffCardGroups(path, rows, groups ?? null),
 		[groups, path, rows],
 	);
+	// #247: the strip carries EVERY file the call touched — the successful ones
+	// from the persisted row groups, then one tab per failed file. The host keeps
+	// input order (successes first), so the tab row, the banner and the count
+	// summary agree without a derived field in the meta.
+	const tabs = useMemo<readonly DiffTab[]>(
+		() => [
+			...fileGroups.map((group): DiffTab => ({ kind: "diff", path: group.path, rows: group.rows })),
+			...(failures ?? []).map((failure): DiffTab => ({ kind: "error", path: failure.path, failure })),
+		],
+		[failures, fileGroups],
+	);
+	const failureList = failures ?? [];
 	const [activeTab, setActiveTab] = useState(0);
-	const activeIndex = Math.min(activeTab, fileGroups.length - 1);
-	const activeRows = fileGroups[activeIndex]!.rows;
+	const activeIndex = Math.min(activeTab, tabs.length - 1);
+	const active = tabs[activeIndex];
+	const activeFailure = active?.kind === "error" ? active.failure : null;
+	const activeRows = active?.kind === "diff" ? active.rows : EMPTY_ROWS;
 	const baseId = useId();
 	const panelId = `${baseId}-panel`;
 
@@ -274,8 +340,51 @@ export function DiffRowsBlock({
 		className: `${css.block} ${className ?? ""}`.trim(),
 		"data-diff": "",
 		children: [
+			// #247: the failure banner sits ABOVE the strip — one row per failed file
+			// (dot + code + path + the message's first line) and the ONE `role="alert"`
+			// of the card. Clicking a path selects that file's tab instead of repeating
+			// the error card here.
+			...(failureList.length > 0
+				? [
+						jsx_("div", {
+							key: "failures",
+							className: css.failBanner,
+							role: "alert",
+							children: [
+								jsx_("div", {
+									className: css.failHead,
+									children: `${failureList.length} of ${tabs.length} files failed`,
+								}),
+								...failureList.map((failure, offset) =>
+									jsx_("div", {
+										key: failure.path,
+										className: css.failRow,
+										children: [
+											jsx_("span", { className: css.failDot, "aria-hidden": true }),
+											failure.code !== undefined
+												? jsx_("code", { className: css.failCode, children: failure.code })
+												: null,
+											jsx_("button", {
+												type: "button",
+												className: css.failPath,
+												onClick: () => onSelect(fileGroups.length + offset),
+												children: failure.path,
+											}),
+											jsx_("span", {
+												className: css.failMessage,
+												children: failure.message.split("\n")[0] ?? "",
+											}),
+										],
+									}),
+								),
+							],
+						}),
+					]
+				: []),
 			jsx_(TabStrip, {
-				paths: fileGroups.map((group) => group.path),
+				paths: tabs.map((tab) => tab.path),
+				// The failed files' tabs carry the error tone (red dot + red path).
+				errorIndexes: tabs.flatMap((tab, index) => (tab.kind === "error" ? [index] : [])),
 				activeIndex,
 				onSelect,
 				labels: { tablist: tablistLabel, more: labels.more },
@@ -288,45 +397,58 @@ export function DiffRowsBlock({
 					children: copied ? labels.copied : labels.copy,
 				}),
 			}),
-			jsx_("div", {
-				className: css.body,
-				id: panelId,
-				role: "tabpanel",
-				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
-				style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
-				children: [
-					// PER-ROW: one flex container per drawn line — anchor cell + content
-					// cell in DOM order, so a drag is an ordinary continuous text
-					// selection (the rows you drag across, anchors and lines together).
-					// Each cell takes its ROW's class too: a removed line's `-21:C7` is
-					// red and an added line's `+21:h2` is green, the way the shipped
-					// diff card drew them. The fold toggle spans the full row.
-					...head.map((row, index) => foldRow(row, index)),
-					// The fold toggle stays rendered whenever rows are hidden OR the fold
-					// is open — otherwise an opened fold could never be closed again.
-					...(hidden > 0
-						? [
-								jsx_("div", {
-									key: "fold-row",
-									className: css.row,
-									children: [
-										// Empty anchor cell: keeps the toggle indented to the code
-										// column instead of drifting into the anchor lane.
-										jsx_("span", { className: css.gutterLine, "aria-hidden": true }),
-										jsx_(FoldToggle, {
-											className: css.expand,
-											expanded,
-											hidden,
-											labels,
-											onToggle,
+			activeFailure !== null
+				? jsx_("div", {
+						className: css.panel,
+						id: panelId,
+						role: "tabpanel",
+						"aria-labelledby": `${baseId}-tab-${activeIndex}`,
+						children: jsx_(ErrorCard, {
+							model: errorCardOf(activeFailure),
+							// The banner above already announced the failure; switching to
+							// its tab must not re-announce the same card.
+							announce: false,
+						}),
+					})
+				: jsx_("div", {
+						className: css.body,
+						id: panelId,
+						role: "tabpanel",
+						"aria-labelledby": `${baseId}-tab-${activeIndex}`,
+						style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
+						children: [
+							// PER-ROW: one flex container per drawn line — anchor cell + content
+							// cell in DOM order, so a drag is an ordinary continuous text
+							// selection (the rows you drag across, anchors and lines together).
+							// Each cell takes its ROW's class too: a removed line's `-21:C7` is
+							// red and an added line's `+21:h2` is green, the way the shipped
+							// diff card drew them. The fold toggle spans the full row.
+							...head.map((row, index) => foldRow(row, index)),
+							// The fold toggle stays rendered whenever rows are hidden OR the fold
+							// is open — otherwise an opened fold could never be closed again.
+							...(hidden > 0
+								? [
+										jsx_("div", {
+											key: "fold-row",
+											className: css.row,
+											children: [
+												// Empty anchor cell: keeps the toggle indented to the code
+												// column instead of drifting into the anchor lane.
+												jsx_("span", { className: css.gutterLine, "aria-hidden": true }),
+												jsx_(FoldToggle, {
+													className: css.expand,
+													expanded,
+													hidden,
+													labels,
+													onToggle,
+												}),
+											],
 										}),
-									],
-								}),
-						]
-					: []),
-					...tail.map((row, index) => foldRow(row, index)),
-				],
-			}),
+									]
+								: []),
+							...tail.map((row, index) => foldRow(row, index)),
+						],
+					}),
 			jsx_("div", {
 				className: css.footer,
 				children: `└ +${added} -${removed} · ${labels.files(fileGroups.length)}`,

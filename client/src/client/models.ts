@@ -25,6 +25,7 @@ import type {
 	DiagCapsuleMeta,
 	ErrorCardModel,
 	FileDiff,
+	FileFailureMeta,
 	GrepCardModel,
 	GrepFileRowGroup,
 	GrepRowMeta,
@@ -504,10 +505,30 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 	}
 	if (block.isError) return null;
 	const applied = appliedDiffs(block.meta);
+	const rowGroups = metaDiffRowGroups(block.meta);
+	const failures = metaFileFailures(block.meta);
 	if (applied !== null && applied !== "empty") {
 		const rows = metaDiffRows(block.meta);
-		const rowGroups = metaDiffRowGroups(block.meta);
-		return { path: applied[0]?.path ?? "", diffs: applied, ...(rows !== null ? { rows } : {}), ...(rowGroups !== null ? { rowGroups } : {}) };
+		return {
+			path: applied[0]?.path ?? "",
+			diffs: applied,
+			...(rows !== null ? { rows } : {}),
+			...(rowGroups !== null ? { rowGroups } : {}),
+			...(failures.length > 0 ? { failures } : {}),
+		};
+	}
+	// A multi-file meta whose every successful file was a whole-file no-op has an
+	// EMPTY `diffs` array while still carrying its row groups and the failure
+	// list (#247). Falling through to the intended-diff path dropped the whole
+	// card — the failed files' tabs included. An empty success side is a fact,
+	// not a reason to bail.
+	if (rowGroups !== null || failures.length > 0) {
+		return {
+			path: rowGroups?.[0]?.path ?? failures[0]?.path ?? "",
+			diffs: Array.isArray(applied) ? applied : [],
+			...(rowGroups !== null ? { rowGroups } : {}),
+			...(failures.length > 0 ? { failures } : {}),
+		};
 	}
 	const intended = intendedDiff(block);
 	if (intended === null) return null;
@@ -623,7 +644,10 @@ export function metaDiffRowGroups(meta: unknown): DiffRowGroup[] | null {
 		if (typeof group !== "object" || group === null) return null;
 		const g = group as Record<string, unknown>;
 		if (typeof g.path !== "string") return null;
-		if (!Array.isArray(g.rows) || g.rows.length === 0) return null;
+		// A group with ZERO rows is LEGAL and must survive (#247): a whole-file
+		// no-op still touches a file, and refusing it here nulled the ENTIRE
+		// array — every tab of a multi-file card disappeared with it.
+		if (!Array.isArray(g.rows)) return null;
 		const rows: DiffRowMeta[] = [];
 		for (const row of g.rows) {
 			if (typeof row !== "object" || row === null) return null;
@@ -638,6 +662,33 @@ export function metaDiffRowGroups(meta: unknown): DiffRowGroup[] | null {
 	return out;
 }
 
+/**
+ * Soft-validate the persisted per-file `failures` list (#247: a multi-file call
+ * where SOME file failed while at least one other succeeded). The host declares
+ * the shape once (`FileFailureMeta`); this narrows it field by field and DROPS a
+ * malformed entry rather than refusing the whole list — one half-drawn failure
+ * must not cost the reader the other failures' tabs.
+ */
+export function metaFileFailures(meta: unknown): FileFailureMeta[] {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return [];
+	const failures = (meta as Record<string, unknown>).failures;
+	if (!Array.isArray(failures)) return [];
+	const out: FileFailureMeta[] = [];
+	for (const entry of failures) {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+		const f = entry as Record<string, unknown>;
+		if (typeof f.path !== "string" || f.path === "" || typeof f.message !== "string") continue;
+		out.push({
+			path: f.path,
+			...(typeof f.code === "string" && f.code !== "" ? { code: f.code } : {}),
+			message: f.message,
+			...(typeof f.context === "string" && f.context !== "" ? { context: f.context } : {}),
+			...(typeof f.hint === "string" && f.hint !== "" ? { hint: f.hint } : {}),
+		});
+	}
+	return out;
+}
+
 /** A derived diff card: structured rows (gutter) and/or the official hunks. */
 export interface DiffCard {
 	path: string;
@@ -646,6 +697,8 @@ export interface DiffCard {
 	rows?: readonly DiffRowMeta[] | undefined;
 	/** Per-file row groups for multi-file tab rendering (issue #82). */
 	rowGroups?: readonly DiffRowGroup[] | undefined;
+	/** Failed files of a PARTIALLY failed multi-file call (#247): their own tabs. */
+	failures?: readonly FileFailureMeta[] | undefined;
 }
 
 // `editAnchorHints` lived here and is DELETED, with the row that used it.

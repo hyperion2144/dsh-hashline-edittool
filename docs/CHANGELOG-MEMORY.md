@@ -249,3 +249,31 @@ ADR-0013 rather than left in issues.
 
 - write 的自动预览 / grep / `ast_edit` 的尾部仍是各自形态 → #246。
 - 遗留文件通道清理（`settings.yaml` 直读、`parseSettingsYaml`、`dev-diag`、README 旧措辞）→ #237。
+
+---
+
+## 2026-10-05 — 多文件部分失败的卡片可见性：并列的 `failures` 通道 (#247)
+
+**Type:** decision + contract documentation
+**Confidence:** High
+**Evidence:** 地图 [#234](https://github.com/hyperion2144/dsh-hashline-edittool/issues/234) 的通道票 [#240](https://github.com/hyperion2144/dsh-hashline-edittool/issues/240) / 形态原型 [#241](https://github.com/hyperion2144/dsh-hashline-edittool/issues/241) / 实施规格 [#247](https://github.com/hyperion2144/dsh-hashline-edittool/issues/247) 的逐轮裁定；新测试 `test/core/partial-failure-meta.test.ts`（6 例）与 `client/test/models.test.ts` 的「partial failure (#247)」段（6 例）；`npm test`（129 文件 / 1427 例）、`npm test -w client`（6 文件 / 158 例）与两侧 typecheck 均绿。
+
+### Why
+`edit` 的多文件批是每文件一笔事务（ADR-0003），一个文件落盘、另一个被拒时**整条调用是成功的**：canonical value 里 `success[]` 与 `fail[]` 并列明说了，但 web 行只拿 `presentationMeta`，而它只投射成功侧 —— 卡片选择先看 `errorBody`（来自 `meta.error`，按设计只在**整条调用零变更**时出现），行状态又是 `ok`，于是失败文件连路径都看不到。模型侧在同一时刻却什么都看得到。
+
+排查中还发现两处**从未被报告**的陷阱：`presentationMeta` 的空 diff 兜底分支不带 `diffRowGroups`（唯一成功文件是整文件 no-op 时，失败与成功会一起消失）；per-file 失败码取自消息里**最后一个** `[E_*]` 字面量，而拒绝会原样带回 ±3 回声，被回显的源码行自带码字面量时会把卡片显示的码劫持掉（本仓库测试夹具里就有这种行）。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0015-partial-failure-visibility.md` — new：`failures` 与 `error` 互斥且穷尽、per-file 码取头部字面量、回声留在 `context`、卡片形态（失败 tab + 单条 alert 横幅 + 行仍算成功）、零行分组合法。
+- `src/infra/error-result.ts` — 导出 `FileFailureMeta`（`code?` 可选）与 `splitErrorText`，两个通道共用一个切分；`src/tools/tool-edit.ts` — `presentationMeta` 的 `failures` 投射与头部码规则。
+- `client/src/client/models.ts`、`types.ts`、`diff-block.tsx`、`tool-row.tsx`、`error-card.tsx`、`tab-strip.tsx` — 两通道窄化、零行分组、失败 tab / 横幅 / 行摘要。
+- `CONTEXT.md` — `meta.error` 词条改为「零变更」通道，并新增「Partial failure」；`AGENTS.md` — `l0_domains.decisions` 扩到 0001–0015。
+- `CHANGELOG.md` — `[Unreleased] ### Changed` 中文条目。
+
+### 本轮定案（复核时照此）
+
+- 判据：`error` = 这次调用零变更；`failures` = 至少一个文件成功时的失败清单。空表不出现键（无损 JSON，禁 `{failures: undefined}`），顺序 = 输入顺序，不新增 counts。
+- 失败项形状 = `ErrorMeta` + 必填 `path`，`code` 可选（取自内层失败的**头部**字面量、去方括号）。`fail[]` 仍按 ADR-0004 保留方括号 —— 两者同码不同形，测试同时钉住两边。
+- 卡片：失败与成功同列 tab、横幅独占 `role="alert"`、行状态仍成功；计数文案由客户端从两个数组长度推导（不是宿主发的字段）。
+- 事实备注（写给下一个改这块的人）：`edit` 的 `presentationMeta` 只能从 canonical value 的 `v.success`/`v.fail` 出发投射，`failures` 因而与成功侧**同一个分支**计算；把它嵌回「有 diff 才投射」的老分支，no-op 场景会再次静默丢失败。
