@@ -2,26 +2,21 @@
  * Hashline settings — namespace, schema, live snapshot, and wiring into the
  * hash shape.
  *
- * Settings live under the `hashline` namespace of the dsh settings service
- * (persisted to ~/.dsh/settings.yaml by the settings-file layer). As a
- * fallback — and as the ONLY path when the deployment has no settings
- * service (e.g. a minimal smoke profile) — the same file is read directly
- * so `separator` / `hash_length` / `output_format` always take effect:
+ * Settings are the plugin's **profile configuration** (dsh 0.1.7+): the loader
+ * resolves our `Config` schema and hands it to `apply(ctx, config)` as volatile
+ * live references. The plugin reads no settings file itself — there is no
+ * fallback path around the settings service:
  *
  * ```yaml
- * hashline:
- *   separator: ":"        # column separator (default ":")
- *   hash_length: 3        # anchor hash length, 1..6 (default 3; space = 62^len)
- *   output_format: text   # "text" (hashline rows) | "json" (pure JSON)
+ * - id: dsh-hashline-edittool
+ *   config:
+ *     separator: ":"       # column separator (default ":")
+ *     output_format: text  # "text" (hashline rows) | "json" (pure JSON)
  * ```
  *
- * Precedence: the registered settings service (live getter + settings/updated)
- * > defaults. There is NO direct settings.yaml fallback: file access happens
- * only inside the settings provider's own load/persist, never around it.
+ * Precedence: the live profile configuration > defaults.
  * @module dsh-hashline-edittool/config
  */
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { applyHashlineShape } from "./hashline/hash-assign.js";
@@ -40,8 +35,8 @@ export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
  *
  * dsh 0.1.7 addresses settings by the Loader ENTRY id (our patch row id,
  * identical to the package name), not by a registered namespace: the client
- * card binds `ctx.configForms.get(entryId)` with this key, and the legacy
- * migration writes into this entry.
+ * card binds `ctx.configForms.get(entryId)` with this key, and the settings
+ * service resolves the same id on the host side.
  */
 export const HASHLINE_ENTRY_ID = "dsh-hashline-edittool";
 
@@ -344,7 +339,7 @@ export function applyEffective(
 	// The schema's path-prefixed throw is the loud path; this loop is the
 	// quiet one. It runs on every apply regardless of how the schema
 	// behaved, so an out-of-range value that slipped past a future code path
-	// (or was hand-edited into settings.yaml and re-loaded by a path that
+	// (or was hand-edited into the entry's config and re-loaded by a path that
 	// bypassed the schema) is still named explicitly with the field, the
 	// value, the range, and the fallback constant. Unset is NOT warned —
 	// it is the legitimate "use the host-side constant" signal.
@@ -467,164 +462,6 @@ const sep =
 void getAstClient().dispose();
 	}
 }
-
-/** Default settings.yaml location (same file the dsh settings layer uses). */
-/** Default settings.yaml location: $DSH_HOME when set, else ~/.dsh. */
-export function settingsYamlPath(): string {
-	const dshHome = process.env.DSH_HOME;
-	const base = dshHome && dshHome.length > 0 ? dshHome : join(homedir(), ".dsh");
-	return join(base, "settings.yaml");
-}
-
-/**
- * Minimal YAML extractor for the `hashline:` section:
- *
- * ```yaml
- * hashline:
- *   separator: "|"
- *   hash_length: 4
- *   output_format: json
- * ```
- *
- * Handles quoted/unquoted scalars and `#` comments; anything unexpected
- * falls back to that key being unset (defaults apply). Separately exported
- * for tests.
- */
-export function parseSettingsYaml(text: string): HashlineSettings {
-	const out: HashlineSettings = {};
-	let inSection = false;
-	// The `ast` entry is the one nested value. Without this branch the flat
-	// fallback would drop it silently — the switch would appear to save and do
-	// nothing, which is worse than refusing it.
-	let inAst = false;
-	let astLanguage: string | undefined;
-	const astLangs: Record<string, { enabled?: boolean }> = {};
-	// The `lsp` entry is nested too, and for the same reason: the flat fallback
-	// would drop it silently and a named server would appear to save and do
-	// nothing.
-	let inLsp = false;
-	const lspServers: Record<string, string> = {};
-	for (const raw of text.split("\n")) {
-		const line = raw.trimEnd();
-		if (!inSection) {
-			if (/^hashline:\s*(#.*)?$/.test(line)) {
-				inSection = true;
-			}
-			continue;
-		}
-		if (!/^\s/.test(line) && line.trim() !== "") break; // next top-level key
-
-		// --- the `ast` sub-tree ---
-		const astTop = /^ {2}ast:\s*(#.*)?$/.exec(line);
-		if (astTop !== null) {
-			inAst = true;
-			astLanguage = undefined;
-			continue;
-		}
-		if (inAst) {
-			// Four levels: `ast:` → `enabled` / `languages:` → `<id>:` → `enabled`.
-			const langEnabled = /^ {8}enabled:\s*(.*)$/.exec(line);
-			if (langEnabled !== null && astLanguage !== undefined) {
-				const v = langEnabled[1]!.trim();
-				if (v === "true") astLangs[astLanguage] = { enabled: true };
-				else if (v === "false") astLangs[astLanguage] = { enabled: false };
-				continue;
-			}
-			const langName = /^ {6}([A-Za-z_][A-Za-z0-9_]*):\s*(#.*)?$/.exec(line);
-			if (langName !== null) {
-				astLanguage = langName[1]!;
-				continue;
-			}
-			const child = /^ {4}([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
-			if (child !== null) {
-				if (child[1] === "enabled") {
-					const v = child[2]!.trim();
-					if (v === "true") out.ast = { ...out.ast, enabled: true };
-					else if (v === "false") out.ast = { ...out.ast, enabled: false };
-				}
-				// `languages:` is just a container; its children carry the values.
-				continue;
-			}
-			if (/^ {2}\S/.test(line)) inAst = false; // dedented: leave the sub-tree
-			else continue;
-		}
-
-		// --- the `lsp` sub-tree ---
-		// Three levels: `lsp:` → `servers:` → `<id>:` <command>.
-		const lspTop = /^ {2}lsp:\s*(#.*)?$/.exec(line);
-		if (lspTop !== null) {
-			inLsp = true;
-			continue;
-		}
-		if (inLsp) {
-			const entry = /^ {6}([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
-			if (entry !== null) {
-				// Quoted or bare, with a trailing comment stripped: a command is a
-				// path, and paths contain spaces, so quotes are worth honouring.
-				const value = entry[2]!.replace(/\s+#.*$/, "").trim().replace(/^["']|["']$/g, "");
-				if (value !== "") lspServers[entry[1]!] = value;
-				continue;
-			}
-			if (/^ {4}servers:\s*(#.*)?$/.test(line)) continue; // container only
-			// The delivery switch sits beside `servers` at FOUR-space indent; the
-			// six-space matcher above only names SERVER ENTRIES, so the switch is
-			// read here — a value inside the 6-char regex would parse a language
-			// literally named `auto_diagnostics` as a server command.
-			const autoDiag = /^ {4}auto_diagnostics:\s*(.*)$/.exec(line);
-			if (autoDiag !== null) {
-				const v = autoDiag[1]!.replace(/\s+#.*$/, "").trim();
-				if (v === "true") out.lsp = { ...out.lsp, auto_diagnostics: true };
-				else if (v === "false") out.lsp = { ...out.lsp, auto_diagnostics: false };
-				continue;
-			}
-			if (/^ {2}\S/.test(line)) inLsp = false; // dedented: leave the sub-tree
-			else continue;
-		}
-
-		const m = /^\s{2,}([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/.exec(line);
-		if (!m) continue;
-		const key = m[1]!;
-		let value = m[2]!.trim();
-		value = value.replace(/\s+#.*$/, "").replace(/^["']|["']$/g, "").trim();
-		if (value === "") continue;
-		if (key === "separator") out.separator = value;
-		else if (key === "output_format") {
-			if (value === "json" || value === "text") {
-				out.output_format = value;
-			}
-		}
-		// NOTE: legacy `hash_length` key is parsed but ignored (v2.0 variable-length).
-		else if (key === "context_lines") {
-			const n = Number(value);
-			if (Number.isInteger(n) && n >= 0 && n <= 20) out.context_lines = n;
-		}
-		else if (key === "require_line_content") {
-			if (value === "true") out.require_line_content = true;
-			else if (value === "false") out.require_line_content = false;
-		}
-		else if (key === "line_numbers") {
-			if (value === "true") out.line_numbers = true;
-			else if (value === "false") out.line_numbers = false;
-		}
-		else if (key === "grep_respect_gitignore") {
-			if (value === "true") out.grep_respect_gitignore = true;
-			else if (value === "false") out.grep_respect_gitignore = false;
-		}
-		else if (key === "max_response_chars") {
-			const n = Number(value);
-			if (Number.isInteger(n)) out.max_response_chars = n;
-		}
-	}
-	if (Object.keys(astLangs).length > 0) {
-		out.ast = { ...out.ast, languages: astLangs };
-	}
-	if (Object.keys(lspServers).length > 0) {
-		out.lsp = { ...out.lsp, servers: lspServers };
-	}
-	return out;
-}
-
-
 
 /**
  * Unwrap one volatile config reference (`.get()`), passing plain values

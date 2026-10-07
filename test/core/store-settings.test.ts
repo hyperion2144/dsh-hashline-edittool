@@ -251,7 +251,7 @@ describe("StoreBudgetWarn — the warning-sink contract", () => {
 describe("applyEffective — the second line of defence for #179 / #180", () => {
 	// applyEffective is the host's `apply(rootCtx, config)` hand-off. The
 	// direct writes below simulate the non-schema write paths the install
-	// layer's `onWarn` hook is meant to catch: a hand-edited settings.yaml
+	// layer's `onWarn` hook is meant to catch: a hand-edited entry config
 	// whose value was reset by the schema's silent drop, or a future code
 	// path that bypasses the schema entirely.
 	it("warns when one store-budget field is below the floor", () => {

@@ -482,7 +482,7 @@ function LanguageRowItem(props: {
 	/** Only consulted when this row renders a switch — i.e. when it is usable. */
 	readonly disabled?: boolean | undefined;
 	/**
-	 * Whether settings.yaml names this language EXPLICITLY.
+	 * Whether the configuration names this language EXPLICITLY.
 	 *
 	 * The distinction the card was hiding: an absent entry means "inherit the
 	 * master switch", and only an explicit `false` is ever written — so a user
@@ -511,7 +511,7 @@ function LanguageRowItem(props: {
 			<StateDot state={dotState} size={8} />
 			<span className="dshl-mgr-display-name">{row.displayName}</span>
 			{props.overridden === true ? (
-				<span className="dshl-mgr-hint" title="settings.yaml 里为这门语言写了显式值（其余语言继承总开关）">
+				<span className="dshl-mgr-hint" title="这门语言在配置里写了显式值（其余语言继承总开关）">
 					已覆盖
 				</span>
 			) : null}

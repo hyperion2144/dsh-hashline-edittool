@@ -13,7 +13,7 @@ import {
 	astDisabledLanguages,
 	isAstEnabled,
 	isAstLanguageEnabled,
-	parseSettingsYaml,
+	lspConfiguredServers,
 } from "../../src/config.js";
 import { readDescription } from "../../src/domain/edit/prompts.js";
 import { HashlineSettingsSchema, resolveSettings } from "../../src/config.js";
@@ -36,13 +36,6 @@ describe("the ast namespace", () => {
 		expect(resolved?.ast?.languages?.python?.enabled).toBe(false);
 	});
 
-	it("reads the nested form from settings.yaml, not a flat key", () => {
-		const parsed = parseSettingsYaml(
-			"hashline:\n  separator: \":\"\n  ast:\n    enabled: true\n    languages:\n      python:\n        enabled: true\n",
-		);
-		expect(parsed.ast?.enabled).toBe(true);
-		expect(parsed.ast?.languages?.python?.enabled).toBe(true);
-	});
 });
 
 describe("the master switch and per-language narrowing", () => {
@@ -110,35 +103,30 @@ describe("the read description no longer moves with the switch", () => {
 	});
 });
 
-describe("hashline.lsp.servers — the named-server sub-tree (#120)", () => {
+describe("lsp.servers — the named-server sub-tree (#120)", () => {
+	// The sub-tree is reached through the schema's nested shape, not by parsing
+	// a file: the hand-written YAML reader is gone (#237), so what has to hold
+	// now is that the nested map survives the effective snapshot and that an
+	// empty command is still dropped rather than mapped to nothing.
 	it("reads a language -> command map", () => {
-		const parsed = parseSettingsYaml(
-			["hashline:", "  lsp:", "    servers:", "      typescript: /opt/tsserver", "      tsx: /opt/tsserver"].join("\n"),
-		);
-		expect(parsed.lsp?.servers).toEqual({ typescript: "/opt/tsserver", tsx: "/opt/tsserver" });
+		applyEffective({ lsp: { servers: { typescript: "/opt/tsserver", tsx: "/opt/my tools/tsserver" } } });
+		expect([...lspConfiguredServers()]).toEqual([
+			["typescript", "/opt/tsserver"],
+			["tsx", "/opt/my tools/tsserver"],
+		]);
 	});
 
-	it("keeps a quoted command containing spaces", () => {
-		// A command is a path, and paths contain spaces, so the quotes have to be
-		// honoured rather than the value truncated at the first space.
-		const parsed = parseSettingsYaml(["hashline:", "  lsp:", "    servers:", '      tsx: "/opt/my tools/tsserver"'].join("\n"));
-		expect(parsed.lsp?.servers).toEqual({ tsx: "/opt/my tools/tsserver" });
+	it("drops an empty command instead of mapping the language to nothing", () => {
+		applyEffective({ lsp: { servers: { typescript: "/opt/tsserver", python: "" } } });
+		expect([...lspConfiguredServers()]).toEqual([["typescript", "/opt/tsserver"]]);
 	});
 
-	it("strips a trailing comment and skips an empty value", () => {
-		const parsed = parseSettingsYaml(
-			["hashline:", "  lsp:", "    servers:", "      typescript: /opt/tsserver   # local build", "      python:"].join("\n"),
-		);
-		expect(parsed.lsp?.servers).toEqual({ typescript: "/opt/tsserver" });
-	});
-
-	it("coexists with ast, which is parsed by its own branch", () => {
-		// Both sub-trees are nested, and each needs its own reader; a shared flat
-		// fallback would drop whichever it reached second.
-		const parsed = parseSettingsYaml(
-			["hashline:", "  ast:", "    enabled: true", "    languages:", "      python:", "        enabled: false", "  lsp:", "    servers:", "      python: /opt/pyright"].join("\n"),
-		);
-		expect(parsed.ast).toEqual({ enabled: true, languages: { python: { enabled: false } } });
-		expect(parsed.lsp?.servers).toEqual({ python: "/opt/pyright" });
+	it("coexists with ast — two nested sub-trees, one snapshot", () => {
+		applyEffective({
+			ast: { enabled: true, languages: { python: { enabled: false } } },
+			lsp: { servers: { python: "/opt/pyright" } },
+		});
+		expect(isAstLanguageEnabled("python")).toBe(false);
+		expect(lspConfiguredServers().get("python")).toBe("/opt/pyright");
 	});
 });
