@@ -194,10 +194,16 @@ just gave you, or re-read.
 ### Batch semantics
 
 - `edits[]` apply **in order against one snapshot**; overlapping ranges are
-  `[E_BATCH_CONFLICT]`; any failure is `[E_BATCH_ABORT]` — nothing is written.
+  `[E_BATCH_CONFLICT]`; any failure in that file's batch is `[E_BATCH_ABORT]` and that file is
+  left untouched.
 - With per-item `path` (or every item carrying `path`), items are grouped per file and each
   file is **all-or-nothing independently**; results aggregate as `success[]` / `fail[]`
   (multi-file form). `item.path === topLevelPath` is auto-folded to absent.
+- **Partial failure is visible**: when at least one file succeeds and another fails, the call is
+  *not* a failure — every failed file is reported with its own code and recovery hint, and the web
+  card draws a `N of M files failed` banner plus one tab per failed file (marked in the tab strip).
+  The aggregate `[E_BATCH_ABORT]` message, and its "nothing was written", belongs to calls where
+  **every** file failed.
 - Up to 32 edits per call.
 
 ### `op` semantics
@@ -231,7 +237,7 @@ search what the plugin's own walk sees (the whole tree minus hidden entries and
 
 | Tool | What it does |
 | --- | --- |
-| `read` | File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers, or the bare `<anchor>` — that shape is the user's `line_numbers` setting (off by default), no longer a tool parameter, and a call still carrying it is `[E_BAD_SHAPE]`. `offset` (1-based) / `limit` paging; oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. |
+| `read` | File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers, or the bare `<anchor>` — that shape is the user's `line_numbers` setting (off by default), no longer a tool parameter, and a call still carrying it is `[E_BAD_SHAPE]`. `offset` takes a 1-based line **or an anchor** (inclusive start); `limit` takes a row count **or an anchor** (inclusive end) — with numbering off, the anchor is the only cursor you can see. Every text-mode window ends with one sentence: `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` when the body was truncated, otherwise `[Lines X-Y of N. Use offset="ANCHOR" to continue.]` (`offset=N` for a plain line cursor), and `[Lines X-Y of N. End of file.]` at the end of the file. Oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. |
 | `edit` | One or more range edits via `{ path?, edits: [{ op, … }, …] }` — the full contract is [above](#the-anchor-contract). Replaces the legacy `batch_edit`. |
 | `write` | Fully shadowed: creates/overwrites a file and returns the write **plus an auto-read preview** with fresh anchors, so the next edit never needs a separate read. |
 | `grep` | JavaScript-flavre regex search (or `regex: false` for literal) across a path tree, one section per file under the same header, full lines only. The tree comes from ripgrep, so `.gitignore`d paths are skipped by default (see `grep_respect_gitignore`). `-C N` echoes context rows; hits are served → directly editable. |
