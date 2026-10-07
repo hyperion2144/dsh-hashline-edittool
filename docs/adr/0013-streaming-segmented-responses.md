@@ -7,6 +7,12 @@
 > cursor is `[E_RESUME_CONFLICT]`. Segments and line windows are separate axes;
 > this ADR's decisions on tokens, spilling and budgets stand unchanged.
 
+> **Amendment** (2026-10-05, #246): one spelling for "there is more". The
+> parenthesized notice is now built by `formatOmittedNotice` — the shared spill
+> helper, grep's two spill branches and read's report footer all call it — and
+> `write`'s auto-read preview (a file window) closes with read's window sentence
+> instead of minting its own. Tokens, spilling and budgets stand unchanged.
+
 ## Problem Statement
 
 The #167 read budget charged every candidate file's GROSS byte size against a

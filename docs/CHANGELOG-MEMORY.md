@@ -324,3 +324,30 @@ ADR-0013 rather than left in issues.
 - `docs/edit-payload-spec.md:86` 等历史 spec 里的旧 description 引文就地不改（记录的是各自时代的原文），只改现行模型侧文案。
 - `README.md:298` 的 `[E_ANCHOR_STATE_DUP]` 行也写着「Nothing was written.」但该码今天只走 `console.error` + 状态修复（`src/domain/session/anchor-state.ts:142-146`），未核实为模型可见的拒绝 → 未改，留待需要时单独核。
 - 工具教训：`sed` 的锚点必须逐字复制（大小写敏感）—— 我误把 `SX:56` 写成 `sc:56`（正好是上一行的锚），工具按锚解析到第 55 行、模式不匹配而**静默 noop**，唯一信号是 `[E_LINE_HINT] line hint 56 does not match anchor sc (resolved to line 55)`。
+
+## 2026-10-05 — 续读/分页文案收口成一句话 (#246)
+
+**Topic:** 五个通道各自拼「还有更多」的句子（共享 spill 助手、grep 两处、read 的 `[Continued report]` 页脚、`write` 的自动读预览、`hashline/` 里一个死掉的 `paginationHint`）收成两个生成器：括号版通知 `formatOmittedNotice` 与 read 的窗口句 `formatWindowSummary`。
+
+**Confidence:** High
+
+**Evidence:** 地图 [#234](https://github.com/hyperion2144/dsh-hashline-edittool/issues/234) 的票 [#246](https://github.com/hyperion2144/dsh-hashline-edittool/issues/246)；`npm run typecheck` 与 `npm test`（131 文件 = 130 passed + 1 skipped / 1429 例 = 1428 passed + 1 skipped）全绿；新增 `test/core/issue-246-tail-copy.test.ts`（8 例：生成器字面量两态、与 spill 助手逐字相等、grep 真实溢出 + token 续读、read 报告段页脚、write 预览 text/JSON 两态、两句 guidance 引文）。
+
+### Why
+B 线（#245）只统一了 `read` 自己的窗口尾巴，同一句 `(Omitted …)` 仍有四处手写副本，且 `write` 的预览是「第四种」拼法 —— 它明明是文件窗口却发括号版通知。更糟的是 preview 的 JSON 模式把通知**粘在 JSON 字符串后面**，而 diagnostics 合并会对该文本再 `JSON.parse`，构成一条真实崩溃路径（JSON 模式 + 有 diagnostics + 预览被截断）。
+
+### Path / Affected typed relationships
+- `src/infra/response-stream.ts`：新增导出的 `formatOmittedNotice({omittedLines, omittedChars?, consumer, token})`；`spillModelTextOverflow` 的尾巴改为调用它（输出字节不变）。
+- `src/tools/tool-grep.ts`：两处 spill 分支（`overflow` 与 `spillRows`）共用生成器（字节不变）。
+- `src/tools/tool-read.ts`：`[Continued report]` 页脚走生成器（`more lines` → `lines`，唯一可见字节变化）。
+- `src/tools/tool-write-shadow.ts`：预览先铸 token、算 `previewWindow`/`continuation`，text 模式收尾用 `formatWindowSummary`，JSON 模式把 `window`/`continuation` 放进 payload；删掉一条裸表达式死代码（原先每次 write 在 JSON 模式下会多跑一遍 `buildReadJson`）。
+- `src/hashline/anchor-pipeline.ts`：删掉无人调用的 `paginationHint`（纯域层，不得反向依赖 `domain/session/`）。
+- `src/domain/edit/prompts.ts`：read guidance 的引文改成现行窗口句、grep guidance 补 `(~C chars)`。
+- 文档：`CONTEXT.md` 新增「Continuation notice」「Window sentence」词条；ADR-0013 / ADR-0014 各加一条 Amendment；`CHANGELOG.md` `[Unreleased]`。
+
+### 本轮定案（复核时照此）
+- 收口只做**同一个语义**：括号版通知归 `formatOmittedNotice`；read 的窗口句仍归 `formatWindowSummary`（窗口有 `start/end/totalLines`，通知没有）。`write` 预览按窗口句处理，因为它的处境与 read 的预算截断完全相同（同一个 `file-window` 令牌）。
+- grep 只发括号版（无窗口数字可报）；read 的报告段页脚不知道字节数，故省略 `(~C chars)`；edit 的拒绝回声今天本来就没有分页句（生成器是死的，直接删）。
+- `buildReadJson(...)` 返回的是 **`object`**（不是字符串），要放进 JSON payload 直接 `...buildReadJson(content, hashes, offset, limit, path, undefined, window)` 展开 —— 我第一版写成 `JSON.parse(buildReadJson(...))`，被 LSP 拦下。
+- 测试教训：`takeTextContinuation(sessionKey, token, consumer, count)` 的第 4 个参数是**行数**（read 传 `RESUME_WINDOW_LINES = 4000`），不是字符数 —— 夹具要造 >4000 行才会得到 `done === false` 的部分段。
+- 诚实缺口（另票）：read 的 report-segment 续读在 JSON 模式下仍返回散文（`totalLines:0` / `lines:[]` 占位），本票只记账不修，避免扩散。

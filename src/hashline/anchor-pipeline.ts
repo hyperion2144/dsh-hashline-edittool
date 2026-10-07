@@ -1045,10 +1045,6 @@ function retryHint(): string {
 	return "Retry the edit with remove_from/remove_to copied from these fresh rows (no read needed).";
 }
 
-function paginationHint(nextOffset: number, more: number): string {
-	return `[... ${more} more lines — use read with offset=${nextOffset} to see the rest]`;
-}
-
 /**
  * The session layer's answer to "may this session write the lines it named?"
  * (contract §2.2), as produced by the `probeLines` primitive.

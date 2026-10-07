@@ -33,7 +33,13 @@ import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { readNormFile, readView } from "../domain/session/file-view.js";
 import { recordServed } from "../domain/session/session-view.js";
-import { createResume, loadResume, takeTextContinuation, responseBudgetChars } from "../infra/response-stream.js";
+import {
+	createResume,
+	formatOmittedNotice,
+	loadResume,
+	responseBudgetChars,
+	takeTextContinuation,
+} from "../infra/response-stream.js";
 import {
 	buildReadPresentation,
 	buildReadJson,
@@ -294,7 +300,7 @@ export function buildReadTool(io: FileIO) {
 					const take = await takeTextContinuation(sessionKey, resumeToken, "read", RESUME_WINDOW_LINES);
 					const footer = take.done
 						? "[End of continued report.]"
-						: `(Omitted ${take.remaining} more lines. Use read {resume: "${resumeToken}"} to continue.)`;
+						: formatOmittedNotice({ omittedLines: take.remaining, consumer: "read", token: resumeToken });
 					const modelText = `[Continued report]\n${take.lines.join("\n")}\n${footer}`;
 					return {
 						path: typeof sidecar.meta.path === "string" ? sidecar.meta.path : pathFromArgs(args) ?? "",

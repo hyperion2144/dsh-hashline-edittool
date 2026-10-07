@@ -125,6 +125,10 @@ _Avoid_: overflow dump, cache, temp store
 The opaque handle a truncated result carries — a random id bound to a sidecar state file (session, consumer tool, spill file, cursor, version stamps). Consumed via a `resume` parameter; read-only tools consume their own, read consumes every mutating tool's report segment.
 _Avoid_: continuation id, spill path (never exposed), cursor
 
+**Continuation notice**:
+The one parenthesized sentence a truncated result carries — `(Omitted N lines (~C chars). Use <consumer> {resume: "TOKEN"} to continue.)` — built once by `formatOmittedNotice` so every spilling channel spells it the same way. The byte count appears only for channels that know it (the shared spill helper and grep); read's `[Continued report]` footer omits it, and a read window closes with the window sentence instead.
+_Avoid_: footer, overflow message
+
 **Version stamp**:
 The per-file identity recorded when a spill is written and re-checked when a resume is served (snapshot id first, mtime+size fallback); a mismatch raises the modified-file caution.
 _Avoid_: mtime check, file hash, staleness token
@@ -134,6 +138,10 @@ _Avoid_: mtime check, file hash, staleness token
 **Window**:
 The line range one `read` actually served — `window: {start, end, totalLines}` in the JSON value and in the card's `presentationMeta`, with `start`/`end` always **file** line numbers (the anchor ledger), never offsets local to the response. Absent when nothing was served (an offset past the end); an empty file's window is `{1, 1, 1}`.
 _Avoid_: page, viewport, slice
+
+**Window sentence**:
+The bracketed closing sentence of a cut `read`, built by `formatWindowSummary` — `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` when a token continues it, otherwise `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`, and `[Lines X-Y of N. End of file.]` at the end. `write`'s auto-read preview is a file window too and closes with the same sentence rather than minting a fourth spelling of "there is more".
+_Avoid_: footer, pagination hint
 
 **Anchor cursor**:
 An `offset`/`limit` given as a live anchor instead of a number: it names the window's first / last line (a closed range), so a continuation survives renumbering. Mixable with numbers; an inverted range is `[E_BAD_SHAPE]`, a dead anchor `[E_STALE]`.
