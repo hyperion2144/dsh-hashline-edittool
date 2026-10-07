@@ -19,6 +19,10 @@ import type { FileIO } from "../../src/infra/fs-bridge.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
+import { useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 function makeExec(cwd: string): (args: unknown) => ToolRunContext {
 	return (args: unknown) =>

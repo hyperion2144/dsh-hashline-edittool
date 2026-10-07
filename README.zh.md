@@ -68,7 +68,7 @@
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
-**插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断。改完提交即生效——不用碰 YAML。
+**插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断。改完提交即生效——不用碰 YAML。
 
 **处处热切换。** 提交的设置改动**下一次工具调用**即生效——输出格式、分隔符、上下文行数、AST/LSP 开关（已实测：会话中途切换 `output_format`，模型收到的内容立即改变）。影响面最大的开关也有处理：切换 `require_line_content` 会销毁并重挂 `edit` 工具的 schema，模型下一步就看到新的 `{ anchor, line }` 参数集——全程无需重启。
 
@@ -184,7 +184,7 @@ D0:4|export function greet(name: string): string {
 
 | 工具 | 功能 |
 | --- | --- |
-| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记（`line_numbers: false` 得到裸锚点）。`offset`（1 起）/ `limit` 分页；超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。 |
+| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset`（1 起）/ `limit` 分页；超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。 |
 | `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。 |
 | `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加带新鲜锚点的自动 read 预览**，下一次编辑不再需要单独 read。 |
 | `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。清单由 ripgrep 出，因此 `.gitignore` 的路径默认跳过（见 `grep_respect_gitignore`）。`-C N` 回显上下文行；命中即 served → 可直接编辑。 |
@@ -215,6 +215,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
     context_lines: 3         # 陈旧回显 / diff 的上下文行数（0..20）
     max_response_chars: 48000 # 每次响应的字符预算（默认 48000，范围 [8000, 49984]）
     require_line_content: false
+    line_numbers: false     # 模型侧行标记：`<anchor>:<line>`（true）或裸锚点（false）
     ast:
       enabled: true
       languages: {}          # 按语言收窄：{ <id>: { enabled: false } }

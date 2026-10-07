@@ -277,6 +277,7 @@ function readCore(snapshot: ConfigFormSnapshot): {
 	outputFormat: "text" | "json";
 	contextLines: number;
 	requireLineContent: boolean;
+	lineNumbers: boolean;
 } {
 	const value = snapshot.value ?? {};
 	return {
@@ -284,6 +285,7 @@ function readCore(snapshot: ConfigFormSnapshot): {
 		outputFormat: value.output_format === "json" ? "json" : "text",
 		contextLines: typeof value.context_lines === "number" ? value.context_lines : 3,
 		requireLineContent: value.require_line_content === true,
+		lineNumbers: value.line_numbers === true,
 	};
 }
 
@@ -897,6 +899,26 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 							),
 						)}
 					</div>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">显示行号</span>
+						<span className="dshl-mgr-grow" />
+						{/*
+						 * The USER'S switch (#244): model-facing rows are `<anchor>:<line>`
+						 * when on, the bare `<anchor>` when off. It used to be a tool
+						 * parameter (`line_numbers`), which let the agent decide how much
+						 * of the file it was told — the decision belongs to the reader.
+						 * Default OFF, so "off" is an unset op, like the rows above.
+						 */}
+						{renderSwitch(core.lineNumbers, !writable, "line_numbers", (checked) =>
+							void write("line_numbers", () =>
+								checked ? writeField("line_numbers", true) : writeField("line_numbers"),
+							),
+						)}
+					</div>
+					<p className="dshl-mgr-hint">
+						{"开启后每行标记为 `<锚点>:<行号>`（锚点在前）；关闭时只给锚点，行号不发给模型。web 卡片不受影响。"}
+					</p>
+
 					<div className="dshl-mgr-master">
 						<span className="dshl-mgr-label">上下文行数</span>
 						<input

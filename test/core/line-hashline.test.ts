@@ -10,7 +10,10 @@
  */
 import { beforeAll, describe, expect, it, afterEach } from "vitest";
 import { applyEffective } from "../../src/config.js";
-import { withTempFile, setupIntegrationTest, getText } from "../support/fixtures.js";
+import { withTempFile, setupIntegrationTest, getText, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import { genDiff } from "../../src/render/edit-diff.js";
 import { grepFileContent } from "../../src/tools/tool-grep.js";
 import {

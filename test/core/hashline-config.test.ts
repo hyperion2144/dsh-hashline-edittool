@@ -91,7 +91,8 @@ describe("read json view", () => {
 	it("builds {path, offset, totalLines, lines} with anchor keys", () => {
 		const content = "one\ntwo\n\nfour";
 		const hashes = ["aB3", "xY7", "zQ9", "mN0"];
-		const json = buildReadJson(content, hashes, 1, 4, "f.txt") as {
+		// #244: ask for numbering explicitly — the default is the user's switch.
+		const json = buildReadJson(content, hashes, 1, 4, "f.txt", true) as {
 			// The cast has to name every field the assertions below read:
 			// `buildReadJson` returns `object`, so a narrower cast than this is not
 			// checked against anything and the reads silently fail to compile.
@@ -116,7 +117,7 @@ describe("read json view", () => {
 	it("honors offset/limit windows", () => {
 		const content = Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n");
 		const hashes = Array.from({ length: 10 }, (_, i) => "" + i + "ab");
-		const json = buildReadJson(content, hashes, 4, 2, "f") as {
+		const json = buildReadJson(content, hashes, 4, 2, "f", true) as {
 			offset: number;
 			lines: Record<string, string>;
 		};

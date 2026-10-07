@@ -10,7 +10,8 @@
 
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { beforeAll, afterAll, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
+import { applyEffective } from "../../src/config.js";
 import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
@@ -24,6 +25,21 @@ export async function getWritableTempRoot(): Promise<string> {
 	const fallback = join(process.cwd(), ".tmp");
 	await mkdir(fallback, { recursive: true });
 	return fallback;
+}
+
+/**
+ * #244: the line-number switch belongs to the USER now and defaults OFF. Most
+ * of this suite was written when every row carried `<anchor>:<line>`, so the
+ * suites that assert numbered rows pin the switch ON through this helper, and
+ * spread {@link NUMBERED} into any `applyEffective` call that flips another
+ * flag mid-test. The OFF default has its own tests.
+ */
+export const NUMBERED = { line_numbers: true } as const;
+
+/** Registers the ON baseline for every test in the calling file. */
+export function useNumberedRows(): void {
+	beforeEach(() => applyEffective(NUMBERED));
+	afterEach(() => applyEffective(undefined));
 }
 
 export async function setupTestHome(): Promise<{

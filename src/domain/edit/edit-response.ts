@@ -1,6 +1,7 @@
 import type { ServedRow } from "../../hashline/anchor-pipeline.js";
 import { genDiff } from "../../render/edit-diff.js";
 import { visLines, clipLine } from "../../infra/utils.js";
+import { lineNumbersEnabled } from "../../infra/settings.js";
 import { contextLinesCfg } from "../../hashline/index.js";
 
 /**
@@ -75,7 +76,7 @@ export interface SuccessInput {
 	snapshotId?: string;
 	editMeta: RMeta;
 	driftNotice?: string;
-	/** v2.0: render diff rows as `<line>:<anchor>` (informational only). */
+	/** The user's line-number switch (#244): diff rows carry `<anchor>:<line>` when on (informational only). */
 	lineNumbers?: boolean;
 	/** The batch's hunks, when the caller has them — removal-row attribution (#198). */
 	hunkShifts?: HunkShift[];
@@ -204,7 +205,7 @@ export function buildChanged(input: SuccessInput): TResult {
 		contextLinesCfg(),
 		resultHashes,
 		originalHashes,
-		input.lineNumbers !== false,
+		input.lineNumbers ?? lineNumbersEnabled(),
 		undefined,
 		replacedOriginalRanges(input.hunkShifts ?? []),
 	);

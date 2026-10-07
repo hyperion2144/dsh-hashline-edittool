@@ -12,6 +12,7 @@
  */
 import { hashSep, hashlineHeader } from "../hashline/hash-assign.js";
 import { formatRowMarker } from "./edit-diff.js";
+import { lineNumbersEnabled } from "../infra/settings.js";
 
 /** Extension → syntax-highlighting language hint (mirrored from dsh-tool-fs; extended for the hashline corpus). */
 const LANG_BY_EXTENSION: Record<string, string> = {
@@ -132,7 +133,7 @@ export function buildReadPresentation(
 		maxLineBytes?: number;
 		maxBytes?: number;
 		lang?: string;
-		/** issue #66/B5: render row markers as <line>:<anchor> when on. */
+		/** issue #66/B5: the user's line-number switch (#244) — markers become <anchor>:<line> when on. */
 		lineNumbers?: boolean;
 	} = {},
 ): ReadValue & { modelText: string } {
@@ -175,16 +176,16 @@ export function buildReadPresentation(
 	}
 
 	// issue #66/B5: the tool-layer presentation rebuilds the model text from
-	// the structured value (not from readAndServe's text), so the line_numbers
-	// switch must be honored HERE too — rows render as `<anchor>:<line>:content`.
+	// the structured value (not from readAndServe's text), so the user's switch
+	// (#244) must be honored HERE too — rows render as `<anchor>:<line>:content`.
 	const body = lineRenders
 		.map(({ number, hash, text }) =>
-			opts.lineNumbers !== false
+			(opts.lineNumbers ?? lineNumbersEnabled())
 				? `${hash}:${number}${hashSep()}${text}`
 				: `${hash}${hashSep()}${text}`,
 		)
 		.join("\n");
-	const modelText = `${hashlineHeader(opts.lineNumbers !== false)}\n${body}\n\n${footer}`;
+	const modelText = `${hashlineHeader(opts.lineNumbers ?? lineNumbersEnabled())}\n${body}\n\n${footer}`;
 
 	return {
 		path,
@@ -291,7 +292,7 @@ export function buildReadJson(
 	offset: number,
 	limit: number,
 	path: string,
-	lineNumbers = true,
+	lineNumbers = lineNumbersEnabled(),
 ): object {
 	const allLines = splitLines(content);
 	const totalLines = allLines.length;
@@ -304,7 +305,7 @@ export function buildReadJson(
 		// The key carries its line number exactly as every other row does —
 		// anchor first, its line trailing — so the JSON view and the text view
 		// name a line IDENTICALLY and a key can be pasted straight into `edit`.
-		const key = lineNumbers && anchor !== "" ? formatRowMarker(anchor, i + 1) : anchor;
+		const key = lineNumbers && anchor !== "" ? formatRowMarker(anchor, i + 1, lineNumbers) : anchor;
 		lines[key] = allLines[i] ?? "";
 	}
 	return {

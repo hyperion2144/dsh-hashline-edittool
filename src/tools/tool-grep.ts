@@ -21,7 +21,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { readdir, lstat } from "node:fs/promises";
-import { lineNumbersSchema } from "../contract/contract.js";
+import { assertNoRetiredLineNumbers } from "../contract/contract.js";
 import { MAX_READ_LINE_BYTES } from "../infra/constants.js";
 import { formatSize } from "../domain/session/file-view.js";
 import { minimatch } from "minimatch";
@@ -30,7 +30,7 @@ import type { Context as CordisContext } from "@deepseek-ai/cordis";
 
 import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey, recordServed, openWorkspaceStore } from "../domain/session/session-view.js";
-import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import {
 	codeUnits,
 	createResume,
@@ -91,8 +91,6 @@ export interface GrepToolOptions {
 	context?: number;
 	/** If true, `pattern` is treated as a JavaScript regex. Default TRUE (v2.0.2). */
 	regex?: boolean;
-	/** v2.0: prefix every context/match row marker with `<line>:<anchor>`. */
-	lineNumbers?: boolean;
 }
 
 const DEFAULT_LIMIT = 100;
@@ -240,9 +238,6 @@ export function buildGrepTool(io: FileIO) {
 			resume: {
 				type: "string",
 				description: "Continuation token from a previous truncated scan; returns the next segment of matches.",
-			},
-			line_numbers: {
-				...lineNumbersSchema,
 			},
 		},
 		output: {
@@ -452,6 +447,7 @@ export function buildGrepTool(io: FileIO) {
 				const signal2 = signal;
 
 				const params = args as Record<string, unknown>;
+				assertNoRetiredLineNumbers(params, "Grep request");
 				if (
 					params.path !== undefined &&
 					(typeof params.path !== "string" || params.path.length === 0)
@@ -475,7 +471,6 @@ export function buildGrepTool(io: FileIO) {
 					limit: typeof params.limit === "number" ? params.limit : undefined,
 					context: typeof params.context === "number" ? params.context : contextLinesCfg(),
 					regex: params.regex !== false,
-					lineNumbers: params.line_numbers !== false,
 				};
 				// Pre-build matcher so a bad regex fails before any IO.
 				buildMatcher(params.pattern, opts.regex);
@@ -582,7 +577,7 @@ export function buildGrepTool(io: FileIO) {
 							await io.emitObserved(file, exec, signal2).catch(() => undefined);
 						}
 						fileSections.push(
-							renderSection(displayPath, section.contextRows, anchorsByPosition, opts.lineNumbers, !headerEmitted),
+							renderSection(displayPath, section.contextRows, anchorsByPosition, lineNumbersEnabled(), !headerEmitted),
 						);
 						headerEmitted = true;
 						cardFiles.push({

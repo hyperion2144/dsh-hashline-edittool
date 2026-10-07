@@ -24,7 +24,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyEffective } from "../../src/config.js";
-import { getText, setupIntegrationTest, withTempFile } from "../support/fixtures.js";
+import { getText, setupIntegrationTest, withTempFile, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON — and any
+// mid-test `applyEffective` spread `...NUMBERED` to keep it on.
+useNumberedRows();
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildLspTool } from "../../src/tools/tool-lsp.js";
 import { setAstClient, type WorkerLike } from "../../src/ast/client.js";

@@ -404,7 +404,7 @@ export interface ApplyOneInput {
 	absolutePath: string;
 	displayPath: string;
 	signal?: AbortSignal;
-	/** Echo rows carry `<line>:<anchor>` markers unless this is false. */
+	/** Echo rows carry `<anchor>:<line>` markers while the user's numbering is on. */
 	lineNumbers?: boolean;
 	/** Shared warnings array; resEdit warnings are pushed here. */
 	warnings: string[];

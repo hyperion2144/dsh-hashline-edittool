@@ -36,10 +36,9 @@ import {
 	buildEditsSchema,
 	anchorOf,
 	declaredLineOf,
-	lineNumbersSchema,
 	type EditOp,
 } from "../contract/contract.js";
-import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 // Marker parsing, not symbol reading: `lineHintOf` moved beside the other
@@ -321,7 +320,6 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 	parameters: {
 			path: { ...pathSchema },
 			edits: buildEditsSchema(getEffectiveConfig().requireLineContent),
-			line_numbers: { ...lineNumbersSchema },
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
 		output: {
@@ -436,7 +434,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					canonical.path = resolution.path;
 				}
 				assertEditRequest(canonical, getEffectiveConfig().requireLineContent);
-				const lineNumbers = canonical.line_numbers !== false;
+				const lineNumbers = lineNumbersEnabled();
 				if (resolution) {
 					// Preserve the path-resolution warning at the top of the warnings list.
 					(canonical as { _pathWarning?: string })._pathWarning = resolution.warning;
@@ -809,7 +807,7 @@ function enforceNoopLoopSync(opts: {
 export function buildCanonicalFromFileResult(
 	file: FileEditResult,
 	displayPath: string,
-	lineNumbers = true,
+	lineNumbers = lineNumbersEnabled(),
 ): EditCanonicalValue {
 	// 渲染通道（issue #71）: genDiff 的结构化 diff 行（新旧行号 + 会话锚点）。
 	// 与 modelText 同源同算法，但作为结构化数据走 presentationMeta，
@@ -855,7 +853,7 @@ export function buildCanonicalFromFileResult(
 function buildChangedModelText(
 	file: FileEditResult,
 	displayPath: string,
-	lineNumbers = true,
+	lineNumbers = lineNumbersEnabled(),
 ): string {
 	if (file.appliedCount === 0) {
 		const warningsBlock =

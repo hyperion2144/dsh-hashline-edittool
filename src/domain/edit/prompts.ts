@@ -7,9 +7,10 @@
  *
  * v2.0: anchors are variable-length Base62 (`[A-Za-z0-9]{1,8}`, 2-char
  * first), unique per line, and the legacy `<line>#<hash>` form is REJECTED
- * (`E_BAD_REF`). Line numbers are an optional output (`line_numbers: true`)
- * rendered as `<line>:<anchor>` — informational only, never part of the
- * anchor. Stale references fail hard via the served-content check.
+ * (`E_BAD_REF`). Line numbers are the USER's switch, off by default: when on,
+ * a row's marker carries its 1-indexed line as `<anchor>:<line>` — informational
+ * only, never part of the anchor; when off, rows carry the bare anchor.
+ * Stale references fail hard via the served-content check.
  * @module dsh-hashline-edittool/prompts
  */
 
@@ -94,11 +95,11 @@ const AST_MOVED_NOTE =
 export function readDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
 		return (
-			"Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {anchor: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is `<anchor>:<line>` (anchor first, its line number trailing; pass `line_numbers: false` for bare anchors); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit." +
+			"Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {marker: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is the row's marker (`<anchor>`, or `<anchor>:<line>` while the user's line numbers are on); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit." +
 			AST_MOVED_NOTE
 		);
 	}
-	return ("Read a text file: pass `file_path`. Each row is `<anchor>:<line>:content` — the anchor FIRST, its line number trailing (pass `line_numbers: false` for bare `<anchor>:content` rows) — under an `ANCHOR:FILELINE` header inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit." +
+	return ("Read a text file: pass `file_path`. Each row is `<anchor>:content` — the anchor FIRST; with the user's line numbers on, the marker also carries its 1-indexed line (`<anchor>:<line>:content`), informational only — under a header line that separates marker from content (`ANCHOR:LINE:CONTENT`, or `ANCHOR:CONTENT` while numbering is off) inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit." +
 		AST_MOVED_NOTE);
 }
 
@@ -107,8 +108,8 @@ export const READ_GUIDANCE: ToolGuidance = {
 		"Use read, not shell commands, to inspect text files and obtain the variable-length anchors the editing tools require.",
 	lines: [
 		"`read`: call it only for content the tools have not served — a page you never saw, or lines past the post-edit diff.",
-		"`read`: each row is `<anchor>:<line>:content` — copy the ANCHOR (the first token); the line number trails it and is a hint only (`line_numbers: false` gives bare `<anchor>:content`). Identical content lines get DISTINCT anchors. The header `ANCHOR:FILELINE` separates marker columns from file content.",
-		"`read`: the ANCHOR comes first; the number after it is that line's number, informational only. Either half works as the anchor field (the whole `<anchor>:<line>` marker or the bare anchor both parse — and a bare line number alone is accepted too, resolved to that served line), but the anchor is authoritative. Pass `line_numbers: false` for bare `<anchor>:content` rows.",
+		"`read`: each row is `<anchor>:content` — copy the ANCHOR (the first token); with the user's line numbers on the marker reads `<anchor>:<line>` and that number is a hint only. Identical content lines get DISTINCT anchors. The header separates marker columns from file content.",
+		"`read`: the ANCHOR comes first; a line number, when present, is that line's number, informational only. Either half works as the anchor field (the whole `<anchor>:<line>` marker or the bare anchor both parse — and a bare line number alone is accepted too, resolved to that served line), but the anchor is authoritative.",
 		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
 		"`read`: binary/directory rejects; page large files with offset/limit.",
 		'`read`: results over the per-response char budget (default 48,000) return a segment + `(Omitted N lines. Use read {resume: "TOKEN"} to continue.)` — pass the token back via `resume` to keep reading. `offset`/`limit` also still work.',
@@ -130,9 +131,9 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 /** Grep tool description, generated from the effective config (text/json). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {anchor: content}}]} — keys are `<anchor>:<line>` edit markers (the variable-length Base62 anchor first, its line number trailing), values are verbatim file content; matches are served so they can be edited directly.";
+		return "Search files (JavaScript-flavre regex by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {marker: content}}]} — keys are the row markers (`<anchor>`, or `<anchor>:<line>` while the user's line numbers are on), values are verbatim file content; matches are served so they can be edited directly.";
 	}
-	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:<line>:content` rows — anchor first, line number trailing; `line_numbers: false` for bare anchors); matches are served, so they can be edited directly.";
+	return "Search files (JavaScript-flavre regex by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:content` rows, or `<anchor>:<line>:content` while the user's line numbers are on — anchor first); matches are served, so they can be edited directly.";
 }
 
 export const GREP_GUIDANCE: ToolGuidance = {
@@ -140,7 +141,7 @@ export const GREP_GUIDANCE: ToolGuidance = {
 	lines: [
 		"`grep`: defaults to JavaScript-flavre regex; pass `regex: false` for literal substring matching. Only set the flag when a literal pattern would mis-parse as regex (e.g. it contains (, [, *, +, ?).",
 		"`grep`: `-C N` (or `--context N`) adds N marker rows above and below each match — use a small N to keep context cheap; the rows still carry markers, so a hit from the context window is editable.",
-		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with `ANCHOR:FILELINE` and lists matches in file order.",
+		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with a header line and lists matches in file order.",
 		"`grep`: every file read is recorded as observed, so the matches can be edited without a separate `read` call.",
 		"`grep`: use `limit` to cap matches per file when probing a noisy file; the cap applies per file, not globally.",
 		'`grep`: results over the per-response char budget (default 48,000) spill to a resume file. The footer `(Omitted N lines. Use grep {resume: "TOKEN"} to continue.)` tells you the token — pass it via `resume` to get the next segment.'

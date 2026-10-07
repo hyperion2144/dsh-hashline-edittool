@@ -15,7 +15,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { hashStorePath } from "../../src/infra/paths.js";
 import { decodeServedAnchors } from "../../src/domain/session/served-codec.js";
-import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/fixtures.js";
+import { getWritableTempRoot, setupIntegrationTest, getText, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 let tmpHome: string;
 beforeAll(async () => {

@@ -29,7 +29,7 @@ export interface ReadAndServeOptions {
 	limit?: number;
 	/** ADR-0013: per-response char budget for the returned window. */
 	maxChars?: number;
-	/** v2.0: prefix every row marker with `<line>:<anchor>`. */
+	/** The user's line-number switch (#244): a row marker becomes `<anchor>:<line>` when on. */
 	lineNumbers?: boolean;
 	/**
 	 * The calling execution. Serving rows IS observing the file, so the dsh

@@ -6,7 +6,10 @@ import {
 } from "../../src/hashline/index.js";
 import { servedAnchors } from "../support/anchor-serve.js";
 import { splitLines } from "../../src/infra/utils.js";
-import { useTestHome } from "../support/fixtures.js";
+import { useNumberedRows, useTestHome } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 const home = useTestHome();
 
 describe("strict hashline contract", () => {

@@ -23,14 +23,13 @@ import {
 	normalizeRequest as normReq,
 	assertReadRequest,
 	readFilePathSchema,
-	lineNumbersSchema,
 	type ReadParams,
 } from "../contract/contract.js";
 
 import { readAndServe, UTF8_REWRITE_NOTE } from "../read-and-serve.js";
 import { readDescription } from "../domain/edit/prompts.js";
 import { splitLines } from "../infra/utils.js";
-import { isJsonOutput, getEffectiveConfig } from "../config.js";
+import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { readView } from "../domain/session/file-view.js";
 import { recordServed } from "../domain/session/session-view.js";
@@ -77,9 +76,6 @@ export function buildReadTool(io: FileIO) {
 				type: "string",
 				description:
 					'Continuation token from a previous truncated result. Takes precedence over offset/limit. Report continuations (from write/edit/undo) are consumed here too.',
-			},
-			line_numbers: {
-				...lineNumbersSchema,
 			},
 		},
 		output: {
@@ -221,7 +217,6 @@ export function buildReadTool(io: FileIO) {
 							sessionKey,
 							signal,
 							offset: windowOffset,
-							lineNumbers: canonical.line_numbers !== false,
 							maxChars: budget,
 							exec,
 						});
@@ -288,7 +283,6 @@ export function buildReadTool(io: FileIO) {
 							signal,
 							offset: canonical.offset,
 							limit: canonical.limit,
-							lineNumbers: canonical.line_numbers !== false,
 							maxChars: budget,
 							exec,
 						},
@@ -356,7 +350,7 @@ export function buildReadTool(io: FileIO) {
 						const text = servedAllLines[row.position] ?? "";
 						lines.push({ number, text });
 						hashlines.push({ number, hash: row.anchor, text });
-						lineDict[canonical.line_numbers !== false ? `${row.anchor}:${number}` : row.anchor] =
+						lineDict[lineNumbersEnabled() ? `${row.anchor}:${number}` : row.anchor] =
 							text;
 					}
 					if (isJsonOutput()) {
@@ -399,7 +393,7 @@ export function buildReadTool(io: FileIO) {
 							start,
 							shownCount,
 							canonical.path,
-							{ lineNumbers: canonical.line_numbers !== false },
+							{ lineNumbers: lineNumbersEnabled() },
 						);
 				// If the file had non-UTF-8 bytes, the readAndServe text already
 				// carries the rewrite note — append it to the model text so the

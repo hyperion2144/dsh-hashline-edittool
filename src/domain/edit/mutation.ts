@@ -86,7 +86,7 @@ export interface ExecPipelineOptions {
 	store?: HashStore
 	noPersist?: boolean
 	sessionKey?: string
-	/** Echo rows carry `<line>:<anchor>` markers unless this is false. */
+	/** Echo rows carry `<anchor>:<line>` markers while the user's numbering is on. */
 	lineNumbers?: boolean
 	/**
 	 * The calling execution. Needed so an echo can emit `fs/observed` for the

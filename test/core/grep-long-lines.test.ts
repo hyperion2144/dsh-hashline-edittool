@@ -18,7 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyEffective } from "../../src/config.js";
 import { MAX_READ_LINE_BYTES } from "../../src/infra/constants.js";
-import { setupIntegrationTest, getText } from "../support/fixtures.js";
+import { setupIntegrationTest, getText, NUMBERED, useNumberedRows } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 import { applyHashlineShape } from "../../src/hashline/hash-assign.js";
 
 applyHashlineShape({ separator: ":", contextLines: 3 });
@@ -64,7 +67,7 @@ describe("grep long lines", () => {
 			const long = "PREFIX " + "y".repeat(260) + " SUFFIX";
 			const path = join(dir, "long.txt");
 			await writeFile(path, long + "\nkeep\n", "utf-8");
-			applyEffective({ require_line_content: true });
+			applyEffective({ ...NUMBERED, require_line_content: true });
 			const h = setupIntegrationTest(dir);
 			const res = await (h.getTool("grep") as Tool).execute("grep", {
 				pattern: "PREFIX",

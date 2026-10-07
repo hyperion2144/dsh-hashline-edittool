@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 // semantics these unit tests exercise.
 const DEFAULT_MAX_BYTES = 50 * 1024;
 import { fmtReadPreview } from "../../src/domain/session/file-view.js";
-import { useTestHome } from "../support/fixtures.js";
+import { useNumberedRows, useTestHome } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 const home = useTestHome();
 

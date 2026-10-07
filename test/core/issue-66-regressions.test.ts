@@ -16,7 +16,10 @@ import { applyHashlineShape, hashlineHeader, hashSep } from "../../src/hashline/
 import { anchorsPure } from "../../src/hashline/alloc.js";
 import { anchorsFor } from "../../src/domain/session/anchor-state.js";
 import { buildReadJson } from "../../src/render/read-card.js";
-import { useTestHome } from "../support/fixtures.js";
+import { useNumberedRows, useTestHome } from "../support/fixtures.js";
+// #244: the line-number switch belongs to the user now and defaults OFF; this
+// file asserts numbered rows, so every test here pins it ON.
+useNumberedRows();
 
 const home = useTestHome();
 const SEP = hashSep();

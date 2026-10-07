@@ -15,7 +15,8 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { toLF, stripBOM, genDiff, restoreEndings } from "../render/edit-diff.js";
 import { cntDiff, splitLines } from "../infra/utils.js";
-import { assertUndoRequest, normalizeRequest as normReq, lineNumbersSchema } from "../contract/contract.js";
+import { lineNumbersEnabled } from "../config.js";
+import { assertUndoRequest, normalizeRequest as normReq } from "../contract/contract.js";
 import { contentChecksum, contextLinesCfg } from "../hashline/hash-assign.js";
 import { changedRange } from "../hashline/anchor-pipeline.js";
 import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit.js";
@@ -73,9 +74,6 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				type: "string",
 				required: true,
 				description: "Path to the file to undo",
-			},
-			line_numbers: {
-				...lineNumbersSchema,
 			},
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},
@@ -147,7 +145,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			const canonical = normReq(args);
 			assertUndoRequest(canonical);
-			const lineNumbers = canonical.line_numbers !== false;
+			const lineNumbers = lineNumbersEnabled();
 			const path = canonical.path;
 			const absolutePath = await io.resolve(path, cwd, signal);
 			const sandboxPolicy = await sandbox.resolvePolicy("undo_last_edit", canonical as unknown as FsEscalationArgs, exec);
