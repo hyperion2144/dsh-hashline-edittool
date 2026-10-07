@@ -48,9 +48,9 @@
 - **同一工作区内锚点跨会话共享。** 在一个会话里读过文件，另一个会话可以直接改，不必重读：
   锚点是每工作区的身份，而「这一行能不能写」按会话回答。若另一个会话**替换**了你手里那一行，
   你会拿到拒绝与该行当前的锚点 —— 而不是静默写到别处。
-- **一次调用 = 一个原子批次。** 同一 `edit` 调用里的所有锚点都对照原始快照解析；任何
-  一条失败即整批拒绝、什么都不写。多文件批次按文件分组，每个文件独立 all-or-nothing，
-  部分成功会被明确上报。
+- **每个文件一个原子批次。** 同一 `edit` 调用里的所有锚点都对照原始快照解析，因此每一项都用原始锚点。
+  单个文件内的编辑 all-or-nothing：一条失败即拒绝**该文件**的批次（`[E_BATCH_ABORT]`）、该文件什么都不写；
+  文件之间互不牵连 —— 多文件调用逐文件上报部分成功，每个失败各自带错误码。
 - **一切皆卡片。** 随包的 client 插件从结构化 `presentationMeta` 在 dsh web UI 渲染
   读 / diff / grep / 撤销 / 写入 / 结构 / LSP 卡片 —— 模型文本与 UI 永远不需要靠字符串
   解析达成一致。
@@ -170,7 +170,7 @@ D0:4|export function greet(name: string): string {
 
 开启 `hashline.require_line_content` 后，每个锚点变成 `{ anchor, line }` 对 —— `line`
 是你对该行**当前完整文本**的声明。声明在陈旧锚点检查之后验证；不匹配则以
-`[E_CONTENT_MISMATCH]` 拒绝整次调用，并回显你声明的内容实际所在的位置。
+`[E_CONTENT_MISMATCH]` 拒绝该文件的批次，并回显你声明的内容实际所在的位置。
 
 ### `grep_respect_gitignore`（默认开）
 
@@ -241,7 +241,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_BAD_OP]` | 范围终点在起点之前（方向颠倒时自动纠正）。 |
 | `[E_BAD_REF]` | 锚点字段不是从行首列复制的标记。 |
 | `[E_BAD_SHAPE]` | 请求/字段形状错误（未知字段、op 与锚点字段不匹配等）。 |
-| `[E_BATCH_ABORT]` | 批内一条失败；什么都没写。 |
+| `[E_BATCH_ABORT]` | 批内一条失败；**该文件**的批次被拒绝，该文件什么都没写。 |
 | `[E_BATCH_CONFLICT]` | 两条目在同一快照上范围重叠。 |
 | `[E_CONTENT_MISMATCH]` | （require_line_content）声明的 `line` 不匹配。 |
 | `[E_ELISION_IN_PAYLOAD]` | 载荷携带大纲标记 `…`；警告，编辑继续。 |
@@ -268,7 +268,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | 语法下载失败 / SHA-256 不匹配 / tarball 中缺少条目。 |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` / `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP：该语言无服务器 / 操作无效 / 服务器不可用 / 请求中止 / 通道已关闭 / 仍在启动 / 超时。 |
 | `[E_BARE_HASH_PREFIX]` | `lines` 中粘入了带锚点前缀的行；剥除并警告。 |
-| `[E_ANCHOR_AMBIGUOUS]` | 锚点同时活在多行上（被释放的锚点在模型仍持旧绑定时被重新分配）——拒绝；请重新 read。未写入任何内容。 |
+| `[E_ANCHOR_AMBIGUOUS]` | 锚点同时活在多行上（被释放的锚点在模型仍持旧绑定时被重新分配）——拒绝；请重新 read。该文件未写入任何内容。 |
 
 ## 存储
 

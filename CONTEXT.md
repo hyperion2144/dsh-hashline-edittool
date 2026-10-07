@@ -43,7 +43,7 @@ An array of `{op, anchor_start, anchor_end?, lines?}` entries — the payload of
 _Avoid_: patches, modifications, replacements (plural); `batch_edit` (the removed 0.3-era tool)
 
 **declared line (`line`)**:
-With `require_line_content` enabled, each anchor in an `edits[i]` entry becomes a `{ anchor, line }` pair — `line` is the caller's declaration of the anchor line's CURRENT full text (single line, verbatim; trailing whitespace and a copied read-row marker prefix are tolerated). Every declaration is verified after the served-staleness check and before anything applies; a mismatch rejects the whole call (`E_CONTENT_MISMATCH`). With the switch off, declared lines do not exist and anchors are plain markers.
+With `require_line_content` enabled, each anchor in an `edits[i]` entry becomes a `{ anchor, line }` pair — `line` is the caller's declaration of the anchor line's CURRENT full text (single line, verbatim; trailing whitespace and a copied read-row marker prefix are tolerated). Every declaration is verified after the served-staleness check and before anything applies; a mismatch rejects that file's batch (`E_CONTENT_MISMATCH`). With the switch off, declared lines do not exist and anchors are plain markers.
 _Avoid_: expected content, content echo, `line_content`, confirmation text
 
 **Anchor entry point**:

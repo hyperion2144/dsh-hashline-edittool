@@ -300,3 +300,27 @@ ADR-0013 rather than left in issues.
 - `cordis.patch.yml` 的说法**不是**过时措辞：本机 `~/.dsh/profiles/{desktop,web}/cordis.patch.yml` 实测仍在 → README 只改迁移段，路径句保留（票面把它当「过时措辞」是证据不足）。
 - 事实备注（工具教训）：在运行时目录里 grep `cordis\.patch` 得到 no matches **不能**当作「文件不存在」的证据 —— grep 工具跳过 `node_modules`；要查磁盘就 glob。
 - `hash_length` 的 schema 容忍（legacy 键）属于 schema 形状，不在本票范围；`src/infra/paths.ts` 的 `legacyHashStorePath()` 是哈希库路径，不是设置文件。
+
+## 2026-10-05 — 模型侧编辑文案改成逐文件口径 (#242)
+
+**Topic:** `edit` 的 prompt / description / guidance / 错误文案不再宣称「整批原子、整批拒绝」，改为 ADR-0003 语义：单个文件内一个原子批次、文件之间互不牵连、部分成功逐文件上报。
+
+**Confidence:** High
+
+**Evidence:** 地图 [#234](https://github.com/hyperion2144/dsh-hashline-edittool/issues/234) 的 C3 票 [#242](https://github.com/hyperion2144/dsh-hashline-edittool/issues/242)；`npm run typecheck` 与 `npm test`（130 文件 = 129 passed + 1 skipped / 1421 例 = 1420 passed + 1 skipped）、`npm run typecheck -w client` 与 `npm test -w client`（6 文件 / 158 例）全绿；新增 `test/core/issue-242-atomicity-wording.test.ts`（7 例）。
+
+### Why
+引擎自 0.4.0 起就是**按文件**分组、文件内 all-or-nothing、多文件部分成功（ADR-0003 / ADR-0004），但模型侧文案从那时起一直写着「The batch is ATOMIC — any hunk failure rejects the WHOLE batch … and nothing is written」。多文件调用里一处失败时，模型据此以为整次调用什么都没发生（实际别的文件已落盘），于是既不会重试失败文件、也不会核对落盘结果 —— 这正是用户第③件事在模型侧的同源缺陷。
+
+### Path / Affected typed relationships
+- `src/domain/edit/prompts.ts`：`editDescription` 两态开头（`:34`/`:35`）与 `editGuidance` 两态原子性 bullet（`:60`/`:79`）改逐文件口径（`:79` 另补「已落盘的保留自己的 undo 槽」）；`:56` 申报不匹配句与 `:72` 的 `Classification: noop` 句同批收窄。
+- `src/contract/contract.ts` 的 `edits` 参数 description 同口径，并写明「单文件内按序演进，但每个锚点对照同一次 read 的原始快照」。
+- `src/domain/edit/edit-engine.ts` 与 `src/hashline/anchor-pipeline.ts` 的两条 `[E_ANCHOR_AMBIGUOUS]` 抛出文案：`nothing was written.` → `nothing was written for that file.`（该守卫在一个文件的解锚阶段抛，多文件调用里别的文件可能已落盘）。
+- README.md / README.zh.md 的同款 bullet、`[E_BATCH_ABORT]` 与 `[E_ANCHOR_AMBIGUOUS]` 错误码行；`CONTEXT.md` 的申报门词条同句。
+
+### 本轮定案（复核时照此）
+- 引擎 `[E_BATCH_ABORT]` 的尾巴逐字保留：作用域就是一个文件的批次，单文件调用里字字为真；多文件响应由 ADR-0004 剥掉它（`src/tools/tool-edit.ts` 的 `/\nThe whole batch was rejected[\s\S]*$/`），三条测试已锁。改它要同时动剥壳正则与三条测试，收益为零。
+- 票面 ③ 的「ADR-0005」是误标 —— ADR-0005 是 grep 卡片 ADR；对齐基准 = ADR-0003（per-file atomicity）+ ADR-0004（多文件响应形状）。
+- `docs/edit-payload-spec.md:86` 等历史 spec 里的旧 description 引文就地不改（记录的是各自时代的原文），只改现行模型侧文案。
+- `README.md:298` 的 `[E_ANCHOR_STATE_DUP]` 行也写着「Nothing was written.」但该码今天只走 `console.error` + 状态修复（`src/domain/session/anchor-state.ts:142-146`），未核实为模型可见的拒绝 → 未改，留待需要时单独核。
+- 工具教训：`sed` 的锚点必须逐字复制（大小写敏感）—— 我误把 `SX:56` 写成 `sc:56`（正好是上一行的锚），工具按锚解析到第 55 行、模式不匹配而**静默 noop**，唯一信号是 `[E_LINE_HINT] line hint 56 does not match anchor sc (resolved to line 55)`。

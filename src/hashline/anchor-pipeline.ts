@@ -1600,7 +1600,7 @@ export function applyEdit(
 			const first = fileAnchors.indexOf(anchor);
 			const second = fileAnchors.indexOf(anchor, first + 1);
 			throw new Error(
-				`[E_ANCHOR_AMBIGUOUS] anchor "${anchor}" is currently live on lines ${first + 1} and ${second + 1} — the file's anchor state is inconsistent. Re-read the file and retry with fresh anchors; nothing was written.`,
+				`[E_ANCHOR_AMBIGUOUS] anchor "${anchor}" is currently live on lines ${first + 1} and ${second + 1} — the file's anchor state is inconsistent. Re-read the file and retry with fresh anchors; nothing was written for that file.`,
 			);
 		}
 	}

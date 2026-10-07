@@ -649,7 +649,7 @@ export function buildEditsSchema(
 		type: "array",
 		required: true,
 		description:
-			"Ordered list of edits to apply atomically. Edits apply in order against evolving content; each one sees the file state after the previous edit in the same call. All anchors come from one read (original snapshot) — re-read for fresh anchors after an edit (there is no `Shift:` block in v2.0).",
+			"Ordered list of edits. Within one file the edits are one atomic batch — a failure rejects that file's batch ([E_BATCH_ABORT]) and writes nothing for that file, while other files in the same call are unaffected and partial success is reported per file. Inside one file the edits apply in order against evolving content — each one sees the file state after the previous edit in the same call — but every anchor resolves against the ORIGINAL snapshot of one read — re-read for fresh anchors after an edit (there is no `Shift:` block in v2.0).",
 		items: buildEditItemSchema(requireLineContent),
 	} as const;
 }

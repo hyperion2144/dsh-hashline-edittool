@@ -95,7 +95,7 @@ function pinBound(bound: Anchor, fileAnchors: string[]): Anchor {
 		const second = fileAnchors.indexOf(bound.anchor, idx + 1);
 		if (second >= 0) {
 			throw new Error(
-				`[E_ANCHOR_AMBIGUOUS] anchor "${bound.anchor}" is currently live on lines ${idx + 1} and ${second + 1} — the file's anchor state is inconsistent (an external rewrite re-allocated a served anchor). Re-read the file and retry with fresh anchors; nothing was written.`,
+				`[E_ANCHOR_AMBIGUOUS] anchor "${bound.anchor}" is currently live on lines ${idx + 1} and ${second + 1} — the file's anchor state is inconsistent (an external rewrite re-allocated a served anchor). Re-read the file and retry with fresh anchors; nothing was written for that file.`,
 			);
 		}
 	}
