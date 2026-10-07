@@ -320,6 +320,8 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_PASTE_DUP]` | Replacement line matches an adjacent file line; kept verbatim. |
 | `[E_SERVED_RECORD]` | Diagnostics: served state could not be persisted (storage failure); the response carries a re-read notice instead of silently losing the rows. |
 | `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. `E_RANGE_STALE` is also what the host's `FS_STALE_VERSION` is reported as: same remedy (re-read), different cause. |
+| `[E_RESUME_CONFLICT]` | A read request carried both a resume token and `offset`/`limit`; the token already names the window — pass one or the other. |
+| `[E_RESUME_GONE]` / `[E_RESUME_BAD]` / `[E_RESUME_TOOL]` | A `resume` token's spill is gone or expired / the token is malformed, corrupt, or bound to another session / it must be consumed by a different tool. |
 | `[E_STALE]` | Anchor no longer matches served content; re-read. |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit`'s replacement would leave the file unparsable; not written. |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | File changed after the edit / undo history could not persist. |

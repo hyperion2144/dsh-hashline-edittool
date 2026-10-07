@@ -39,7 +39,7 @@ describe("read modelText has no dsh envelope (issue #71 direction B)", () => {
 			};
 			expect(value.modelText).not.toMatch(DSH_READ_ENVELOPE_RE);
 			expect(value.modelText.startsWith("ANCHOR:LINE")).toBe(true);
-			expect(value.modelText).toMatch(/\[End of file - total 2 lines\.\]$/);
+			expect(value.modelText).toMatch(/\[Lines 1-2 of 2\. End of file\.\]$/);
 		});
 	});
 

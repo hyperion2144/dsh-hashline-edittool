@@ -215,3 +215,37 @@ ADR-0013 rather than left in issues.
 - `docs/anchor-entry-contract.md` §6 — Amended：新增「实测补充」段，并把「失败始终是 `E_RANGE_UNVERIFIED`」限定为**本节范围内**。正确读法：`E_RANGE_UNVERIFIED` 覆盖「已解析但不在本会话 served 集合」；「锚点不可解析」归既有的 `E_STALE`。§2.4 的四类 `reason` 仍按原样分岔提示语，**不改动任何一个码**。
 - 不涉及 `README.md`：它本来就是对的，改的是契约对它的复述。
 - 不涉及错误码集合的增删 —— 本次重构的「错误码一字不改」承诺未破。
+
+---
+
+## 2026-10-05 — read 的行窗口：锚点游标与只剩一句的尾巴 (#245)
+
+**Type:** decision + contract documentation
+**Confidence:** High
+**Evidence:** 地图 [#234](https://github.com/hyperion2144/dsh-hashline-edittool/issues/234) 的契约票 [#238](https://github.com/hyperion2144/dsh-hashline-edittool/issues/238) / 形态票 [#239](https://github.com/hyperion2144/dsh-hashline-edittool/issues/239) / 实施票 [#245](https://github.com/hyperion2144/dsh-hashline-edittool/issues/245) 的逐轮裁定；新模块 `src/domain/session/read-window.ts`；单一拼装点 `assembleServedRead`（`src/tools/tool-read.ts`）；`test/core/read-window.test.ts`（13 例）；`npm test`（129 文件 / 1421 例）与根 typecheck 均绿。
+
+### Why
+行号开关（#244）关掉之后 grep 只回裸锚点，而 `offset`/`limit` 只认数字：模型能说“再来十二行”，说不出“从这个锚点到那一行”。尾部同时有三个拼装点（渲染器 footer、`formatPaginationHint`、字符截断后重加提示的正则），text / JSON / web 卡片三通道可以各说一个窗口；`resume` 与 `offset`/`limit` 同时出现还会被静默偏向 `resume`（被忽略的参数看上去像是生效了）。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0014-read-window-cursor-and-summary.md` — new：游标语义（闭区间、两种字段各收数字或锚点、倒置区间是唯一新增硬拒绝）、一句话尾部的四条形态与三通道同源、失败码按 `edit` 口径、空文件是真实服务。
+- `docs/adr/0013-streaming-segmented-responses.md` — 文首加一行 See also 指针（分段与行窗口是两条轴，`resume` 与游标互斥）；本 ADR 关于 token / spill / 预算的结论一字未改。
+- `CONTEXT.md` — 新增 “Read windows” 簇：**Window**（`window: {start, end, totalLines}`，`start`/`end` 恒为文件行号）与 **Anchor cursor**。
+- `README.md` / `README.zh.md` — 错误码表补 `[E_RESUME_CONFLICT]`，并把三个**既有** `E_RESUME_*` 码一并登记：它们原先在 `src/infra/response-stream.ts` 由字符串插值生成，互锁测试（`test/core/error-codes.test.ts`）正则扫不到，于是从未进表；本轮改为 `RESUME_CODE_TAG` 字面量表，插值输出逐字不变。
+- `CHANGELOG.md` — `[Unreleased] ### Changed` 一条中文条目。
+- `AGENTS.md` — `l0_domains.decisions` 由 0001–0013 扩为 0001–0014。
+
+### 本轮定案（复核时照此）
+
+- 闭区间：`offset` 的锚点行**包含**在窗口内；`limit` 给锚点是“末行”而不是计数，给数字仍是计数；数字与锚点可混用。
+- 失败码按 `edit` 口径：锚点已死（不在 `anchor_lines`）→ `[E_STALE]`；served 类异常（没服务过 / 行移动 / 内容变化，四因一码）→ `[E_RANGE_UNVERIFIED]`；`[E_RANGE_STALE]` 仍只留给校验和与版本守卫（它是重映射/版本断言，不是 served 判定）。
+- 空文件是**真实服务**：`window {1, 1, 1}`、`lines` 保留 synthetic 空行、末行仍是空文件提示（提示单点在 `EMPTY_FILE_NOTE`）；越界才是「一行也没服务」，不产出 `window`。
+- 尾巴只归宿主：模型侧 text 与 JSON 的 `window`、web 卡片的 `presentationMeta.window` 同源；渲染器不再自带 footer。其他尾巴（write 预览 / grep / edit 拒绝回声）归 #246。
+- 事实备注（写给下一个改这块的人）：行文本有两种形状 —— `buildReadPresentation` 拼 `anchor:n:content`（无空格），渲染器 `fmtHashlineRow` 拼 `anchor:n: content`（有空格）。默认读路径一直用前者，只有稀疏（超大行提示）与 JSON 走渲染器的 `result.text`；本轮一度改成一律用渲染器文本，42 条解析型断言随即变红（`one.hash` 为 undefined），遂原样回退。
+- 事实备注（与 #215 条目同题）：`[E_STALE]` 在 read 游标路径上仍走**定位阶段**那条既有路径（锚点不可解析 / 不在本文件），与 2026-10-04 的更正条目一致；`[E_RANGE_UNVERIFIED]` 继续覆盖「已解析但 served 判定不过」。
+
+### 未做（留给后续票）
+
+- write 的自动预览 / grep / `ast_edit` 的尾部仍是各自形态 → #246。
+- 遗留文件通道清理（`settings.yaml` 直读、`parseSettingsYaml`、`dev-diag`、README 旧措辞）→ #237。

@@ -13,6 +13,8 @@
 import { hashSep, hashlineHeader } from "../hashline/hash-assign.js";
 import { formatRowMarker } from "./edit-diff.js";
 import { lineNumbersEnabled } from "../infra/settings.js";
+import { splitLines } from "../infra/utils.js";
+import { formatNoLinesSummary, type ReadWindow } from "../domain/session/read-window.js";
 
 /** Extension → syntax-highlighting language hint (mirrored from dsh-tool-fs; extended for the hashline corpus). */
 const LANG_BY_EXTENSION: Record<string, string> = {
@@ -110,13 +112,11 @@ type ReadLineRender = {
 	text: string;
 } & { [key: string]: unknown };
 
-/** Pure LF splitter (mirrors dsh-tool-fs's splitting). */
-function splitLines(content: string): string[] {
-	if (content.length === 0) return [];
-	const lines = content.split("\n");
-	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-	return lines;
-}
+/**
+ * Line semantics come from `infra/utils` (one splitter for the whole tool):
+ * an empty file is ONE line, so the text view, the JSON view and the window
+ * summary all agree (#245).
+ */
 
 /**
  * Build the read canonical value and the model-facing text in one pass.
@@ -164,16 +164,12 @@ export function buildReadPresentation(
 		return { number: start + i, hash: hashesSlice[i] ?? "", text: truncated };
 	});
 
-	const hasMore = endIdx < totalLines;
-	const endLine = start + lineRenders.length - 1;
-	let footer: string;
-	if (hasMore) {
-		footer = `[Showing lines ${start}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue.]`;
-	} else if (start > totalLines) {
-		footer = `[Offset ${start} is beyond end of file (${totalLines} lines total).]`;
-	} else {
-		footer = `[End of file - total ${totalLines} lines.]`;
-	}
+	// The window sentence that ends a read belongs to the TOOL layer (#245):
+	// only the tool knows the resume token and the served set, so this builder
+	// emits rows and nothing else. One exception — a request that served NO
+	// line has no rows to carry the diagnosis, so it says so here.
+	const summary =
+		lineRenders.length === 0 ? formatNoLinesSummary(start, totalLines) : undefined;
 
 	// issue #66/B5: the tool-layer presentation rebuilds the model text from
 	// the structured value (not from readAndServe's text), so the user's switch
@@ -185,7 +181,10 @@ export function buildReadPresentation(
 				: `${hash}${hashSep()}${text}`,
 		)
 		.join("\n");
-	const modelText = `${hashlineHeader(opts.lineNumbers ?? lineNumbersEnabled())}\n${body}\n\n${footer}`;
+	const modelText =
+		summary === undefined
+			? `${hashlineHeader(opts.lineNumbers ?? lineNumbersEnabled())}\n${body}`
+			: `${hashlineHeader(opts.lineNumbers ?? lineNumbersEnabled())}\n${summary}`;
 
 	return {
 		path,
@@ -293,6 +292,7 @@ export function buildReadJson(
 	limit: number,
 	path: string,
 	lineNumbers = lineNumbersEnabled(),
+	window?: ReadWindow,
 ): object {
 	const allLines = splitLines(content);
 	const totalLines = allLines.length;
@@ -313,5 +313,6 @@ export function buildReadJson(
 		offset: start,
 		totalLines,
 		lines,
+		...(window === undefined ? {} : { window }),
 	};
 }

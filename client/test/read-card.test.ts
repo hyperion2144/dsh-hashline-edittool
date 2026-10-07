@@ -47,6 +47,19 @@ describe("readCardMeta", () => {
 		expect(readCardMeta(model({ totalLines: 2 }), readCardLabels(t))).toEqual(["ts"]);
 	});
 
+	it("prefers the host's window to the row count (#245)", () => {
+		// A sparse window whose served rows happen to look like the whole file: the
+		// host knows better, so its answer wins.
+		expect(readCardMeta(model({ window: { start: 5, end: 6, totalLines: 300 } }), readCardLabels(t))).toEqual([
+			"ts",
+			"read.window(2,300)",
+		]);
+	});
+
+	it("says nothing when the host's window is the whole file (#245)", () => {
+		expect(readCardMeta(model({ window: { start: 1, end: 2, totalLines: 2 } }), readCardLabels(t))).toEqual(["ts"]);
+	});
+
 	it("draws no footer at all when there is nothing to say", () => {
 		expect(readCardMeta(model({ lang: undefined, totalLines: 2 }), readCardLabels(t))).toEqual([]);
 		expect(readCardMeta(model({ lang: "", totalLines: 2 }), readCardLabels(t))).toEqual([]);

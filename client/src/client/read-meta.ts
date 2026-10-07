@@ -24,10 +24,17 @@ import type { ReadCardModel } from "./types.js";
  * @returns the footer's text parts, possibly empty.
  */
 export function readCardMeta(model: ReadCardModel, labels: ReadCardLabels): readonly string[] {
-	const windowed = model.rows.length < model.totalLines;
+	const windowMeta = model.window;
+	// #245: the host already decided what this window IS (it knows which rows were
+	// served, which a sparse window's row count cannot). Prefer its answer; fall
+	// back to the row count for cards persisted before the field existed.
+	const windowed =
+		windowMeta !== undefined
+			? windowMeta.start > 1 || windowMeta.end < windowMeta.totalLines
+			: model.rows.length < model.totalLines;
 	const parts: Array<string | null> = [
 		model.lang !== undefined && model.lang !== "" ? model.lang : null,
-		windowed ? labels.window(model.rows.length, model.totalLines) : null,
+		windowed ? labels.window(model.rows.length, windowMeta?.totalLines ?? model.totalLines) : null,
 	];
 	return parts.filter((part): part is string => part !== null);
 }

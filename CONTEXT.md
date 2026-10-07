@@ -125,3 +125,13 @@ _Avoid_: continuation id, spill path (never exposed), cursor
 The per-file identity recorded when a spill is written and re-checked when a resume is served (snapshot id first, mtime+size fallback); a mismatch raises the modified-file caution.
 _Avoid_: mtime check, file hash, staleness token
 
+## Read windows
+
+**Window**:
+The line range one `read` actually served — `window: {start, end, totalLines}` in the JSON value and in the card's `presentationMeta`, with `start`/`end` always **file** line numbers (the anchor ledger), never offsets local to the response. Absent when nothing was served (an offset past the end); an empty file's window is `{1, 1, 1}`.
+_Avoid_: page, viewport, slice
+
+**Anchor cursor**:
+An `offset`/`limit` given as a live anchor instead of a number: it names the window's first / last line (a closed range), so a continuation survives renumbering. Mixable with numbers; an inverted range is `[E_BAD_SHAPE]`, a dead anchor `[E_STALE]`.
+_Avoid_: anchor marker (that is the row prefix handed back to `edit`), line hint
+

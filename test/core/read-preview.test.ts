@@ -46,14 +46,22 @@ describe("fmtReadPreview", () => {
     expect(result.text).not.toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*c/);
   });
 
-  it("shows pagination hint when limit is less than total lines", async () => {
+  // #245: the renderer draws rows and reports the render bound; the closing
+  // "here is how to continue" sentence is the tool layer's job now.
+  it("reports the render bound when limit is less than total lines", async () => {
     const result = await fmtReadPreview("a\nb\nc\n", { sessionKey: SESSION, limit: 2 }, undefined, home.testPath);
-    expect(result.text).toContain("[Showing lines 1-2 of 3. Use offset=3 to continue.]");
+    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*a/);
+    expect(result.text).not.toContain("[Showing lines");
+    expect(result.shownEnd).toBe(2);
+    expect(result.nextOffset).toBeUndefined();
   });
 
-  it("shows pagination hint when offset is beyond start", async () => {
+  it("reports the render bound when the offset starts mid-file", async () => {
     const result = await fmtReadPreview("a\nb\nc\nd\n", { sessionKey: SESSION, offset: 2, limit: 2 }, undefined, home.testPath);
-    expect(result.text).toContain("[Showing lines 2-3 of 4. Use offset=4 to continue.]");
+    expect(result.text).toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
+    expect(result.text).not.toContain("[Showing lines");
+    expect(result.shownEnd).toBe(3);
+    expect(result.nextOffset).toBeUndefined();
   });
 
   it("rejects non-positive offset", async () => {
@@ -109,7 +117,7 @@ describe("fmtReadPreview", () => {
     expect(result.text).not.toContain(": W");
     expect(result.text).toContain("[Line 2 is");
     expect(result.nextOffset).toBeUndefined(); // no budget → no resume
-    expect(result.text).toContain("[Showing lines 1-3 of 6. Use offset=4 to continue.]");
+    expect(result.text).not.toContain("[Showing lines"); // #245: the tool layer owns the page sentence
   });
 
   it("shows a 60KB line in full by default", async () => {
@@ -149,7 +157,7 @@ describe("fmtReadPreview — oversized marker truncation", () => {
     expect(first.text).toContain("[Line 2 is");
     expect(first.text).not.toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
     expect(first.text).not.toContain("Line 3");
-    expect(first.text).toContain("Use offset=3 to continue");
+    expect(first.text).not.toContain("[Showing lines"); // #245: no page sentence from the renderer
     expect(first.nextOffset).toBeUndefined(); // no budget → no resume
 
     const second = await fmtReadPreview(content, { sessionKey: SESSION, offset: 3 }, undefined, home.testPath, budget);
@@ -166,7 +174,7 @@ describe("fmtReadPreview — maxTruncLines budget", () => {
     expect(result.text).toContain(": l1");
     expect(result.text).toContain(": l3");
     expect(result.text).not.toContain(": l4");
-    expect(result.text).toContain("[Showing lines 1-3 of 5. Use offset=4 to continue.]");
+    expect(result.text).not.toContain("[Showing lines"); // #245: the tool layer owns the page sentence
     expect(result.nextOffset).toBeUndefined(); // no budget → no resume
   });
 
@@ -178,7 +186,7 @@ describe("fmtReadPreview — maxTruncLines budget", () => {
     expect(result.text).toContain("[Line 2 is");
     expect(result.text).not.toContain("[Line 3 is");
     expect(result.text).not.toMatch(/[A-Za-z0-9]{2,8}:\d+:\s*b/);
-    expect(result.text).toContain("[Showing lines 1-2 of 4 (50.0KB limit). Use offset=3 to continue.]");
+    expect(result.text).not.toContain("[Showing lines"); // #245: the tool layer owns the page sentence
     expect(result.nextOffset).toBeUndefined(); // no budget → no resume
   });
 });

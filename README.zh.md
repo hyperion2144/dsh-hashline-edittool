@@ -256,6 +256,8 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_OP_INS]` | 提示：`ins` 已把行插入锚点之后。 |
 | `[E_PASTE_DUP]` | 替换行与相邻文件行相同；原样保留。 |
 | `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | served 校验失败；范围已回显为新鲜行。`E_RANGE_STALE` 也是宿主 `FS_STALE_VERSION` 的报码：补救相同（重新 read），成因不同。 |
+| `[E_RESUME_CONFLICT]` | 一次 read 同时带了 resume 令牌与 `offset`/`limit`；令牌已经指明窗口，二者只能给一个。 |
+| `[E_RESUME_GONE]` / `[E_RESUME_BAD]` / `[E_RESUME_TOOL]` | `resume` 令牌的 spill 已消失或过期 / 令牌形状错误、内容损坏或属于别的会话 / 必须由另一个工具消费。 |
 | `[E_STALE]` | 锚点不再匹配 served 内容；重新 read。 |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit` 的替换会让文件无法解析；未写入。 |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | 编辑后文件被改动 / undo 历史无法持久化。 |

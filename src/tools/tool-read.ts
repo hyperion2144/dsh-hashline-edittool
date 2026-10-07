@@ -31,7 +31,7 @@ import { readDescription } from "../domain/edit/prompts.js";
 import { splitLines } from "../infra/utils.js";
 import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { readView } from "../domain/session/file-view.js";
+import { readNormFile, readView } from "../domain/session/file-view.js";
 import { recordServed } from "../domain/session/session-view.js";
 import { createResume, loadResume, takeTextContinuation, responseBudgetChars } from "../infra/response-stream.js";
 import {
@@ -48,6 +48,18 @@ import type { FileIO } from "../infra/fs-bridge.js";
 import { execCwd, execSessionKey } from "../domain/session/session-view.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { takeRebuildWarning } from "../domain/session/hash-store.js";
+import { probeLines } from "../domain/session/anchor-entry.js";
+import {
+	EMPTY_FILE_NOTE,
+	cursorRejection,
+	formatWindowSummary,
+	invertedWindowError,
+	parseReadCursor,
+	readWindowOf,
+	resumeConflictError,
+	type ReadCursorName,
+	type ReadWindow,
+} from "../domain/session/read-window.js";
 
 const RESUME_WINDOW_LINES = 4000;
 
@@ -65,17 +77,23 @@ export function buildReadTool(io: FileIO) {
 		parameters: {
 			file_path: readFilePathSchema,
 			offset: {
-				type: "number",
-				description: "Line number to start reading from (1-indexed)",
+				// #245: a line number OR an anchor, and the anchor's line is the
+				// window's FIRST line (inclusive). Declared as a union because the
+				// harness validates this schema itself, before `execute` runs —
+				// the same pattern `tool-write-shadow` uses for its nullable field.
+				oneOf: [{ type: "number" }, { type: "string" }],
+				description:
+					'Line number to start reading from (1-indexed), or the anchor of the line to start at — an anchor\'s line is included in the window.',
 			},
 			limit: {
-				type: "number",
-				description: "Maximum number of lines to read",
+				oneOf: [{ type: "number" }, { type: "string" }],
+				description:
+					'Maximum number of lines to read, or the anchor of the LAST line to read: a number counts rows, an anchor names the end point.',
 			},
 			resume: {
 				type: "string",
 				description:
-					'Continuation token from a previous truncated result. Takes precedence over offset/limit. Report continuations (from write/edit/undo) are consumed here too.',
+					'Continuation token from a previous truncated result. Mutually exclusive with offset/limit — the token already names the window. Report continuations (from write/edit/undo) are consumed here too.',
 			},
 		},
 		output: {
@@ -112,6 +130,16 @@ export function buildReadTool(io: FileIO) {
 						},
 					},
 					truncatedByBytes: { type: "boolean" },
+					// #245: the lines this call actually served (absent when none were).
+					window: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							start: { type: "integer", required: true },
+							end: { type: "integer", required: true },
+							totalLines: { type: "integer", required: true },
+						},
+					},
 					modelText: { type: "string", required: true },
 					continuation: {
 						type: "object",
@@ -139,7 +167,7 @@ export function buildReadTool(io: FileIO) {
 				{ type: "text", text: (value as ReadValue & { modelText: string }).modelText },
 			],
 			presentationMeta: (_args, value) => {
-				const v = value as ReadValue & { error?: ErrorMeta };
+				const v = value as ReadValue & { error?: ErrorMeta; window?: ReadWindow };
 				if (v.error !== undefined) return { error: v.error } as never;
 				const lang = langFromPath(v.path);
 				return {
@@ -148,28 +176,33 @@ export function buildReadTool(io: FileIO) {
 					lines: v.lines,
 					totalLines: v.totalLines,
 					hashlines: v.hashlines,
+					...(v.window === undefined ? {} : { window: v.window }),
 					...(lang === undefined ? {} : { lang }),
 				} as never;
 			},
 		},
 		presentCall: (args) => {
-			const offset = (args as { offset?: number }).offset;
-			const limit = (args as { limit?: number }).limit;
+			const offset = (args as { offset?: number | string }).offset;
+			const limit = (args as { limit?: number | string }).limit;
 			const path =
 				(args as { path?: unknown; file_path?: unknown }).path ??
 				(args as { file_path?: unknown }).file_path;
 			if (typeof path !== "string") return undefined;
+			// #245: a cursor may be an anchor, and its line number is only known
+			// after the read resolves it — so the call card names what was passed.
 			const window =
-				limit !== undefined && limit > 0
-					? ` (${offset ?? 1} - ${(offset ?? 1) + limit - 1})`
-					: offset !== undefined
+				typeof limit === "number" && limit > 0
+					? ` (${typeof offset === "number" ? offset : 1} - ${(typeof offset === "number" ? offset : 1) + limit - 1})`
+					: typeof offset === "number"
 						? ` (from line ${offset})`
-						: "";
+						: typeof offset === "string" || typeof limit === "string"
+							? ` (from anchor ${typeof offset === "string" ? offset : String(limit)})`
+							: "";
 			return {
 				card: "generic",
 				title: `Read ${path}${window}`,
 				kind: "read",
-				locations: [{ path, line: offset ?? 1 }],
+				locations: [{ path, line: typeof offset === "number" ? offset : 1 }],
 			};
 		},
 		presentResult: (_args, result) => {
@@ -201,13 +234,35 @@ export function buildReadTool(io: FileIO) {
 				assertReadRequest(canonical);
 				const budget = responseBudgetChars();
 
-				// ADR-0013: a resume token takes precedence over offset/limit. Two
-				// kinds land here — read's own file windows (fall through to the
-				// normal read flow at the token's offset) and report/text segments
-				// produced by the mutating tools (consumed as plain text: their
-				// anchors, where they exist, were minted and served by the producer).
-				if (typeof canonical.resume === "string" && canonical.resume.length > 0) {
-					const sidecar = await loadResume(sessionKey, canonical.resume, "read");
+
+				// #245: a resume token and a cursor name the same window — carrying
+				// both is refused instead of silently preferring one (ADR-0014).
+				const resumeToken =
+					typeof canonical.resume === "string" ? canonical.resume.trim() : "";
+				if (resumeToken.length > 0 && (canonical.offset !== undefined || canonical.limit !== undefined)) {
+					throw resumeConflictError();
+				}
+				// Anchors resolve to line numbers BEFORE the read, against the served
+				// ledger, through the same read-only probe `edit` uses: no served
+				// record, no echo, and `edit`'s refusal codes (ADR-0014).
+				const cursors = await resolveReadCursors({
+					cwd,
+					sessionKey,
+					signal,
+					path: canonical.path,
+					offset: canonical.offset,
+					limit: canonical.limit,
+				});
+				const offset = cursors.offset;
+				const limit = cursors.limit;
+				// ADR-0013: a resume token names a window of its own, and (#245) carrying
+				// a cursor ALONGSIDE it is refused above — never silently resolved. Two
+				// kinds land here — read's own file windows (fall through to the normal
+				// read flow at the token's offset) and report/text segments produced by
+				// the mutating tools (consumed as plain text: their anchors, where they
+				// exist, were minted and served by the producer).
+				if (resumeToken.length > 0) {
+					const sidecar = await loadResume(sessionKey, resumeToken, "read");
 					if (sidecar.kind === "file-window") {
 						const windowPath =
 							typeof sidecar.meta.path === "string" ? sidecar.meta.path : pathFromArgs(args) ?? "";
@@ -220,31 +275,26 @@ export function buildReadTool(io: FileIO) {
 							maxChars: budget,
 							exec,
 						});
-						const continuedTotal = splitLines(continued.normalized ?? "").length;
-						const continuedBody = continued.hadUtf8DecodeErrors
-							? `${continued.text}\n\n${UTF8_REWRITE_NOTE}`
-							: continued.text;
-						const allLines = splitLines(continued.normalized ?? "");
-						const shownEnd = continued.nextOffset !== undefined ? continued.nextOffset - 1 : continuedTotal;
-						const lines: Array<{ number: number; text: string }> = [];
-						const hashlines: Array<{ number: number; hash: string; text: string }> = [];
-						for (let i = windowOffset - 1; i < Math.min(shownEnd, allLines.length); i++) {
-							lines.push({ number: i + 1, text: allLines[i] ?? "" });
-							hashlines.push({ number: i + 1, hash: continued.hashes?.[i] ?? "", text: allLines[i] ?? "" });
-						}
-						return {
-							path: windowPath,
-							offset: windowOffset,
-							totalLines: continuedTotal,
-							lines,
-							hashlines,
-							modelText: continuedBody,
-						} as ReadValue & { modelText: string };
+						// #245: the resumed window reports the same rows, the same window
+						// sentence and the same resume token as a direct read — one
+						// assembly, so the two paths cannot drift apart.
+						return await assembleServedRead({
+							sessionKey,
+							displayPath: windowPath,
+							start: windowOffset,
+							text: continued.text,
+							normalized: continued.normalized ?? "",
+							served: continued.served,
+							shownEnd: continued.shownEnd,
+							nextOffset: continued.nextOffset,
+							absolutePath: continued.absolutePath,
+							hadUtf8DecodeErrors: continued.hadUtf8DecodeErrors,
+						});
 					}
-					const take = await takeTextContinuation(sessionKey, canonical.resume, "read", RESUME_WINDOW_LINES);
+					const take = await takeTextContinuation(sessionKey, resumeToken, "read", RESUME_WINDOW_LINES);
 					const footer = take.done
 						? "[End of continued report.]"
-						: `(Omitted ${take.remaining} more lines. Use read {resume: "${canonical.resume}"} to continue.)`;
+						: `(Omitted ${take.remaining} more lines. Use read {resume: "${resumeToken}"} to continue.)`;
 					const modelText = `[Continued report]\n${take.lines.join("\n")}\n${footer}`;
 					return {
 						path: typeof sidecar.meta.path === "string" ? sidecar.meta.path : pathFromArgs(args) ?? "",
@@ -281,8 +331,8 @@ export function buildReadTool(io: FileIO) {
 						{
 							sessionKey,
 							signal,
-							offset: canonical.offset,
-							limit: canonical.limit,
+							offset,
+							limit,
 							maxChars: budget,
 							exec,
 						},
@@ -318,128 +368,45 @@ export function buildReadTool(io: FileIO) {
 					} as ReadValue & { modelText: string };
 				}
 
-				// Window seam (#212): the render bound is `shownEnd` — the renderer's
-				// LAST SERVED row. `nextOffset` is NOT the render bound: it exists
-				// only when the char BUDGET cut the window (it mints the resume
-				// token), so deriving the window from it made every limit-cut fall
-				// back to EOF and rebuild rows that were never served — bare-number
-				// rows for unallocated lines, "not in served set" for persisted ones.
+				// The model's rows come from the structured builder when the served set is
+				// the contiguous window, and from the renderer when it is SPARSE (an
+				// oversized-line notice cannot be rebuilt from a range). Row text is the
+				// one thing read-card still owns — the closing sentence is not (#245).
+				const servedRows = result.served;
 				const totalLines = splitLines(result.normalized).length;
-				const start = Math.max(1, canonical.offset ?? 1);
+				const start = Math.max(1, offset ?? 1);
 				const shownEnd =
 					result.shownEnd ??
 					(result.nextOffset !== undefined ? result.nextOffset - 1 : totalLines);
-				const shownCount = Math.max(0, shownEnd - start + 1);
-				// Served rows are normally the contiguous window [start..shownEnd].
-				// The oversized-line branch serves a SPARSE set (oversized rows are
-				// shown as notices, not content) — rebuild those from the served
-				// rows alone so presentation == served, never more.
-				const servedRows = result.served;
 				const contiguous =
 					servedRows.length > 0 &&
 					servedRows[0]!.position === start - 1 &&
-					servedRows[servedRows.length - 1]!.position - servedRows[0]!.position + 1 ===
-						servedRows.length;
-				const servedAllLines = splitLines(result.normalized);
-				const buildFromServed = (): ReadValue & { modelText: string } => {
-					const lines: Array<{ number: number; text: string }> = [];
-					const hashlines: Array<{ number: number; hash: string; text: string }> = [];
-					const lineDict: Record<string, string> = {};
-					for (const row of servedRows) {
-						const number = row.position + 1;
-						const text = servedAllLines[row.position] ?? "";
-						lines.push({ number, text });
-						hashlines.push({ number, hash: row.anchor, text });
-						lineDict[lineNumbersEnabled() ? `${row.anchor}:${number}` : row.anchor] =
-							text;
-					}
-					if (isJsonOutput()) {
-						const modelView = {
-							path: canonical.path,
-							offset: start,
-							totalLines: servedAllLines.length,
-							lines: lineDict,
-						};
-						return {
-							path: canonical.path,
-							offset: start,
-							totalLines: servedAllLines.length,
-							lines,
-							hashlines,
-							modelText: JSON.stringify(modelView),
-						} as ReadValue & { modelText: string };
-					}
-					// Text mode: the renderer's preview IS the model text here — it
-					// carries the header, the served rows and the oversized-row
-					// notices that a range rebuild could not reproduce.
-					return {
-						path: canonical.path,
-						offset: start,
-						totalLines: servedAllLines.length,
-						lines,
-						hashlines,
-						modelText: result.text,
-					} as ReadValue & { modelText: string };
-				};
-				// JSON mode: one builder for both windows — the served rows ARE the
-				// rendered rows in every branch (contiguous window or sparse
-				// oversized-line set), so the dict/arrays come from one place.
-				const presentation =
+					servedRows[servedRows.length - 1]!.position - servedRows[0]!.position + 1 === servedRows.length;
+				const text =
 					!contiguous || isJsonOutput()
-						? buildFromServed()
+						? result.text
 						: buildReadPresentation(
-							result.normalized!,
-							result.hashes!,
-							start,
-							shownCount,
-							canonical.path,
-							{ lineNumbers: lineNumbersEnabled() },
-						);
-				// If the file had non-UTF-8 bytes, the readAndServe text already
-				// carries the rewrite note — append it to the model text so the
-				// structured value's modelText is faithful to the original contract.
-				let body = result.hadUtf8DecodeErrors
-					? `${presentation.modelText}\n\n${UTF8_REWRITE_NOTE}`
-					: presentation.modelText;
-				// A REBUILD invalidated every anchor this workspace had (a version upgrade
-				// or a capacity sweep). The model has to hear it from the first result that
-				// runs afterwards, or it keeps presenting markers that are now dead and
-				// reads every refusal as its own mistake. `takeRebuildWarning` clears it, so
-				// exactly ONE result carries the notice — whichever tool ran first — and the
-				// rest of the session sees clean output.
-				//
-				// Prepended rather than appended: it is the frame the rows below are read
-				// in, not a footnote to them.
-				const rebuildNotice = takeRebuildWarning();
-				if (rebuildNotice !== undefined) body = `${rebuildNotice}\n\n${body}`;
-				// companion client plugin) renders the web read card from the
-				// persisted presentationMeta alone, so the model no longer pays the
-				// four <path>/<type>/<content> wrapper lines per read — and json
-				// mode emits pure JSON again. extractReadBody still strips the
-				// envelope from PRE-0.4.2 session history.
-
-				// ADR-0013: when the window was budget-cut, mint the continuation.
-				let continuation: { resume: string; remaining: number } | undefined;
-				if (result.nextOffset !== undefined && result.nextOffset <= totalLines) {
-					const { token } = await createResume({
-						sessionKey,
-						producer: "read",
-						consumer: "read",
-						kind: "file-window",
-						rows: [],
-						meta: { path: result.absolutePath, nextOffset: result.nextOffset },
-					});
-					const omitted = totalLines - shownEnd;
-					continuation = { resume: token, remaining: omitted };
-					// ADR-0013: the classic pagination hint is superseded by the resume footer.
-					body = body.replace(/\n*\[Showing lines [^\]]*\]\s*$/, "\n");
-					body = `${body}(Omitted ${omitted} lines. Use read {resume: "${token}"} to continue.)`;
-				}
-				return {
-					...presentation,
-					modelText: body,
-					...(continuation !== undefined ? { continuation } : {}),
-				};
+								result.normalized,
+								result.hashes,
+								start,
+								Math.max(0, shownEnd - start + 1),
+								canonical.path,
+								{ lineNumbers: lineNumbersEnabled() },
+							).modelText;
+				// #245: rows, window, ONE closing sentence and the resume token are
+				// assembled in one place — this path and the resumed window share it.
+				return await assembleServedRead({
+					sessionKey,
+					displayPath: canonical.path,
+					start,
+					text,
+					normalized: result.normalized,
+					served: result.served,
+					shownEnd: result.shownEnd,
+					nextOffset: result.nextOffset,
+					absolutePath: result.absolutePath,
+					hadUtf8DecodeErrors: result.hadUtf8DecodeErrors,
+				});
 		}).catch((error: unknown) => ({
 			path: pathFromArgs(args) ?? "",
 			offset: 1,
@@ -461,4 +428,156 @@ export function registerReadTool(
 	io: FileIO,
 ): () => void {
 	return agentCtx.tools.register(buildReadTool(io));
+}
+
+/**
+ * Resolve `read`'s `offset` / `limit` cursors to line numbers (#245, ADR-0014).
+ *
+ * A number is already a line number. An anchor is looked up against the served
+ * ledger with the very same READ-ONLY probe `edit` uses: it writes no served
+ * record, allocates no anchor, and echoes nothing — read's refusal names the
+ * anchor and sends the caller back to `read`, in `edit`'s codes.
+ *
+ * @param input - the raw fields plus the session they resolve against.
+ * @returns the numeric window, with absent fields absent.
+ */
+async function resolveReadCursors(input: {
+	readonly path: string;
+	readonly cwd: string;
+	readonly sessionKey: string;
+	readonly signal?: AbortSignal | undefined;
+	readonly offset: unknown;
+	readonly limit: unknown;
+}): Promise<{ offset?: number; limit?: number }> {
+	const offsetCursor = parseReadCursor(input.offset, "offset");
+	const limitCursor = parseReadCursor(input.limit, "limit");
+	const offsetLine = offsetCursor.kind === "line" ? offsetCursor.line : undefined;
+	let limitCount = limitCursor.kind === "line" ? limitCursor.line : undefined;
+	if (offsetCursor.kind !== "anchor" && limitCursor.kind !== "anchor") {
+		return {
+			...(offsetLine === undefined ? {} : { offset: offsetLine }),
+			...(limitCount === undefined ? {} : { limit: limitCount }),
+		};
+	}
+	const norm = await readNormFile(input.path, input.cwd, { signal: input.signal });
+	const refs = [offsetCursor, limitCursor]
+		.filter((cursor): cursor is { kind: "anchor"; anchor: string } => cursor.kind === "anchor")
+		.map((cursor) => ({ anchor: cursor.anchor }));
+	const probe = await probeLines({
+		path: norm.absolutePath,
+		content: norm.normalized,
+		refs,
+		sessionKey: input.sessionKey,
+	});
+	if (!probe.ok) {
+		const failed = probe.rows[0]?.given ?? refs[0]!.anchor;
+		const name: ReadCursorName =
+			offsetCursor.kind === "anchor" && offsetCursor.anchor === failed ? "offset" : "limit";
+		throw cursorRejection(probe.reason, failed, norm.absolutePath, name);
+	}
+	const lineOf = (anchor: string): number => probe.resolved.find((row) => row.anchor === anchor)!.line;
+	const start = offsetCursor.kind === "anchor" ? lineOf(offsetCursor.anchor) : offsetLine ?? 1;
+	if (limitCursor.kind === "anchor") {
+		const endLine = lineOf(limitCursor.anchor);
+		if (endLine < start) throw invertedWindowError(start, endLine);
+		limitCount = endLine - start + 1;
+	}
+	return { offset: start, ...(limitCount === undefined ? {} : { limit: limitCount }) };
+}
+
+/**
+ * Assemble one read result: rows, window, the ONE closing sentence and the
+ * resume token (#245). The direct read and a resumed file window both come
+ * through here, so the two channels cannot report different windows.
+ *
+ * Text mode ends with exactly one sentence ({@link formatWindowSummary}) — and
+ * never for an empty file, whose single served row already says what to do.
+ * JSON mode stays PURE JSON: the window, the token and the warnings ride INSIDE
+ * the object instead of being appended as prose (they used to break JSON.parse).
+ *
+ * @param input - what the renderer served, plus the session for the token.
+ * @returns the canonical value, model text included.
+ */
+async function assembleServedRead(input: {
+	readonly sessionKey: string;
+	readonly displayPath: string;
+	readonly start: number;
+	readonly text: string;
+	readonly normalized: string;
+	readonly served: readonly { readonly position: number; readonly anchor: string }[];
+	readonly shownEnd?: number | undefined;
+	readonly nextOffset?: number | undefined;
+	readonly absolutePath?: string | undefined;
+	readonly hadUtf8DecodeErrors?: boolean | undefined;
+}): Promise<ReadValue & { modelText: string }> {
+	const allLines = splitLines(input.normalized);
+	const totalLines = allLines.length;
+	const shownEnd = input.shownEnd ?? (input.nextOffset !== undefined ? input.nextOffset - 1 : totalLines);
+	const window = readWindowOf(input.served, totalLines);
+	// ADR-0013: a BUDGET cut mints the token before the text is assembled — the
+	// token is part of the sentence the model reads, and in JSON mode it is a field.
+	let continuation: { resume: string; remaining: number } | undefined;
+	if (input.nextOffset !== undefined && input.nextOffset <= totalLines) {
+		const { token } = await createResume({
+			sessionKey: input.sessionKey,
+			producer: "read",
+			consumer: "read",
+			kind: "file-window",
+			rows: [],
+			meta: { path: input.absolutePath ?? input.displayPath, nextOffset: input.nextOffset },
+		});
+		continuation = { resume: token, remaining: Math.max(0, totalLines - shownEnd) };
+	}
+	const lines: Array<{ number: number; text: string }> = [];
+	const hashlines: Array<{ number: number; hash: string; text: string }> = [];
+	const lineDict: Record<string, string> = {};
+	for (const row of input.served) {
+		const number = row.position + 1;
+		const text = allLines[row.position] ?? "";
+		lines.push({ number, text });
+		hashlines.push({ number, hash: row.anchor, text });
+		lineDict[lineNumbersEnabled() && row.anchor !== "" ? `${row.anchor}:${number}` : row.anchor] = text;
+	}
+	const lastAnchor = input.served.length === 0 ? "" : input.served[input.served.length - 1]!.anchor;
+	// An empty file is a REAL serve whose single row has no text (#245): its
+	// sentence is the tail, and the JSON channel spells it structurally instead.
+	const summary =
+		input.normalized === ""
+			? EMPTY_FILE_NOTE
+			: window === undefined
+				? undefined
+				: formatWindowSummary(
+						window,
+						continuation === undefined ? { nextAnchor: lastAnchor } : { resumeToken: continuation.resume },
+					);
+	const rebuildNotice = takeRebuildWarning();
+	const utf8Note = input.hadUtf8DecodeErrors === true ? UTF8_REWRITE_NOTE : undefined;
+	const warnings = [rebuildNotice, utf8Note].filter((warning): warning is string => warning !== undefined);
+	let modelText: string;
+	if (isJsonOutput()) {
+		modelText = JSON.stringify({
+			path: input.displayPath,
+			offset: input.start,
+			totalLines,
+			lines: lineDict,
+			...(window === undefined ? {} : { window }),
+			...(continuation === undefined ? {} : { continuation }),
+			...(warnings.length === 0 ? {} : { warnings }),
+		});
+	} else {
+		modelText = input.text;
+		if (summary !== undefined) modelText = `${modelText}\n\n${summary}`;
+		if (utf8Note !== undefined) modelText = `${modelText}\n\n${utf8Note}`;
+		if (rebuildNotice !== undefined) modelText = `${rebuildNotice}\n\n${modelText}`;
+	}
+	return {
+		path: input.displayPath,
+		offset: input.start,
+		totalLines,
+		lines,
+		hashlines,
+		...(window === undefined ? {} : { window }),
+		...(continuation === undefined ? {} : { continuation }),
+		modelText,
+	};
 }
