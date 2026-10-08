@@ -58,6 +58,7 @@ import { probeLines } from "../domain/session/anchor-entry.js";
 import {
 	EMPTY_FILE_NOTE,
 	cursorRejection,
+	digitLineOf,
 	formatWindowSummary,
 	invertedWindowError,
 	parseReadCursor,
@@ -188,8 +189,21 @@ export function buildReadTool(io: FileIO) {
 			},
 		},
 		presentCall: (args) => {
-			const offset = (args as { offset?: number | string }).offset;
-			const limit = (args as { limit?: number | string }).limit;
+			// #256: a bare digit string is a line number serialized as text —
+			// normalize it so the card shows the numeric window it names, not a
+			// phantom anchor.
+			const asNumber = (value: unknown): number | undefined =>
+				typeof value === "number"
+					? value
+					: typeof value === "string"
+						? digitLineOf(value)
+						: undefined;
+			const offset =
+				asNumber((args as { offset?: unknown }).offset) ??
+				(args as { offset?: number | string }).offset;
+			const limit =
+				asNumber((args as { limit?: unknown }).limit) ??
+				(args as { limit?: number | string }).limit;
 			const path =
 				(args as { path?: unknown; file_path?: unknown }).path ??
 				(args as { file_path?: unknown }).file_path;
