@@ -106,6 +106,12 @@ describe("read file_path spelling (raw args the web validates)", () => {
 		expect(card?.title).toContain("a.txt");
 		const legacy = tool.presentCall({ path: "b.txt" });
 		expect(legacy?.title).toContain("b.txt");
+
+		// #256: a digit string is a line number — the card shows the numeric
+		// window it names, not a phantom anchor.
+		const digits = tool.presentCall({ file_path: "a.txt", offset: "5", limit: "2" });
+		expect(digits?.title).toContain("(5 - 6)");
+		expect(digits?.title).not.toContain("anchor");
 	});
 });
 

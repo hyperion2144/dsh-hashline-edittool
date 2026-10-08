@@ -4,6 +4,9 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`read` 游标收纯数字字符串（#256，ADR-0014 Amendment）**：模型工具调用里行号以字符串形态到达是常态（本单会话内 8 次自然复现：`offset` `"1"`/`"145"`/`"148"`、`limit` `"8"`/`"14"`/`"40"` 等），而 `parseReadCursor` 的 `DIGITS_RE` 分支把纯数字串一律当「row marker 的行号 hint 被当锚点抄」抛 `[E_BAD_REF]` —— 同一语义的 number 形态却照收，错误文案指路「Re-read that line to get its anchor」对想要行号的调用方完全无效。修复（#238 决议 6 之修订，维护者拍板）：字符串 trim 后命中 `/^\d+$/` 即按数字语义解析（`offset`=起始行号、`limit`=行数，与 number 同义）；沿用 number 同款正整数校验（`"0"` → `[E_BAD_SHAPE]`，顺带修复其原先报 `E_BAD_REF` 的同语义两种报法）；前导零（`"088"`）与空白（`" 88 "`）容忍；`line#hash` / `line:anchor` 混合形态维持 `[E_BAD_REF]`，真锚点行为不变；`presentCall` 卡片同步归一（数字串不再显示为幽灵锚点）。read-window 套件 13 → 20 例（单元级边界矩阵 + 集成级同结果/JSON 同码）。
 ## [0.10.0] - 2026-10-07
 
 ### Changed

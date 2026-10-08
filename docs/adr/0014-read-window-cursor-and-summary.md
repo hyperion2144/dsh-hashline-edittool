@@ -7,6 +7,13 @@
 > mode carries `window` and `continuation` inside the payload rather than
 > appending prose after the JSON.
 
+> **Amendment** (2026-10-08, #256): a bare digit string (`offset: "88"`) is a
+> line number serialized as text — the model's normal shape for one — and
+> parses as that number (decision 1's integer branch; digits are never
+> anchors, so nothing ambiguous is absorbed). `"0"` refuses with the number
+> form's `[E_BAD_SHAPE]`, not `[E_BAD_REF]`. The marker-shape refusals of
+> decision 3 (`line#hash`, `line:anchor`) stand unchanged.
+
 ## Problem Statement
 
 The `line_numbers` switch (#244) can strip the `:lineNumber` suffix

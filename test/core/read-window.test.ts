@@ -14,6 +14,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { applyEffective } from "../../src/config.js";
+import { parseReadCursor } from "../../src/domain/session/read-window.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { getWritableTempRoot, setupIntegrationTest, getText, makeExec, type Harness } from "../support/fixtures.js";
@@ -161,6 +162,36 @@ describe("#245 read windows: anchors as cursors", () => {
 			"[E_RESUME_CONFLICT]",
 		);
 	});
+	it("#256 a digit-string cursor behaves exactly like the number form", async () => {
+		const { cwd } = await makeCase("digit-string");
+		const h = setupIntegrationTest(cwd);
+
+		// Same request, serialized as strings — same window as {offset: 5, limit: 2}.
+		const text = await readText(h, { path: "f.txt", offset: "5", limit: "2" });
+		expect(text).toContain("line-05 content");
+		expect(text).toContain("line-06 content");
+		expect(text).not.toContain("line-07 content");
+		expect(text).toContain("[Lines 5-6 of 12.");
+
+		// The two fields serialize independently — a number offset beside a
+		// digit-string limit is the same window as both-numbers.
+		const mixed = await readText(h, { path: "f.txt", offset: 5, limit: "2" });
+		expect(mixed).toContain("[Lines 5-6 of 12.");
+
+		// Leading zeros and surrounding whitespace are numeric, not anchors.
+		expect(await readText(h, { path: "f.txt", offset: "08" })).toContain("[Lines 8-12 of 12.");
+		expect(await readText(h, { path: "f.txt", offset: " 9 " })).toContain("[Lines 9-12 of 12.");
+
+		// "0" carries the number form's own refusal, word for word.
+		const zero = await readText(h, { path: "f.txt", offset: "0" });
+		expect(zero).toContain("[E_BAD_SHAPE]");
+		expect(zero).toContain("must be a positive integer");
+
+		// A digit string past the end serves nothing, exactly like the number 99.
+		expect(await readText(h, { path: "f.txt", offset: "99" })).toContain(
+			"[No lines read. Offset 99 is beyond end of file (12 lines total). Use offset=1 to read from the start.]",
+		);
+	});
 });
 
 describe("#245 read windows: the one closing sentence", () => {
@@ -235,5 +266,58 @@ describe("#245 read windows: the one closing sentence", () => {
 		expect(parsed.offset).toBe(5);
 		// No prose tail may ride outside the object (#245 story: JSON is parseable).
 		expect(value.modelText).not.toContain("[Lines ");
+	});
+
+	it("#256 JSON mode resolves a digit-string cursor identically", async () => {
+		const { cwd } = await makeCase("digit-json");
+		applyEffective({ output_format: "json" });
+		const tool = buildReadTool(localIO());
+		const args = { path: "f.txt", offset: "5", limit: "2" };
+		const value = (await tool.execute(args, makeExec(cwd, "digit-json-session")(args))) as unknown as {
+			modelText: string;
+		};
+		const parsed = JSON.parse(value.modelText) as {
+			offset: number;
+			window?: { start: number; end: number; totalLines: number };
+		};
+		expect(parsed.offset).toBe(5);
+		expect(parsed.window).toEqual({ start: 5, end: 6, totalLines: 12 });
+	});
+});
+
+describe("#256 read cursors: a bare digit string is a line number, not an anchor attempt", () => {
+	const P = (value: unknown, name: "offset" | "limit" = "offset") => parseReadCursor(value, name);
+
+	it("a digit string names the same line as the number form", () => {
+		expect(P(88)).toEqual({ kind: "line", line: 88 });
+		expect(P("88")).toEqual({ kind: "line", line: 88 });
+		expect(P("10", "limit")).toEqual({ kind: "line", line: 10 });
+	});
+
+	it("leading zeros and whitespace are tolerated — the value is numeric", () => {
+		expect(P("088")).toEqual({ kind: "line", line: 88 });
+		expect(P(" 88 ")).toEqual({ kind: "line", line: 88 });
+	});
+
+	it("\"0\" refuses with the number form's own words", () => {
+		expect(() => P("0")).toThrow(
+			/\[E_BAD_SHAPE\] Read request field "offset" must be a positive integer\./,
+		);
+		expect(() => P(0)).toThrow(
+			/\[E_BAD_SHAPE\] Read request field "offset" must be a positive integer\./,
+		);
+		expect(() => P("0", "limit")).toThrow(
+			/\[E_BAD_SHAPE\] Read request field "limit" must be a positive integer\./,
+		);
+	});
+
+	it("the pasted-marker shapes stay [E_BAD_REF] — only bare digits became a line number", () => {
+		expect(() => P("7#abc")).toThrow(/\[E_BAD_REF\]/);
+		expect(() => P("5:ab3")).toThrow(/\[E_BAD_REF\]/);
+	});
+
+	it("a real anchor still resolves as an anchor", () => {
+		expect(P("aB3xZ")).toEqual({ kind: "anchor", anchor: "aB3xZ" });
+		expect(P(undefined)).toEqual({ kind: "none" });
 	});
 });

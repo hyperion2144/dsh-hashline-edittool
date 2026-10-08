@@ -10,7 +10,8 @@
  * The cursor anchors are checked against the served ledger through the same
  * read-only probe `edit` uses, and the refusals reuse `edit`'s codes: a dead
  * anchor is `E_STALE`, a served anomaly is `E_RANGE_UNVERIFIED`. Line numbers
- * in row markers stay hints — a cursor takes bare anchors.
+ * in row markers stay hints — a cursor takes bare anchors, and a bare digit
+ * string is the line number itself serialized as text (#256).
  *
  * @module dsh-hashline-edittool/domain/session/read-window
  */
@@ -44,13 +45,25 @@ export interface ReadWindow {
 const DIGITS_RE = /^\d+$/;
 
 /**
+ * The numeric value of a bare digit string (#256) — a line number the caller
+ * serialized as text. `undefined` when the text is not all digits. Shared by
+ * the cursor parser and the call card so the two spell one shape.
+ */
+export function digitLineOf(value: string): number | undefined {
+	const text = value.trim();
+	return DIGITS_RE.test(text) ? Number(text) : undefined;
+}
+
+/**
  * Parse one cursor field.
  *
  * A number stays a line number (a non-positive or fractional one is rejected).
- * A string is an anchor — unless it is visibly a line number wearing an
- * anchor's clothes (`line#hash`, `anchor:line`, `line:anchor`, or bare digits),
- * which is the one mistake worth naming precisely: the row marker's line half
- * is a hint, never part of the anchor.
+ * So does a bare digit string — the model's normal serialization of a line
+ * number (#256): `offset: "88"` names line 88, and `"0"` refuses exactly like
+ * the number `0`. Any other string is an anchor — unless it is visibly a line
+ * number wearing an anchor's clothes (`line#hash`, `anchor:line`,
+ * `line:anchor`), which is the one mistake worth naming precisely: the row
+ * marker's line half is a hint, never part of the anchor.
  *
  * @param value - the raw field.
  * @param name - `offset` or `limit`, for the message.
@@ -68,7 +81,16 @@ export function parseReadCursor(value: unknown, name: ReadCursorName): ReadCurso
 		throw new Error(`[E_BAD_SHAPE] Read request field "${name}" must be a line number or an anchor.`);
 	}
 	const text = value.trim();
-	if (LINE_HASH_RE.test(text) || lineAnchorRe().test(text) || DIGITS_RE.test(text)) {
+	// #256: a bare digit string is a line number serialized as text — parse it
+	// as one (digits are never anchors, so nothing ambiguous is being absorbed).
+	const digitLine = digitLineOf(value);
+	if (digitLine !== undefined) {
+		if (!Number.isInteger(digitLine) || digitLine < 1) {
+			throw new Error(`[E_BAD_SHAPE] Read request field "${name}" must be a positive integer.`);
+		}
+		return { kind: "line", line: digitLine };
+	}
+	if (LINE_HASH_RE.test(text) || lineAnchorRe().test(text)) {
 		throw new Error(
 			`[E_BAD_REF] Read request field "${name}" takes a bare anchor, not "${text}": the line number in a row marker is a hint, not part of the anchor. Re-read that line to get its anchor.`,
 		);
