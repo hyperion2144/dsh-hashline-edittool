@@ -119,4 +119,49 @@ describe("ast pattern — a self-built matcher, no dependency", () => {
 			expect(hits[1]!.captures.get("A")).toHaveLength(2);
 		});
 	});
+	it("a bare identifier pattern matches only nodes spelled that way (#255)", () => {
+		const root = parse(
+			["const alpha = 1;", "const beta = 2;", "const gamma = alpha + beta;"].join("\n"),
+			"typescript",
+		);
+		const hits = matchPattern(root, compilePattern("alpha", "typescript")!);
+		// `alpha` is spelled twice — declaration and reference — and both are the
+		// pattern's business. Type alone used to admit `beta` and `gamma` too.
+		expect(hits.map((h) => h.node.text)).toEqual(["alpha", "alpha"]);
+		expect(hits.map((h) => h.node.startPosition.row)).toEqual([0, 2]);
+	});
+
+	it("a bare string-literal pattern names one specific literal (#255)", () => {
+		const root = parse('import a from "m";\nimport b from "n";', "typescript");
+		const hits = matchPattern(root, compilePattern('"m"', "typescript")!);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]!.node.text).toBe('"m"');
+	});
+	it("a bare number pattern matches only the same numeral (#255)", () => {
+		const root = parse("const a = 1;\nconst b = 2;", "typescript");
+		const hits = matchPattern(root, compilePattern("1", "typescript")!);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]!.node.text).toBe("1");
+	});
+
+
+	it("a bare metavariable pattern stays a type-scoped wildcard (#255)", () => {
+		const root = parse("const alpha = 1;\nconst beta = 2;", "typescript");
+		// A sentinel root is role `node`/`list`, not `literal`, so the leaf text
+		// check must not turn `$NAME` into "match only the node named $NAME".
+		for (const pat of ["$NAME", "$$$NAME"] as const) {
+			const hits = matchPattern(root, compilePattern(pat, "typescript")!);
+			expect(hits.map((h) => h.node.text).sort(), pat).toEqual(["alpha", "beta"]);
+		}
+	});
+
+	it("a leaf literal after a list capture still agrees by text (#255)", () => {
+		const root = parse("f(1, y);\nf(1, z);", "typescript");
+		const hits = matchPattern(root, compilePattern("f($$$A, y)", "typescript")!);
+		// The tail `y` is compared in `matchesRest`, whose literal branch used to
+		// check TYPE only — `z` passed as `y` and the second call was a false hit.
+		expect(hits).toHaveLength(1);
+		expect(hits[0]!.node.startPosition.row).toBe(0);
+	});
+
 });

@@ -147,6 +147,19 @@ function matchNode(
 	target: Node,
 	captures: Map<string, readonly Node[]>,
 ): boolean {
+	// A LEAF literal pattern node must agree by TEXT, not just type: it has no
+	// children to compare, so without this a bare identifier in the pattern
+	// matched every identifier in the tree (`pat: "alpha"` finding `beta` too —
+	// issue #255). TYPE is the caller's business — the root walk, `matchesRest`
+	// and the child branch each check it — and a sentinel root (`$NAME` alone)
+	// is role `node`/`list`, never `literal`, so wildcards stay wildcards.
+	if (
+		pattern.namedChildCount === 0 &&
+		roleOf(pattern).kind === "literal" &&
+		pattern.text !== target.text
+	) {
+		return false;
+	}
 	const patternChildren = pattern.namedChildren;
 	const targetChildren = target.namedChildren;
 	let p = 0;

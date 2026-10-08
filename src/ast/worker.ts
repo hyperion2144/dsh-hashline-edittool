@@ -507,9 +507,22 @@ export async function handleRequest(request: AstWorkerRequest): Promise<AstWorke
 				endLine: m.node.endPosition.row + 1,
 				endColumn: m.node.endPosition.column,
 				// Captures travel as text: the tool renders them and the model reads
-				// them, and neither has any use for a node handle.
+				// them, and neither has any use for a node handle. A capture travels
+				// as ONE entry — the SOURCE SLICE from its first node to its last —
+				// because the text BETWEEN the captured nodes (`name: string`, the
+				// commas in `f(1, 2)`, a statement's newline) is exactly what a
+				// replacement template has to put back. Per-node texts joined with
+				// ", " turned `name: string` into `name, : string` and made every
+				// such rewrite unparsable (issue #255). For a single-node capture the
+				// slice IS the node's text, so `$NAME` is unchanged; a zero-span `$$$`
+				// capture stays empty.
 				captures: Object.fromEntries(
-					[...m.captures].map(([name, nodes]) => [name, nodes.map((n: Node) => n.text)]),
+					[...m.captures].map(([name, nodes]) => [
+						name,
+						nodes.length === 0
+							? []
+							: [request.text.slice(nodes[0]!.startIndex, nodes[nodes.length - 1]!.endIndex)],
+					]),
 				),
 				// ...and as SPANS, so the card can highlight what the pattern actually
 				// captured instead of the whole matched node.

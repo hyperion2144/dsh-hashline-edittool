@@ -223,6 +223,30 @@ describe("ast_edit", () => {
 		expect(after).toContain('import Default from "./d";');
 	});
 
+	it("a leaf pattern edits only the line that spells the text (#255)", async () => {
+		// The two-line field report: `beta` never contains `alpha`, yet the
+		// type-only match rewrote its line too — silently, with `ok: true`.
+		await writeFile(file, "const alpha = 1;\nconst beta = 2;\n", "utf-8");
+		const value = await run({ pat: "alpha", out: "alpha2" });
+		expect(value.ok).toBe(true);
+		expect(value.count).toBe(1);
+		expect(await readFile(file, "utf-8")).toBe("alpha2\nconst beta = 2;\n");
+	});
+
+	it("a `$$$` capture expands to the source it spanned (#255)", async () => {
+		// `$$$ARGS` captured `[name, ": string"]` as bare texts and the fill
+		// joined them with ", " — `name, : string` — which the syntax gate then
+		// refused. The capture now travels as the source slice it spanned.
+		await writeFile(file, "export function greet(name: string) {\n  return name;\n}\n", "utf-8");
+		const value = await run({
+			pat: "export function greet($$$ARGS) { $$$BODY }",
+			out: "export function greet2($$$ARGS) { $$$BODY }",
+		});
+		expect(value.ok).toBe(true);
+		expect(value.count).toBe(1);
+		expect(await readFile(file, "utf-8")).toContain("export function greet2(name: string) {");
+	});
+
 	it("answers with the SAME diff an edit answers with — not the new body", async () => {
 		// The model channel is `edit`'s, from `edit`'s own builder: the diff
 		// legend, the `-`/`+` rows with their fresh anchors, the success line.
