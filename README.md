@@ -231,7 +231,8 @@ is searched at all: build output and vendored copies never reach the read stage 
 64 MiB budget). Only the **searched tree's own** ignore files apply — naming an ignored
 directory on purpose still searches it. Turn `hashline.grep_respect_gitignore` off to
 search what the plugin's own walk sees (the whole tree minus hidden entries and
-`node_modules`), which is also the behavior whenever ripgrep cannot be resolved.
+`node_modules`), which is also the behavior whenever ripgrep cannot be resolved
+or an invocation fails — `grep` never fails because ripgrep did.
 
 ## Tools
 

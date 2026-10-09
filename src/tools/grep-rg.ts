@@ -9,9 +9,11 @@
  * Deliberately conservative by contract: the filter only NARROWS a file list
  * the caller already produced (identical include/exclude semantics are
  * preserved, because the caller's list is the input), and ANY failure — binary
- * missing, spawn error, non-zero exit, timeout, oversized output — returns
- * `undefined` so the caller simply keeps its full list and runs the JS engine
- * it has always run. grep never fails because ripgrep did.
+ * missing, spawn error — including the SYNCHRONOUS refusal of an over-long
+ * command line, which `execFile` throws instead of reporting (#260) — non-zero
+ * exit, timeout, oversized output: every one of them returns `undefined`, so the
+ * caller simply keeps its full list and runs the JS engine it has always run.
+ * grep never fails because ripgrep did.
  *
  * Line numbers are NOT taken from ripgrep: the caller needs file content for
  * anchors and context anyway, and its own matcher is the output contract.
@@ -23,6 +25,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { ARGV_BUDGET, planArgvChunks } from "../infra/argv-limit.js";
 
 /**
  * Resolve the rg binary the same way DSH's own search does: the `@vscode/ripgrep`
@@ -80,6 +83,12 @@ let rgResolved: string | undefined | null;
 /**
  * Run `rg --files-with-matches` over an explicit file list.
  *
+ * The list goes on the command line, so it is split by LENGTH, never by file
+ * count (#260): every invocation's flags plus its chunk must fit the
+ * command-line budget (`infra/argv-limit`). A list that cannot fit at all — a
+ * pattern or a single path wider than the whole budget — is "no rg answer"
+ * rather than a spawn the OS is guaranteed to refuse.
+ *
  * @param pattern - the grep pattern, passed to rg as-is (see the dialect note in
  *   the caller: rg-rejected patterns must fall back to the JS engine).
  * @param files - the candidate files (the caller's already-filtered list).
@@ -99,21 +108,38 @@ export async function rgFilesWithMatches(
 	if (rgResolved === undefined) return undefined;
 	const rg = rgResolved;
 
-	// Chunked so argv never overflows on large trees; each chunk is an
-	// independent `rg -l` over an explicit --file list.
+	// #260: chunked by the LENGTH of the command line, never by file count. rg's
+	// own path, the flags and the pattern ride on every invocation, so they come off
+	// the budget first; each chunk is an independent `rg -l` over an explicit
+	// --file list.
+	const fixedArgs: readonly string[] = ["--no-config", "--files-with-matches", "-e", pattern];
+	const argsFor = (chunk: readonly string[]): string[] => [...fixedArgs, ...chunk];
+	const chunks = planArgvChunks([rg, ...fixedArgs], files, ARGV_BUDGET);
+	if (chunks === undefined) return undefined;
+
 	const out: string[] = [];
-	const CHUNK = 400;
-	const run = (chunk: string[]) =>
+	const run = (chunk: readonly string[]) =>
 		new Promise<string | undefined>((resolve) => {
-			execFile(
-				rg,
-				["--no-config", "--files-with-matches", "-e", pattern, ...chunk],
-				{ timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
-				(error, stdout) => resolve(classifyRgExit(error) === "failed" ? undefined : stdout),
-			);
+			try {
+				execFile(
+					rg,
+					argsFor(chunk),
+					{ timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+					(error, stdout) => resolve(classifyRgExit(error) === "failed" ? undefined : stdout),
+				);
+			} catch {
+				// A spawn the OS refuses BEFORE a process exists throws here instead of
+				// reporting through the callback — an over-long command line (E2BIG /
+				// ENAMETOOLONG, #260), a binary path that cannot be executed. Inside a
+				// promise executor that throw would REJECT the promise, and the caller's
+				// "keep my list" fallback would never run: that is the reported symptom.
+				// A failed spawn is this optional pre-filter failing, which the contract
+				// above already spells as undefined.
+				resolve(undefined);
+			}
 		});
-	for (let i = 0; i < files.length; i += CHUNK) {
-		const chunkOut = await run(files.slice(i, i + CHUNK));
+	for (const chunk of chunks) {
+		const chunkOut = await run(chunk);
 		if (chunkOut === undefined) return undefined;
 		out.push(...chunkOut.split("\n").filter((line) => line !== ""));
 	}

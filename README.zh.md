@@ -182,7 +182,7 @@ D0:4|export function greet(name: string): string {
 构建产物与 vendored 副本根本不进读取阶段（自然也不吃那 64 MiB 读取预算）。只认**被搜目录
 自身**的忽略规则 —— 你点名一个被忽略的目录，它照样会搜。关掉
 `hashline.grep_respect_gitignore` 即退回插件自己的走查（整棵树减去隐藏项与
-`node_modules`），rg 无法解析时也是同一回退。
+`node_modules`），rg 无法解析、或某次调用无法 spawn / 执行失败时，也是同一回退 —— grep 不会因为 ripgrep 出错而失败。
 
 ## 工具
 

@@ -351,3 +351,30 @@ B 线（#245）只统一了 `read` 自己的窗口尾巴，同一句 `(Omitted �
 - `buildReadJson(...)` 返回的是 **`object`**（不是字符串），要放进 JSON payload 直接 `...buildReadJson(content, hashes, offset, limit, path, undefined, window)` 展开 —— 我第一版写成 `JSON.parse(buildReadJson(...))`，被 LSP 拦下。
 - 测试教训：`takeTextContinuation(sessionKey, token, consumer, count)` 的第 4 个参数是**行数**（read 传 `RESUME_WINDOW_LINES = 4000`），不是字符数 —— 夹具要造 >4000 行才会得到 `done === false` 的部分段。
 - 诚实缺口（另票）：read 的 report-segment 续读在 JSON 模式下仍返回散文（`totalLines:0` / `lines:[]` 占位），本票只记账不修，避免扩散。
+
+## 2026-10-09 — grep 预过滤的 argv 按命令行长度分块 (#260)
+
+**Topic:** ripgrep 预过滤的分块策略从「按文件数（`CHUNK = 400`）」改为「按命令行长度」；新增 `src/infra/argv-limit.ts`（`COMMAND_LINE_LIMIT` / `ARGV_BUDGET` / `planArgvChunks`）；`rgFilesWithMatches` 里 spawn 的同步抛出不再逃逸成 rejection。
+
+**Confidence:** High
+
+**Evidence:** 票 [#260](https://github.com/hyperion2144/dsh-hashline-edittool/issues/260)；本机 Node 探针（1.2 MB / 2.5 MB argv → `execFile` **同步**抛 `spawn E2BIG`，不走回调）与「修复前 `run()` 形状」探针（真实 2.5 MB argv → `REJECTED: spawn E2BIG`）；mock 内核的 `test/core/grep-rg-argv-limit.test.ts` 在修复前 4 红 1 绿（红 = `promise rejected "Error: spawn ENAMETOOLONG"`）；`npm run typecheck` 与 `npm test`（133 文件 passed + 1 skipped / 1457 例）与 client workspace（158 例）全绿；真实 rg 对不存在路径退出 2（ripgrep 15.0.0 实测）。
+
+### Why
+
+票面根因（按数量分块 → 撞 Windows 32,767 命令行上限）成立，但**失败路径比票面写得更硬**：票面把同步抛出归为「某些 Node 版本行为」的假设，实测是当前 Node 的确定行为，而 `new Promise` 执行器内的同步抛出会把 Promise 变成 reject，于是模块文档承诺的 undefined 回退从未运行 —— 这才是用户看到工具错误的直接原因。
+
+### Path / Affected typed relationships
+
+- 新增 `src/infra/argv-limit.ts`（tools/ → infra/ 单向依赖）：`argCost = 长度 + 4`；`planArgvChunks(fixed, items, budget)`（`fixed` 先占预算；任一条目若与 `fixed` 无法共处预算即整体返回 undefined；`fixed` 独自超预算亦返回 undefined）；`QUOTING_HEADROOM = 2_767` 与 `ARGV_BUDGET = COMMAND_LINE_LIMIT − QUOTING_HEADROOM = 30,000`。
+- `src/tools/grep-rg.ts`：`CHUNK = 400` 与 `files.slice` 循环删除，改 `fixedArgs` + `planArgvChunks([rg, ...fixedArgs], files, ARGV_BUDGET)`；`run()` 的 `execFile` 包 `try/catch` → `resolve(undefined)`；模块头与函数 doc 同步写明「同步拒绝也是失败」。
+- 测试：`test/core/grep-rg-argv-limit.test.ts`（新，10 例 = 5 例 mock 内核端到端 + 5 例预算算术本体：合批 / 按长度切分 / `fixed` 独占超预算弃权 / 单条超预算弃权 / 跨块保序不丢不空）与 `test/core/grep-rg-prefilter.test.ts` 新增一例真实 argv（400 × ~6.3K ≈ 2.5 MB）。
+- 文档：ADR-0016、`AGENTS.md` 的 `l0_domains.decisions` 行、README / README.zh 的 rg 回退句、`CHANGELOG.md` `[Unreleased]`。
+
+### 本轮定案（复核时照此）
+
+- **单一预算，不做平台分支**：POSIX `ARG_MAX` 是 1–2 MiB，平台分支能少几次 spawn，但要维护两个数；30,000 一次仍装下数百条普通路径，故选一个处处成立的规则。
+- mock 是**内核替身**（在 32,767 处同步抛 `spawn ENAMETOOLONG`），不是业务替身：断言量的是模块真实组装的 argv；替身 `+3/参数` 的保守计价故意比生产的 `+4` 更宽松。
+- 真实 argv 用例的断言依赖 rg 对不存在路径退 2，因而写 `undefined` 而非 `[]`（实测过，不是推断）。
+- **AC 字面化（评审后改）**：首版让「单条超预算独占一块、自己去撞 spawn」；Spec 轴评审指出这仍会组装出一条超过 32,767 的命令行，与验收标准 (a)「绝不产生超限命令行」不符。改为**整体弃权**（`planArgvChunks` 返回 undefined）：结果与旧写法一致（该块必失败 → 同样 undefined），但少一次注定被拒的系统调用，标准字面成立，且测试能钉住「零 spawn」（`expect(harness.invocations).toHaveLength(0)`）。
+- 诚实缺口（另票候选，本次未改）：`rgFiles` 的 `execFile` 同样会同步抛出（argv 固定且短，票面列为 out of scope）；LSP 安装 path 的 spawn 同理。
