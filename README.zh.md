@@ -164,7 +164,7 @@ D0:4|export function greet(name: string): string {
 | op | 锚点字段 | 行为 |
 | --- | --- | --- |
 | `replace` | `anchor_start`（+ 可选 `anchor_end`） | 用 `lines` 换掉该范围（非空；**一个元素就是一行** —— 只有元素自身含换行符才添行；`[""]` 把行清成空行，区别于 `del`）。省略 `anchor_end` = 单行替换；**范围跨多行时必填**。 |
-| `ins` | `anchor_after` | 在该行**下方**插入 `lines` —— 锚点行保留，`lines` 只放新内容。`anchor_start`/`anchor_end` 会被拒绝。可以锚在其他 hunk 范围的**结束行**，绝不能是起点或内部。 |
+| `ins` | `anchor_after` | 在该行**下方**插入 `lines` —— 锚点行保留，`lines` 只放新内容。`anchor_start`/`anchor_end` 会被拒绝。可以锚在其他 hunk 范围的**结束行**，绝不能是起点或内部。粘贴行（`<anchor>:<内容>`）会被抢救成锚点并附 `[E_BAD_REF]` 警告 —— 锚点行绝不会被替换。 |
 | `del` | `anchor_start`（+ 可选 `anchor_end`） | 删除范围（或单个 `anchor_start` 行）；`lines` 被忽略。 |
 | `sed` | `anchor_start`（+ 可选 `anchor_end`） | 用 `pattern` + `replacement` + 可选 `flags`（`gims`）**逐行**重写范围；不放 `lines`，`replacement` 不得含换行；sed 的 `\1`/`&` 与 JS 的 `$1`/`$&` 都接受。 |
 
@@ -243,7 +243,7 @@ front-matter 围栏损坏会快速失败并告警。
 | --- | --- |
 | `[E_ACCESS]` | 文件存在但不可读/不可写。 |
 | `[E_BAD_OP]` | 范围终点在起点之前（方向颠倒时自动纠正）。 |
-| `[E_BAD_REF]` | 锚点字段不是从行首列复制的标记。 |
+| `[E_BAD_REF]` | 锚点字段不是从行首列复制的标记；可抢救的粘贴行会归约成锚点并附警告（所有 op —— `ins` 保住锚点行）。 |
 | `[E_BAD_SHAPE]` | 请求/字段形状错误（未知字段、op 与锚点字段不匹配等）。 |
 | `[E_BATCH_ABORT]` | 批内一条失败；**该文件**的批次被拒绝，该文件什么都没写。 |
 | `[E_BATCH_CONFLICT]` | 两条目在同一快照上范围重叠。 |

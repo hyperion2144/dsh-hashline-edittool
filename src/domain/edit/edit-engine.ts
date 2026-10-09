@@ -161,6 +161,9 @@ export interface PreparedItem {
 	replacement?: string;
 	flags?: string;
 	pathWarning?: string;
+	/** #261 normalize-once: `[E_BAD_REF]` salvage warnings emitted while
+	 *  normalizing this item's anchor refs at the tool layer. */
+	refWarnings?: string[];
 	/** Edit semantic. Defaults to "replace"; the block ops are resolved to a
 	 *  line range before this point (spec §6.3). */
 	op?: EditOp;
@@ -1134,6 +1137,14 @@ export async function runFileEdits(
 			warnings.push(
 				`[E_ELISION_IN_PAYLOAD] edits[${item.index}] carries U+2026, which is how an ast_grep outline renders a FOLDED range — not source. If it was meant as literal text the edit is correct as written; if it was pasted from an outline, undo and re-read the lines you meant to change.`
 			);
+		}
+	}
+
+	// #261 normalize-once: the tool layer salvaged pasted-row refs before the
+	// engine saw them; surface its salvage warnings alongside the engine's own.
+	for (const item of items) {
+		if (item.refWarnings !== undefined && item.refWarnings.length > 0) {
+			warnings.push(...item.refWarnings);
 		}
 	}
 

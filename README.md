@@ -211,7 +211,7 @@ just gave you, or re-read.
 | op | anchor field | behavior |
 | --- | --- | --- |
 | `replace` | `anchor_start` (+ optional `anchor_end`) | swap the range for `lines` (non-empty; **one element = one line** — only an element's own newline adds a line; `[""]` clears a line to empty, distinct from `del`). `anchor_end` omitted = single-line replace; **required when the range spans multiple lines**. |
-| `ins` | `anchor_after` | insert `lines` **below** that line — the anchor line is kept, `lines` holds only what is new. `anchor_start`/`anchor_end` are refused. May anchor on another hunk's range **end** line, never its start/interior. |
+| `ins` | `anchor_after` | insert `lines` **below** that line — the anchor line is kept, `lines` holds only what is new. `anchor_start`/`anchor_end` are refused. May anchor on another hunk's range **end** line, never its start/interior. A pasted row (`<anchor>:<content>`) is salvaged to its anchor with an `[E_BAD_REF]` warning — the anchor line is never replaced. |
 | `del` | `anchor_start` (+ optional `anchor_end`) | delete the range (or the single `anchor_start` line); `lines` is ignored. |
 | `sed` | `anchor_start` (+ optional `anchor_end`) | rewrite the range **line by line** with `pattern` + `replacement` + optional `flags` (`gims`), no `lines`, no newline in `replacement`; sed's `\1`/`&` and JS's `$1`/`$&` both accepted. |
 
@@ -305,7 +305,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_AST_DISABLED]` / `[E_AST_PATTERN]` / `[E_AST_TOO_LARGE]` | AST capability off for the language / pattern did not parse as one node / file exceeds the AST size cap. |
 | `[E_AST_WORKER_ABORTED]` / `[E_AST_WORKER_FAILED]` | The tree-sitter worker was aborted / failed. |
 | `[E_BAD_OP]` | Range end precedes range start (autocorrected when reversed). |
-| `[E_BAD_REF]` | Anchor field is not a marker copied from a row's leftmost column. |
+| `[E_BAD_REF]` | Anchor field is not a marker copied from a row's leftmost column; a salvageable pasted row is reduced to its anchor with a warning (all ops — `ins` keeps its anchor line). |
 | `[E_BAD_SHAPE]` | Request/field shape wrong (unknown fields, wrong anchor field for the op, …). |
 | `[E_BATCH_ABORT]` | A batch item failed; that file's batch was rejected and nothing was written for it. |
 | `[E_BATCH_CONFLICT]` | Two items' ranges overlap on the same snapshot. |
