@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyEffective } from "../../src/config.js";
-import { getText, setupIntegrationTest, withTempFile, useNumberedRows } from "../support/fixtures.js";
+import { NUMBERED, getText, setupIntegrationTest, withTempFile, useNumberedRows } from "../support/fixtures.js";
 // #244: the line-number switch belongs to the user now and defaults OFF; this
 // file asserts numbered rows, so every test here pins it ON — and any
 // mid-test `applyEffective` spread `...NUMBERED` to keep it on.
@@ -100,7 +100,7 @@ describe("#147 grep — line numbers in read's line space", () => {
 			const harness = setupIntegrationTest(cwd);
 			const readRows = parseRows(getText(await harness.readTool.execute("read", { path })));
 			const byContent = new Map(readRows.map((r) => [r.content, r]));
-			applyEffective({ output_format: "json" });
+			applyEffective({ ...NUMBERED, output_format: "json" });
 			const res = await grepTool(harness).execute("g", { path, pattern: "gamma", regex: false, context: 1 });
 			const out = JSON.parse(getText(res)) as {
 				files: Array<{ path: string; matches: Record<string, string> }>;
