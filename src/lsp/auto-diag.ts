@@ -32,7 +32,7 @@
  * @module dsh-hashline-edittool/lsp/auto-diag
  */
 import { pathToFileURL } from "node:url";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import { languageForPath } from "../ast/language.js";
@@ -476,12 +476,15 @@ function startAsyncWait(input: AfterWriteInput): void {
 /**
  * The plugin-sourced message an async delivery injects.
  *
- * `form: "diagnostics"` is deliberately OUTSIDE the platform's `ContextForm`
- * union: an unknown form is the documented opaque-content default, which is
- * exactly the plain-text collapsed row #130 accepted as final (Q16 — a custom
- * card would have to hijack every context message's renderer). The cast is
- * local to this one field so a future union growth cannot silently re-style
- * this message.
+ * The source declares the platform-known `notice` form — "a one-off account
+ * of something that just happened" — with the one-line `summary` the form
+ * requires, so the web client renders the injection card: a collapsed row
+ * carrying the summary over the model-facing text (#170). This supersedes
+ * #130 Q16's `form: "diagnostics"`: the unknown-form default it relied on
+ * proved invisible on 0.1.7-rc.1, not the plain-text row it was assumed to
+ * be, and a known form is the only version-stable way to be seen. The cast
+ * stays local to the source object — `MessageSourceMap` has no
+ * plugin-producer key to type it against.
  */
 function buildInjectedMessage(input: AfterWriteInput, report: FileDiagnostics): UserMessage {
 	return createUserMessage({
@@ -495,7 +498,12 @@ function buildInjectedMessage(input: AfterWriteInput, report: FileDiagnostics): 
 			// third-party plugin, so live injection and migrated history agree,
 			// and the legacy `plugin` field is gone with the wrapper that carried it.
 			kind: `plugin:${PLUGIN_NAME}`,
-			form: "diagnostics",
+			// The KNOWN form is the fix (#170): the web client projects an
+			// unknown form to nothing, while `notice` renders the injection
+			// card. It requires the summary below — a notice without a
+			// non-empty one falls back to opaque, the fate being fixed here.
+			form: "notice",
+			summary: boundContextSummary(`LSP diagnostics arrived late for ${report.path}`),
 		} as never,
 	});
 }
