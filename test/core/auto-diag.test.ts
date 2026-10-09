@@ -27,6 +27,7 @@ import {
 	type AfterWriteInput,
 	type FileDiagnostics,
 } from "../../src/lsp/auto-diag.js";
+import { CONTEXT_SUMMARY_MAX_CHARS } from "@deepseek-ai/dsh-llm";
 import { applyEffective, getEffectiveConfig, isAutoDiagnosticsEnabled } from "../../src/config.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
@@ -321,7 +322,7 @@ describe("the async path — a push later than the window", () => {
 			const message = injected[0] as {
 				role: string;
 				content: Array<{ text: string }>;
-				source: { kind: string; form: string };
+				source: { kind: string; form: string; summary?: string };
 			};
 			expect(message.role).toBe("user");
 			// v4 session admission (#165): the kind is the producer's OWN —
@@ -330,6 +331,18 @@ describe("the async path — a push later than the window", () => {
 			expect(message.source.kind).toBe("plugin:dsh-hashline-edittool");
 			expect(message.source.kind).not.toBe("plugin");
 			expect(message.source).not.toHaveProperty("plugin");
+			// #170: the source declares the platform-known `notice` form — "a
+			// one-off account of something that just happened" — so the web
+			// client renders the injection card instead of the opaque fallback
+			// that 0.1.7-rc.1 showed as nothing at all.
+			expect(message.source.form).toBe("notice");
+			// A `notice` WITHOUT a non-empty summary falls back to opaque
+			// (contextBody), and the account is bounded by the platform's
+			// CONTEXT_SUMMARY_MAX_CHARS. It names the file so the collapsed row
+			// is readable without expanding.
+			expect(typeof message.source.summary).toBe("string");
+			expect(message.source.summary).toContain("a.ts");
+			expect(message.source.summary!.length).toBeLessThanOrEqual(CONTEXT_SUMMARY_MAX_CHARS);
 			const text = message.content[0]!.text;
 			// Story 15: file, tool, and call id all identify the edit that caused it.
 			expect(text).toContain("a.ts");
@@ -385,6 +398,42 @@ describe("the async path — a push later than the window", () => {
 			// Long enough for a live poll to see the push; the aborted one must not.
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			expect(injected).toHaveLength(0);
+		});
+	});
+
+	it("bounds the injected notice summary to the platform's 120 chars (#170)", async () => {
+		await withTempDir("auto-diag-notice-bound-", async (cwd) => {
+			const injected: unknown[] = [];
+			const late = fakeSession(DIAGNOSTICS);
+			// A display path long enough to push the one-line account past the
+			// bound: the collapsed row must never carry an unbounded string.
+			const longName = `${"name".repeat(30)}.ts`;
+			const input = makeInput({
+				cwd,
+				session: undefined,
+				absolutePath: join(cwd, longName),
+				displayPath: longName,
+				uri: pathToFileURL(join(cwd, longName)).href,
+				exec: makeExec(cwd, (m) => injected.push(m)),
+			});
+			// Cold-start wiring: no ready session and the boot wait resolves
+			// fast, so the delivery hands straight to the background path —
+			// the same fast shape as the BUG-1 regression above.
+			setLspManager({
+				readySessionFor: () => undefined,
+				warm: vi.fn(),
+				waitForSession: async () => late.session,
+				openDocumentFor: () => (text: string) => late.openText(text),
+			} as never);
+			expect(await deliverDiagnosticsAfterWrite(input)).toBeUndefined();
+			late.push();
+			await vi.waitFor(() => expect(injected).toHaveLength(1), { timeout: 6_000 });
+			const message = injected[0] as { source: { summary: string } };
+			expect(message.source.summary.length).toBeLessThanOrEqual(CONTEXT_SUMMARY_MAX_CHARS);
+			// Bounded with an ellipsis, not cut silently: the account still
+			// opens by naming what happened.
+			expect(message.source.summary.startsWith("LSP diagnostics arrived late for ")).toBe(true);
+			expect(message.source.summary.endsWith("…")).toBe(true);
 		});
 	});
 });
