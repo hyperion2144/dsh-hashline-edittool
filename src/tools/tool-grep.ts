@@ -410,7 +410,7 @@ export function buildGrepTool(io: FileIO) {
 						for (const row of rowsOut) {
 							servedParts.push(
 								row.hash !== ""
-									? `${row.hash}:${row.number}${hashSep()}${row.text}`
+									? `${fmtMarker(row.hash, row.number)}${hashSep()}${row.text}`
 									: `[line ${row.number}] ${row.text}`,
 							);
 						}
@@ -600,12 +600,19 @@ export function buildGrepTool(io: FileIO) {
 							const context = opts.context ?? contextLinesCfg();
 							const matches: Record<string, string> = {};
 							const anchorsByPos = anchorsByPosition;
+							// #259: the KEY is the marker, so it is spelled by the ONE formula —
+							// hand-built here, this site leaked a line number with the switch OFF.
+							// A row that could not be anchored keeps its bare line number: then
+							// that number is the only handle there is.
+							const keyOf = (position: number): string => {
+								const anchor = anchorsByPos.get(position) ?? "";
+								return anchor === "" ? `${position + 1}` : fmtMarker(anchor, position + 1);
+							};
 							for (const match of section.matches) {
-								const key = `${anchorsByPos.get(match.position) ?? ""}:${match.position + 1}`;
-								matches[key] = rowContent(section, match.position);
+								matches[keyOf(match.position)] = rowContent(section, match.position);
 								for (let k = Math.max(0, match.position - context); k <= Math.min(section.lineCount - 1, match.position + context); k++) {
 									if (k === match.position) continue;
-									matches[`${anchorsByPos.get(k) ?? ""}:${k + 1}`] = rowContent(section, k);
+									matches[keyOf(k)] = rowContent(section, k);
 								}
 							}
 							jsonFiles.push({ path: displayPath, matches });

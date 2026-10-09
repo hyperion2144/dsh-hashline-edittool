@@ -203,7 +203,8 @@ D0:4|export function greet(name: string): string {
 
 - **`text`**（默认）—— 上文的 `ANCHOR:FILELINE` 行格式；
 - **`json`** —— 纯 JSON 信封（如 edit 返回 `{ ok, path, diff, hints, warnings }`，
-  `diff` 是 `{"<锚点>:<行>": 内容}` 字典）。结构化，适合偏好解析的模型。
+  `diff` 是 `{"<anchor>": 内容}` / `{"<锚点>:<行>": 内容}` 字典 —— 键**就是**标记，
+  形态随同一个 `line_numbers` 开关）。结构化，适合偏好解析的模型。
 
 web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构化。
 

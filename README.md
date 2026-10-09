@@ -253,8 +253,9 @@ or an invocation fails — `grep` never fails because ripgrep did.
 
 - **`text`** (default) — the `ANCHOR:FILELINE` row format shown above;
 - **`json`** — pure JSON envelopes (e.g. edit returns `{ ok, path, diff, hints, warnings }`
-  where `diff` is a `{"<anchor>:<line>": content}` dict). Structured, for models that
-  prefer parsing over row formats.
+  where `diff` is a `{"<anchor>": content}` / `{"<anchor>:<line>": content}` dict — the
+  key **is** the marker, so its shape follows the same `line_numbers` setting).
+  Structured, for models that prefer parsing over row formats.
 
 The web cards are unaffected — they render from `presentationMeta`, which is always
 structured.

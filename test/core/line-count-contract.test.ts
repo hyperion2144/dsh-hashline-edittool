@@ -239,7 +239,7 @@ describe("exact line-count edit contract", () => {
 		await withTempFile("t.txt", "alpha\nbeta\ngamma\ndelta\n", async ({ cwd }) => {
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, "t.txt");
-			applyEffective({ output_format: "json" });
+			applyEffective({ ...NUMBERED, output_format: "json" });
 			const res = await (harness.getTool("grep") as unknown as {
 				execute: (id: string, p: unknown) => Promise<{ content: Array<{ text?: string }> }>;
 			}).execute("g", { path: "t.txt", pattern: "beta" });

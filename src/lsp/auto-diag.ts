@@ -606,7 +606,7 @@ export function diagRowsToJson(rows: readonly DiagRow[]): Record<string, DiagJso
 		rows.map((row) => [
 			// A row without an anchor falls back to its bare line number — the
 			// same marker rule every other channel uses.
-			row.hash === "" ? `${row.number}` : `${row.hash}:${row.number}`,
+			row.hash === "" ? `${row.number}` : fmtMarker(row.hash, row.number),
 			{
 				text: row.text,
 				messages: row.messages,
