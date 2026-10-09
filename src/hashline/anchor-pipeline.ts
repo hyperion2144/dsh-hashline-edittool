@@ -497,47 +497,71 @@ export function resEdit(edit: HTEdit, warnings?: string[]): HEdit {
 	assertItem(edit as Record<string, unknown>);
 
 	const editLines = parseText(edit.replacement_text);
-	const bounds = [edit.remove_from, edit.remove_to].map((ref) => {
-		const trimmed = ref.trim();
-		// Already a valid reference form (bare anchor or `<line>:<anchor>` hint) —
-		// keep it verbatim so the line hint survives to parseHashRef. The row
-		// regex below would greedily eat `4:lA` as anchor "4" + separator ":".
-		if (hashRe().test(trimmed) || lineAnchorRe().test(trimmed)) return trimmed;
-		const match = trimmed.match(hlRowAnchorRe());
-		if (!match) return ref;
-		// The row regex accepts either marker order; re-emit in the CURRENT one so
-		// the line hint survives to parseHashRef whatever the row used.
-		const parts = rowMarkerParts(match);
-		const anchor =
-			parts.line === undefined ? parts.anchor : `${parts.anchor}:${parts.line}`;
-		const rest = trimmed.slice(match[0].length);
-		if (rest) {
-			// issue #66/B2: any pasted row prefix (diff marker / line hint / anchor
-			// + separator + content) is stripped UNCONDITIONALLY, with a warning.
-			// The v2.0-era isRealMarker check (line number in range AND that
-			// line's current anchor equals the prefix anchor) almost never held
-			// for rows pasted from a post-edit diff (fresh anchors) — such rows
-			// landed verbatim in the file, polluting it with anchor junk.
-			let message: string;
-			if (/\r\n?|\n/.test(rest)) {
-				message = `[E_BAD_REF] remove_from/remove_to got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
-			} else if (match[1] === "+") {
-				message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
-			} else if (match[1] === "-") {
-				message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
-			} else {
-				message = `[E_BAD_REF] stripped trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
-			}
-			warnings?.push(message);
-		}
-		// Re-emitted in the CURRENT order (`<anchor>:<line>`) either way — the
-		// bounds are re-parsed right below, so only the anchor and the hint matter.
-		return anchor;
-	}) as [string, string];
+	const bounds = [edit.remove_from, edit.remove_to].map((ref, index) =>
+		salvageAnchorRef(ref, warnings, index === 0 ? "remove_from" : "remove_to"),
+	) as [string, string];
 	return {
 		content_lines: editLines,
 		hash_bounds: [parseHashRef(bounds[0]), parseHashRef(bounds[1])],
 	};
+}
+
+/**
+ * Salvage one anchor-field reference: reduce a pasted read/grep/diff row
+ * (`[+-]?[<line>:]<anchor><sep><content>`) to its reference form (`<anchor>`
+ * or `<anchor>:<line>`), warning about what was stripped. Reference forms
+ * pass through verbatim — the row regex would greedily eat `4:lA` as anchor
+ * "4" plus separator, so the fast path must run first.
+ *
+ * Shared by `buildPreparedItem` (tool layer — #261 normalize-once: the ins
+ * expansion must see the same salvaged ref the pipeline would forgive, or
+ * `resolveIns`'s strict parse early-returns and the anchor line is replaced
+ * instead of kept) and by `resEdit` (engine bounds — the last-line defense
+ * for callers that bypass the tool layer).
+ * `fieldLabel` names the anchor field in warnings, so a pasted row is
+ * attributed to the field the caller actually handed over (`anchor_after`
+ * from the tool layer, `remove_from`/`remove_to` from `resEdit` bounds).
+ */
+export function salvageAnchorRef(
+	ref: string,
+	warnings: string[] | undefined,
+	fieldLabel: string,
+): string {
+	const trimmed = ref.trim();
+	// Already a valid reference form (bare anchor or `<line>:<anchor>` hint) —
+	// keep it verbatim so the line hint survives to parseHashRef. The row
+	// regex below would greedily eat `4:lA` as anchor "4" + separator ":".
+	if (hashRe().test(trimmed) || lineAnchorRe().test(trimmed)) return trimmed;
+	const match = trimmed.match(hlRowAnchorRe());
+	if (!match) return ref;
+	// The row regex accepts either marker order; re-emit in the CURRENT one so
+	// the line hint survives to parseHashRef whatever the row used.
+	const parts = rowMarkerParts(match);
+	const anchor =
+		parts.line === undefined ? parts.anchor : `${parts.anchor}:${parts.line}`;
+	const rest = trimmed.slice(match[0].length);
+	if (rest) {
+		// issue #66/B2: any pasted row prefix (diff marker / line hint / anchor
+		// + separator + content) is stripped UNCONDITIONALLY, with a warning.
+		// The v2.0-era isRealMarker check (line number in range AND that
+		// line's current anchor equals the prefix anchor) almost never held
+		// for rows pasted from a post-edit diff (fresh anchors) — such rows
+		// landed verbatim in the file, polluting it with anchor junk.
+		let message: string;
+		if (/\r\n?|\n/.test(rest)) {
+			message = `[E_BAD_REF] ${fieldLabel} got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
+		} else if (match[1] === "+") {
+			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+		} else if (match[1] === "-") {
+			message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+		} else {
+			message = `[E_BAD_REF] stripped trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+		}
+		warnings?.push(message);
+	}
+	// Re-emitted in the CURRENT order (`<anchor>:<line>`) either way — the
+	// bounds are re-parsed right below, so only the anchor and the hint matter.
+	return anchor;
 }
 
 function warnUnicodeEsc(edit: HEdit, warnings: string[]): void {

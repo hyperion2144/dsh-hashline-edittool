@@ -34,7 +34,6 @@ import {
 	assertEditRequest,
 	pathSchema,
 	buildEditsSchema,
-	anchorOf,
 	declaredLineOf,
 	type EditOp,
 } from "../contract/contract.js";
@@ -52,7 +51,7 @@ import {
 // `<line>:<anchor>` handling when the block-op path was removed.
 import { lineHintOf } from "../hashline/declaration.js";
 import type { AnchorRef } from "../hashline/declaration.js";
-import { encodeText } from "../hashline/anchor-pipeline.js";
+import { encodeText, salvageAnchorRef } from "../hashline/anchor-pipeline.js";
 import { abortIf, isRec, visLines } from "../infra/utils.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 
@@ -113,9 +112,11 @@ type EditCanonicalValue = {
  * Build a `PreparedItem` from one `edits[i]`. Resolves the per-item
  * `path` against the top-level fallback, defaults `anchor_end` to `anchor_start` when
  * omitted, and maps `op: "del"` to `replacement_text: ""`. The `op:
- * "ins"` case is left to `applyOne`/`resolveIns` — the `replacement_text`
+ * "ins" case is left to `applyOne`/`resolveIns` — the `replacement_text`
  * is still the raw `lines.join("\n")` here because the anchor's own
- * content needs to be read first.
+ * content needs to be read first. Anchor REFS, though, are salvaged HERE
+ * (#261 normalize-once): pasted rows reduce to reference forms once, so
+ * `resolveIns` and `resEdit` can no longer disagree about one token.
  */
 /** The raw reference string of an anchor field (declaration form → its anchor). */
 function rawAnchor(field: AnchorRef): string {
@@ -160,7 +161,19 @@ export function buildPreparedItem(
 			`[E_BAD_SHAPE] edits[${index}] has no anchor: op:"ins" takes "anchor_after", the other ops take "anchor_start".`,
 		);
 	}
-	const toResolved = item.anchor_end !== undefined ? anchorOf(item.anchor_end) : anchorOf(startAnchor);
+	// #261 normalize-once: salvage pasted-row refs (`<anchor>:<content>`, diff
+	// markers, multi-line blocks) HERE, once — the same salvage `resEdit`
+	// applies — so `resolveIns`'s strict parse and the pipeline's forgiving
+	// strip can no longer disagree about one token (that disagreement let an
+	// un-expanded ins REPLACE its anchor line). Ins's folded end reuses the
+	// start's salvage, so one pasted anchor warns exactly once.
+	const refWarnings: string[] = [];
+	const startLabel = item.op === "ins" ? "anchor_after" : "anchor_start";
+	const startRef = salvageAnchorRef(rawAnchor(startAnchor), refWarnings, startLabel);
+	const endRef =
+		item.anchor_end !== undefined
+			? salvageAnchorRef(rawAnchor(item.anchor_end), refWarnings, "anchor_end")
+			: startRef;
 	const replacementText =
 		item.op === "del"
 			? ""
@@ -169,8 +182,8 @@ export function buildPreparedItem(
 		index,
 		path: itemPath,
 		absolutePath,
-		remove_from: anchorOf(startAnchor),
-		remove_to: toResolved,
+		remove_from: startRef,
+		remove_to: endRef,
 		replacement_text: replacementText,
 		op: item.op ?? "replace",
 		// `op: "sed"` carries its substitution through untouched: the regex runs
@@ -179,18 +192,17 @@ export function buildPreparedItem(
 		...(item.replacement !== undefined ? { replacement: item.replacement } : {}),
 		...(item.flags !== undefined ? { flags: item.flags } : {}),
 		anchorEndAsserted: item.anchor_end !== undefined,
-		// The numeric hints, when the caller wrote the `<line>:<anchor>` form.
-		// `anchorOf` is what strips them, so read them off the raw field.
-		...(lineHintOf(rawAnchor(startAnchor)) === undefined
-			? {}
-			: { lineStart: lineHintOf(rawAnchor(startAnchor)) }),
-		...(item.anchor_end !== undefined && lineHintOf(rawAnchor(item.anchor_end)) !== undefined
-			? { lineEnd: lineHintOf(rawAnchor(item.anchor_end)) }
+		// The numeric hints, when the caller wrote a line number into the ref —
+		// read off the SALVAGED refs so a pasted row keeps its hint too.
+		...(lineHintOf(startRef) === undefined ? {} : { lineStart: lineHintOf(startRef) }),
+		...(item.anchor_end !== undefined && lineHintOf(endRef) !== undefined
+			? { lineEnd: lineHintOf(endRef) }
 			: {}),
 		expectedStart: declaredLineOf(startAnchor),
 		...(item.anchor_end !== undefined
 			? { expectedEnd: declaredLineOf(item.anchor_end) }
 			: {}),
+		...(refWarnings.length > 0 ? { refWarnings } : {}),
 	};
 }
 
