@@ -268,13 +268,14 @@ export function lineHashesPure(content: string): string[] {
  * are never all-digits and the two forms can never be confused.
  *
  * @param anchor - the allocated anchor.
- * @param line - 1-based line number, when the caller knows it.
+ * @param line - 1-based line number, or the `start-end` RANGE of a row that
+ * folds several lines, when the caller knows it.
  * @param lineNumbers - whether the number belongs in the marker.
  * @returns the marker text.
  */
 export function fmtMarker(
 	anchor: string,
-	line: number | undefined,
+	line: number | string | undefined,
 	lineNumbers = lineNumbersEnabled(),
 ): string {
 	return lineNumbers && line !== undefined ? `${anchor}:${line}` : anchor;

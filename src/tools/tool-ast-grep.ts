@@ -342,10 +342,12 @@ export function buildAstGrepTool(io: FileIO) {
 				}
 				const outlineLines = rendered.rows.map((row) => {
 					// A merged row's number part is a RANGE (`20-34`); a kept row's is
-					// its line. The anchor comes FIRST and the number trails it inside
-					// the marker; the separator only divides marker from content.
+					// its line. Through the ONE marker formula (#259): hand-built here
+					// before, this site spelled a number with the switch OFF — in the
+					// text rows AND in the dict keyed by that same marker. The separator
+					// only divides marker from content.
 					const line = row.merged ? `${row.number}-${row.endNumber}` : `${row.number}`;
-					return { marker: `${row.anchor}:${line}`, text: row.text, line };
+					return { anchor: row.anchor, marker: fmtMarker(row.anchor, line), text: row.text, line };
 				});
 				// The CARD's rows: the outline IS a folded line view, so it wears the
 				// grep card's row shape — gutter and text, no match highlight (an
@@ -354,10 +356,11 @@ export function buildAstGrepTool(io: FileIO) {
 				// an empty `files` here rendered the search card's 无结果, telling
 				// the reader the outline the model was actively reading was nothing.
 				const outlineCardRows = outlineLines.map((r) => {
-					const at = r.marker.lastIndexOf(":");
+					// The anchor itself, NOT a slice of the marker: the marker's
+					// spelling follows the switch now (#259), and the CARD's does not.
 					return {
 						number: Number.parseInt(r.line, 10),
-						hash: at > 0 ? r.marker.slice(0, at) : "",
+						hash: r.anchor,
 						text: r.text,
 					};
 				});

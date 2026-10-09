@@ -37,6 +37,7 @@ import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";
 import { setAstClient, type WorkerLike } from "../../src/ast/client.js";
 import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "../../src/ast/worker.js";
+import { diagnosticsJson, type FileDiagnostics } from "../../src/lsp/auto-diag.js";
 import { getText, getWritableTempRoot, makeExec, setupIntegrationTest } from "../support/fixtures.js";
 
 const BODY = ["line-01 content", "line-02 content", "line-03 content"].join("\n") + "\n";
@@ -104,7 +105,11 @@ async function makeCase(name: string, extra?: { file: string; body: string }): P
 function renderRows(text: string): Array<[string, string]> {
 	const found: Array<[string, string]> = [];
 	for (const raw of text.split("\n")) {
-		const match = /^[+\- ]*([A-Za-z0-9]{1,8}(?::\d+)?):\s?(.*)$/.exec(raw);
+		// The number part may be a RANGE: a merged outline row's marker is
+		// `<anchor>:<start>-<end>` (#259), and a pattern that rejected it would
+		// make that row invisible to every assertion below — which is how the
+		// outline leak stayed hidden.
+		const match = /^[+\- ]*([A-Za-z0-9]{1,8}(?::\d+(?:-\d+)?)?):\s?(.*)$/.exec(raw);
 		if (match !== null) found.push([match[1]!, match[2] ?? ""]);
 	}
 	return found;
@@ -121,9 +126,17 @@ function markerFor(text: string, content: string): string {
 	return row[0];
 }
 
-/** `true` when any row carries a `:line` hint between its anchor and its text. */
+/**
+ * `true` when any RENDERED ROW's marker carries a line number — `:N`, or the
+ * `:START-END` range a merged outline row shows.
+ *
+ * Row-shaped ONLY. Prose that happens to name a line (a cursor's `offset=41`,
+ * a rejection's `file:12` location, grep's `[line 7]` fallback for a row with
+ * no anchor at all) is not a row and is deliberately NOT governed by the
+ * switch — the caller cannot act without it in either state.
+ */
 function hasNumberedRows(text: string): boolean {
-	return /^\s*[+\- ]*[A-Za-z0-9]{1,8}:\d+:/.test(text.split("\n").join("\n")) || /\n\s*[+\- ]*[A-Za-z0-9]{1,8}:\d+:/.test(text);
+	return renderRows(text).some(([marker]) => /:\d/.test(marker));
 }
 
 /**
@@ -348,12 +361,203 @@ describe("#244 the line-number switch", () => {
 	});
 
 	it("one marker helper serves every row site, lsp included", () => {
-		// `lsp` renders its rows through `fmtMarker` (src/tools/tool-lsp.ts), so
-		// this helper IS the lsp side of the switch — a second "does lsp follow?"
-		// integration test would exercise this same call and nothing more.
+		// `lsp` renders its ROWS through `fmtMarker` (src/tools/tool-lsp.ts), so for
+		// those this helper IS the lsp side of the switch. Its diagnostics JSON
+		// projection is a separate builder with its own key spelling — that one is
+		// pinned in the #259 block below, not here.
 		applyEffective(undefined);
 		expect(fmtMarker("ab", 3)).toBe("ab");
 		applyEffective({ line_numbers: true });
 		expect(fmtMarker("ab", 3)).toBe("ab:3");
+	});
+});
+
+/**
+ * #259 — the switch is TOTAL. #248 wired the four tools and `ast_grep`'s match
+ * rows; auditing every marker and legend construction against
+ * `lineNumbersEnabled()`'s consumers turned up the sites it left behind. One
+ * test per site, each stating the ticket's contract: with the switch OFF,
+ * nothing a tool returns carries a line number — not a text row, not a merged
+ * row's range, not a JSON key, not a header legend.
+ *
+ * The boundary is ROWS AND LEGENDS, not prose. A cursor (`offset=41`), a
+ * rejection's `file:12` location and grep's `[line N]` fallback for a row with
+ * no anchor at all stay in BOTH states: the caller cannot act without them, and
+ * each is a statement about the file rather than a marker pretending to be one.
+ * `hasNumberedRows` is written to that line.
+ */
+describe("#259 no row site escapes the switch", () => {
+	/** A TypeScript file the outline GATE accepts: past the 20-line floor, with
+	 *  bodies of ≥4 lines to fold and folds that clear the 0.6 shrink ratio. */
+	const FOLDABLE = [
+		'import { a } from "./m";',
+		"",
+		...[0, 1].flatMap((i) => [
+			`export function fn${i}() {`,
+			...Array.from({ length: 8 }, (_, j) => `  const v${i}_${j} = ${j};`),
+			"}",
+			"",
+		]),
+	].join("\n");
+
+	/** `ast_grep` over FOLDABLE — the same in-process worker the pattern test
+	 *  above builds, because the outline needs a REAL parse. */
+	async function astGrepOverFoldable(name: string) {
+		const cwd = await makeCase(name, { file: "t.ts", body: FOLDABLE });
+		await loadHashStore(cwd);
+		const { AstClient } = (await import("../../src/ast/client.js")) as unknown as {
+			AstClient: new (opts: { spawn: () => WorkerLike; idleMs: number }) => Parameters<typeof setAstClient>[0];
+		};
+		setAstClient(new AstClient({ spawn: inProcessWorker, idleMs: 0 }));
+		return { tool: buildAstGrepTool(localIO()), execFor: makeExec(cwd, "test-session") };
+	}
+
+	it("ast_grep's OUTLINE rows — a merged row's range included — follow the switch", async () => {
+		const { tool, execFor } = await astGrepOverFoldable("outline-rows");
+
+		applyEffective({ ast: { enabled: true } });
+		const off = (await tool.execute({ path: "t.ts" }, execFor({}))) as { modelText?: string };
+		const offText = off.modelText ?? "";
+		expect(offText).toContain("fn0"); // the outline itself, not a refusal
+		expect(renderRows(offText).length).toBeGreaterThan(0);
+		expect(hasNumberedRows(offText)).toBe(false);
+		// A fold reports itself as a RANGE in the number slot; anchors are Base62,
+		// so a `-` inside a marker can only ever be that range.
+		expect(renderRows(offText).some(([marker]) => marker.includes("-"))).toBe(false);
+
+		applyEffective({ ast: { enabled: true }, line_numbers: true });
+		const on = (await tool.execute({ path: "t.ts" }, execFor({}))) as { modelText?: string };
+		expect(hasNumberedRows(on.modelText ?? "")).toBe(true);
+	});
+
+	it("ast_grep's outline JSON keys are bare anchors when OFF", async () => {
+		const { tool, execFor } = await astGrepOverFoldable("outline-json");
+		const keysOf = async (): Promise<string[]> => {
+			const value = (await tool.execute({ path: "t.ts" }, execFor({}))) as { modelText?: string };
+			return Object.keys(
+				(JSON.parse(value.modelText ?? "{}") as { lines?: Record<string, string> }).lines ?? {},
+			);
+		};
+
+		applyEffective({ ast: { enabled: true }, output_format: "json" });
+		const off = await keysOf();
+		expect(off.length).toBeGreaterThan(0);
+		for (const key of off) expect(key).toMatch(/^[A-Za-z0-9]{2,8}$/);
+
+		applyEffective({ ast: { enabled: true }, output_format: "json", line_numbers: true });
+		const on = await keysOf();
+		expect(on.length).toBe(off.length);
+		for (const key of on) expect(key).toMatch(/^[A-Za-z0-9]{2,8}:\d+(-\d+)?$/);
+	});
+
+	it("grep's JSON match AND context keys are bare anchors when OFF", async () => {
+		const h = setupIntegrationTest(await makeCase("grep-json-rows"));
+		const keysOf = async (): Promise<string[]> => {
+			const text = getText(await h.getTool("grep").execute("grep", { path: ".", pattern: "line-02" }));
+			const parsed = JSON.parse(text) as { files?: Array<{ matches: Record<string, string> }> };
+			return (parsed.files ?? []).flatMap((file) => Object.keys(file.matches));
+		};
+
+		applyEffective({ output_format: "json" });
+		const off = await keysOf();
+		// The hit AND its context rows: one hand-built key per row, so a fix that
+		// only reaches the match row still fails here.
+		expect(off).toHaveLength(3);
+		for (const key of off) expect(key).toMatch(/^[A-Za-z0-9]{2,8}$/);
+
+		applyEffective({ output_format: "json", line_numbers: true });
+		const on = await keysOf();
+		expect(on).toHaveLength(3);
+		for (const key of on) expect(key).toMatch(/^[A-Za-z0-9]{2,8}:\d+$/);
+	});
+
+	it("grep's RESUMED (spilled) rows follow the switch", async () => {
+		const cwd = await makeCase("grep-resume-rows");
+		// Past the response budget, so the tail spills into a resume token and
+		// comes back through the continuation renderer.
+		await writeFile(
+			join(cwd, "many.txt"),
+			`${Array.from({ length: 900 }, (_, i) => `needle-${i}-${"z".repeat(90)}`).join("\n")}\n`,
+			"utf-8",
+		);
+		applyEffective(undefined);
+		const h = setupIntegrationTest(cwd);
+		const first = getText(
+			await h.getTool("grep").execute("grep", { path: ".", pattern: "needle", limit: 900 }),
+		);
+		const token = /Use grep \{resume: "([^"]+)"\}/.exec(first)?.[1];
+		expect(token).toBeDefined();
+
+		const resumed = getText(await h.getTool("grep").execute("grep", { resume: token }));
+		expect(resumed).toContain("needle-");
+		expect(hasNumberedRows(resumed)).toBe(false);
+	});
+
+	it("the diagnostics JSON projection keys rows by the bare anchor when OFF", () => {
+		const report = {
+			path: "a.ts",
+			absolutePath: "/repo/a.ts",
+			toolName: "edit",
+			totalSeen: 2,
+			truncated: false,
+			rows: [
+				{ number: 1, hash: "ab", text: "const a = 1;", messages: ["error: boom"], severities: [1] },
+				{ number: 2, hash: "cd", text: "const b = 2;", messages: [], severities: [] },
+			],
+		} as FileDiagnostics;
+
+		applyEffective(undefined);
+		expect(Object.keys(diagnosticsJson([report])[0]!.rows)).toEqual(["ab", "cd"]);
+
+		applyEffective({ line_numbers: true });
+		expect(Object.keys(diagnosticsJson([report])[0]!.rows)).toEqual(["ab:1", "cd:2"]);
+
+		// A row with no anchor at all has no marker to bare: its line number is the
+		// only handle there is, in EITHER state (the deliberate exception).
+		const orphan = {
+			...report,
+			rows: [{ number: 7, hash: "", text: "x", messages: [], severities: [] }],
+		} as FileDiagnostics;
+		applyEffective(undefined);
+		expect(Object.keys(diagnosticsJson([orphan])[0]!.rows)).toEqual(["7"]);
+		applyEffective({ line_numbers: true });
+		expect(Object.keys(diagnosticsJson([orphan])[0]!.rows)).toEqual(["7"]);
+	});
+
+	it("the drift rejection's ±context echo legend follows the switch", async () => {
+		/** Serve `f.txt`, drift it EXTERNALLY, then resubmit the served anchor: the
+		 *  served verdict answers with a ±context echo, and that echo carries a
+		 *  legend. A fresh case per state — the first rejection re-materialises the
+		 *  window, so a second attempt on the same anchor has no line hint left to
+		 *  centre an echo on. */
+		const rejected = async (name: string): Promise<string> => {
+			const cwd = await makeCase(name);
+			const h = setupIntegrationTest(cwd);
+			const anchor = markerFor(
+				getText(await h.readTool.execute("read", { path: "f.txt" })),
+				"line-02 content",
+			);
+			await writeFile(join(cwd, "f.txt"), BODY.replace("line-02 content", "DRIFTED"), "utf-8");
+			return getText(
+				await h.editTool.execute("edit", {
+					path: "f.txt",
+					edits: [{ op: "replace", anchor_start: anchor, anchor_end: anchor, lines: ["B"] }],
+				}),
+			);
+		};
+
+		applyEffective(undefined);
+		const off = await rejected("echo-legend-off");
+		expect(off).toMatch(/E_RANGE_UNSERVED|E_RANGE_UNVERIFIED|E_STALE/);
+		expect(off).toMatch(/Echo of the (line you tried|first unserved line)/);
+		// The legend must not teach `<anchor>:<line>` above bare-anchor rows.
+		expect(off).toContain("the marker is the anchor alone");
+		expect(off).not.toContain("the marker is <anchor>:<line>");
+
+		applyEffective({ line_numbers: true });
+		const on = await rejected("echo-legend-on");
+		expect(on).toMatch(/Echo of the (line you tried|first unserved line)/);
+		expect(on).toContain("the marker is <anchor>:<line>");
+		expect(on).not.toContain("the marker is the anchor alone");
 	});
 });

@@ -1241,7 +1241,7 @@ export function verifyServedRange(args: {
 				contentKey: contentChecksum(canon(fileLines[ln - 1] ?? "")),
 			});
 		}
-		const ctxEcho = `${hashlineHeader(true)}\n${ctxEchoLines.join("\n")}`;
+		const ctxEcho = `${hashlineHeader()}\n${ctxEchoLines.join("\n")}`;
 		// The retry marker is the NOW-allocated anchor at the mismatch line —
 		// the stale one (possibly empty) is what failed, not what to reuse.
 		const retryMarker = fileAnchors[firstMismatch] ?? expectedAnchor;
