@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ast_grep` / `ast_edit` 的叶子 pattern 补上根文本比较；`$$$` 捕获按源码切片保真展开（#255）**：裸标识符等叶子 pattern 原先只比节点类型（`matchNode` 对无具名子节点的 pattern 节点循环体不执行、直接判真），`pat: "alpha"` 会命中文件里所有同类型节点，叠加 `ast_edit` 的行粒度替换后连不含 `alpha` 的行也被整行改写。修复把子节点分支既有的「literal = 同类型且叶子时同文本」规则下沉到 `matchNode` 开头作守卫，根 walk、`matchesRest` 尾部字面量与子节点递归三个入口一次覆盖；哨兵根（单独成 pattern 的 `$NAME` / `$$$NAME`）role 非 `literal`，通配语义不变。次要观察一并修复：`$$$ARGS` 的捕获在 worker grep 分支原先降成「逐节点文本按 ", " 拼接」（`name: string` 变 `name, : string`，替换后必然 `[E_SYNTAX_AFTER_EDIT]`），现改为**单元素源码切片** `request.text.slice(首节点.startIndex, 末节点.endIndex)`（零跨度捕获保持空数组），模板展开与 ast_grep 卡片展示随之保真。新增 7 例钉住（ast-pattern 5 + tool-ast 2）；ast-pattern 12/12、tool-ast 23/23，根与 client 双 workspace typecheck+test 全绿。
+
 ## [0.10.1] - 2026-10-08
 
 ### Fixed
