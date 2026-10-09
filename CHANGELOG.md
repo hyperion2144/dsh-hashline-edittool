@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Changed
+
+- **SDK 开发依赖对齐 0.2.0-rc.2 运行时线**：17 个 `@deepseek-ai/dsh-*` devDependencies 从 0.1.7-alpha.1 升到 0.2.0-rc.2（保持原有 exact / `^` 前缀风格；`cordis` ^4.0.1 与 `schemastery` 不在此次范围）。这些包只承担类型与测试期运行时（宿主在运行时自供实现），升级后 typecheck 与双 workspace 全量测试零源码改动通过 —— #170 的注入修复即按 0.2.x 的 `ContextForm` / `KNOWN_FORMS` 词汇验证。
+
 ### Fixed
 
 - **LSP 异步诊断注入在 dsh web 显示为卡片（#170）**：写入后落在 inline 窗口之外的慢诊断走 `agent.inject()` 异步投递，其消息 source 原先是 `form: "diagnostics"` —— 刻意落在平台 `ContextForm` 联合之外的「不透明」形态（#130 Q16 的定案），赌的是平台对未知 form 有「纯文本折叠行」回退；而 0.1.7-rc.1 的 web 端把未知 form 直接投影成 `null`，卡片整个不可见（模型侧可见、web 端没有）。修复改为声明平台已知的 `notice` form（语义即「一次性事件通知，不取代任何东西」）并携带其必需的 `summary` 一行摘要（经平台 `boundContextSummary` 封顶 120 字符，长路径省略号截断）—— web 端 `contextForm` 命中 `KNOWN_FORMS` 后走 `NoticeBody` 渲染路径，折叠行带摘要、展开是模型可见全文，与 dsh 自身 notice 类注入卡片同款式。渲染链按磁盘上的真实客户端源码验证：0.2.0-rc.2 与 0.2.1-alpha.x 的 `KNOWN_FORMS` 均含 `notice`，仓库锁定的 0.1.7-alpha.1 SDK 类型联合亦含之；notice 无非空 `summary` 时仍回退不透明，故 summary 是必要条件（测试钉住）。准入侧不受影响：v4 准入只校验 `source.kind`（producer-owned，#165），form 不参与准入；inline 路径（诊断落在窗口内、附在工具结果与 presentation meta 上）不经注入，不受影响。旧会话里的 `form: "diagnostics"` 历史消息维持原样，由不透明回退渲染。新增 2 例：异步注入消息的形态断言（form=notice + 非空 summary ≤120）与长路径 summary 边界。
