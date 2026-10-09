@@ -85,4 +85,33 @@ describe("rgFilesWithMatches", () => {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("sizes each invocation by command-line length, never by file count (#260)", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "rg-argv-"));
+		try {
+			const hit = join(dir, "hit.txt");
+			await writeFile(hit, "needle\n", "utf8");
+			if ((await rgFilesWithMatches("needle", [hit], 15_000)) === undefined) {
+				// No rg here: this seam's contract is "undefined, caller keeps its list",
+				// which is the same answer this test expects for its own reason. The
+				// positive half lives in grep-rg-argv-limit.test.ts.
+				return;
+			}
+
+			// 400 paths of ~6.3K chars ≈ 2.5 MB of argv — past macOS' 1 MiB `ARG_MAX`,
+			// Linux' 2 MiB, and Windows' 32,767-char command line alike. The count-based
+			// chunker put all 400 on ONE command line and `execFile` threw `spawn E2BIG`
+			// synchronously, so the rejection surfaced to the model as a tool error.
+			// Length-based chunking keeps every invocation inside the budget: rg runs,
+			// and paths that do not exist are a FAILURE (exit 2) — undefined, and the
+			// caller keeps its full list.
+			const huge = Array.from(
+				{ length: 400 },
+				(_unused, index) => `${dir}/${"d".repeat(6_200)}-miss-${index}.ts`,
+			);
+			await expect(rgFilesWithMatches("needle", huge, 15_000)).resolves.toBeUndefined();
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
 });
