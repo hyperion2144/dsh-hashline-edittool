@@ -4,7 +4,10 @@
  * `read` tool: every match row is `<line>#<hash>│content` under a
  * `ANCHOR:FILELINE` header, one section per file. Matches are
  * recorded as served, so a follow-up `edit` against a hit does not require a
- * separate `read`.
+ * separate `read` — EXCEPT for a file the backend refused as text (#268):
+ * `readTextTolerant` still searches it, but its rows are unserved
+ * (`[line N] content`), because `edit` reads through `readText` and would
+ * refuse the very same file.
  *
  * ADR-0013: the scan runs to completion — nothing is refused by size. The
  * response carries whole sections up to the per-response char budget; rows
@@ -362,9 +365,12 @@ export function buildGrepTool(io: FileIO) {
 							current !== undefined ? { version: current } : undefined,
 						);
 						let content: string | undefined;
+						let binary = false;
 						if (!changed) {
 							try {
-								content = await io.readText(group.path, signal);
+								const tolerant = await io.readTextTolerant(group.path, signal);
+								content = tolerant.text;
+								binary = tolerant.binary;
 							} catch {
 								changed = true;
 							}
@@ -383,7 +389,7 @@ export function buildGrepTool(io: FileIO) {
 						// `recordServed` further down, so a failure between them served rows
 						// that no session had "seen".
 						const allocated =
-							!changed && normalized !== undefined
+							!changed && !binary && normalized !== undefined
 								? await anchorForInWorkspace({
 										cwd,
 										absolutePath: group.path,
@@ -532,10 +538,18 @@ export function buildGrepTool(io: FileIO) {
 				for (const file of files) {
 					abortIf(signal2);
 					let raw: string;
+					let binary = false;
 					try {
-						raw = await io.readText(file, signal2);
-					} catch (error) {
-						if (signal2?.aborted === true) throw error;
+						// #268: `readTextTolerant` is `readText` first — every text file is read
+						// exactly as before — and falls back to the backend's raw bytes only when
+						// it was refused as text. A NUL byte in a log no longer answers "No
+						// matches" for content `rg -a` finds.
+						const tolerant = await io.readTextTolerant(file, signal2);
+						raw = tolerant.text;
+						binary = tolerant.binary;
+					} catch {
+						// An abort is never "this file is unreadable": ask the signal itself.
+						abortIf(signal2);
 						continue; // unreadable file — skipped, never a refusal
 					}
 					const text = toLF(raw);
@@ -557,13 +571,19 @@ export function buildGrepTool(io: FileIO) {
 					if (!spilling && usedChars + sectionChars <= budget) {
 						const positions = section.contextRows.map((row) => row.position + 1);
 						// #223: same single entry point as the section branch above.
-						const allocated = await anchorForInWorkspace({
-							cwd,
-							absolutePath: file,
-							content: text,
-							lines: positions,
-							sessionKey,
-						});
+						// A file the backend refused as text is not editable either (#268):
+						// `edit` reads through `readText`, so an anchor minted here could never be
+						// used. Its rows stay unserved — `[line N] content` — which is the honest
+						// shape for "found, but not editable".
+						const allocated = binary
+							? []
+							: await anchorForInWorkspace({
+									cwd,
+									absolutePath: file,
+									content: text,
+									lines: positions,
+									sessionKey,
+								});
 						const anchorsByPosition = new Map<number, string>();
 						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
 						section.contextRows.forEach((row, index) => {

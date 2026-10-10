@@ -262,9 +262,13 @@ function makeTestSandbox() {
 	} as never);
 }
 
-/** Drive the dsh tool builders end-to-end over a temp cwd, with a stable session key. */
-export function setupIntegrationTest(cwd: string) {
-	const io: FileIO = localIO();
+/**
+ * Drive the dsh tool builders end-to-end over a temp cwd, with a stable session
+ * key, over the local bridge — or over `fileIO` when a test needs a DIFFERENT
+ * deployment's read behaviour (e.g. a backend that refuses binary content, #268).
+ */
+export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
+	const io: FileIO = fileIO ?? localIO();
 	const sessionKey = "test-session";
 	const makeExecFor = makeExec(cwd, sessionKey);
 	const sandbox = makeTestSandbox();
