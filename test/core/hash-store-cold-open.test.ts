@@ -200,6 +200,27 @@ function measureColdOpen(home: string): Measurement {
 	return parsed;
 }
 
+/**
+ * The gated reading: three real cold opens in three fresh processes, judged on
+ * their median.
+ *
+ * Nothing is skipped — `measureColdOpen` spawns a child every time — but no
+ * single sample can redden the gate on its own: at #267's first CI run the
+ * identical steady-state open measured 52.156 ms on the Ubuntu/Node 22 leg
+ * (4% over the 50 ms ceiling) while the other four legs passed, and the same
+ * work measures 8 ms on the development machine and 125 ms on Windows (that is
+ * why the ceiling above is already scaled for win32). What this gate hunts is a
+ * full-database pass — ~1.7 s over the #180 store — which is two orders of
+ * magnitude away and cannot hide in a median. The machine-independent
+ * guarantee stays with the `meta.last_open_integrity_check` test below: that
+ * one asserts the check was SKIPPED and cannot be satisfied by a fast machine.
+ */
+function steadyColdOpen(home: string): Measurement {
+	const samples = [measureColdOpen(home), measureColdOpen(home), measureColdOpen(home)];
+	samples.sort((a, b) => a.durationMs - b.durationMs);
+	return samples[1]!;
+}
+
 function writeRunner(): void {
 	mkdirSync(join(REPO, ".tmp"), { recursive: true });
 	// The runner prints exactly one JSON line on stdout (its measurement).
@@ -262,8 +283,8 @@ describe("hash-store cold-open (issue #180, spec #184)", () => {
 				// day, as opposed to once after an upgrade.
 				const migrated = measureColdOpen(home);
 				expect(migrated.rowCount ?? 0).toBeGreaterThan(0);
-				const second = measureColdOpen(home);
-				expect(second.durationMs).toBeLessThan(COLD_OPEN_BUDGET_MS);
+				const steady = steadyColdOpen(home);
+				expect(steady.durationMs).toBeLessThan(COLD_OPEN_BUDGET_MS);
 			} finally {
 				rmSync(home, { recursive: true, force: true });
 			}
@@ -294,7 +315,7 @@ describe("hash-store cold-open (issue #180, spec #184)", () => {
 				expect(healed.bytes ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual(64 * 1024 * 1024);
 				expect(healed.paths ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual(5000);
 				expect(healed.rowCount ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual(300_000);
-				const converged = measureColdOpen(home);
+				const converged = steadyColdOpen(home);
 				expect(converged.durationMs).toBeLessThan(COLD_OPEN_BUDGET_MS);
 			} finally {
 				rmSync(home, { recursive: true, force: true });
