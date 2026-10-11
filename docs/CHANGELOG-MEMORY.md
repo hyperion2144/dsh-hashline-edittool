@@ -378,3 +378,26 @@ B 线（#245）只统一了 `read` 自己的窗口尾巴，同一句 `(Omitted �
 - 真实 argv 用例的断言依赖 rg 对不存在路径退 2，因而写 `undefined` 而非 `[]`（实测过，不是推断）。
 - **AC 字面化（评审后改）**：首版让「单条超预算独占一块、自己去撞 spawn」；Spec 轴评审指出这仍会组装出一条超过 32,767 的命令行，与验收标准 (a)「绝不产生超限命令行」不符。改为**整体弃权**（`planArgvChunks` 返回 undefined）：结果与旧写法一致（该块必失败 → 同样 undefined），但少一次注定被拒的系统调用，标准字面成立，且测试能钉住「零 spawn」（`expect(harness.invocations).toHaveLength(0)`）。
 - 诚实缺口（另票候选，本次未改）：`rgFiles` 的 `execFile` 同样会同步抛出（argv 固定且短，票面列为 out of scope）；LSP 安装 path 的 spawn 同理。
+
+## 2026-10-10 — ADR-0017 记账：后端的二进制拒绝属于「读」，不属于「搜」 (#268)
+
+`grep` 逐文件走 `FileIO.readText`，dsh 后端对判为二进制的文件抛 `FS_NOT_TEXT`（→ `[E_NOT_TEXT]`），读循环 catch 后 `continue` —— 「搜过没命中」与「根本没搜」在输出上无法区分：含一个 `\0` 字节的日志恒答 No matches，而 `rg -a` 找得到。维护者在票内拍板方案 A：容忍读加在 IO 缝上，而不是让 grep 绕过 `ctx.fs` 直读本地磁盘（方案 B 被否）。
+
+### Why
+
+拒绝本身是对的，错的是它的**作用域**：`readText` 服务的是「按行铸锚点、可被 edit 复写」的读（read / edit / ast_grep / lsp / undo），这个契约必须继续拒绝二进制内容；而 grep 只问「这行文本在不在这里」，它需要的是 `rg -a` 那种读。两者混用同一个读方法，等于让读契约替搜契约做决定。
+
+### Path / Affected typed relationships
+
+- `FileIO.readTextTolerant(absolutePath, signal?)`（`src/infra/fs-bridge.ts`）返回 `TolerantRead = { text, binary }`：先 `readText`（纯文本的调用序列逐字不变）；**仅** `FS_NOT_TEXT` 时回退后端的 `fs.readBytes`（不解码、不拒绝的字节缝）+ 有损 UTF-8 解码（非法字节 → `U+FFFD`）；其余错误码原样经 `mapFsError`；上限 `TOLERANT_READ_MAX_BYTES = MAX_BYTES`（`src/infra/constants.ts`）。`binary` 这个标记是**调用方必须知道的事实**，不是装饰：它决定 grep 是否铸锚点。
+- `src/tools/tool-grep.ts` 两处读点（扫描循环与 `{resume}` 续读）都改走 `readTextTolerant`；**被判为非文本的文件不 served** —— 行渲染成 `[line N] content`（本仓「拿不到锚点」的既有形态）。含 NUL 的文件因此**可搜不可编辑**，且这一点在输出里可见。
+- `readText` 语义一字未动 → `read` / `edit` / `ast_grep` / `lsp` / `undo` 继续拒绝。
+- 文档：ADR-0017、本文件、`AGENTS.md` 的 `l0_domains.decisions` 行、README / README.zh 的 grep 行、`CHANGELOG.md` `[Unreleased]`。
+
+### 本轮定案（复核时照此）
+
+- 容忍读**只**对 `FS_NOT_TEXT` 生效；不做「任何读失败都重试」。abort、缺失、目录、沙箱拒绝原样冒给调用方。
+- 用后端的 `readBytes`，**不** import `node:fs/promises`：远程/沙箱后端的字节不在这台机器上（方案 B 被否的同一理由）。
+- 解码刻意有损（`U+FFFD`），**不猜编码**：猜错会静默改写一个部署里的文本。代价记在 ADR-0017 里 —— UTF-16 文件里的 ASCII 文本仍然匹配不上，与 `rg -a` 一致。
+- 「可搜不可编辑」的边界由**知道答案的那一层**报告（`binary` 标记），而不是由工具嗅探 NUL 推断：本地后端从不拒绝，含 NUL 的文件在那种部署里**可以**编辑，嗅探会把能编辑的文件误标成不可编辑。
+- ripgrep 预过滤不需要 `-a`，但前提是它**按显式路径**列候选：实测 `rg --files-with-matches` 对显式路径会报告「NUL 在第 0 字节、命中在 ~10 MB 处」的文件（命中在 NUL **之前**的同样报告），而把同一棵树按目录搜则一个都不报。`grep-rg.ts` 未改，目录形态的端到端行为由测试钉住。

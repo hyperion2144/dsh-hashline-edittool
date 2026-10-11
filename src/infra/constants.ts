@@ -3,6 +3,14 @@ export const SNIFF_BYTES = 8192;
 export const MAX_READ_LINE_BYTES = 200 * 1024;
 export const MAX_BYTES = 100 * 1024 * 1024;
 /**
+ * Byte ceiling for the binary-tolerant read `grep` falls back to when the
+ * backend refuses a file as text (#268). Deliberately the read layer's own
+ * `MAX_BYTES`: the fallback exists to search a text file that happens to carry
+ * a `\0`, not to buffer an arbitrary blob — and a file past this ceiling is
+ * skipped exactly as it was before the fallback existed.
+ */
+export const TOLERANT_READ_MAX_BYTES = MAX_BYTES;
+/**
  * Per-response budget (ADR-0013, specs #209/#210): UTF-16 code units one tool
  * response's model text may reach before the rest spills to a resume file.
  * 48,000 sits just under the host's measured 49,984-char inline gate

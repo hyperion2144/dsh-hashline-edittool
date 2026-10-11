@@ -23,6 +23,20 @@ import type { SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
 import { writeAtomic } from "./fs-write.js";
 import { fileSnap } from "./file-snap.js";
 import { resolveTarget, toCwd } from "./paths.js";
+import { TOLERANT_READ_MAX_BYTES } from "./constants.js";
+import { errCode } from "./utils.js";
+
+/** A read that can hand back a blob: the text, and how it was obtained. */
+export interface TolerantRead {
+	/** `readText`'s answer, or the raw bytes decoded as UTF-8 when it refused. */
+	text: string;
+	/**
+	 * True when the backend refused the file as text and its bytes were decoded
+	 * instead. The file is SEARCHABLE, but a line-anchored edit against it is
+	 * refused for the very same reason — so its rows must not be served.
+	 */
+	binary: boolean;
+}
 
 /** Text-IO operations the hashline tools need, keyed by canonical absolute path. */
 export interface FileIO {
@@ -30,6 +44,22 @@ export interface FileIO {
 	resolve(path: string, cwd: string, signal?: AbortSignal): Promise<string>;
 	/** Read whole text; missing files, directories, and binary content throw. */
 	readText(absolutePath: string, signal?: AbortSignal): Promise<string>;
+	/**
+	 * Read whole text without refusing binary content: a file the backend
+	 * declines as text (a NUL byte, an undecodable sequence) still comes back,
+	 * with every byte that is not valid UTF-8 replaced by U+FFFD — the reading
+	 * `rg -a` gives the same file.
+	 *
+	 * `readText` stays the contract for callers that must never be handed a
+	 * blob (`read`, `edit`); this is the search-shaped read, and only `grep`
+	 * uses it. It answers with the flag that tells the two apart, because a
+	 * file the backend refuses as text cannot be edited later either.
+	 *
+	 * The raw read behind the fallback is bounded by `TOLERANT_READ_MAX_BYTES`:
+	 * past that ceiling the read fails as too large and the file is skipped,
+	 * exactly as it was before this read existed.
+	 */
+	readTextTolerant(absolutePath: string, signal?: AbortSignal): Promise<TolerantRead>;
 	/**
 	 * Atomically write whole text, preserving mode when the file exists. On the
 	 * dsh backend this dispatches `fs/write-intent` (policy guard), stamps the
@@ -189,6 +219,41 @@ async function writeWithIntent(
 		exec,
 	);
 }
+
+/**
+ * The binary-tolerant read behind {@link FileIO.readTextTolerant}: `readText`
+ * first — the ordinary path, identical for every text file — then the
+ * backend's raw-bytes seam when, and only when, the refusal is `FS_NOT_TEXT`.
+ *
+ * Every other failure keeps its mapped error: a missing file stays
+ * `[E_NOT_FOUND]`, a directory stays not-a-text-file, an abort stays an abort.
+ * The decode is deliberately lossy (U+FFFD) instead of an encoding guess — no
+ * deployment's text is re-interpreted, and an undecodable byte can never mask
+ * a separate failure.
+ */
+async function readTextAllowingBinary(
+	fs: FileSystem,
+	absolutePath: string,
+	signal: AbortSignal | undefined,
+): Promise<TolerantRead> {
+	const target = await fs.resolve(absolutePath, {
+		...(signal !== undefined ? { signal } : {}),
+	});
+	let refusal: unknown;
+	try {
+		return { text: await fs.readText(target, signal), binary: false };
+	} catch (error) {
+		refusal = error;
+	}
+	// The backend's contract is an `FsError`, so `errCode` is the one peel; a
+	// foreign throwable with no code keeps its own error instead of being read
+	// as bytes.
+	if (errCode(refusal) !== "FS_NOT_TEXT") {
+		throw refusal;
+	}
+	const bytes = await fs.readBytes(target, signal, TOLERANT_READ_MAX_BYTES);
+	return { text: new TextDecoder("utf-8").decode(bytes), binary: true };
+}
 /** FileIO over the deployment's `ctx.fs` service. */
 export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 	return {
@@ -205,6 +270,13 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 					...(signal !== undefined ? { signal } : {}),
 				});
 				return await fs.readText(target, signal);
+			} catch (error) {
+				return mapFsError(error, absolutePath);
+			}
+		},
+		async readTextTolerant(absolutePath, signal) {
+			try {
+				return await readTextAllowingBinary(fs, absolutePath, signal);
 			} catch (error) {
 				return mapFsError(error, absolutePath);
 			}
@@ -323,13 +395,23 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 
 /** FileIO over the host filesystem directly (tests, previews, fallback). */
 export function localIO(): FileIO {
+	// Node's own decode is already tolerant: it never refuses a file for its
+	// content and turns invalid bytes into U+FFFD, so `readText` and
+	// `readTextTolerant` are the same read here — only the flag differs.
+	const readLocal = async (absolutePath: string, signal?: AbortSignal): Promise<string> => {
+		signal?.throwIfAborted();
+		return readFile(absolutePath, "utf-8");
+	};
 	return {
 		async resolve(path, cwd) {
 			return resolveTarget(toCwd(path, cwd ?? process.cwd()));
 		},
 		async readText(absolutePath, signal) {
-			signal?.throwIfAborted();
-			return readFile(absolutePath, "utf-8");
+			return readLocal(absolutePath, signal);
+		},
+		async readTextTolerant(absolutePath, signal) {
+			// Nothing here can be refused as text, so no read is ever a tolerant one.
+			return { text: await readLocal(absolutePath, signal), binary: false };
 		},
 		async writeText(absolutePath, content, signal, _exec, _sandboxPolicy) {
 			signal?.throwIfAborted();
