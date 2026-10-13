@@ -401,3 +401,23 @@ B 线（#245）只统一了 `read` 自己的窗口尾巴，同一句 `(Omitted �
 - 解码刻意有损（`U+FFFD`），**不猜编码**：猜错会静默改写一个部署里的文本。代价记在 ADR-0017 里 —— UTF-16 文件里的 ASCII 文本仍然匹配不上，与 `rg -a` 一致。
 - 「可搜不可编辑」的边界由**知道答案的那一层**报告（`binary` 标记），而不是由工具嗅探 NUL 推断：本地后端从不拒绝，含 NUL 的文件在那种部署里**可以**编辑，嗅探会把能编辑的文件误标成不可编辑。
 - ripgrep 预过滤不需要 `-a`，但前提是它**按显式路径**列候选：实测 `rg --files-with-matches` 对显式路径会报告「NUL 在第 0 字节、命中在 ~10 MB 处」的文件（命中在 NUL **之前**的同样报告），而把同一棵树按目录搜则一个都不报。`grep-rg.ts` 未改，目录形态的端到端行为由测试钉住。
+
+## 2026-10-13 — mapFsError 补 FS_TOO_LARGE 分支 (#271)
+
+`mapFsError` 的错误码白名单漏了 `FS_TOO_LARGE`（dsh-fs 契约里 `readBytes` 超过 `maxBytes` 时抛的正式码，`node_modules/@deepseek-ai/dsh-fs/lib/types/index.d.ts:175-177`）。#268 的容忍读把它从理论边缘变成**热路径**：超上限文件走 `readBytes` 回退必抛此码，穿透白名单后以裸错误（`message: "FS_TOO_LARGE"`，无 `[E_*]` 前缀、无路径、无下一步指引）冒给调用方。现在映射为 `[E_TOO_LARGE] File exceeds the read limit: <path> …`，README 错误码表双语收录（按字母序插在 `E_SYNTAX_AFTER_EDIT` 与 `E_UNDO_STALE` 之间）。
+
+### Why
+
+ADR-0007 的口径是「模型只见结构化错误码」：每个后端拒绝都该有可文档化、可被 `extractFailure` 泛化解析的领域码；白名单漏一个码，那个拒绝就退回裸错误形态。
+
+### Path / Affected typed relationships
+
+- `src/infra/fs-bridge.ts` `mapFsError`：`FS_ABORTED` 分支后加一个分支，`FS_TOO_LARGE` → `[E_TOO_LARGE]`。守卫（`error instanceof Error && typeof code === "string"`）之外的行为不变 —— 非 Error 或无字符串码的抛物仍原样冒；Windows `ReplaceFileW` 正则在守卫外，对本码不可达。
+- 消息给**可执行**的下一步（换更小的目标文件 / 外部切分内容），刻意不写「narrower pattern」：上限是单文件字节预算（本插件传入的 `TOLERANT_READ_MAX_BYTES`），与搜索 pattern 无关；同一条消息也会出现在 read 路径上，那里没有 pattern 概念。
+- 文档：README / README.zh 错误码表、`CHANGELOG.md` `[Unreleased]`、本文件。
+
+### 本轮定案（复核时照此）
+
+- 用户可见行为不变：grep 容忍读遇超上限文件仍只静默跳过该文件、其余照答（`test/core/issue-271-too-large-mapping.test.ts` 端到端钉住，含「readBytes 回退确实发生过」的调用序列断言）；本票补的是映射完备性，不是行为变更。
+- 码名 `[E_TOO_LARGE]` 与 AST 族 `[E_AST_TOO_LARGE]` 正交（AST 族统一 `E_AST_*` 前缀、单独一行），不改名；v1 已删的 `E_FILE_TOO_LARGE` 只残留在旧测试注释里，不复活。
+- `error-codes.test.ts` 双向契约自动覆盖新码；该测试只读 README.md，README.zh 靠人工同步（既有设计）。

@@ -265,6 +265,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_RESUME_GONE]` / `[E_RESUME_BAD]` / `[E_RESUME_TOOL]` | `resume` 令牌的 spill 已消失或过期 / 令牌形状错误、内容损坏或属于别的会话 / 必须由另一个工具消费。 |
 | `[E_STALE]` | 锚点不再匹配 served 内容；重新 read。 |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit` 的替换会让文件无法解析；未写入。 |
+| `[E_TOO_LARGE]` | 文件超过读取预算（`readBytes` 的 ceiling），预算本身不可配置。换更小的目标文件，或在外部切分内容。 |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | 编辑后文件被改动 / undo 历史无法持久化。 |
 | `[E_WOULD_EMPTY]` | 编辑会把非空文件清空；请用 `write`。 |
 | `[E_WIN_REPLACE]` | Windows 原子替换被其他进程占用。 |

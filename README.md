@@ -334,6 +334,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_RESUME_GONE]` / `[E_RESUME_BAD]` / `[E_RESUME_TOOL]` | A `resume` token's spill is gone or expired / the token is malformed, corrupt, or bound to another session / it must be consumed by a different tool. |
 | `[E_STALE]` | Anchor no longer matches served content; re-read. |
 | `[E_SYNTAX_AFTER_EDIT]` | `ast_edit`'s replacement would leave the file unparsable; not written. |
+| `[E_TOO_LARGE]` | The file exceeds the read budget (the `readBytes` ceiling); the budget itself is not configurable. Target a smaller file or split the content externally. |
 | `[E_UNDO_STALE]` / `[E_UNDO_UNAVAILABLE]` | File changed after the edit / undo history could not persist. |
 | `[E_WOULD_EMPTY]` | Edit would empty a non-empty file; use `write`. |
 | `[E_WIN_REPLACE]` | Windows atomic replace held open by another process. |

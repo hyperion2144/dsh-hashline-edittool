@@ -159,6 +159,11 @@ export function mapFsError(error: unknown, displayPath: string): never {
 		if (code === "FS_ABORTED") {
 			throw new Error("Operation aborted");
 		}
+		if (code === "FS_TOO_LARGE") {
+			throw new Error(
+				`[E_TOO_LARGE] File exceeds the read limit: ${displayPath}. The file is larger than the read budget allows, and the budget is not configurable; target a smaller file or split the content externally.`,
+			);
+		}
 	}
 	// Windows atomic-replace failures (dsh-fs-local calls ReplaceFileW):
 	// error 1175 = ERROR_UNABLE_TO_MOVE_REPLACEMENT — the target is held open
