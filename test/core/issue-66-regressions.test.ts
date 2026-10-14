@@ -111,6 +111,10 @@ describe("#66/B5 — line_numbers renders <line>:<anchor> rows on request", () =
 			const io = {
 				resolve: async (p: string) => p,
 				readText: async (p: string) => readFile(p, "utf-8"),
+				readTextTolerant: async (p: string) => ({
+					text: await readFile(p, "utf-8"),
+					fidelity: "native",
+				}),
 			};
 			const res = await readAndServe(io as never, path, "/tmp", {
 				sessionKey: "b5-on",

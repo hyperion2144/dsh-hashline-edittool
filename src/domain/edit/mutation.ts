@@ -151,7 +151,10 @@ export async function execPipeline(
 
 	abortIf(signal)
 	const absolutePath = await io.resolve(path, cwd, signal)
-	const rawText = await io.readText(absolutePath, signal)
+	const { text: rawText } = await io.readTextTolerant(absolutePath, signal)
+	// #273 (review M3): the lossy refusal for the LIVE edit pipeline lives in
+	// edit-engine.ts. This seam (execPipeline) has no callers today, and its
+	// duplicate guard had zero test coverage — it is deliberately not carried.
 	const {
 		normalized: originalNormalized,
 		bom,

@@ -26,16 +26,19 @@ import { resolveTarget, toCwd } from "./paths.js";
 import { TOLERANT_READ_MAX_BYTES } from "./constants.js";
 import { errCode } from "./utils.js";
 
-/** A read that can hand back a blob: the text, and how it was obtained. */
+/**
+ * How a tolerant read's text was obtained — the fact every tool needs to
+ * decide whether the file may be served and edited (#273).
+ * - `native`: the backend's own `readText` — an ordinary text file;
+ * - `lossless`: the backend refused the file (its NUL heuristic), but the
+ *   raw bytes are valid UTF-8 — the text is byte-exact and editable;
+ * - `lossy`: undecodable bytes were replaced by U+FFFD — searchable and
+ *   displayable, never safe to write back through a string seam.
+ */
 export interface TolerantRead {
-	/** `readText`'s answer, or the raw bytes decoded as UTF-8 when it refused. */
+	/** The decoded whole-file text (byte-exact unless `fidelity` is `lossy`). */
 	text: string;
-	/**
-	 * True when the backend refused the file as text and its bytes were decoded
-	 * instead. The file is SEARCHABLE, but a line-anchored edit against it is
-	 * refused for the very same reason — so its rows must not be served.
-	 */
-	binary: boolean;
+	fidelity: "native" | "lossless" | "lossy";
 }
 
 /** Text-IO operations the hashline tools need, keyed by canonical absolute path. */
@@ -45,15 +48,12 @@ export interface FileIO {
 	/** Read whole text; missing files, directories, and binary content throw. */
 	readText(absolutePath: string, signal?: AbortSignal): Promise<string>;
 	/**
-	 * Read whole text without refusing binary content: a file the backend
-	 * declines as text (a NUL byte, an undecodable sequence) still comes back,
-	 * with every byte that is not valid UTF-8 replaced by U+FFFD — the reading
-	 * `rg -a` gives the same file.
-	 *
-	 * `readText` stays the contract for callers that must never be handed a
-	 * blob (`read`, `edit`); this is the search-shaped read, and only `grep`
-	 * uses it. It answers with the flag that tells the two apart, because a
-	 * file the backend refuses as text cannot be edited later either.
+	 * Read whole text without refusing content the backend declines as text:
+	 * a file its NUL heuristic rejects still comes back, classified by
+	 * `fidelity` — `native` (an ordinary read), `lossless` (refused, but the
+	 * bytes are valid UTF-8: byte-exact text, safe to serve AND edit), or
+	 * `lossy` (undecodable bytes shown as U+FFFD: searchable and displayable
+	 * only). The caller owns the policy; this seam never refuses.
 	 *
 	 * The raw read behind the fallback is bounded by `TOLERANT_READ_MAX_BYTES`:
 	 * past that ceiling the read fails as too large and the file is skipped,
@@ -232,9 +232,11 @@ async function writeWithIntent(
  *
  * Every other failure keeps its mapped error: a missing file stays
  * `[E_NOT_FOUND]`, a directory stays not-a-text-file, an abort stays an abort.
- * The decode is deliberately lossy (U+FFFD) instead of an encoding guess — no
- * deployment's text is re-interpreted, and an undecodable byte can never mask
- * a separate failure.
+ * The fallback classifies by a fatal UTF-8 decode (#273): bytes that decode
+ * cleanly are `lossless` — the backend refused a text file and this read
+ * restores it byte-exactly; anything else is `lossy` (U+FFFD). The decode is
+ * deliberately lossy instead of an encoding guess — no deployment's text is
+ * re-interpreted, and an undecodable byte can never mask a separate failure.
  */
 async function readTextAllowingBinary(
 	fs: FileSystem,
@@ -246,7 +248,7 @@ async function readTextAllowingBinary(
 	});
 	let refusal: unknown;
 	try {
-		return { text: await fs.readText(target, signal), binary: false };
+		return { text: await fs.readText(target, signal), fidelity: "native" };
 	} catch (error) {
 		refusal = error;
 	}
@@ -257,7 +259,16 @@ async function readTextAllowingBinary(
 		throw refusal;
 	}
 	const bytes = await fs.readBytes(target, signal, TOLERANT_READ_MAX_BYTES);
-	return { text: new TextDecoder("utf-8").decode(bytes), binary: true };
+	const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+	// `ignoreBOM` keeps a UTF-8 BOM in the text: the default STRIPS it, which
+	// makes a byte-perfect BOM file round-trip unequal and misclassifies it
+	// lossy (#273 review M1). edit re-attaches the BOM it strips (edit-engine).
+	// Byte-exact iff the decoded text re-encodes to the same bytes: that is
+	// the lossless shape the backend refused for its NUL heuristic alone.
+	return {
+		text,
+		fidelity: Buffer.from(text, "utf-8").equals(bytes) ? "lossless" : "lossy",
+	};
 }
 /** FileIO over the deployment's `ctx.fs` service. */
 export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
@@ -400,9 +411,9 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 
 /** FileIO over the host filesystem directly (tests, previews, fallback). */
 export function localIO(): FileIO {
-	// Node's own decode is already tolerant: it never refuses a file for its
-	// content and turns invalid bytes into U+FFFD, so `readText` and
-	// `readTextTolerant` are the same read here — only the flag differs.
+	// Node's own decode never refuses a file for its content: `readText` is
+	// the plain string read, and `readTextTolerant` re-reads as bytes to
+	// classify (native vs lossy) without changing what comes back.
 	const readLocal = async (absolutePath: string, signal?: AbortSignal): Promise<string> => {
 		signal?.throwIfAborted();
 		return readFile(absolutePath, "utf-8");
@@ -415,8 +426,16 @@ export function localIO(): FileIO {
 			return readLocal(absolutePath, signal);
 		},
 		async readTextTolerant(absolutePath, signal) {
-			// Nothing here can be refused as text, so no read is ever a tolerant one.
-			return { text: await readLocal(absolutePath, signal), binary: false };
+			// The local deployment never refuses a file for its content, so a
+			// byte-exact decode IS the native answer; only undecodable bytes
+			// downgrade the classification to lossy (#273).
+			signal?.throwIfAborted();
+			const bytes = await readFile(absolutePath);
+			const text = bytes.toString("utf-8");
+			return {
+				text,
+				fidelity: Buffer.from(text, "utf-8").equals(bytes) ? "native" : "lossy",
+			};
 		},
 		async writeText(absolutePath, content, signal, _exec, _sandboxPolicy) {
 			signal?.throwIfAborted();

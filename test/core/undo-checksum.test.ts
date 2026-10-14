@@ -35,7 +35,7 @@ beforeAll(async () => {
 
 /** The newest undo row for a path, read straight from the store. */
 function topUndoRow(cwd: string, file: string): {
-	result_content: string;
+	result_content: string | Uint8Array;
 	result_checksum: string | null;
 } {
 	const db = new DatabaseSync(hashStorePath(cwd), { readOnly: true });
@@ -70,7 +70,10 @@ describe("the undo stack stores a checksum instead of a second body (#176)", () 
 		});
 
 		const row = topUndoRow(cwd, file);
-		expect(row.result_content).toBe("");
+		// The body cell is stored as BLOB bytes now (hash-store pushUndo); empty
+		// still means "no post-edit body" — just in its stored encoding.
+		const storedBody = row.result_content;
+		expect(typeof storedBody === "string" ? storedBody : Buffer.from(storedBody).toString("utf8")).toBe("");
 		expect(row.result_checksum).toBeTruthy();
 		// 14 hex chars of cyrb53 — the whole point is that it is a fixed small
 		// string where a full body used to be.

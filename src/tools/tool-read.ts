@@ -26,7 +26,7 @@ import {
 	type ReadParams,
 } from "../contract/contract.js";
 
-import { readAndServe, UTF8_REWRITE_NOTE } from "../read-and-serve.js";
+import { readAndServe, LOSSY_BYTES_NOTE } from "../read-and-serve.js";
 import { readDescription } from "../domain/edit/prompts.js";
 import { splitLines } from "../infra/utils.js";
 import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
@@ -137,6 +137,21 @@ export function buildReadTool(io: FileIO) {
 						},
 					},
 					truncatedByBytes: { type: "boolean" },
+					// #273 review round 2: the lossy view rides these — the host rejects
+					// undeclared fields outright (additionalProperties: false).
+					lossy: { type: "boolean" },
+					lossyNote: { type: "string" },
+					unservedRows: {
+						type: "array",
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								number: { type: "integer", required: true },
+								text: { type: "string", required: true },
+							},
+						},
+					},
 					// #245: the lines this call actually served (absent when none were).
 					window: {
 						type: "object",
@@ -183,6 +198,15 @@ export function buildReadTool(io: FileIO) {
 					lines: v.lines,
 					totalLines: v.totalLines,
 					hashlines: v.hashlines,
+					// #273 — a lossy read serves nothing: carry the flag, the shown-but-
+					// unserved rows and the note so the web card renders the view the
+					// model saw instead of an empty file.
+					...(v.lossy === true
+						? { lossy: true, ...(v.lossyNote !== undefined ? { lossyNote: v.lossyNote } : {}) }
+						: {}),
+					...(v.unservedRows !== undefined && v.unservedRows.length > 0
+						? { unservedRows: v.unservedRows }
+						: {}),
 					...(v.window === undefined ? {} : { window: v.window }),
 					...(lang === undefined ? {} : { lang }),
 				} as never;
@@ -309,6 +333,7 @@ export function buildReadTool(io: FileIO) {
 							nextOffset: continued.nextOffset,
 							absolutePath: continued.absolutePath,
 							hadUtf8DecodeErrors: continued.hadUtf8DecodeErrors,
+							lossy: continued.lossy,
 						});
 					}
 					const take = await takeTextContinuation(sessionKey, resumeToken, "read", RESUME_WINDOW_LINES);
@@ -426,6 +451,7 @@ export function buildReadTool(io: FileIO) {
 					nextOffset: result.nextOffset,
 					absolutePath: result.absolutePath,
 					hadUtf8DecodeErrors: result.hadUtf8DecodeErrors,
+						lossy: result.lossy,
 				});
 		}).catch((error: unknown) => ({
 			path: pathFromArgs(args) ?? "",
@@ -529,11 +555,21 @@ async function assembleServedRead(input: {
 	readonly nextOffset?: number | undefined;
 	readonly absolutePath?: string | undefined;
 	readonly hadUtf8DecodeErrors?: boolean | undefined;
+	/** #273 — the view is lossy: shown rows are U+FFFD stand-ins; nothing is served. */
+	readonly lossy?: boolean | undefined;
 }): Promise<ReadValue & { modelText: string }> {
 	const allLines = splitLines(input.normalized);
 	const totalLines = allLines.length;
 	const shownEnd = input.shownEnd ?? (input.nextOffset !== undefined ? input.nextOffset - 1 : totalLines);
-	const window = readWindowOf(input.served, totalLines);
+	const window =
+		readWindowOf(input.served, totalLines) ??
+		// #273: an unserved view (lossy read) shows rows it does not serve, so
+		// `served` is empty and readWindowOf has nothing — the window comes from
+		// the render bound instead, and the sentence's cursor is the numeric
+		// offset (no anchor exists on an unserved row).
+		(input.shownEnd !== undefined
+			? { start: input.start, end: Math.min(input.shownEnd, totalLines), totalLines }
+			: undefined);
 	// ADR-0013: a BUDGET cut mints the token before the text is assembled — the
 	// token is part of the sentence the model reads, and in JSON mode it is a field.
 	let continuation: { resume: string; remaining: number } | undefined;
@@ -559,6 +595,19 @@ async function assembleServedRead(input: {
 		lineDict[lineNumbersEnabled() && row.anchor !== "" ? `${row.anchor}:${number}` : row.anchor] = text;
 	}
 	const lastAnchor = input.served.length === 0 ? "" : input.served[input.served.length - 1]!.anchor;
+	// #273 (review B1): a lossy view SERVES nothing, so `lines`/`lineDict` below
+	// would be empty while the file visibly has rows. Text mode carries the rows
+	// inside `input.text`; JSON built its payload from `served` only and went out
+	// looking like an EMPTY file — an invitation to overwrite it. Carry the
+	// shown-but-unserved rows and let the note explain why they are not editable.
+	const unservedRows: Array<{ number: number; text: string }> = [];
+	if (input.lossy === true) {
+		const servedSet = new Set(input.served.map((row) => row.position));
+		const end = Math.min(shownEnd, totalLines);
+		for (let position = 0; position < end; position++) {
+			if (!servedSet.has(position)) unservedRows.push({ number: position + 1, text: allLines[position] ?? "" });
+		}
+	}
 	// An empty file is a REAL serve whose single row has no text (#245): its
 	// sentence is the tail, and the JSON channel spells it structurally instead.
 	const summary =
@@ -571,8 +620,12 @@ async function assembleServedRead(input: {
 						continuation === undefined ? { nextAnchor: lastAnchor } : { resumeToken: continuation.resume },
 					);
 	const rebuildNotice = takeRebuildWarning();
-	const utf8Note = input.hadUtf8DecodeErrors === true ? UTF8_REWRITE_NOTE : undefined;
-	const warnings = [rebuildNotice, utf8Note].filter((warning): warning is string => warning !== undefined);
+	const warnings = [
+		rebuildNotice,
+		// #273 (review B1): JSON has no prose to append the refusal note to — it
+		// rides inside the payload like every other channel-crossing remark.
+		...(input.lossy === true ? [LOSSY_BYTES_NOTE] : []),
+	].filter((warning): warning is string => warning !== undefined);
 	let modelText: string;
 	if (isJsonOutput()) {
 		modelText = JSON.stringify({
@@ -580,6 +633,7 @@ async function assembleServedRead(input: {
 			offset: input.start,
 			totalLines,
 			lines: lineDict,
+			...(unservedRows.length > 0 ? { unservedRows } : {}),
 			...(window === undefined ? {} : { window }),
 			...(continuation === undefined ? {} : { continuation }),
 			...(warnings.length === 0 ? {} : { warnings }),
@@ -587,7 +641,6 @@ async function assembleServedRead(input: {
 	} else {
 		modelText = input.text;
 		if (summary !== undefined) modelText = `${modelText}\n\n${summary}`;
-		if (utf8Note !== undefined) modelText = `${modelText}\n\n${utf8Note}`;
 		if (rebuildNotice !== undefined) modelText = `${rebuildNotice}\n\n${modelText}`;
 	}
 	return {
@@ -596,6 +649,16 @@ async function assembleServedRead(input: {
 		totalLines,
 		lines,
 		hashlines,
+		// #273 — the card reads the SAME answer the model saw: a lossy view is
+		// flagged, its shown-but-unserved rows ride along, and the footer note is
+		// the host's own wording (the web card never parses model text).
+		...(input.lossy === true
+			? {
+					lossy: true,
+					lossyNote: LOSSY_BYTES_NOTE,
+					...(unservedRows.length > 0 ? { unservedRows } : {}),
+				}
+			: {}),
 		...(window === undefined ? {} : { window }),
 		...(continuation === undefined ? {} : { continuation }),
 		modelText,

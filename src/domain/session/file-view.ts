@@ -454,6 +454,93 @@ function normPosInt(
   return value;
 }
 
+/**
+ * The unserved window (#273): the same window arithmetic as the served path
+ * — offset/limit, the char budget, the per-row byte cap, head truncation —
+ * but every row renders as `[line N] content`, nothing is minted, nothing is
+ * recorded, and `served`/`hashes` come back empty. A lossy file (undecodable
+ * bytes shown as U+FFFD) is displayed this way: an anchor served against
+ * stand-in text could never verify the edit's write-back later.
+ */
+function renderUnserved(
+  text: string,
+  options: {
+    offset?: number;
+    limit?: number;
+    maxChars?: number;
+    lineNumbers?: boolean;
+  },
+  maxLineBytes: number,
+  maxTruncLines: number,
+): {
+  text: string;
+  truncation?: TruncationResult;
+  nextOffset?: number;
+  /** #273 — the last RENDERED row; bounds the window sentence of an unserved page. */
+  shownEnd?: number;
+} {
+  const allLines = splitLines(text);
+  const totalLines = allLines.length;
+  const startLine = normPosInt(options.offset, 'offset') ?? 1;
+  if (text.length === 0 && startLine === 1) {
+    return { text: `${hashlineHeader(options.lineNumbers)}\n${EMPTY_FILE_NOTE}` };
+  }
+  if (startLine > totalLines) {
+    return { text: formatNoLinesSummary(startLine, totalLines) };
+  }
+  const limit = normPosInt(options.limit, 'limit');
+  let endIdx = limit
+    ? Math.min(startLine - 1 + limit, totalLines)
+    : totalLines;
+  let selected = allLines.slice(startLine - 1, endIdx);
+  const originalCount = endIdx - startLine + 1;
+  let budgetCut = false;
+  if (options.maxChars !== undefined) {
+    let acc = 0;
+    let count = 0;
+    for (const line of selected) {
+      const cost = line.length + 24;
+      if (acc + cost > options.maxChars && count > 0) break;
+      acc += cost;
+      count += 1;
+    }
+    selected = selected.slice(0, count);
+    endIdx = startLine - 1 + count;
+    budgetCut = count < originalCount;
+  }
+  const rows = selected.map(
+    (line, index) => `[line ${startLine + index}] ${line}`,
+  );
+  // A single unserved row past the byte cap collapses to the same notice the
+  // served path shows — a line is never cut mid-way either way.
+  const rendered = rows.map((row, index) =>
+    Buffer.byteLength(row, 'utf-8') > maxLineBytes
+      ? `[Line ${startLine + index} is ${formatSize(Buffer.byteLength(row, 'utf-8'))}, exceeds ${formatSize(maxLineBytes)}; content not shown. Use bash: sed -n '${startLine + index}p' <path> | head -c ${maxLineBytes}]`
+      : row,
+  );
+  const truncation = truncateHead(rendered.join('\n'), {
+    maxBytes: maxLineBytes,
+    maxLines: maxTruncLines,
+  });
+  let nextOffset: number | undefined;
+  if (truncation.truncated) {
+    nextOffset = startLine + truncation.outputLines;
+  } else if (endIdx < totalLines) {
+    // Same as the served path: a user `limit` cut sets the render bound
+    // WITHOUT minting a token — propagation below stays budget-only.
+    nextOffset = endIdx + 1;
+  }
+  return {
+    text: `${hashlineHeader(options.lineNumbers)}\n${truncation.content}`,
+    truncation: truncation.truncated ? truncation : undefined,
+    ...(budgetCut && nextOffset !== undefined ? { nextOffset } : {}),
+    // #273: the last RENDERED row bounds the window — an unserved page still
+    // forms a window, so the tool layer's one-sentence tail (and the resume
+    // token it carries) applies to a lossy read exactly as to a served one.
+    shownEnd: startLine + truncation.outputLines - 1,
+  };
+}
+
 
 export async function fmtReadPreview(
   text: string,
@@ -477,6 +564,13 @@ export async function fmtReadPreview(
 		 * silent, which is the failure class this refactor exists to remove.
 		 */
 		cwd?: string;
+		/**
+		 * #273: render WITHOUT serving — rows become `[line N] content`, nothing
+		 * is minted or recorded. A lossy file (undecodable bytes) is displayed
+		 * this way: its text is a U+FFFD stand-in, so an anchor served against it
+		 * could never verify the edit's write-back later.
+		 */
+		serve?: boolean;
 	},
   precomputedHashes?: string[],
   path?: string,
@@ -503,6 +597,23 @@ export async function fmtReadPreview(
   const allLines = splitLines(text);
   const totalLines = allLines.length;
   const startLine = normPosInt(options.offset, 'offset') ?? 1;
+  if (options.serve === false) {
+    return {
+      ...renderUnserved(
+        text,
+        {
+          offset: options.offset,
+          limit: options.limit,
+          maxChars: options.maxChars,
+          lineNumbers: options.lineNumbers ?? lineNumbersEnabled(),
+        },
+        maxLineBytes,
+        maxTruncLines,
+      ),
+      served: [],
+      hashes: [],
+    };
+  }
   if (text.length === 0) {
     if (startLine === 1) {
       const allHashes = precomputedHashes ?? (path ? anchorsFor(path, text) : []);
@@ -714,6 +825,8 @@ export interface FileView {
   /** #212 — absolute line of the last served row; the tool layer's render bound. */
   shownEnd?: number;
   hadUtf8DecodeErrors: boolean;
+  /** #273 — the view's text is a U+FFFD stand-in; nothing in it is served. */
+  lossy: boolean;
   bom: string;
   originalEnding: LineEnding;
   normalized: string;
@@ -766,7 +879,10 @@ export async function readView(
   // workspace's store first. Without this a read that is the session's first
   // tool call renders anchors that were never persisted (#171 probe).
   await loadHashStore(cwd);
-  const rawText = await io.readText(absolutePath, signal);
+  const { text: rawText, fidelity } = await io.readTextTolerant(absolutePath, signal);
+  // #273: a lossy file is displayed but never served — its rows are U+FFFD
+  // stand-ins, so anchors served now could never verify a later edit.
+  const lossy = fidelity === "lossy";
   const { normalized, fileHashes, hadUtf8DecodeErrors, bom, originalEnding } =
     await normFromText({
       absolutePath,
@@ -776,7 +892,7 @@ export async function readView(
     });
 	const r = await fmtReadPreview(
 		normalized,
-			{ offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers ?? lineNumbersEnabled(), maxChars: opts.maxChars, sessionKey: opts.sessionKey, cwd }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget; #223: sessionKey is what lets the renderer mint through the one entry point
+			{ serve: !lossy, offset: opts.offset, limit: opts.limit, lineNumbers: opts.lineNumbers ?? lineNumbersEnabled(), maxChars: opts.maxChars, sessionKey: opts.sessionKey, cwd }, // issue #66/B5: lineNumbers never reached the renderer; maxChars is the ADR-0013 budget; #223: sessionKey is what lets the renderer mint through the one entry point
 			undefined, // LAZY (#169): the renderer fetches the view and allocates the window itself; a provided precomputed array means REAL hashes (write shadow) and is never re-allocated
 		absolutePath,
 	);
@@ -791,6 +907,7 @@ export async function readView(
     nextOffset: r.nextOffset,
     shownEnd: r.shownEnd,
     hadUtf8DecodeErrors,
+    lossy,
     bom,
     originalEnding,
     normalized,

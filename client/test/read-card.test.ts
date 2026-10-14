@@ -64,6 +64,15 @@ describe("readCardMeta", () => {
 		expect(readCardMeta(model({ lang: undefined, totalLines: 2 }), readCardLabels(t))).toEqual([]);
 		expect(readCardMeta(model({ lang: "", totalLines: 2 }), readCardLabels(t))).toEqual([]);
 	});
+
+	it("names the lossy substitution in the footer (#273)", () => {
+		expect(
+			readCardMeta(
+				model({ lossy: true, lossyNote: "[Undecodable bytes; view is not editable]" }),
+				readCardLabels(t),
+			),
+		).toEqual(["ts", "read.window(2,3)", "[Undecodable bytes; view is not editable]"]);
+	});
 });
 
 describe("foldWindow drives both columns", () => {
