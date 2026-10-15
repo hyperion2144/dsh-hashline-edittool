@@ -367,6 +367,21 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 	if (value.hashlines !== undefined) {
 		if (!Array.isArray(value.hashlines) || !value.hashlines.every(isMetaHashline)) return null;
 	}
+	// #273: a lossy view flags itself and carries its shown-but-unserved rows.
+	if (value.lossy !== undefined && value.lossy !== true) return null;
+	if (value.lossyNote !== undefined && typeof value.lossyNote !== "string") return null;
+	let unservedRows: ReadMetaLine[] | undefined;
+	if (value.unservedRows !== undefined) {
+		if (!Array.isArray(value.unservedRows) || !value.unservedRows.every(isMetaLine)) return null;
+		// Same window discipline as the served lines: in-range and strictly
+		// ascending, so a gutter like `0` can never reach the card.
+		let previousUnserved = 0;
+		for (const { number } of value.unservedRows as ReadMetaLine[]) {
+			if (number <= previousUnserved || number > totalLines) return null;
+			previousUnserved = number;
+		}
+		unservedRows = value.unservedRows as ReadMetaLine[];
+	}
 	if (lang !== undefined && typeof lang !== "string") return null;
 	const windowMeta = rawWindow === undefined ? undefined : readWindowMeta(rawWindow);
 	if (rawWindow !== undefined && windowMeta === undefined) return null;
@@ -382,6 +397,9 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 		lines,
 		totalLines,
 		...(value.hashlines !== undefined ? { hashlines: value.hashlines as ReadMetaHashline[] } : {}),
+		...(value.lossy === true ? { lossy: true } : {}),
+		...(value.lossyNote !== undefined ? { lossyNote: value.lossyNote as string } : {}),
+		...(unservedRows !== undefined ? { unservedRows } : {}),
 		...(lang !== undefined ? { lang: lang as string } : {}),
 		...(windowMeta !== undefined ? { window: windowMeta } : {}),
 	};
@@ -419,13 +437,26 @@ export function readCardModel(
 		label: abbreviateHomePath(relativizeToCwd(meta.path, cwd), home),
 		// The anchor stays a field of its own, with `gutter` as the marker the card
 		// draws: nothing is pre-composed into a numeric field any more (issue #98).
-		rows: meta.lines.map(({ number, text: lineText }) => {
-			const hash = hashByNumber.get(number) ?? "";
-			return { number, hash, gutter: hash === "" ? `${number}` : `${number}:${hash}`, text: lineText };
-		}),
+		rows: [
+			...meta.lines.map(({ number, text: lineText }) => {
+				const hash = hashByNumber.get(number) ?? "";
+				return { number, hash, gutter: hash === "" ? `${number}` : `${number}:${hash}`, text: lineText };
+			}),
+			// #273: a lossy read serves nothing, so its shown rows arrive as
+			// `unservedRows` — no anchor exists, the gutter is the bare number,
+			// the exact shape every anchorless row already draws.
+			...(meta.unservedRows ?? []).map(({ number, text }) => ({
+				number,
+				hash: "",
+				gutter: `${number}`,
+				text,
+			})),
+		],
 		totalLines: meta.totalLines,
 		...(meta.lang !== undefined ? { lang: meta.lang } : {}),
 		...(meta.window !== undefined ? { window: meta.window } : {}),
+		...(meta.lossy === true ? { lossy: true } : {}),
+		...(meta.lossyNote !== undefined ? { lossyNote: meta.lossyNote } : {}),
 	};
 }
 

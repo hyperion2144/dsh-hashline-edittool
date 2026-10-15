@@ -52,6 +52,10 @@ import {
 } from "../lsp/auto-diag.js";
 
 /** Canonical write value: built-in contract plus the card/model extensions. */
+/** #273 (review M2): said when the overwritten file's previous bytes were not valid UTF-8 — no honest per-line diff exists against a U+FFFD stand-in. */
+const WRITE_LOSSY_BEFORE_NOTE =
+	"[Previous content had undecodable bytes (shown as U+FFFD); its per-line diff is omitted, and the file was fully overwritten as UTF-8.]";
+
 export interface WriteValue {
 	path: string;
 	operation: "create" | "update";
@@ -59,6 +63,8 @@ export interface WriteValue {
 	after: string;
 	/** Structured rows for the web card's `行号:锚点` gutter. */
 	diffRows?: EditDiffRow[];
+	/** #273 — true when the pre-write read was lossy: `before` holds U+FFFD stand-ins and `diffRows` is omitted. */
+	beforeLossy?: boolean;
 	/** #131: inline diagnostics meta, present only when a push arrived in the window. */
 	diagnostics?: DiagMetaEntry[];
 	modelText: string;
@@ -106,6 +112,11 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 						oneOf: [{ type: "string" }, { type: "null" }],
 					},
 					after: { type: "string", required: true },
+					// #273: present only when the pre-write read was lossy. The host
+					// validates the RETURNED value against this declaration and rejects an
+					// undeclared field, so the note's structured flag must be named here —
+					// a unit test calling `execute` directly can never see that rejection.
+					beforeLossy: { type: "boolean" },
 					// Rendering channel: structured rows carrying the per-line
 					// `行号:锚点` gutter facts — never parsed from model text.
 					diffRows: { type: "array" },
@@ -127,7 +138,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					path: filePath,
 					// Built-in parity: overwrites carry hunks, creates carry none.
 					diffs:
-						v.before === null
+						v.before === null || v.beforeLossy === true
 							? []
 							: computeHunkDiffs(filePath, v.before, v.after),
 					...(v.diffRows !== undefined && v.diffRows.length > 0
@@ -210,8 +221,13 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				const absolute = await io.resolve(rawPath, cwd, signal);
 				let before: string | null = null;
 				let operation: "create" | "update" = "create";
+				let beforeLossy = false;
 				try {
-					before = await io.readText(absolute, signal);
+					// #273: tolerant — overwriting a file the backend refuses as text is
+					// an update, not a refusal; the diff preview is pure (nothing served).
+					const tolerantBefore = await io.readTextTolerant(absolute, signal);
+					before = tolerantBefore.text;
+					beforeLossy = tolerantBefore.fidelity === "lossy";
 					operation = "update";
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
@@ -227,8 +243,11 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// a version nothing serves (the store-poisoning bug).
 				// LAZY (#169): the `-` side is a pure VIEW — removal rows are historical
 				// and nothing is allocated for them.
+				// beforeLossy: anchorsFor would record session anchors for U+FFFD stand-in
+				// rows — the store must never carry anchors for text the disk does not
+				// contain (#273), so a lossy pre-write read captures no hashes.
 				const beforeHashes =
-					before === null ? undefined : anchorsFor(absolute, before);
+					before === null || beforeLossy ? undefined : anchorsFor(absolute, before);
 				abortIf(signal);
 				// #131: baseline BEFORE the sync; then tell the language server — the
 				// one `write` path never did, so its diagnostics (and the manual
@@ -313,8 +332,22 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 							? JSON.stringify({ ...JSON.parse(baseText) as object, diagnostics: diagJson })
 							: `${baseText}\n\n${diagSection}`;
 
+				// #273 (review M2): a lossy pre-write read means the OLD side of this
+				// overwrite was U+FFFD stand-ins — say so where the model reads. Text
+				// appends prose; JSON rides inside the payload, which stays parseable.
+				const finalModelText = !beforeLossy
+					? modelText
+					: isJsonOutput() && modelText.startsWith("{")
+						? JSON.stringify({
+								...(JSON.parse(modelText) as object),
+								beforeLossy: true,
+								warnings: [WRITE_LOSSY_BEFORE_NOTE],
+							})
+						: `${modelText}\n\n${WRITE_LOSSY_BEFORE_NOTE}`;
 				// ---- web card channel: structured rows with `行号:锚点` ----
-				const diffRows = await buildDiffRows(
+				// #273 (review M2): no per-line diff against a U+FFFD stand-in — the
+				// `-` side would show bytes the disk never had; the note says why.
+				const diffRows = beforeLossy ? undefined : await buildDiffRows(
 					absolute,
 					before,
 					after,
@@ -335,9 +368,10 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					operation,
 					before,
 					after,
+				...(beforeLossy ? { beforeLossy: true } : {}),
 					...(diffRows !== undefined ? { diffRows } : {}),
 					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
-					modelText,
+					modelText: finalModelText,
 				} as WriteValue;
 		}).catch((error: unknown) => ({
 			path: pathFromArgs(args) ?? "",

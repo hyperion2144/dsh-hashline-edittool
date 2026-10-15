@@ -93,6 +93,12 @@ export type ReadValue = {
 	lines: ReadFileLine[];
 	hashlines: ReadHashlineLine[];
 	truncatedByBytes?: boolean;
+	/** #273 — the view is lossy: shown rows are U+FFFD stand-ins; nothing is served. */
+	lossy?: boolean;
+	/** #273 — the host-composed note the card's footer renders for a lossy view. */
+	lossyNote?: string;
+	/** #273 — the shown-but-unserved rows (bare number + U+FFFD text); absent when none. */
+	unservedRows?: ReadFileLine[];
 } & { [key: string]: unknown };
 
 /** The hashline read tool's persisted presentation projection. */

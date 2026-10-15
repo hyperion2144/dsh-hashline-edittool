@@ -94,6 +94,48 @@ describe("readCardModel", () => {
 		expect(card?.lang).toBe("ts");
 	});
 
+	it("appends a lossy view's unserved rows as anchorless rows (#273)", () => {
+		const card = readCardModel(
+			settledRead({
+				meta: {
+					path: "/w/src/bad.log",
+					offset: 1,
+					totalLines: 3,
+					lines: [],
+					lossy: true,
+					lossyNote: "[Undecodable bytes shown as U+FFFD; this view is not editable — edit refuses files whose bytes are not valid UTF-8.]",
+					unservedRows: [
+						{ number: 1, text: "alpha" },
+						{ number: 2, text: "\uFFFD" },
+						{ number: 3, text: "beta" },
+					],
+					lang: "log",
+				},
+				text: "[line 1] alpha\n[line 2] \uFFFD\n[line 3] beta",
+			}),
+			"/w",
+			undefined,
+		);
+		expect(card).not.toBeNull();
+		expect(card?.lossy).toBe(true);
+		expect(card?.rows.map((row) => row.hash)).toEqual(["", "", ""]);
+		expect(card?.rows.map((row) => row.gutter)).toEqual(["1", "2", "3"]);
+		expect(card?.rows.map((row) => row.text)).toEqual(["alpha", "\uFFFD", "beta"]);
+		expect(card?.lossyNote).toContain("not editable");
+	});
+
+	it("rejects a malformed lossy meta instead of rendering it (#273)", () => {
+		const meta = {
+			path: "/w/src/bad.log",
+			offset: 1,
+			totalLines: 1,
+			lines: [],
+			lossy: true,
+			unservedRows: [{ number: 0, text: "before-one" }],
+		};
+		expect(readCardModel(settledRead({ meta }), undefined, undefined)).toBeNull();
+	});
+
 	it("falls back to the bare number when a row's hash is empty", () => {
 		const card = readCardModel(
 			settledRead({

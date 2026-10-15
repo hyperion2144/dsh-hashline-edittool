@@ -188,10 +188,10 @@ D0:4|export function greet(name: string): string {
 
 | 工具 | 功能 |
 | --- | --- |
-| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset` 收 1 起的行号**或锚点**（含该行；纯数字字符串即该行号的文本形态，按行号解析，limit 的行数同理）；`limit` 收行数**或锚点**（含该行）—— 关掉行号后，锚点是你唯一能看到的游标。text 模式的每个窗口都以一句话收尾：正文被截断时是 `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]`，否则 `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`（纯行号游标则是 `offset=N`），读到底则 `[Lines X-Y of N. End of file.]`。超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。 |
-| `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。 |
+| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset` 收 1 起的行号**或锚点**（含该行；纯数字字符串即该行号的文本形态，按行号解析，limit 的行数同理）；`limit` 收行数**或锚点**（含该行）—— 关掉行号后，锚点是你唯一能看到的游标。text 模式的每个窗口都以一句话收尾：正文被截断时是 `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]`，否则 `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`（纯行号游标则是 `offset=N`），读到底则 `[Lines X-Y of N. End of file.]`。超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。字节不是合法 UTF-8 的文件照样可读：有损解码（`U+FFFD`），渲染为不 served 的 `[line N] content` 行，不可编辑 —— 但展示即观测：有损读同样告知宿主已读过该文件，`write` 仍可整体覆盖（`edit` 拒绝）。 |
+| `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。有损文件（非合法 UTF-8）被拒绝（`[E_LOSSY_BYTES]`）；无损文件（含 NUL 的合法 UTF-8）照常编辑、写回字节一致。 |
 | `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加带新鲜锚点的自动 read 预览**，下一次编辑不再需要单独 read。 |
-| `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。清单由 ripgrep 出，因此 `.gitignore` 的路径默认跳过（见 `grep_respect_gitignore`）。`-C N` 回显上下文行；命中即 served → 可直接编辑（被后端判为非文本的文件除外，见下）。被后端判为非 UTF-8 文本的文件（一个 NUL 字节就够）照样搜索，口径同 `rg -a`：原始字节按 UTF-8 解码，无法解码的字节显示为 `U+FFFD`。这类文件编辑不了（`read` / `edit` 同样拒绝），因此它的行**不 served** —— 渲染为 `[line N] content`，与任何拿不到锚点的行同形。UTF-16 文件按它的字节搜，里面的 ASCII 文本仍然匹配不上，与 `rg -a` 完全一致。 |
+| `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。清单由 ripgrep 出，因此 `.gitignore` 的路径默认跳过（见 `grep_respect_gitignore`）。`-C N` 回显上下文行；命中即 served → 可直接编辑。被后端判为非 UTF-8 文本的文件（一个 NUL 字节就够）照样搜索，口径同 `rg -a`：原始字节按 UTF-8 解码。字节合法（含 NUL）时行会 served，文件照常可编辑；存在无法解码的字节（`U+FFFD`）时行**不 served** —— 渲染为 `[line N] content`，与任何拿不到锚点的行同形，且 `edit` 拒绝该文件（`[E_LOSSY_BYTES]`）。UTF-16 文件按它的字节搜，里面的 ASCII 文本仍然匹配不上，与 `rg -a` 完全一致。 |
 | `undo_last_edit` | `{ path }` 撤销该文件最后一次 hashline 编辑 —— 仅当文件仍与存储的编辑后内容一致时；可跨重启。 |
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
 | `ast_edit` | 结构改写：按形状找到位置，把变更交给 `edit` **同一引擎** —— served 校验、undo 记录、diff 与语法门全部生效。 |
@@ -255,6 +255,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_INVALID_PATCH]` | diff 预览标记被粘进 `lines`；剥除并警告。 |
 | `[E_LINE_HINT]` | `<line>:<anchor>` 提示与锚点不一致；以锚点为准。 |
 | `[E_LINE_REF]` | 锚点字段传了纯数字；安全时按 served 状态解析。 |
+| `[E_LOSSY_BYTES]` | `edit` 拒绝读取为有损的文件（字节非合法 UTF-8）；字符串写回无法保留原始字节。 |
 | `[E_NOOP_LOOP]` | 同一编辑反复无变化；再提交被拒绝。 |
 | `[E_NOT_FOUND]` / `[E_NOT_TEXT]` | 文件不存在 / 目录-二进制-非 UTF-8。 |
 | `[E_NOT_OBSERVED]` | 本会话未观察过该文件（先读后写策略）。 |

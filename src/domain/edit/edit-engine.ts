@@ -1095,7 +1095,14 @@ export async function runFileEdits(
 	const first = items[0]!;
 	abortIf(opts.signal);
 	const absolutePath = first.absolutePath;
-	const rawText = await io.readText(absolutePath, opts.signal);
+	const { text: rawText, fidelity } = await io.readTextTolerant(absolutePath, opts.signal);
+	// #273: a lossy read is a U+FFFD stand-in — an edit built on it would
+	// write the stand-ins back and corrupt bytes no string can carry.
+	if (fidelity === "lossy") {
+		throw new Error(
+			`[E_LOSSY_BYTES] File contains bytes that are not valid UTF-8: ${first.path}. Reading it is lossy (U+FFFD), and a string write-back cannot preserve the original bytes; re-encode the file externally first.`,
+		);
+	}
 	const {
 		normalized: originalNormalized,
 		bom,

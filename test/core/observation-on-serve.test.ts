@@ -16,7 +16,8 @@ import { describe, expect, it } from "vitest";
 import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
-import { withTempFile, makeExec } from "../support/fixtures.js";
+import { withTempBytes, withTempFile, makeExec } from "../support/fixtures.js";
+import { buildGrepTool } from "../../src/tools/tool-grep.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 /** The edit tool needs a sandbox controller; an unconfined one is the test default. */
@@ -100,6 +101,45 @@ describe("observed-on-serve", () => {
 			// The read observed it, the write observes it again — what matters is
 			// that the edited file is among the observed paths.
 			expect(seen.some((p) => p.includes("obs-edit.txt"))).toBe(true);
+		});
+
+	});
+
+	it("a lossy read observes the file it showed as unserved stand-ins", async () => {
+		const bytes = Buffer.concat([
+			Buffer.from("alpha\n", "utf-8"),
+			Buffer.from([0xff]),
+			Buffer.from("\nbeta\n", "utf-8"),
+		]);
+		await withTempBytes("obs-lossy.log", bytes, async ({ cwd }) => {
+			const seen: string[] = [];
+			const tool = buildReadTool(recordingIO(seen));
+			const result = (await tool.execute({ path: "obs-lossy.log" }, makeExec(cwd)({}))) as {
+				modelText: string;
+			};
+			// The rows are U+FFFD stand-ins and stay UNSERVED — but the file WAS shown,
+			// so `write` must be able to replace it. Without the observation the host
+			// refuses the write with a remedy (`read()` first) a lossy read can never
+			// satisfy, which made the note's "not editable" claim the whole story.
+			expect(result.modelText).toContain("not editable");
+			expect(seen).toHaveLength(1);
+			expect(seen[0]).toContain("obs-lossy.log");
+		});
+	});
+
+	it("a lossy grep observes the file whose hits it showed unserved", async () => {
+		const bytes = Buffer.concat([
+			Buffer.from("needle alpha\n", "utf-8"),
+			Buffer.from([0xff]),
+			Buffer.from("\n", "utf-8"),
+		]);
+		await withTempBytes("obs-lossy-grep.log", bytes, async ({ cwd }) => {
+			const seen: string[] = [];
+			const tool = buildGrepTool(recordingIO(seen));
+			await tool.execute({ pattern: "needle", path: "." }, makeExec(cwd)({}));
+			// Found, shown, unserved — and still observed: the write that follows a
+			// lossy grep hit must not need a second, impossible read.
+			expect(seen.some((p) => p.includes("obs-lossy-grep.log"))).toBe(true);
 		});
 	});
 });

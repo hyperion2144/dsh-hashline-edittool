@@ -16,9 +16,13 @@ import type { FileIO } from "./infra/fs-bridge.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { ServedRow } from "./hashline/anchor-pipeline.js";
 
-/** Appended when the file had non-UTF-8 bytes; editing rewrites it as UTF-8. */
-export const UTF8_REWRITE_NOTE =
-	"[Non-UTF-8 bytes shown as U+FFFD; editing rewrites the file as UTF-8.]";
+/**
+ * Appended when the view is lossy (#273): undecodable bytes are shown as
+ * U+FFFD stand-ins, so nothing in this view is served and `edit` refuses
+ * the file outright — writing back the stand-ins would corrupt the bytes.
+ */
+export const LOSSY_BYTES_NOTE =
+	"[Undecodable bytes shown as U+FFFD; this view is not editable — edit refuses files whose bytes are not valid UTF-8.]";
 
 export interface ReadAndServeOptions {
 	/** The session whose served rows these lines belong to. */
@@ -41,11 +45,13 @@ export interface ReadAndServeOptions {
 }
 
 export interface ReadAndServeResult {
-	/** The model-facing read text, including the UTF-8 note when applicable. */
+	/** The model-facing read text, including the lossy-bytes note when applicable. */
 	text: string;
 	/** The rows recorded as served (empty when nothing was shown). */
 	served: ServedRow[];
 	hadUtf8DecodeErrors: boolean;
+	/** #273 — the view is lossy: text rows are U+FFFD stand-ins and nothing was served. */
+	lossy: boolean;
 	absolutePath: string;
 	/**
 	 * Per-line hashes for the WHOLE file (not just the window) — let the
@@ -67,7 +73,7 @@ export interface ReadAndServeResult {
  * Perform one read-and-serve: normalize the file at `rawPath`, render its
  * hashline preview, record the shown rows as served for the session, and clear
  * the reported-drift marks (a fresh read resets them). The returned text
- * carries the UTF-8 rewrite note when the file had decode errors.
+ * carries the lossy-bytes note when the view is lossy (#273).
  *
  * Records the shown rows as served AND emits `fs/observed` for the file when an
  * exec context was supplied: a caller that can see the lines can also write
@@ -92,7 +98,11 @@ export async function readAndServe(
 		sessionKey,
 		signal,
 	});
-	if (view.served.length > 0) {
+	// #273: a lossy view serves no rows, but the model HAS seen the file — the
+	// observation is what lets `write` replace it (`edit` still refuses it via
+	// [E_LOSSY_BYTES]). Gating this block on served rows alone left a lossy file
+	// un-writable, with a remedy ("call read() first") that can never succeed.
+	if (view.served.length > 0 || view.lossy) {
 		// #223: the mint AND the served record now commit together, inside the
 		// renderer's call to the one entry point — see `fmtReadPreview`, which
 		// mints the window it is about to show and serves it in the same
@@ -130,21 +140,21 @@ export async function readAndServe(
 				);
 			}
 		}
-		// The rows are served, so the session has SEEN this file: tell the dsh
-		// observation policy, or the very rows just handed over cannot be
-		// edited with until an explicit read re-observes the file.
+		// The rows are served — or, for a lossy view, shown unserved — so the
+		// session has SEEN this file: tell the dsh observation policy, or the
+		// very rows just handed over cannot be written with until an explicit
+		// read re-observes the file.
 		if (options.exec !== undefined) {
 			await io.emitObserved(view.absolutePath, options.exec, signal);
 		}
 	}
 	await clearDriftReported(sessionKey, view.absolutePath);
-	const text = view.hadUtf8DecodeErrors
-		? `${view.text}\n\n${UTF8_REWRITE_NOTE}`
-		: view.text;
+	const text = view.lossy ? `${view.text}\n\n${LOSSY_BYTES_NOTE}` : view.text;
 	return {
 		text,
 		served: view.served,
 		hadUtf8DecodeErrors: view.hadUtf8DecodeErrors,
+		lossy: view.lossy,
 		absolutePath: view.absolutePath,
 		hashes: view.hashes,
 		normalized: view.normalized,

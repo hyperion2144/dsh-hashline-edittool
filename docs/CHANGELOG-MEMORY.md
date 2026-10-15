@@ -421,3 +421,53 @@ ADR-0007 的口径是「模型只见结构化错误码」：每个后端拒绝�
 - 用户可见行为不变：grep 容忍读遇超上限文件仍只静默跳过该文件、其余照答（`test/core/issue-271-too-large-mapping.test.ts` 端到端钉住，含「readBytes 回退确实发生过」的调用序列断言）；本票补的是映射完备性，不是行为变更。
 - 码名 `[E_TOO_LARGE]` 与 AST 族 `[E_AST_TOO_LARGE]` 正交（AST 族统一 `E_AST_*` 前缀、单独一行），不改名；v1 已删的 `E_FILE_TOO_LARGE` 只残留在旧测试注释里，不复活。
 - `error-codes.test.ts` 双向契约自动覆盖新码；该测试只读 README.md，README.zh 靠人工同步（既有设计）。
+
+## 2026-10-14 — ADR-0018 记账：拒绝不是一种东西——按保真度分类容忍读 (#273)
+
+#273 报告 read/edit 拒绝「只含一个 NUL 字节的合法 UTF-8 文件」（`[E_NOT_TEXT]`），而本地后端同文件可读可改。维护者裁定：嗅探过于简陋粗暴（「含 null 也可能是文本文件」），政策是「能读就能写」——但**写缝是 string-only**，无法保留非法 UTF-8 字节，所以两类被拒文件必须分开对待，`binary` 布尔做不到。
+
+### Why
+
+ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 走严格 `readText`，锚点会许诺一个必然被拒的编辑。但这个理由只对**有损**那一半成立。拒绝的**原因**才是契约：字节合法（NUL 触发嗅探）→ 文本即文件，能读就该能写；字节非法 → 文本只是 `U+FFFD` 解释，string 写回必失真。
+
+### Path / Affected typed relationships
+
+- `src/infra/fs-bridge.ts`：`TolerantRead` 改 `{ text, fidelity: "native" | "lossless" | "lossy" }`；内部 `readTextAllowingBinary` 回退后按往返等式分类（`Buffer.from(text,"utf-8")` 等于原始字节 → `lossless`，否则 `lossy`），绝不从「被拒」推断；`localIO` 字节精确时记 `native`。
+- `src/domain/session/file-view.ts`：`readView` 改容忍读；lossy 走 `renderUnserved()`（`[line N] content`，不铸锚）+ 不可编辑注记；`fmtReadPreview` 加 `serve` 选项。
+- `src/domain/edit/mutation.ts` / `edit-engine.ts`：容忍读 + lossy 抛 **`[E_LOSSY_BYTES]`**（文件不动）；`src/read-and-serve.ts` lossy 提示 `LOSSY_BYTES_NOTE`。
+- `src/tools/tool-grep.ts` 两读点：lossless → served（#268 升级），lossy → 不 served 不变；`tool-undo.ts` / `tool-write-shadow.ts` 预读改容忍读。
+- `lsp`/`ast_*` 保持严格 `readText`（明确 out-of-scope）；上游 dsh-fs 的嗅探不动。
+- 文档：ADR-0018（新）、ADR-0017 状态行承接标注、README 双语工具表三行 + 错误码行、`CHANGELOG.md` `[Unreleased]`、本文件、`AGENTS.md` decisions 行。
+
+### 本轮定案（复核时照此）
+
+- 分类是**字节**的属性：lossless 由往返等式**证明**，不是「后端说它拒绝所以有 NUL」。
+- 「能读就能写」在字节允许处精确成立：lossless 可编辑且写回字节一致（集成测试钉住）；lossy 拒绝必须**有名字**（`[E_LOSSY_BYTES]` 进 README 错误码表），不再藏在「不是文本文件」里。
+- 保留非 UTF-8 字节的编辑需要 bytes-mode 写缝（后端契约变更），明确不做。
+- 超 `TOLERANT_READ_MAX_BYTES` 走 `[E_TOO_LARGE]`（#271），不误分类。
+
+---
+
+## 2026-10-16 — 真机验证修正：#273 的 lossy 视图可读却不可写（观测被 served 条件挡住）
+
+**Type:** bug fix（#273 收尾修复）
+**Confidence:** High
+**Evidence:** 会话重启后（运行时 0.2.1-alpha.4）在主检出 17c97d1 的真机十项矩阵 —— read/edit/grep/undo/write 与 `[E_TOO_LARGE]` 九项通过，`write` 对 lossy 文件被 `[E_NOT_OBSERVED]` 拒绝；根因在 `src/read-and-serve.ts` 与 `src/tools/tool-grep.ts` 把 `emitObserved` 嵌在 served 条件内。`test/core/observation-on-serve.test.ts` +2 例（变异：把条件改回旧形态 → 恰好 2 例红，其余 3 例绿）；根 1514 passed（1 例环境性红：`test/core/hash-store.test.ts` 的 WAL 截断用例，主检出同样红）、client 161 passed。
+
+### Why
+
+- 「不 served」是「没有锚点可用」，不是「模型没看过」。观测（`fs/observed`）服务的是后写策略，`write` 只需要「看过」，`edit` 才需要锚点 —— 把两者绑在一个条件上，lossy 文件就成了「可读但不可写」，而拒绝信息开出的补救（先 `read`）对 lossy 永不成立：死胡同。
+- 连带发现一：`write` 值的 `beforeLossy` 未在输出 schema 声明，宿主按 `additionalProperties: false` 会拒收整个返回值（与第二轮 PR 评论的 read schema 事故同类）。已补声明，并用 `schemaViolations(outputSchemaOf(tool), result)` 钉住。
+- 连带发现二（预存在）：`grep` 的 `{resume}` 续读分支自 93e8974 起只 served 不观测 —— 续读命中可编辑却不可写；本轮在同一处补上。
+
+### Path / Affected typed relationships
+
+- `src/read-and-serve.ts`：观测闸门改为 `if (view.served.length > 0 || view.lossy)`。
+- `src/tools/tool-grep.ts`：扫描分支 `(servedRows.length > 0 || lossy)`；续读分支补 `emitObserved`（`!changed` 时）。
+- `src/tools/tool-write-shadow.ts`：输出 schema 增 `beforeLossy: { type: "boolean" }`。
+- 文档：ADR-0018 增「展示即观测」条目、README 双语 read 行、`CHANGELOG.md` #273 条目补记。
+
+### 本轮定案（复核时照此）
+
+- 观测是**无条件**的：只要渲染出了内容（served / unserved / lossy）就观测；`edit` 的拒绝由 `[E_LOSSY_BYTES]` 在锚点解析前决定，不靠观测挡。
+- 环境备注（本会话新运行时）：`node` 现为 bun 的 node-shim 1.4.0；worktree 的 `node_modules` 必须是逐包软链的**真实目录**（整目录软链会让 vite 的 `.vite-temp` 落回主检出，报 `Cannot find module … .vite-temp/…mjs`）；`test/core/hash-store.test.ts` 的 WAL 截断用例在该运行时下红、原生 Node 下绿。

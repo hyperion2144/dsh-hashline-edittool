@@ -36,6 +36,13 @@ describe("read of a deleted file emits an absent observation", () => {
 					code: "FS_NOT_FOUND",
 				});
 			},
+			// readView reads through the tolerant seam now; the refusal must ride
+			// the same error so the [E_NOT_FOUND] mapping stays exercised.
+			readTextTolerant: async () => {
+				throw Object.assign(new Error("File not found: gone.txt"), {
+					code: "FS_NOT_FOUND",
+				});
+			},
 			emitObserved: async () => {},
 			emitAbsent: async (abs: string) => {
 				absentEmitted.push(abs);
@@ -56,6 +63,10 @@ describe("read of a deleted file emits an absent observation", () => {
 		const io = {
 			resolve: async (p: string) => p,
 			readText: async () => "line one\nline two\n",
+			readTextTolerant: async () => ({
+				text: "line one\nline two\n",
+				fidelity: "native",
+			}),
 			emitObserved: async () => {},
 			emitAbsent: async () => {
 				absent++;

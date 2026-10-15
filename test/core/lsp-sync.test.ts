@@ -29,6 +29,10 @@ const sessionKey = "sync-session";
 const io = {
 	resolve: async (p: string) => p,
 	readText: async (p: string) => readFileSync(p, "utf-8"),
+	readTextTolerant: async (p: string) => ({
+		text: readFileSync(p, "utf-8"),
+		fidelity: "native",
+	}),
 	// The write path needs a real write; this test asserts the sync fires
 	// AFTER content lands, so the stub must actually land it.
 	writeText: async (p: string, content: string) => {

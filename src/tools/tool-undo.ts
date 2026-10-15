@@ -164,7 +164,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 
 			let currentRaw: string;
 			try {
-				currentRaw = await io.readText(absolutePath, signal);
+				// #273: tolerant — an undo may target a file the backend refuses as
+				// text (its pre-edit content was served through the tolerant seam).
+				currentRaw = (await io.readTextTolerant(absolutePath, signal)).text;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				if (message.includes("[E_NOT_FOUND]")) {

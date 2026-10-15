@@ -82,6 +82,12 @@ export interface ReadPresentation {
 	totalLines: number;
 	hashlines?: ReadMetaHashline[] | undefined;
 	lang?: string | undefined;
+	/** #273 — the view is lossy (rows are U+FFFD stand-ins); nothing is served. */
+	lossy?: boolean | undefined;
+	/** #273 — the host-composed note the card renders in its footer. */
+	lossyNote?: string | undefined;
+	/** #273 — the shown-but-unserved rows, present only on a lossy view. */
+	unservedRows?: ReadMetaLine[] | undefined;
 	window?: ReadWindowMeta | undefined;
 }
 
@@ -125,6 +131,10 @@ export interface ReadCardModel {
 	readonly lang?: string | undefined;
 	/** #245 — the host's window, when this read carried one. */
 	readonly window?: ReadWindowMeta | undefined;
+	/** #273 — the view is lossy; the footer names the substitution and the refusal. */
+	readonly lossy?: boolean | undefined;
+	/** #273 — the host-composed footer note for a lossy view. */
+	readonly lossyNote?: string | undefined;
 }
 
 /** Props accepted by the primitives' DiffBlock. */

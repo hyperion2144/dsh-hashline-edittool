@@ -158,8 +158,9 @@ describe("ctxFsIO.readTextTolerant (#268)", () => {
 			await expect(io.readText(path)).rejects.toThrow("[E_NOT_TEXT]");
 			await expect(io.readTextTolerant(path)).resolves.toEqual({
 				text: "hello\0 world\nsecond line\n",
-				// …and it says so, because a refused file cannot be edited later either.
-				binary: true,
+				// …and it says WHICH kind of refusal: the bytes are valid UTF-8, so the
+				// text is byte-exact — served and editable (#273).
+				fidelity: "lossless",
 			});
 		});
 	});
@@ -171,7 +172,7 @@ describe("ctxFsIO.readTextTolerant (#268)", () => {
 			await expect(io.readTextTolerant(path)).resolves.toEqual({
 				// The undecodable byte is marked; the NUL is passed through as itself.
 				text: "a\uFFFDb\0c",
-				binary: true,
+				fidelity: "lossy",
 			});
 		});
 	});
@@ -208,7 +209,7 @@ describe("ctxFsIO.readTextTolerant (#268)", () => {
 	it("keeps plain text on the ordinary read path — no raw-bytes read", async () => {
 		await withTempBytes("plain.txt", Buffer.from("just text\n", "utf-8"), async ({ path }) => {
 			const { io, calls } = dshIO();
-			await expect(io.readTextTolerant(path)).resolves.toEqual({ text: "just text\n", binary: false });
+			await expect(io.readTextTolerant(path)).resolves.toEqual({ text: "just text\n", fidelity: "native" });
 			expect(calls).toContain("readText");
 			expect(calls).not.toContain("readBytes");
 		});
@@ -229,8 +230,8 @@ describe("ctxFsIO.readTextTolerant (#268)", () => {
 			const io = localIO();
 			const read = await io.readTextTolerant(path);
 			expect(read.text).toBe(await io.readText(path));
-			// Nothing is ever refused here, so nothing is ever flagged as refused.
-			expect(read.binary).toBe(false);
+			// Nothing is ever refused here: a byte-exact decode is native (#273).
+			expect(read.fidelity).toBe("native");
 		});
 	});
 });
@@ -257,7 +258,7 @@ describe("grep over a backend that refuses binary content (#268)", () => {
 		);
 	});
 
-	it("directory search: finds a match that sits AFTER the NUL byte, and leaves it unserved", async () => {
+	it("directory search: finds a match that sits AFTER the NUL byte, and serves it (#273)", async () => {
 		await withTempDir("grep-268-", async (cwd) => {
 			await writeFile(join(cwd, "plain.txt"), "needle in plain text\n");
 			await writeFile(
@@ -275,10 +276,9 @@ describe("grep over a backend that refuses binary content (#268)", () => {
 			expect(out).toContain("needle in plain text");
 			expect(out).toContain("binaryish.log");
 			expect(out).toContain("needle after the nul");
-			// A file the backend refused as text is searched but NOT served: `edit`
-			// reads through `readText`, so an anchor minted here could never be used.
-			// The unserved `[line N]` shape is the honest one for "found, not editable".
-			expect(rowOf(out, "needle after the nul").startsWith("[line ")).toBe(true);
+			// #273: the file's bytes are valid UTF-8 (a lossless refusal), so its
+			// rows are SERVED — anchored and editable, like any other text file.
+			expect(rowOf(out, "needle after the nul").startsWith("[line ")).toBe(false);
 			// The ordinary text file beside it is untouched: still anchored, still
 			// editable — the promise the normal row shape carries.
 			expect(rowOf(out, "needle in plain text").startsWith("[line ")).toBe(false);
@@ -359,7 +359,7 @@ describe("grep over a backend that refuses binary content (#268)", () => {
 
 			expect(out).not.toContain("No matches");
 			expect(out).toContain("log.bin");
-			expect(rowOf(out, "needle in a log").startsWith("[line ")).toBe(true);
+			expect(rowOf(out, "needle in a log").startsWith("[line ")).toBe(false);
 		});
 	});
 
@@ -383,7 +383,7 @@ describe("grep over a backend that refuses binary content (#268)", () => {
 		});
 	});
 
-	it("resume: a refused file's overflow rows stay unserved, and are not 'changed'", async () => {
+	it("resume: a lossless file's overflow rows are served with anchors, and are not 'changed'", async () => {
 		// The SECOND read site (#268): rows that spill past the budget are read
 		// again when the segment is resumed. That read has to be the tolerant one —
 		// a refusing `readText` here was mistaken for "the file changed".
@@ -402,10 +402,9 @@ describe("grep over a backend that refuses binary content (#268)", () => {
 			expect(calls.filter((call) => call === "readBytes")).toHaveLength(1);
 
 			const next = await runGrep(harness, { resume: token! });
-			expect(next).toContain("needle row");
-			// Unserved, exactly like the first segment: an anchor minted here could
-			// never be edited, because `edit` reads through `readText`.
-			expect(rowOf(next, "needle row").startsWith("[line ")).toBe(true);
+			// Served, exactly like the first segment (#273): the file is lossless,
+			// so the resumed rows carry anchors too.
+			expect(rowOf(next, "needle row").startsWith("[line ")).toBe(false);
 			// The refusal was not read as a difference from the stored text — the
 			// caution a resuming reader gets when the file really did change.
 			expect(next).not.toContain("changed since");

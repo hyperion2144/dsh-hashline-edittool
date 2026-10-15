@@ -35,6 +35,9 @@ export function readCardMeta(model: ReadCardModel, labels: ReadCardLabels): read
 	const parts: Array<string | null> = [
 		model.lang !== undefined && model.lang !== "" ? model.lang : null,
 		windowed ? labels.window(model.rows.length, windowMeta?.totalLines ?? model.totalLines) : null,
+		// #273: a lossy view's footer names the substitution and the edit refusal
+		// (host-composed wording — the card renders it verbatim).
+		model.lossy === true && model.lossyNote !== undefined ? model.lossyNote : null,
 	];
 	return parts.filter((part): part is string => part !== null);
 }

@@ -4,10 +4,11 @@
  * `read` tool: every match row is `<line>#<hash>│content` under a
  * `ANCHOR:FILELINE` header, one section per file. Matches are
  * recorded as served, so a follow-up `edit` against a hit does not require a
- * separate `read` — EXCEPT for a file the backend refused as text (#268):
- * `readTextTolerant` still searches it, but its rows are unserved
- * (`[line N] content`), because `edit` reads through `readText` and would
- * refuse the very same file.
+ * separate `read` — EXCEPT for a lossy file (#273): its text carries U+FFFD
+ * stand-ins for undecodable bytes, so its rows stay unserved (`[line N]
+ * content`) — an anchor served against stand-in text could never verify the
+ * edit's write-back. A lossless refusal (valid UTF-8 the backend declined
+ * for its NUL heuristic) serves normally.
  *
  * ADR-0013: the scan runs to completion — nothing is refused by size. The
  * response carries whole sections up to the per-response char budget; rows
@@ -365,12 +366,12 @@ export function buildGrepTool(io: FileIO) {
 							current !== undefined ? { version: current } : undefined,
 						);
 						let content: string | undefined;
-						let binary = false;
+						let lossy = false;
 						if (!changed) {
 							try {
 								const tolerant = await io.readTextTolerant(group.path, signal);
 								content = tolerant.text;
-								binary = tolerant.binary;
+								lossy = tolerant.fidelity === "lossy";
 							} catch {
 								changed = true;
 							}
@@ -389,7 +390,7 @@ export function buildGrepTool(io: FileIO) {
 						// `recordServed` further down, so a failure between them served rows
 						// that no session had "seen".
 						const allocated =
-							!changed && !binary && normalized !== undefined
+							!changed && !lossy && normalized !== undefined
 								? await anchorForInWorkspace({
 										cwd,
 										absolutePath: group.path,
@@ -409,6 +410,13 @@ export function buildGrepTool(io: FileIO) {
 								rowsOut.push({ number: line, hash: "", text: row.content });
 							}
 						});
+						// #273: the same rule on the resume path — rows this segment SHOWS must
+						// be observed whether they carried anchors (live, unchanged file) or were
+						// lossy/unserved. Without it a resumed hit could be edited but not
+						// written, and a lossy file could be written by no path at all.
+						if (!changed && (servedRows.length > 0 || lossy) && exec !== undefined) {
+							await io.emitObserved(group.path, exec, signal).catch(() => undefined);
+						}
 						// Already served: `anchorForInWorkspace` recorded these anchors in
 						// the same transaction that minted them. A second `recordServed` here
 						// would be re-writing the same fact (and swallowing its own errors).
@@ -538,15 +546,17 @@ export function buildGrepTool(io: FileIO) {
 				for (const file of files) {
 					abortIf(signal2);
 					let raw: string;
-					let binary = false;
+					let lossy = false;
 					try {
-						// #268: `readTextTolerant` is `readText` first — every text file is read
-						// exactly as before — and falls back to the backend's raw bytes only when
-						// it was refused as text. A NUL byte in a log no longer answers "No
-						// matches" for content `rg -a` finds.
+						// #268/#273: `readTextTolerant` is `readText` first — every text file
+						// is read exactly as before — and falls back to the backend's raw
+						// bytes only when it was refused as text. A NUL byte no longer
+						// answers "No matches" for content `rg -a` finds; when the bytes are
+						// valid UTF-8 the file is lossless and its hits are served — only a
+						// lossy file (U+FFFD stand-ins) stays unserved.
 						const tolerant = await io.readTextTolerant(file, signal2);
 						raw = tolerant.text;
-						binary = tolerant.binary;
+						lossy = tolerant.fidelity === "lossy";
 					} catch {
 						// An abort is never "this file is unreadable": ask the signal itself.
 						abortIf(signal2);
@@ -571,11 +581,11 @@ export function buildGrepTool(io: FileIO) {
 					if (!spilling && usedChars + sectionChars <= budget) {
 						const positions = section.contextRows.map((row) => row.position + 1);
 						// #223: same single entry point as the section branch above.
-						// A file the backend refused as text is not editable either (#268):
-						// `edit` reads through `readText`, so an anchor minted here could never be
-						// used. Its rows stay unserved — `[line N] content` — which is the honest
-						// shape for "found, but not editable".
-						const allocated = binary
+						// A lossy file is not editable (#273): its text carries U+FFFD
+						// stand-ins for undecodable bytes, so `edit` refuses it and an anchor
+						// minted here could never verify a write-back. Its rows stay unserved
+						// — `[line N] content` — the honest shape for "found, but lossy".
+						const allocated = lossy
 							? []
 							: await anchorForInWorkspace({
 									cwd,
@@ -599,7 +609,11 @@ export function buildGrepTool(io: FileIO) {
 							}
 						});
 						// Served by the mint above; only the OBSERVATION is left.
-						if (servedRows.length > 0 && exec !== undefined) {
+						// #273: a lossy group serves nothing, but its rows were still SHOWN —
+						// observing them is what lets `write` replace the file (`edit` refuses
+						// it via [E_LOSSY_BYTES]). Skipping it left the file un-writable,
+						// with a remedy (`read()` first) a lossy read can never satisfy.
+						if ((servedRows.length > 0 || lossy) && exec !== undefined) {
 							await io.emitObserved(file, exec, signal2).catch(() => undefined);
 						}
 						fileSections.push(

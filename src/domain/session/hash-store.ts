@@ -27,6 +27,15 @@ import { DatabaseSync } from "node:sqlite";
 import { hashStorePath } from "../../infra/paths.js";
 import { workspaceCwd } from "../../infra/workspace.js";
 import { errCode } from "../../infra/utils.js";
+/**
+ * An undo body cell read back from the store: legacy rows are TEXT, rows
+ * written by {@link HashStore.pushUndo} are BLOB bytes (see the push side
+ * for why).
+ */
+function undoCellText(value: unknown): string {
+	return typeof value === "string" ? value : Buffer.from(value as Uint8Array).toString("utf8");
+}
+
 import { hashRe } from "../../hashline/hash-assign.js";
 import {
 	HASH_STORE_VERSION,
@@ -144,7 +153,8 @@ export interface SweepReport {
 
 // ---- the domain interface --------------------------------------------------
 
-type SqlParams = (string | number)[];
+	/** Blob params carry undo bodies: node:sqlite binds them as BLOB (see pushUndo). */
+	type SqlParams = (string | number | Uint8Array)[];
 
 interface Prepared {
 	allPaths: (...params: SqlParams) => Record<string, unknown>[];
@@ -769,7 +779,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			// `params[0]` is the path — the same key `withStore` would hold.
 			withTransaction(db, params[0] as string, () => {
 				undoPushStmt.run(params[0], ...params);
-				const top = topDepth(params[0]) ?? 0;
+				const top = topDepth(params[0] as string) ?? 0;
 				undoPruneStmt.run(params[0], top - UNDO_STACK_DEPTH + 1);
 			});
 		},
@@ -778,7 +788,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			// `depth = (SELECT MAX(depth) …)` in the DELETE re-evaluates as rows go
 			// and would walk the whole stack out.
 			withTransaction(db, params[0] as string, () => {
-				const top = topDepth(params[0]);
+				const top = topDepth(params[0] as string);
 				if (top === undefined) return;
 				undoPopStmt.run(params[0], top);
 			});
@@ -1110,11 +1120,11 @@ function makeDomainStore(
 					return undefined;
 				}
 				return {
-					content: row.content as string,
+						content: undoCellText(row.content),
 					bom: row.bom as string,
 					ending: row.ending as string,
 					hashes: parsed as string[],
-					resultContent: row.result_content as string,
+						resultContent: undoCellText(row.result_content),
 					// New rows carry a checksum instead of the post-edit body (#176);
 					// legacy rows have an empty string here and are still verified by
 					// their stored text.
@@ -1128,11 +1138,14 @@ function makeDomainStore(
 		pushUndo(path, entry) {
 			stmts.undoPush(
 				path,
-				entry.content,
+				// BLOB, not TEXT: node:sqlite on Node 22 loses a TEXT value's bytes past
+				// the first NUL, and SQLite's LENGTH() stops at that NUL (byte budgets);
+				// both are byte-exact for BLOBs. NUL bodies reach this store since #273.
+				Buffer.from(entry.content, "utf8"),
 				entry.bom,
 				entry.ending,
 				JSON.stringify(entry.hashes),
-				entry.resultContent,
+				Buffer.from(entry.resultContent, "utf8"),
 				entry.resultChecksum ?? "",
 				Date.now(),
 			);
