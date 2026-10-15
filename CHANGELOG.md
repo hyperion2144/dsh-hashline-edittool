@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-15
+
 ### Changed
 
 - **SDK 开发依赖对齐 0.2.0-rc.2 运行时线**：17 个 `@deepseek-ai/dsh-*` devDependencies 从 0.1.7-alpha.1 升到 0.2.0-rc.2（保持原有 exact / `^` 前缀风格；`cordis` ^4.0.1 与 `schemastery` 不在此次范围）。这些包只承担类型与测试期运行时（宿主在运行时自供实现），升级后 typecheck 与双 workspace 全量测试零源码改动通过 —— #170 的注入修复即按 0.2.x 的 `ContextForm` / `KNOWN_FORMS` 词汇验证。
