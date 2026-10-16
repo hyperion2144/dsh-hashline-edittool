@@ -471,3 +471,22 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 
 - 观测是**无条件**的：只要渲染出了内容（served / unserved / lossy）就观测；`edit` 的拒绝由 `[E_LOSSY_BYTES]` 在锚点解析前决定，不靠观测挡。
 - 环境备注（本会话新运行时）：`node` 现为 bun 的 node-shim 1.4.0；worktree 的 `node_modules` 必须是逐包软链的**真实目录**（整目录软链会让 vite 的 `.vite-temp` 落回主检出，报 `Cannot find module … .vite-temp/…mjs`）；`test/core/hash-store.test.ts` 的 WAL 截断用例在该运行时下红、原生 Node 下绿。
+
+---
+
+## 2026-10-16 — CHANGELOG 条目收紧到「一句话说清变更」（维护者要求）
+
+**Type:** convention（写作约定）
+**Confidence:** High
+**Evidence:** 维护者原话：「为什么changelog总是写那么详细，搞得relsease里一堆废话，一个点稍微描述下是啥就行了呀」——v0.10.2 的 Release 正文由 `.github/workflows/release.yml` 用 awk 从 `## [0.10.2]` 段整段提取（`--notes-file`），逐条千字把 Release 淹没。全局 `~/.dsh/AGENTS.md` 执行规则 1 同步写入该约定。
+
+### Why
+
+- CHANGELOG 段是 Release 正文的**唯一来源**：写进去的每个字都会原样出现在 Release 里；根因、测试清单、变异实验、文件路径、CI 数字属于 ADR / PR 正文 / 票面 / 本文件。
+- 一条 = 一行说清「改了什么 + 票号」；要「为什么」就链到 ADR。
+
+### 本轮定案（复核时照此）
+
+- CHANGELOG 每条 1–2 句：变更是什么、影响谁、票号；有 ADR 才带链接。
+- 细节归位：决策 → `docs/adr/`；排查与证据 → 票面进度/评论；实现与门禁 → PR 正文。
+- 不改写历史：只按新粒度重写了 0.10.2 的段（并用同一 awk 提取重刷了它的 Release 正文），更早版本保持原样。

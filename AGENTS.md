@@ -39,7 +39,10 @@ mounted by a single bundle patch.
    procedure: [`docs/workflows/release.md`](docs/workflows/release.md).
 4. **Keep the two READMEs in sync.** [`README.md`](README.md) and
    [`README.zh.md`](README.zh.md) are mirrors; a user-visible change lands in
-   both. `CHANGELOG.md` entries are written in Chinese under `[Unreleased]`.
+   both. `CHANGELOG.md` entries are written in Chinese under `[Unreleased]` —
+   one line per change saying what it is, plus the issue ref. The GitHub Release
+   body is copied from that section verbatim, so root causes, test lists, file
+   paths and CI numbers belong in the ADR, the PR body or the ticket instead.
 5. **Host SDK packages stay out of `dependencies`.** `@deepseek-ai/*` belongs in
    `devDependencies` (types/test) or `peerDependencies` — currently only
    `@deepseek-ai/schemastery`.
