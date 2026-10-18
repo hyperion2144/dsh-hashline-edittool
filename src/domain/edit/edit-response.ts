@@ -1,5 +1,5 @@
 import type { ServedRow } from "../../hashline/anchor-pipeline.js";
-import { genDiff } from "../../render/edit-diff.js";
+import { genDiff, formatRowMarker } from "../../render/edit-diff.js";
 import { visLines, clipLine } from "../../infra/utils.js";
 import { lineNumbersEnabled } from "../../infra/settings.js";
 import { contextLinesCfg } from "../../hashline/index.js";
@@ -13,7 +13,47 @@ import { contextLinesCfg } from "../../hashline/index.js";
 export const EDIT_DIFF_LEGEND =
 	"Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.";
 import type { HunkShift } from "./edit-engine.js";
+
+/**
+ * The model-facing text of a format section (P1's shape): a bracketed
+ * header that names the server, the mode and the counters, then one `+` row
+ * per formatter-changed line the model may address. Rows the eligibility gate
+ * refuses are not IN the section at all (the #275 follow-up ruling: an edit
+ * response never surfaces content the model has no standing view of) — only
+ * `unservedRows` counts them, and a formatted pass whose rows are all
+ * unserved renders the bare header so the counts stay honest.
+ */
+export function renderFormatSection(
+	section: FormatSection,
+	lineNumbers = lineNumbersEnabled(),
+	// The auto pass labels itself `auto-format`; the manual `format` tool
+	// passes its own label so the two are distinguishable in the model text.
+	label = "auto-format",
+): string {
+	const server = section.server ?? "language server";
+	if (section.status === "skipped") {
+		return `[${label}: ${server} · skipped · ${section.reason ?? "unspecified"}]`;
+	}
+	if (section.status !== "formatted" || section.rows === undefined || section.rows.length === 0) {
+		// A formatted outcome whose rows are all unserved is NOT "no changes":
+		// the header carries the honest counts (changedLines + unservedRows) and
+		// the ruling on #275's follow-up says those rows return neither content
+		// nor anchors. Only a genuinely change-free pass says "no changes".
+		if (section.status === "formatted" && (section.unservedRows ?? 0) > 0) {
+			return `[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.unservedRows ?? 0} unserved]`;
+		}
+		return `[${label}: ${server} · no changes]`;
+	}
+	const header = `[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${section.changedLines ?? section.rows.length} lines changed · ${section.unservedRows ?? 0} unserved]`;
+	const rows = section.rows.map((row) => {
+		const marker = row.hash !== "" ? formatRowMarker(row.hash, row.lineNumber, lineNumbers) : "    ";
+		const note = row.alsoInMainDiff ? "  (also in main diff)" : "";
+		return `+${marker} ${row.text}${note}`;
+	});
+	return [header, ...rows].join("\n");
+}
 import { replacedOriginalRanges } from "./edit-engine.js";
+import type { FormatSection } from "../format/types.js";
 
 
 export type EditDetails = {
@@ -80,6 +120,8 @@ export interface SuccessInput {
 	lineNumbers?: boolean;
 	/** The batch's hunks, when the caller has them — removal-row attribution (#198). */
 	hunkShifts?: HunkShift[];
+	/** The automatic format pass's report, when it produced one (map #275). */
+	format?: FormatSection;
 }
 
 export function buildMetrics(args: {
@@ -219,11 +261,12 @@ export function buildChanged(input: SuccessInput): TResult {
 			: "";
 	const noticeBlock = driftBlock(driftNotice);
 	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
+	const formatBlock =
+		input.format !== undefined ? `\n\n${renderFormatSection(input.format, input.lineNumbers ?? lineNumbersEnabled())}` : "";
 	const text =
 		resultLines.length === 0
 			? "File is empty. Use edit to insert content." + noticeBlock
-			: `${diffBody}\n\n${successPrefix}${lineSummary}${warningsBlock}${noticeBlock}`;
-
+			: `${diffBody}${formatBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${noticeBlock}`;
 	const metrics = buildMetrics({
 		classification: "applied",
 		editsAttempted: editMeta.editsAttempted,
@@ -246,6 +289,7 @@ export function buildChanged(input: SuccessInput): TResult {
 			...(warnings !== undefined && warnings.length > 0 ? { warnings } : {}),
 			servedRows: diffResult.servedRows,
 			...(driftNotice !== undefined ? { driftNotice } : {}),
+			...(input.format !== undefined ? { formats: [input.format] } : {}),
 		},
 	};
 }

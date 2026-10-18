@@ -188,3 +188,17 @@ export function validateStoreBudgetDraft(
 	}
 	return { kind: "valid", value: parsed };
 }
+
+/**
+ * The two format switches (#275), read off the effective snapshot. Both are
+ * OPT-IN: absent means OFF — the opposite of auto-diagnostics, because
+ * formatting REWRITES the model's content and must not start unbidden.
+ *
+ * Pure and exported so the card and the tests read ONE truth.
+ */
+export function readFormatFlags(snapshot: ConfigFormSnapshot): { auto: boolean; editorconfig: boolean } {
+	const format = snapshot.value?.format;
+	if (typeof format !== "object" || format === null) return { auto: false, editorconfig: false };
+	const f = format as { auto?: unknown; editorconfig?: unknown };
+	return { auto: f.auto === true, editorconfig: f.editorconfig === true };
+}

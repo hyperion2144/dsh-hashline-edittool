@@ -27,7 +27,7 @@ import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readCardLabels } from "./labels.js";
 import { GrepCard } from "./grep-card.js";
-import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, metaFormatSections, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { ReadCard } from "./read-card.js";
 import { LspDiagBlock } from "./lsp-block.js";
 import { ErrorCard } from "./error-card.js";
@@ -358,6 +358,7 @@ function ToolRow({
 										rows: diffBody.rowGroups[0]?.rows ?? [],
 										groups: diffBody.rowGroups,
 										failures: diffBody.failures,
+										formats: diffBody.formats,
 										tablistLabel: title,
 										labels: diffLabels,
 										maxLines: 8,
@@ -371,6 +372,7 @@ function ToolRow({
 										path: diffBody.path,
 										rows: diffBody.rows,
 										tablistLabel: title,
+										formats: diffBody.formats,
 										labels: diffLabels,
 										maxLines: 8,
 										className: css.diffBody,
@@ -675,6 +677,43 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		filePath: undefined,
 		onOpenFile: openFile,
 		inspect,
+	});
+}
+
+/**
+ * `format` — the manual format tool (#275).
+ *
+ * Its meta carries a formats section, not a main diff — but the section is
+ * exactly what `DiffRowsBlock` already draws under a file's tab. Rather than
+ * a second renderer, reshape the meta into ONE row group (zero rows) whose
+ * body IS the section, and let the edit row draw it: one implementation of
+ * what a format section looks like, the same reason the undo row borrows the
+ * edit row. A meta without a usable `formats` list falls through to the edit
+ * row unchanged, which renders the platform default for it.
+ */
+export function HashlineFormatRow({ toolName, block, ...rest }: ToolViewProps): ReactNode {
+	if (!("kind" in block)) return HashlineEditRow({ toolName, block, ...rest });
+	const meta: Record<string, unknown> =
+		typeof block.meta === "object" && block.meta !== null && !Array.isArray(block.meta)
+			? (block.meta as Record<string, unknown>)
+			: {};
+	const sections = metaFormatSections(meta);
+	if (sections.length === 0) return HashlineEditRow({ toolName, block, ...rest });
+	const path = typeof meta.path === "string" ? meta.path : toolName;
+	return HashlineEditRow({
+		toolName,
+		...rest,
+		titleOverride: "FORMAT",
+		block: {
+			...block,
+			meta: {
+				...meta,
+				// One EMPTY group per section: the tab strip shows the path, the
+				// section renders under its tab, and no main-diff rows exist —
+				// a manual format's section IS the diff.
+				diffRowGroups: sections.map((section) => ({ path: section.path ?? path, rows: [] })),
+			},
+		},
 	});
 }
 

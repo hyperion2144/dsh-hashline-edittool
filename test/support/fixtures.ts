@@ -18,6 +18,7 @@ import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildUndoTool } from "../../src/tools/tool-undo.js";
+import { buildFormatTool } from "../../src/tools/tool-format.js";
 import { buildGrepTool } from "../../src/tools/tool-grep.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 
@@ -276,6 +277,7 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 		read: wrapTool(buildReadTool(io), makeExecFor),
 		edit: wrapTool(buildEditTool(io, sandbox), makeExecFor),
 		undo_last_edit: wrapTool(buildUndoTool(io, sandbox), makeExecFor),
+		format: wrapTool(buildFormatTool(io, sandbox), makeExecFor),
 		grep: wrapTool(buildGrepTool(io), makeExecFor),
 	};
 	return {
@@ -286,6 +288,7 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 		getTool: (name: string) => (tools as Record<string, TestTool>)[name],
 		readTool: tools.read,
 		editTool: tools.edit,
+		formatTool: tools.format,
 	};
 }
 

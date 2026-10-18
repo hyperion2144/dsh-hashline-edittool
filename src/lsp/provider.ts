@@ -68,6 +68,9 @@ export interface LspServiceLike {
 /** This provider's stable id. */
 export const PROVIDER_ID = "dsh-hashline-edittool";
 
+/** No server could be had — a refusal, distinct from an empty answer. */
+export const E_LSP_NO_SERVER = "[E_LSP_NO_SERVER]";
+
 /** The extension map, derived from the built-in language registry. */
 export function extensionToLanguage(): Record<string, string> {
 	const map: Record<string, string> = {};

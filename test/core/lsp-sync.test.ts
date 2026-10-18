@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { runFileEdits, persistUndoAndWrite, type PreparedItem } from "../../src/domain/edit/edit-engine.js";
-import { notifyDocumentWritten, setDocumentSyncHook } from "../../src/lsp/sync.js";
+import { notifyDocumentWritten, setDocumentSyncHook, setPreWriteSyncHook, syncDocumentContent } from "../../src/lsp/sync.js";
 import { getLspManager, LspManager, setLspManager } from "../../src/lsp/manager.js";
 import { encodeMessage, MessageReader } from "../../src/lsp/framing.js";
 import type { LspTransport } from "../../src/lsp/session.js";
@@ -45,10 +45,12 @@ beforeEach(async () => {
 	file = join(dir, "a.ts");
 	await writeFile(file, SOURCE, "utf-8");
 	setDocumentSyncHook(undefined);
-});
+	setPreWriteSyncHook(undefined);
+	});
 
 afterEach(async () => {
 	setDocumentSyncHook(undefined);
+	setPreWriteSyncHook(undefined);
 	setLspManager(undefined);
 	await rm(dir, { recursive: true, force: true });
 });
@@ -56,7 +58,7 @@ afterEach(async () => {
 interface Notification {
 	readonly method: string;
 	readonly params: {
-		readonly textDocument?: { readonly uri?: string; readonly version?: number };
+		readonly textDocument?: { readonly uri?: string; readonly version?: number; readonly text?: string };
 		readonly contentChanges?: ReadonlyArray<{ readonly text?: string }>;
 	};
 }
@@ -238,5 +240,56 @@ describe("the write path", () => {
 		expect(written).toHaveLength(1);
 		expect(written[0]![0]).toBe(file);
 		expect(written[0]![1]).toContain("alpha = 9");
+	});
+});
+
+describe("the pre-write sync (syncDocumentContent)", () => {
+	it("reaches its own hook, separate from the write hook", () => {
+		const pre: Array<[string, string]> = [];
+		const post: Array<[string, string]> = [];
+		setPreWriteSyncHook((path, text) => pre.push([path, text]));
+		setDocumentSyncHook((path, text) => post.push([path, text]));
+		syncDocumentContent("/repo/a.ts", "final content");
+		expect(pre).toEqual([["/repo/a.ts", "final content"]]);
+		expect(post).toEqual([]);
+	});
+
+	it("does not disturb the post-write hook when unset", () => {
+		const post: Array<[string, string]> = [];
+		setDocumentSyncHook((path, text) => post.push([path, text]));
+		syncDocumentContent("/repo/a.ts", "x");
+		expect(post).toEqual([]);
+	});
+
+	it("swallows a hook failure like the write sync does", () => {
+		setPreWriteSyncHook(() => {
+			throw new Error("server exploded");
+		});
+		expect(() => syncDocumentContent("/repo/a.ts", "x")).not.toThrow();
+	});
+
+	it("is a no-op with no manager installed or an unknown language", () => {
+		setLspManager(undefined);
+		expect(() => syncDocumentContent("/repo/a.ts", "x")).not.toThrow();
+		expect(() => syncDocumentContent("/repo/a.rb", "x")).not.toThrow();
+	});
+
+	it("reaches a READY server without warming one", async () => {
+		const { notifications } = await readyManager();
+		syncDocumentContent(file, "const formatted = true;");
+		const syncs = notifications.filter((n) => n.method === "textDocument/didOpen");
+		expect(syncs).toHaveLength(1);
+		expect(syncs[0]!.params.textDocument?.text).toBe("const formatted = true;");
+	});
+
+	it("never starts a server that is not already running", () => {
+		const manager = new LspManager({
+			pathDirs: [],
+			isExecutable: async () => false,
+			spawn: () => ({ transport: { write() {}, onData() {}, onExit() {}, kill() {} } }),
+		});
+		setLspManager(manager);
+		syncDocumentContent("/repo/a.ts", "x");
+		expect(manager.readyLanguages).toEqual([]);
 	});
 });

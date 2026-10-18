@@ -28,8 +28,7 @@ import { diffCardGroups } from "./models.js";
 import { markerColumnCh } from "./read-meta.js";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { DiffBlockLabels } from "./labels.js";
-import type { DiffRowGroup, DiffRowMeta, ErrorCardModel, FileFailureMeta } from "./types.js";
-
+import type { DiffRowGroup, DiffRowMeta, ErrorCardModel, FileFailureMeta, FormatSectionMeta } from "./types.js";
 interface FoldLabels {
 	collapseAria: string;
 	expandAria: (hidden: number) => string;
@@ -94,6 +93,13 @@ const CSS_TEXT = [
 	".dshl-diff-failPath:hover{color:var(--dsw-alias-label-primary)}",
 	".dshl-diff-failMessage{color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xs-13);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}",
 	".dshl-diff-panel{padding:12px 14px}",
+	// #275: the auto-format section under a file's main diff — a header line,
+	// then the formatter's rows with the overlap badge and the no-anchor hint.
+	".dshl-fmt{margin-top:10px;border-top:.5px solid color-mix(in srgb,var(--dsw-alias-label-tertiary) 30%,transparent);padding-top:8px}",
+	".dshl-fmt-head{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);white-space:pre}",
+	".dshl-fmt-noanchor{color:var(--dsw-alias-label-tertiary);font-size:11px}",
+	".dshl-fmt-badge{margin-left:8px;padding:0 6px;border-radius:4px;font-size:10px;line-height:16px;color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 14%,transparent);white-space:nowrap}",
+	".dshl-fmt-skip{display:flex;gap:6px;align-items:baseline;font:var(--dsw-font-xs-13);color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-label-secondary))}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -130,6 +136,11 @@ const css = {
 	failCode: "dshl-diff-failCode",
 	failPath: "dshl-diff-failPath",
 	failMessage: "dshl-diff-failMessage",
+	fmt: "dshl-fmt",
+	fmtHead: "dshl-fmt-head",
+	fmtNoanchor: "dshl-fmt-noanchor",
+	fmtBadge: "dshl-fmt-badge",
+	fmtSkip: "dshl-fmt-skip",
 } as const;
 
 /** Localized chrome (DiffBlockLabels shape). */
@@ -209,11 +220,12 @@ function copyText(rows: readonly DisplayRow[]): string {
 
 /** One tab of the strip: a successful file's rows, or a failed file's error. */
 type DiffTab =
-	| { kind: "diff"; path: string; rows: readonly DiffRowMeta[] }
+	| { kind: "diff"; path: string; rows: readonly DiffRowMeta[]; formats: readonly FormatSectionMeta[] }
 	| { kind: "error"; path: string; failure: FileFailureMeta };
 
 /** The rows a failure tab would have had — it draws an error card instead. */
 const EMPTY_ROWS: readonly DiffRowMeta[] = [];
+const EMPTY_FORMATS: readonly FormatSectionMeta[] = [];
 
 /**
  * A failure entry as the error card's model. `code` is optional in the persisted
@@ -230,6 +242,76 @@ function errorCardOf(failure: FileFailureMeta): ErrorCardModel {
 	};
 }
 
+/**
+ * The sections that belong to one file's tab (#275). A section WITHOUT a
+ * `path` is a single-file meta's section — it belongs to the first group, the
+ * same synthesis rule `diffCardGroups` applies to the rows themselves.
+ */
+function sectionsForPath(
+	sections: readonly FormatSectionMeta[],
+	path: string,
+	isFirst: boolean,
+): readonly FormatSectionMeta[] {
+	return sections.filter((section) => (section.path === undefined ? isFirst : section.path === path));
+}
+
+/** The bracketed header one format section carries — the host's text contract, mirrored. */
+function formatHeader(section: FormatSectionMeta): string {
+	if (section.status === "skipped") {
+		return `[auto-format: ${section.server ?? "server"} · skipped]`;
+	}
+	if (section.status === "noop") {
+		return `[auto-format: ${section.server ?? "server"} · no changes]`;
+	}
+	return `[auto-format: ${section.server ?? "server"} · ${section.mode ?? "full-file"} · ${section.requested ?? 0} → ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.unservedRows ?? 0} unserved]`;
+}
+
+/**
+ * One file's auto-format section: the bracketed header, then the formatter's
+ * rows — a gutter like the main diff's, a badge on rows the main diff already
+ * shows, and the gray no-anchor hint on rows the formatter introduced that
+ * the edit window did not serve.
+ */
+function FormatSectionView({ section }: { section: FormatSectionMeta }): ReactNode {
+	if (section.status === "skipped") {
+		return jsx_("div", {
+			className: css.fmtSkip,
+			role: "status",
+			children: [
+				jsx_("span", { key: "head", children: formatHeader(section) }),
+				jsx_("span", { key: "reason", children: section.reason ?? "" }),
+			],
+		});
+	}
+	return jsx_("div", {
+		children: [
+			jsx_("div", { key: "head", className: css.fmtHead, children: formatHeader(section) }),
+			...section.rows.map((row, index) =>
+				jsx_("div", {
+					key: index,
+					className: css.row,
+					children: [
+						jsx_("span", {
+							className: `${css.gutterLine} ${css.add}`.trim(),
+							children: row.hash !== "" ? `+${row.lineNumber}:${row.hash}` : `+${row.lineNumber}`,
+						}),
+						jsx_("span", {
+							className: css.content,
+							children: [
+								row.text,
+								row.hash === ""
+									? jsx_("span", { key: "noanchor", className: css.fmtNoanchor, children: " · no anchor (not served)" })
+									: null,
+								row.alsoInMainDiff
+									? jsx_("span", { key: "badge", className: css.fmtBadge, children: "also in main diff" })
+									: null,
+							],
+						}),
+					],
+			}, index)),
+		],
+	});
+}
 export interface DiffRowsBlockProps {
 	path: string;
 	rows: readonly DiffRowMeta[];
@@ -247,6 +329,11 @@ export interface DiffRowsBlockProps {
 	 * field to the persisted meta.
 	 */
 	failures?: readonly FileFailureMeta[] | undefined;
+	/**
+	 * Per-file auto-format sections (#275), when the meta carried any. Each
+	 * section renders under ITS file's tab, after that file's main diff.
+	 */
+	formats?: readonly FormatSectionMeta[] | undefined;
 	/** Accessible name of the tab list (the owning tool's title). */
 	tablistLabel: string;
 	labels: DiffRowsLabels;
@@ -265,6 +352,7 @@ export function DiffRowsBlock({
 	rows,
 	groups,
 	failures,
+	formats,
 	tablistLabel,
 	labels,
 	maxLines = 16,
@@ -286,10 +374,15 @@ export function DiffRowsBlock({
 	// summary agree without a derived field in the meta.
 	const tabs = useMemo<readonly DiffTab[]>(
 		() => [
-			...fileGroups.map((group): DiffTab => ({ kind: "diff", path: group.path, rows: group.rows })),
+			...fileGroups.map((group, index): DiffTab => ({
+				kind: "diff",
+				path: group.path,
+				rows: group.rows,
+				formats: sectionsForPath(formats ?? EMPTY_FORMATS, group.path, index === 0),
+			})),
 			...(failures ?? []).map((failure): DiffTab => ({ kind: "error", path: failure.path, failure })),
 		],
-		[failures, fileGroups],
+		[failures, fileGroups, formats],
 	);
 	const failureList = failures ?? [];
 	const [activeTab, setActiveTab] = useState(0);
@@ -298,6 +391,7 @@ export function DiffRowsBlock({
 	const activeFailure = active?.kind === "error" ? active.failure : null;
 	const activeRows = active?.kind === "diff" ? active.rows : EMPTY_ROWS;
 	const baseId = useId();
+	const activeFormats = active?.kind === "diff" ? active.formats : EMPTY_FORMATS;
 	const panelId = `${baseId}-panel`;
 
 	const display = useMemo(() => buildDisplayRows(activeRows), [activeRows]);
@@ -447,6 +541,19 @@ export function DiffRowsBlock({
 									]
 								: []),
 							...tail.map((row, index) => foldRow(row, index)),
+							// #275: the auto-format section rides BELOW the main diff rows,
+							// inside the same body (so the gutter width applies) and outside
+							// the fold (changed rows are bounded; folding them hides the one
+							// thing the section exists to show).
+							...(activeFormats.length > 0
+								? [
+										jsx_("div", {
+											key: "format-section",
+											className: css.fmt,
+											children: activeFormats.map((section, index) => jsx_(FormatSectionView, { section }, index)),
+										}),
+									]
+								: []),
 						],
 					}),
 			jsx_("div", {

@@ -64,6 +64,17 @@ export interface EffectiveHashlineConfig {
 	 * model (issue #131). Default ON — the feature is opt-out.
 	 */
 	autoDiagnostics: boolean;
+	/**
+	 * Whether write/edit/ast_edit hand the final content to a running language
+	 * server for formatting BEFORE it is written (map #275, G3). Default OFF —
+	 * an edit must never surprise the model with re-indented text.
+	 */
+	autoFormat: boolean;
+	/**
+	 * Whether `FormattingOptions` prefer a project `.editorconfig` over the
+	 * document-whitespace heuristic (map #275, G1). Default OFF.
+	 */
+	editorconfig: boolean;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
@@ -76,6 +87,8 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	astLanguages: new Set<string>(),
 	lspServers: new Map<string, string>(),
 	autoDiagnostics: true,
+	autoFormat: false,
+	editorconfig: false,
 	grepRespectGitignore: true,
 	maxResponseChars: RESPONSE_BUDGET_DEFAULT,
 };
@@ -139,6 +152,23 @@ export function lspConfiguredServers(): ReadonlyMap<string, string> {
  */
 export function isAutoDiagnosticsEnabled(): boolean {
 	return effective.autoDiagnostics;
+}
+
+/**
+ * Whether an edit's final content is offered to a running language server
+ * for formatting before it is written (map #275). Default OFF — the switch
+ * is the user's `format.auto`, and edits must not change shape uninvited.
+ */
+export function isAutoFormatEnabled(): boolean {
+	return effective.autoFormat;
+}
+
+/**
+ * Whether formatting options prefer a project `.editorconfig` (map #275,
+ * `format.editorconfig`; default OFF, the file-heuristic fallback applies).
+ */
+export function isEditorconfigEnabled(): boolean {
+	return effective.editorconfig;
 }
 
 

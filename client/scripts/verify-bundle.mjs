@@ -115,8 +115,9 @@ const ctx = {
 };
 exports_.apply(ctx);
 
-// Seven: read, edit, undo_last_edit, grep, write, the AST rows (which register
-// TWO entries under one sub-plugin), and the settings card.
+// Nine toolview keys: read, edit, undo_last_edit, grep, write, the AST rows
+// (which register TWO entries under one sub-plugin), `lsp`, `format`, and
+// the settings card.
 if (ctx.plugins.length !== 7) throw new Error(`expected 7 sub-plugins, got ${ctx.plugins.length}`);
 const keys = ctx.slots.registeredEntries
 	.filter((entry) => entry?.options?.name === "tool.call.toolview")
@@ -137,6 +138,9 @@ const expected = [
 	"ast_grep:-1:conversation",
 	"ast_edit:-1:conversation",
 	"lsp:-1:conversation",
+	// `format` draws its formats section through the edit row (one empty tab
+	// per file; the section IS the diff) — without the key it drew raw I/O.
+	"format:-1:conversation",
 ];
 if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 	throw new Error(`unexpected registrations: ${keys.join(", ")}`);
@@ -166,11 +170,11 @@ const settingsCardPlugin = ctx.plugins.find((p) => p.name === "hashline-settings
 if (JSON.stringify(settingsCardPlugin?.inject) !== JSON.stringify(["slots", "configForms"])) {
 	throw new Error(`settings card injects unavailable services: ${settingsCardPlugin?.inject?.join(", ")}`);
 }
-// EIGHT, not seven: the AST sub-plugin loops over its THREE keys and each
-// iteration asks the slot for its entry, so five single-key sub-plugins plus
-// three. The count is asserted rather than assumed so a sub-plugin added
-// without a key cannot pass quietly.
-if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 8) {
+// NINE, not eight: the AST sub-plugin loops over its FOUR keys (ast_grep,
+// ast_edit, lsp, format) and each iteration asks the slot for its entry, so
+// five single-key sub-plugins plus four. The count is asserted rather than
+// assumed so a sub-plugin added without a key cannot pass quietly.
+if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 9) {
 	throw new Error("expected every toolview to inject the tool.call.toolview declaration");
 }
 console.log("bundle evaluation OK:");

@@ -74,3 +74,44 @@ function defaultSync(absolutePath: string, text: string): void {
 	if (open === undefined) return;
 	open(text);
 }
+
+/**
+ * Tell the language server a file is ABOUT to take this content.
+ *
+ * The PRE-write sibling of {@linkcode notifyDocumentWritten}: the automatic
+ * format path (map #275, G2) formats in memory and writes ONCE, so the
+ * server must learn the final content BEFORE the write lands — not from the
+ * write notification afterwards. Semantics differ (a format sync is a
+ * promise about a write that has not happened yet; the write sync is a
+ * report about one that has), so the hook seams stay separate and a test
+ * can intercept one without the other.
+ *
+ * Same never-throws, never-warms contract as the write sync: only a server
+ * that is ALREADY running hears about the change, and a misbehaving one
+ * cannot break the format pipeline here.
+ *
+ * @param absolutePath - the file that is about to be written.
+ * @param text - the content it will carry (post-format).
+ */
+export function syncDocumentContent(absolutePath: string, text: string): void {
+	try {
+		if (preWriteHook !== undefined) {
+			preWriteHook(absolutePath, text);
+			return;
+		}
+		defaultSync(absolutePath, text);
+	} catch (error) {
+		// Same swallow as the write sync: a sync failure must not turn a
+		// successful format-and-write into a failed edit.
+		console.error(
+			`dsh-hashline-edittool: pre-write document sync failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+let preWriteHook: DocumentSyncHook | undefined;
+
+/** Replace the PRE-write sync hook (tests, or a deployment with its own wiring). */
+export function setPreWriteSyncHook(next: DocumentSyncHook | undefined): void {
+	preWriteHook = next;
+}
