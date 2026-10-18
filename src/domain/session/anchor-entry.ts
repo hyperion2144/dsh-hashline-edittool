@@ -589,6 +589,26 @@ export async function probeLines(input: ProbeInput): Promise<ProbeOk | ProbeFail
 	const notServed = new Set<string>();
 
 	for (const ref of refs) {
+		if (ref.anchor === "") {
+			// #282: a sparse-projection empty slot (`anchorsFor` fills unallocated
+			// lines with ""), NOT a caller claim. The line was never allocated, so
+			// this can only fail CONDITION 2 (we cannot prove this session saw the
+			// line) — never CONDITION 1, which is for anchors that existed and
+			// vanished. `byAnchor.get("")` would misroute it to `not-live` and the
+			// rejection would blame "removed or rewritten" for a line the model
+			// never saw.
+			notServed.add("");
+			const claimed = ref.line;
+			const at =
+				claimed !== undefined && claimed >= 1 && claimed <= lineCount ? claimed : 1;
+			rows.push({
+				line: at,
+				current: byLine.get(at) ?? "",
+				given: "",
+				contentKey: lineCount >= 1 ? contentKey(currentLines[at - 1]!) : 0,
+			});
+			continue;
+		}
 		const row = byAnchor.get(ref.anchor);
 		const line = row?.line;
 		if (line === undefined) {

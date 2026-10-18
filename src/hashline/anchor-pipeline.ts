@@ -1346,7 +1346,9 @@ export function verifyServedRange(args: {
  *   named; take the current marker and resubmit.
  * - `never-seen` — this session was never shown the line. Go READ it;
  *   retrying the same input cannot help.
- * - `not-live` — the anchor is gone from the file's state entirely.
+ * - `not-live` — the anchor the CALLER gave is gone from the file's state
+ *   entirely. A sparse-projection empty slot (`""`) is not a caller anchor —
+ *   a line covered as `""` was never allocated, which is `never-seen` (#282).
  *
  * The old wording blamed a session restart for all four, which is true for only
  * one of them and actively misleads for the others.
@@ -1388,9 +1390,15 @@ function classifyServedFailure(args: {
 		return { reason: "never-seen", current: liveAnchor };
 	}
 	if (liveAnchor === "") {
-		// The position has no anchor now. If the caller HAD one and the file no
-		// longer resolves it anywhere, its line was removed.
-		return { reason: callerAnchor === undefined ? "never-seen" : "not-live", current: "" };
+		// The position has no anchor now. `callerAnchor === ""` is NOT a caller
+		// claim — it is a sparse-projection empty slot the caller's span covered
+		// (#282), so it cannot be CONDITION 1 either: the line never had an
+		// anchor to lose. An undefined caller anchor is the no-session fallback.
+		// Both mean "we cannot prove this session saw the line" — never-seen.
+		return {
+			reason: callerAnchor === undefined || callerAnchor === "" ? "never-seen" : "not-live",
+			current: "",
+		};
 	}
 	// The position carries an anchor, but not the caller's. Two possibilities that
 	// need different recoveries: the caller's anchor may still be live SOMEWHERE
