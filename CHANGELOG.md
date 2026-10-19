@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-19
+
 ### Added
 
 - `format` 工具：用语言服务器的格式化器格式化文件（全文或 served 锚点 range），可冷启动、进 undo、noop 不写盘（#275）。
