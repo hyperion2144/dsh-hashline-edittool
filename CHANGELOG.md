@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- 区间跨「从未读过的行」的 edit 不再谎报该行「已被删除或改写」：稀疏投影空位 `""` 按 `never-seen` 分类并给出重读参数（#282）。
+
 ## [0.10.2] - 2026-10-15
 
 ### Changed
