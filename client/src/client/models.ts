@@ -26,6 +26,8 @@ import type {
 	ErrorCardModel,
 	FileDiff,
 	FileFailureMeta,
+	FormatRowMeta,
+	FormatSectionMeta,
 	GrepCardModel,
 	GrepFileRowGroup,
 	GrepRowMeta,
@@ -538,6 +540,7 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 	const applied = appliedDiffs(block.meta);
 	const rowGroups = metaDiffRowGroups(block.meta);
 	const failures = metaFileFailures(block.meta);
+	const formats = metaFormatSections(block.meta);
 	if (applied !== null && applied !== "empty") {
 		const rows = metaDiffRows(block.meta);
 		return {
@@ -546,6 +549,7 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 			...(rows !== null ? { rows } : {}),
 			...(rowGroups !== null ? { rowGroups } : {}),
 			...(failures.length > 0 ? { failures } : {}),
+			...(formats.length > 0 ? { formats } : {}),
 		};
 	}
 	// A multi-file meta whose every successful file was a whole-file no-op has an
@@ -559,6 +563,7 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
 			diffs: Array.isArray(applied) ? applied : [],
 			...(rowGroups !== null ? { rowGroups } : {}),
 			...(failures.length > 0 ? { failures } : {}),
+			...(formats.length > 0 ? { formats } : {}),
 		};
 	}
 	const intended = intendedDiff(block);
@@ -590,9 +595,15 @@ export function writeCardModel(block: ToolCallBlock): DiffCard | null {
 	const rows = metaDiffRows(block.meta);
 	const applied = appliedDiffs(block.meta);
 	const metaPath = readMetaPath(block.meta);
+	const formats = metaFormatSections(block.meta);
 	if (rows !== null) {
 		const diffs = applied !== null && applied !== "empty" ? applied : [];
-		return { path: metaPath ?? diffs[0]?.path ?? "", diffs, rows };
+		return {
+			path: metaPath ?? diffs[0]?.path ?? "",
+			diffs,
+			rows,
+			...(formats.length > 0 ? { formats } : {}),
+		};
 	}
 	if (applied !== null && applied !== "empty") {
 		return { path: metaPath ?? applied[0]?.path ?? "", diffs: applied };
@@ -720,6 +731,65 @@ export function metaFileFailures(meta: unknown): FileFailureMeta[] {
 	return out;
 }
 
+/**
+ * Soft-validate the persisted `formats` list (#275), the per-file auto-format
+ * sections. A malformed ENTRY is dropped, not the whole list — one half-drawn
+ * section must not cost the reader the other files' (same rule as
+ * `metaFileFailures`). Old metas carry no `formats` at all and yield `[]`.
+ */
+export function metaFormatSections(meta: unknown): FormatSectionMeta[] {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return [];
+	const formats = (meta as Record<string, unknown>).formats;
+	if (!Array.isArray(formats)) return [];
+	const out: FormatSectionMeta[] = [];
+	for (const entry of formats) {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+		const s = entry as Record<string, unknown>;
+		if (s.status !== "formatted" && s.status !== "noop" && s.status !== "skipped") continue;
+		const rows: FormatRowMeta[] = [];
+		if (s.rows !== undefined) {
+			if (!Array.isArray(s.rows)) continue;
+			let valid = true;
+			for (const row of s.rows) {
+				if (typeof row !== "object" || row === null) {
+					valid = false;
+					break;
+				}
+				const r = row as Record<string, unknown>;
+				if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") {
+					valid = false;
+					break;
+				}
+				if (
+					typeof r.lineNumber !== "number" ||
+					!Number.isInteger(r.lineNumber) ||
+					r.lineNumber < 1 ||
+					typeof r.hash !== "string" ||
+					typeof r.text !== "string" ||
+					typeof r.alsoInMainDiff !== "boolean"
+				) {
+					valid = false;
+					break;
+				}
+				rows.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text, alsoInMainDiff: r.alsoInMainDiff });
+			}
+			if (!valid) continue;
+		}
+		out.push({
+			...(typeof s.path === "string" && s.path !== "" ? { path: s.path } : {}),
+			status: s.status,
+			...(typeof s.server === "string" && s.server !== "" ? { server: s.server } : {}),
+			...(s.mode === "range" || s.mode === "full-file" ? { mode: s.mode } : {}),
+			...(typeof s.requested === "number" ? { requested: s.requested } : {}),
+			...(typeof s.applied === "number" ? { applied: s.applied } : {}),
+			...(typeof s.changedLines === "number" ? { changedLines: s.changedLines } : {}),
+			...(typeof s.unservedRows === "number" ? { unservedRows: s.unservedRows } : {}),
+			...(typeof s.reason === "string" && s.reason !== "" ? { reason: s.reason } : {}),
+			rows,
+		});
+	}
+	return out;
+}
 /** A derived diff card: structured rows (gutter) and/or the official hunks. */
 export interface DiffCard {
 	path: string;
@@ -730,6 +800,8 @@ export interface DiffCard {
 	rowGroups?: readonly DiffRowGroup[] | undefined;
 	/** Failed files of a PARTIALLY failed multi-file call (#247): their own tabs. */
 	failures?: readonly FileFailureMeta[] | undefined;
+	/** Format sections (#275), when the meta carried any. */
+	formats?: readonly FormatSectionMeta[] | undefined;
 }
 
 // `editAnchorHints` lived here and is DELETED, with the row that used it.

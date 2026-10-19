@@ -22,7 +22,6 @@ import { runFileEdits, type PreparedItem } from "../domain/edit/edit-engine.js";
 import { execCwd, execSessionKey, withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "../render/edit-card.js";
-import { lineHashesPure } from "../hashline/hash-assign.js";
 import { recordEchoServes } from "../domain/session/session-view.js";
 import { canon, contentChecksum } from "../hashline/hash-assign.js";
 import type { FileIO } from "../infra/fs-bridge.js";
@@ -135,6 +134,8 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 					noop: { type: "boolean" },
 					// #131: inline LSP diagnostics, when a push arrived in the window.
 					diagnostics: { type: "array" },
+					// map #275: the automatic format pass's report, when one ran.
+					formats: { type: "array" },
 					// Structural-search extras: this tool's own three fields.
 					pat: { type: "string", required: true },
 					count: { type: "integer", required: true },
@@ -155,7 +156,7 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 			// and not a `diffs` field. Deriving them instead of carrying them is not
 			// a style choice — an empty `diffs` array reads to the client as "nothing
 			// was applied", so the card silently fell back to raw input/output.
-			presentationMeta: (_args: unknown, value: { readonly path: string; readonly before?: string; readonly after?: string; readonly diffRows?: readonly unknown[]; readonly error?: ErrorMeta }) => {
+			presentationMeta: (_args: unknown, value: { readonly path: string; readonly before?: string; readonly after?: string; readonly diffRows?: readonly unknown[]; readonly formats?: readonly unknown[]; readonly error?: ErrorMeta }) => {
 				if (value.error !== undefined) return { error: value.error } as never;
 				return ({
 					diffs:
@@ -167,6 +168,9 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 						: {}),
 					...(Array.isArray((value as AstEditValue).diagnostics)
 						? { diagnostics: (value as AstEditValue).diagnostics }
+						: {}),
+					...(Array.isArray(value.formats) && value.formats.length > 0
+						? { formats: value.formats }
 						: {}),
 				}) as never;
 			},
@@ -444,6 +448,7 @@ async function runAstEdit(
 				pattern: args.pat,
 				count: matches.length,
 				...(diagJson !== undefined ? { diagnostics: diagJson } : {}),
+				...(result.format !== undefined ? { formats: [{ ...result.format, path: args.path }] } : {}),
 			})
 		: diagSection === ""
 			? canonical.modelText

@@ -4,6 +4,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- `format` 工具：用语言服务器的格式化器格式化文件（全文或 served 锚点 range），可冷启动、进 undo、noop 不写盘（#275）。
+- `format.auto` / `format.editorconfig` 设置（默认关）：write/edit/ast_edit 后自动格式化被改行，无局部格式化能力时回退全文；格式化改动在卡片上以独立段呈现，未 serve 的行不带锚点（#275，ADR-0019）。
+
 ### Fixed
 
 - 区间跨「从未读过的行」的 edit 不再谎报该行「已被删除或改写」：稀疏投影空位 `""` 按 `never-seen` 分类并给出重读参数（#282）。

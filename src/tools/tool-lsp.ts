@@ -19,6 +19,7 @@ import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { languageForPath } from "../ast/language.js";
 import { getLspManager } from "../lsp/manager.js";
+import { E_LSP_NO_SERVER } from "../lsp/provider.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { splitLines } from "../infra/utils.js";
@@ -663,8 +664,8 @@ function lspModelText(value: Record<string, unknown>): string {
 	const symbols = Array.isArray(value.symbols) ? value.symbols.length : 0;
 	return [`${head}${symbols > 0 ? ` (${symbols} symbol(s))` : ""}`, ...body].join("\n");
 }
-/** No server could be had — a refusal, distinct from an empty answer. */
-export const E_LSP_NO_SERVER = "[E_LSP_NO_SERVER]";
+/** Re-exported from the lsp layer: the domain's format tool raises it too. */
+export { E_LSP_NO_SERVER };
 
 /**
  * How long to wait for a server's first diagnostics push after opening a file.

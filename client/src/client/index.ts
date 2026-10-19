@@ -20,6 +20,7 @@ import {
 	HashlineAstGrepRow,
 	HashlineEditRow,
 	HashlineGrepRow,
+	HashlineFormatRow,
 	HashlineLspRow,
 	HashlineReadRow,
 	HashlineUndoRow,
@@ -152,6 +153,10 @@ const astToolviews = {
 			["ast_edit", HashlineAstEditRow],
 			// `lsp` had NO row at all, so its calls fell through to raw input/output.
 			["lsp", HashlineLspRow],
+			// `format` draws its formats section through the edit row's DiffRowsBlock
+			// (one empty tab per file; the section IS the diff) — #275 follow-up:
+			// without this key the manual format call rendered as raw I/O.
+			["format", HashlineFormatRow],
 		] as const) {
 			ctx.slots.inject("tool.call.toolview", () =>
 				ctx.slots.register(

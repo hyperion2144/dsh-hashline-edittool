@@ -106,6 +106,8 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			lspServers: new Map<string, string>(),
 			autoDiagnostics: true,
 			grepRespectGitignore: true,
+			autoFormat: false,
+			editorconfig: false,
 			maxResponseChars: 48000,
 		});
 	});

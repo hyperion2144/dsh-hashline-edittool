@@ -57,6 +57,7 @@ import { contextLinesCfg } from "../hashline/hash-assign.js";
 
 import { enforceNoopLoop } from "../domain/edit/mutation.js";
 import { replacedOriginalRanges, runFileEdits, type PreparedItem, type FileEditResult } from "../domain/edit/edit-engine.js";
+import type { FormatSection } from "../domain/format/types.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -77,7 +78,7 @@ import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/s
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { genDiff } from "../render/edit-diff.js";
-import { EDIT_DIFF_LEGEND } from "../domain/edit/edit-response.js";
+import { EDIT_DIFF_LEGEND, renderFormatSection } from "../domain/edit/edit-response.js";
 import { diffDictFrom, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
 
 import {
@@ -408,6 +409,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					multiDiffRowGroups: { type: "array" },
 					// #131: inline LSP diagnostics, when a push arrived in the window.
 					diagnostics: { type: "array" },
+					// map #275: the automatic format pass's per-file sections
+					formats: { type: "array" },
 					// 两种形态都有
 					modelText: { type: "string", required: true },
 					error: errorFieldSchema,
@@ -440,6 +443,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						return {
 							diffs: md as FileDiff[],
 							...(Array.isArray(mdrGroups) && mdrGroups.length > 0 ? { diffRowGroups: mdrGroups } : {}),
+							...(Array.isArray(v.formats) ? { formats: v.formats } : {}),
 							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 							...failureKey,
 						} as never;
@@ -449,6 +453,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					return {
 						diffs: [],
 						...(Array.isArray(mdrGroups) && mdrGroups.length > 0 ? { diffRowGroups: mdrGroups } : {}),
+						...(Array.isArray(v.formats) ? { formats: v.formats } : {}),
 						...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 						...failureKey,
 					} as never;
@@ -464,6 +469,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					diffs,
 					...(diffRows !== undefined ? { diffRows } : {}),
 					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
+					...(Array.isArray(v.formats) && v.formats.length > 0 ? { formats: v.formats } : {}),
 				} as never;
 		},
 		},
@@ -634,8 +640,10 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				// issue #82: compute per-file diffs + diffRowGroups for multi-file presentationMeta
 				const multiDiffs: FileDiff[] = [];
 				const multiDiffRowGroups: { path: string; rows: EditDiffRow[] }[] = [];
+				const multiFormats: FormatSection[] = [];
 				for (const o of successes) {
 					const file = o.file;
+					if (file.format !== undefined) multiFormats.push({ ...file.format, path: o.displayPath });
 					multiDiffs.push(...computeHunkDiffs(o.displayPath, file.originalNormalized, file.result));
 					multiDiffRowGroups.push({
 						path: o.displayPath,
@@ -688,7 +696,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						return `Edit for ${o.displayPath} failed: ${detected.code} ${detected.message}`;
 					});
 				const multiStreamed = await spillModelTextOverflow({ sessionKey, producer: "edit", consumer: "read", kind: "report-segment", modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}`, budgetChars: responseBudgetChars() });
-				return { success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiStreamed.modelText };
+				return { success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), ...(multiFormats.length > 0 ? { formats: multiFormats as never } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiStreamed.modelText };
 				}
 
 				// json 模式: stringified envelope (ADR-0004 D2)
@@ -698,7 +706,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					fail,
 					...(multiDiagJson.length > 0 ? { diagnostics: multiDiagJson } : {}),
 				});
-				return { ok: success.length > 0, success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
+				return { ok: success.length > 0, success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), ...(multiFormats.length > 0 ? { formats: multiFormats as never } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText };
 			}).catch((error: unknown) => thrownErrorResult(error, { path: pathFromArgs(args) }) as never);
 		},
 	});
@@ -912,6 +920,7 @@ export function buildCanonicalFromFileResult(
 		warnings: file.warnings,
 		...(file.driftNotice !== undefined ? { driftNotice: file.driftNotice } : {}),
 		noop: file.appliedCount === 0,
+		...(file.format !== undefined ? { formats: [file.format] } : {}),
 		diffRows,
 		modelText: buildChangedModelText(file, displayPath, lineNumbers),
 	} as EditCanonicalValue;
@@ -951,6 +960,10 @@ function buildChangedModelText(
 		replacedOriginalRanges(file.hunkShifts),
 	);
 	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
+	// P1's layout: the format section hangs directly off the main diff —
+	// the formatter's answer to "what did it change on top".
+	const formatBlock =
+		file.format !== undefined ? `\n\n${renderFormatSection(file.format, lineNumbers)}` : "";
 	const successPrefix = `Successfully edited in ${displayPath}.`;
 	const lineSummary =
 		linesAdded > 0 || linesRemoved > 0
@@ -959,7 +972,7 @@ function buildChangedModelText(
 	const warningsBlock =
 		file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
 	const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
-	return `${diffBody}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
+	return `${diffBody}${formatBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 
 
 }

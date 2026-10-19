@@ -9,6 +9,7 @@ import {
 	diffCardGroups,
 	metaDiffRowGroups,
 	metaFileFailures,
+	metaFormatSections,
 	narrowDiffs,
 	readCardModel,
 	toolRowModel,
@@ -707,5 +708,65 @@ describe("partial failure (#247): the failures channel survives narrowing", () =
 		);
 		expect(card?.failures).toBeUndefined();
 		expect("failures" in (card ?? {})).toBe(false);
+	});
+});
+
+describe("metaFormatSections (#275)", () => {
+	const good = {
+		status: "formatted",
+		server: "fake-ts",
+		mode: "range",
+		requested: 1,
+		applied: 2,
+		changedLines: 2,
+		unservedRows: 1,
+		rows: [
+			{ kind: "+", lineNumber: 3, hash: "x1", text: "indent();", alsoInMainDiff: false },
+			{ kind: "+", lineNumber: 4, hash: "", text: "\treturn 1;", alsoInMainDiff: true },
+		],
+	};
+
+	it("passes a well-formed section straight through", () => {
+		expect(metaFormatSections({ formats: [good] })).toEqual([good]);
+	});
+
+	it("yields nothing for old metas with no formats field", () => {
+		expect(metaFormatSections({ path: "a.ts", diffRows: [] })).toEqual([]);
+		expect(metaFormatSections(null)).toEqual([]);
+		expect(metaFormatSections({ formats: "nope" })).toEqual([]);
+	});
+
+	it("drops ONE malformed entry, keeps the rest (failures rule)", () => {
+		const bad = { ...good, status: "reformatted" };
+		const badRow = { ...good, rows: [{ kind: "+", lineNumber: 0, hash: "", text: "x", alsoInMainDiff: false }] };
+		const out = metaFormatSections({ formats: [bad, badRow, good] });
+		expect(out).toHaveLength(1);
+		expect(out[0]).toEqual(good);
+	});
+
+	it("keeps the optional fields only when well-typed", () => {
+		const minimal = metaFormatSections({ formats: [{ status: "skipped", reason: "no formatter" }] });
+		expect(minimal).toEqual([{ status: "skipped", reason: "no formatter", rows: [] }]);
+		const garbage = metaFormatSections({
+			formats: [{ status: "formatted", mode: 42, requested: "1", server: 7, rows: "x" }, good],
+		});
+		// mode/server/rows malformations drop the entry or are omitted, never cast.
+		expect(garbage).toHaveLength(1);
+	});
+
+	it("attaches to the diff card when present and omits itself otherwise", () => {
+		const block = settled({
+			call: { name: "edit", argsRaw: "{\"path\":\"a.ts\"}" },
+			meta: {
+				diffs: [{ path: "a.ts", oldText: "old", newText: "new" }],
+				formats: [good],
+			},
+		});
+		const card = diffCardModel(block);
+		expect(card?.formats).toEqual([good]);
+		const plain = diffCardModel(
+			settled({ call: { name: "edit", argsRaw: "{\"path\":\"a.ts\"}" }, meta: { diffs: [{ path: "a.ts", oldText: "o", newText: "n" }] } }),
+		);
+		expect("formats" in (plain ?? {})).toBe(false);
 	});
 });

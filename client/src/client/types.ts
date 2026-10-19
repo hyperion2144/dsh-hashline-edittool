@@ -226,6 +226,39 @@ export interface DiagCapsuleMeta {
 	readonly rows: readonly LspRowMeta[];
 }
 
+/**
+ * One auto-format row (#275): a diff row plus whether the call's MAIN diff
+ * already shows the same line, so the card can badge the overlap instead of
+ * double-drawing it.
+ */
+export interface FormatRowMeta {
+	kind: "+" | "-" | " ";
+	lineNumber: number;
+	/** The final-content anchor; `""` when the row is not served (formatter-introduced). */
+	hash: string;
+	text: string;
+	alsoInMainDiff: boolean;
+}
+
+/**
+ * One file's format section (#275), persisted in `meta.formats[]` by the host.
+ * `status` selects the render: `formatted` draws the header + rows, `noop` the
+ * no-changes header, `skipped` a warning line with `reason`.
+ */
+export interface FormatSectionMeta {
+	/** The file the section belongs to; absent on single-file metas. */
+	path?: string | undefined;
+	status: "formatted" | "noop" | "skipped";
+	server?: string | undefined;
+	mode?: "range" | "full-file" | undefined;
+	requested?: number | undefined;
+	applied?: number | undefined;
+	changedLines?: number | undefined;
+	unservedRows?: number | undefined;
+	reason?: string | undefined;
+	rows: readonly FormatRowMeta[];
+}
+
 /** One rendered slice of a card row: plain text, or a highlighted occurrence. */
 export interface GrepSegment {
 	text: string;

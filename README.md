@@ -91,6 +91,8 @@ semantic results are directly editable.
 
 **Diagnostics on write.** After an edit/write lands, the plugin baselines the language server with the pre-write text, pulls diagnostics, and delivers them per written file — an inline, severity-tinted capsule under the card within a short window, with bounded async delivery at the model's next natural step, riding both the JSON envelope and the text channel. One switch (`lsp.auto_diagnostics`) turns it off.
 
+**Formatting through the language server.** The `format` tool asks the server's formatter to do the work — with indentation inferred from the file (or read from `.editorconfig` when `format.editorconfig` is on). With `format.auto` on (default **off**), every content-changing `write`/`edit`/`ast_edit` also formats what it touched: ready servers only (never started for this), a 2 s budget per file, a **silent** skip when no formatter is up, one warning + a skipped section when a request fails. The card shows the formatter's extra changes as their own section under the diff — header first (`[auto-format: server · mode · requested → applied · n lines changed · u unserved]`), rows the main diff already shows badged `also in main diff`, and rows this session never served carrying **no anchor**: the formatter's rewrite is shown, but only rows you had served can be re-edited by anchor.
+
 **A settings panel rendered by the plugin itself.** The bundled `HashlineSettingsCard` is
 a full settings UI in the web: separator, output format, context lines, line numbers
 (the model-facing marker shape — the user's call, not the agent's), require_line_content,
@@ -246,6 +248,7 @@ or an invocation fails — `grep` never fails because ripgrep did.
 | `ast_grep` | Structural search by syntax shape (`pat` with `$NAME` / `$$$ARGS` / `$_` metavariables). Refuses instead of guessing when a pattern does not parse as one node. Long files come back as a folded, editable outline. |
 | `ast_edit` | Structural rewrite: finds places by shape and hands the change to the **same engine** `edit` uses — served-state check, undo entry, diff and syntax gate all apply. |
 | `lsp` | Symbol-aware work through a real language server when one can be had (started per language, shared with dsh's `lsp` service); falls back to a heuristic backend otherwise. Serves its rows, so LSP output is directly editable. |
+| `format` | Formats a file with its language server's formatter — the whole file, or `range: {start, end}` where **both ends are this session's served anchors**. The file must already be observed (`[E_NOT_OBSERVED]` otherwise); `noop` when the formatter changes nothing; enters undo like `edit`. A cold start is allowed here (15 s) because you asked for it by name. |
 
 ### Output modes
 
@@ -283,6 +286,9 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
     lsp:
       servers: {}            # named servers: { <languageId>: <command> }
       auto_diagnostics: true # deliver server diagnostics inline after writes
+    format:
+      auto: false           # format edited files after write/edit/ast_edit (LSP)
+      editorconfig: false   # honor .editorconfig indent settings when formatting
 ```
 
 Migrating from 0.1.6? A pre-0.1.7 `~/.dsh/settings.yaml` is imported **by dsh itself**
@@ -314,6 +320,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row was pasted into `lines`; stripped with a warning. |
 | `[E_CONTENT_MISMATCH]` | A declared `line` (require_line_content) does not match. |
 | `[E_ELISION_IN_PAYLOAD]` | Payload carries the outline marker `…`; warning, edit proceeds. |
+| `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | Formatting: the server's TextEdits were malformed (out-of-bounds/overlap) / the server has no document formatting provider. |
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | Grammar catalog: built-in name collision / no descriptor for the language / unknown language. |
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | Grammar download failed / SHA-256 mismatch / entry missing from the tarball. |
 | `[E_HASH_SPACE]` | Anchor space exhausted (> 62⁸ lines). |
@@ -324,6 +331,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_LOSSY_BYTES]` | `edit` refuses a file whose read was lossy (bytes not valid UTF-8); a string write-back could not preserve the original bytes. |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` | LSP: no server for the language / unknown operation / server unusable. |
 | `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP request aborted / channel closed / server still starting / timed out. |
+| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | Formatting: the server has no document formatting provider / the formatter returned edits that cannot be applied (line out of range, overlapping). |
 | `[E_NOOP_LOOP]` | The same edit keeps producing no change; resubmission rejected. |
 | `[E_NOT_FOUND]` / `[E_NOT_TEXT]` | Missing file / directory-binary-non-UTF-8. |
 | `[E_NOT_OBSERVED]` | File never observed this session (read-before-write policy). |

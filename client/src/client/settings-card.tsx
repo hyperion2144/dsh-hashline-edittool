@@ -38,6 +38,7 @@ import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ConfigFormSnapshot } from "./types.js";
 import {
 	STORE_BUDGET_SPECS,
+	readFormatFlags,
 	buildFieldOp,
 	controllerSnapshot,
 	requestedView,
@@ -602,6 +603,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	const lsp = useLspStatus();
 	const namedServers = readLspServers(snapshot);
 	const autoDiag = readAutoDiagnostics(snapshot);
+	const formatFlags = readFormatFlags(snapshot);
 	const store = readStore(snapshot);
 	const storeOverridden = hasAnyStoreField(snapshot);
 	const updates = useUpdates();
@@ -1153,6 +1155,37 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					(checked) =>
 						void write("autoDiag", () =>
 							writeField("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
+						),
+				)}
+			</div>
+			{/* #275: the format group, beside the servers that power it. Both are
+				OPT-IN: absent means OFF — the opposite of auto-diagnostics above. */}
+			<h4 className="dshl-mgr-section">格式化</h4>
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">自动格式化（write / edit / ast_edit 后）</span>
+				<span className="dshl-mgr-hint">落盘前用语言服务器格式化被改的行；不支持局部格式化的语言回退全文（默认关）</span>
+				<span className="dshl-mgr-grow" />
+				{renderSwitch(
+					formatFlags.auto,
+					!writable,
+					"formatAuto",
+					(checked) =>
+						void write("formatAuto", () =>
+							writeField("format", { auto: checked, editorconfig: formatFlags.editorconfig }),
+						),
+				)}
+			</div>
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">读取 .editorconfig</span>
+				<span className="dshl-mgr-hint">缩进风格与宽度优先取 .editorconfig，缺省用文件内启发式（默认关）</span>
+				<span className="dshl-mgr-grow" />
+				{renderSwitch(
+					formatFlags.editorconfig,
+					!writable,
+					"formatEditorconfig",
+					(checked) =>
+						void write("formatEditorconfig", () =>
+							writeField("format", { auto: formatFlags.auto, editorconfig: checked }),
 						),
 				)}
 			</div>

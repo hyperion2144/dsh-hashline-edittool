@@ -68,6 +68,8 @@
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
+**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 开启（默认**关**）后，每次真正改了内容的 `write`/`edit`/`ast_edit` 都会顺带格式化被改到的行：只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、无格式化器时**静默**跳过、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · u unserved]`），主 diff 已有的行标 `also in main diff`，本会话从未 serve 过的行**不带锚点**：格式化器的改写照实展示，但只有 serve 过的行才能按锚点再编辑。
+
 **插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断。改完提交即生效——不用碰 YAML。
 
 **处处热切换。** 提交的设置改动**下一次工具调用**即生效——输出格式、分隔符、上下文行数、AST/LSP 开关（已实测：会话中途切换 `output_format`，模型收到的内容立即改变）。影响面最大的开关也有处理：切换 `require_line_content` 会销毁并重挂 `edit` 工具的 schema，模型下一步就看到新的 `{ anchor, line }` 参数集——全程无需重启。
@@ -196,6 +198,7 @@ D0:4|export function greet(name: string): string {
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
 | `ast_edit` | 结构改写：按形状找到位置，把变更交给 `edit` **同一引擎** —— served 校验、undo 记录、diff 与语法门全部生效。 |
 | `lsp` | 能起语言服务器就做符号级工作（按语言启动，与 dsh 的 `lsp` 服务共享）；否则降级启发式后端。其行会被 serve，因此 LSP 输出可直接编辑。 |
+| `format` | 用该文件语言服务器的格式化器格式化——全文，或 `range: {start, end}`（**两端都是本会话 served 锚点**）。文件须已 observed（否则 `[E_NOT_OBSERVED]`）；格式化器无改动即 `noop`；与 `edit` 一样进 undo。手动调用允许冷启动（15s）——因为你点名要它。 |
 
 ### 输出模式
 
@@ -227,6 +230,9 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
     lsp:
       servers: {}            # 命名服务器：{ <languageId>: <command> }
       auto_diagnostics: true # 写入后内联投递服务器诊断
+    format:
+      auto: false           # write/edit/ast_edit 后自动格式化被改文件（LSP）
+      editorconfig: false   # 格式化时读取 .editorconfig 缩进设置
 ```
 
 从 0.1.6 迁移？旧 `~/.dsh/settings.yaml` 的导入由 **dsh 自己**在升级时完成；本插件不再读取、迁移或写入任何设置文件——本页的条目配置是唯一真相源。旧的 `hashline:` 键若没带过来，在上面的表单里补上即可。
@@ -250,6 +256,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_BATCH_CONFLICT]` | 两条目在同一快照上范围重叠。 |
 | `[E_CONTENT_MISMATCH]` | （require_line_content）声明的 `line` 不匹配。 |
 | `[E_ELISION_IN_PAYLOAD]` | 载荷携带大纲标记 `…`；警告，编辑继续。 |
+| `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | 格式化：服务器返回的 TextEdit 非法（越界/重叠）/ 该服务器没有文档格式化 provider。 |
 | `[E_HASH_SPACE]` | 锚点空间耗尽（> 62⁸ 行）。 |
 | `[E_INS_ANCHOR_DUP]` | `ins` 的 `lines[0]` 与锚点行重复；警告，继续。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘进 `lines`；剥除并警告。 |
@@ -274,6 +281,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | 语法目录：内置名冲突 / 该语言无描述符 / 未知语言。 |
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | 语法下载失败 / SHA-256 不匹配 / tarball 中缺少条目。 |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` / `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP：该语言无服务器 / 操作无效 / 服务器不可用 / 请求中止 / 通道已关闭 / 仍在启动 / 超时。 |
+| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | 格式化：服务器无 document formatting provider / 格式化器返回了无法应用的 edit（行越界、重叠）。 |
 | `[E_BARE_HASH_PREFIX]` | `lines` 中粘入了带锚点前缀的行；剥除并警告。 |
 | `[E_ANCHOR_AMBIGUOUS]` | 锚点同时活在多行上（被释放的锚点在模型仍持旧绑定时被重新分配）——拒绝；请重新 read。该文件未写入任何内容。 |
 

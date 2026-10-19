@@ -36,6 +36,7 @@ import { registerAstGrepTool } from "./tools/tool-ast-grep.js";
 import { registerLspTool } from "./tools/tool-lsp.js";
 import { registerAstEditTool } from "./tools/tool-ast-edit.js";
 import { registerWriteShadow } from "./tools/tool-write-shadow.js";
+import { registerFormatTool } from "./tools/tool-format.js";
 import { onEditSurfaceRebuild } from "./domain/edit/edit-rebuild.js";
 import { LspManager, setLspManager } from "./lsp/manager.js";
 import { subprocessTransport } from "./lsp/transport.js";
@@ -228,6 +229,10 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		// (formerly a post-execute hook) AND the write card's structured rows.
 		disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
 
+		// The manual formatter: same undo/serve discipline as a write, with the
+		// language server as the author. Registered once, never rebuilt — its
+		// surface does not vary with any setting.
+		disposers.push(registerFormatTool(rootCtx, agent.ctx, io, sandbox));
 		// Shadow the preset's built-in tool guidance with the hashline
 		// contract. Same section names on the agent's own layer win over the
 		// preset's; text and order come from the per-preset resolution.

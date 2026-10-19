@@ -96,6 +96,21 @@ lsp?: {
 		auto_diagnostics?: boolean;
 	};
 	/**
+	 * The formatting capability's namespace entry (map #275).
+	 *
+	 * `auto` (default false) makes write/edit/ast_edit offer the final content
+	 * to a RUNNING language server before writing: format-what-changed when
+	 * range formatting is available, the whole file when it is not, and
+	 * nothing at all when no server is up — a missing formatter is the normal
+	 * case, not an error. `editorconfig` (default false) prefers a project's
+	 * `.editorconfig` over the document-whitespace heuristic for
+	 * `FormattingOptions`.
+	 */
+	format?: {
+		auto?: boolean;
+		editorconfig?: boolean;
+	};
+	/**
 	 * Bounded-anchor-store budgets exposed by issue #179 / #180.
 	 *
 	 * Unset on a per-field basis falls back to the host-side constants
@@ -152,6 +167,15 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 				auto_diagnostics: z.boolean(),
 			})
 			.volatile(),
+	// Formatting (map #275). Volatile on the OUTERMOST node only — the same
+	// rule the `ast` and `lsp` subtrees follow (a volatile field needs a fixed
+	// path; descendants of a volatile node are already live).
+	format: z
+		.object({
+			auto: z.boolean(),
+			editorconfig: z.boolean(),
+		})
+		.volatile(),
 		// Bounded-store budgets (#179 / #180). `.volatile()` sits on the outermost
 		// node only — same rule the `ast` and `lsp` subtrees follow, because
 		// schemastery requires a volatile field to sit on a fixed path with no
@@ -303,6 +327,8 @@ export {
 	astDisabledLanguages,
 	lspConfiguredServers,
 	isAutoDiagnosticsEnabled,
+	isAutoFormatEnabled,
+	isEditorconfigEnabled,
 	isJsonOutput,
 	lineNumbersEnabled,
 } from "./infra/settings.js";
@@ -425,6 +451,15 @@ const sep =
 		typeof settings?.lsp?.auto_diagnostics === "boolean"
 			? settings.lsp.auto_diagnostics
 			: defaults.autoDiagnostics;
+	// Formatting defaults OFF (G3): an edit must never re-shape text the
+	// model did not ask to re-shape. Absent = off, like `ast.enabled`. The
+	// single source of defaults is `infra/settings`; this only reads them.
+	const autoFormat =
+		typeof settings?.format?.auto === "boolean" ? settings.format.auto : defaults.autoFormat;
+	const editorconfigCfg =
+		typeof settings?.format?.editorconfig === "boolean"
+			? settings.format.editorconfig
+			: defaults.editorconfig;
 	const prev = getEffectiveConfig();
 	const flagChanged = prev.requireLineContent !== requireLine;
 	const astChanged = prev.astEnabled !== astOn;
@@ -442,6 +477,8 @@ const sep =
 		astLanguages: astLangs,
 		lspServers: lspServers,
 		autoDiagnostics: autoDiag,
+		autoFormat,
+		editorconfig: editorconfigCfg,
 		grepRespectGitignore,
 	};
 	setEffectiveSnapshot(next);

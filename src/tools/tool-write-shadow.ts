@@ -35,11 +35,12 @@ import { formatWindowSummary } from "../domain/session/read-window.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
-import { genDiff } from "../render/edit-diff.js";
+import { detectEnding, genDiff, restoreEndings, stripBOM } from "../render/edit-diff.js";
 import { anchorsFor } from "../domain/session/anchor-state.js";
+import { loadServed } from "../domain/session/served.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf, splitLines } from "../infra/utils.js";
-import { isJsonOutput } from "../config.js";
+import { isAutoFormatEnabled, isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
 import {
@@ -50,6 +51,10 @@ import {
 	prepareWriteDiagnostics,
 	type DiagMetaEntry,
 } from "../lsp/auto-diag.js";
+import { runAutoFormat, type AutoFormatOutcome } from "../domain/format/auto-format.js";
+import { buildWriteFormatSection } from "../domain/format/write-section.js";
+import type { FormatSection } from "../domain/format/types.js";
+import { renderFormatSection } from "../domain/edit/edit-response.js";
 
 /** Canonical write value: built-in contract plus the card/model extensions. */
 /** #273 (review M2): said when the overwritten file's previous bytes were not valid UTF-8 — no honest per-line diff exists against a U+FFFD stand-in. */
@@ -66,6 +71,8 @@ export interface WriteValue {
 	/** #273 — true when the pre-write read was lossy: `before` holds U+FFFD stand-ins and `diffRows` is omitted. */
 	beforeLossy?: boolean;
 	/** #131: inline diagnostics meta, present only when a push arrived in the window. */
+	/** map #275: the automatic format pass's report, when it produced a section. */
+	formats?: FormatSection[];
 	diagnostics?: DiagMetaEntry[];
 	modelText: string;
 }
@@ -122,6 +129,8 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					diffRows: { type: "array" },
 					// #131: inline LSP diagnostics, when a push arrived in the window.
 					diagnostics: { type: "array" },
+					// map #275: the automatic format pass's report, when one ran.
+					formats: { type: "array" },
 					modelText: { type: "string", required: true },
 					error: errorFieldSchema,
 				},
@@ -145,6 +154,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 						? { diffRows: v.diffRows }
 						: {}),
 					...(v.diagnostics !== undefined ? { diagnostics: v.diagnostics } : {}),
+				...(v.formats !== undefined ? { formats: v.formats } : {}),
 				} as never;
 			},
 		},
@@ -253,9 +263,45 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// one `write` path never did, so its diagnostics (and the manual
 				// `lsp diagnostics`) answered from the pre-write text.
 				const diagCtx = prepareWriteDiagnostics(absolute, execCwd(exec));
+				// The section's eligibility gate is the PRE-CALL served set — capture
+				// it before anything this call might serve (the preview mints later).
+				const preCallServed = await loadServed(sessionKey, absolute);
 				await io.writeText(absolute, content, signal, exec, sandboxPolicy);
-				notifyDocumentWritten(absolute, content);
-				const after = content;
+				// map #275 (G3): automatic format — after the model content lands,
+				// BEFORE sync/diagnostics/preview, so every downstream view describes
+				// the final text. The rewrite is a second disk write; if IT fails the
+				// model content stays and the skipped section is the warning (write
+				// never adds top-level warnings — G3).
+				let after = content;
+				let formatOutcome: AutoFormatOutcome | undefined;
+				if (isAutoFormatEnabled() && content.trim().length > 0) {
+					const shape = stripBOM(content);
+					const outcome = await runAutoFormat({
+						io,
+						absolutePath: absolute,
+						modelContent: shape.text,
+					});
+					if (outcome.status === "formatted") {
+						const finalContent = shape.bom + restoreEndings(outcome.content, detectEnding(content));
+						try {
+							await io.writeText(absolute, finalContent, signal, exec, sandboxPolicy);
+							after = finalContent;
+							formatOutcome = outcome;
+						} catch (rewriteError) {
+							// The disk keeps the model content the first write put there;
+							// the skipped section says why the formatted text is not there.
+							formatOutcome = {
+								...outcome,
+								status: "skipped",
+								content: shape.text,
+								reason: rewriteError instanceof Error ? rewriteError.message : String(rewriteError),
+							};
+						}
+					} else if (outcome.status === "skipped") {
+						formatOutcome = outcome;
+					}
+				}
+				notifyDocumentWritten(absolute, after);
 
 				// #131: inline delivery — at most one inline window (1s), then the bounded
 				// async wait injects at the model's next natural step.
@@ -265,7 +311,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 						: await deliverDiagnosticsAfterWrite({
 								...diagCtx,
 								toolName: "write",
-								text: content,
+															text: after,
 								absolutePath: absolute,
 								displayPath: rawPath,
 								io,
@@ -280,6 +326,27 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					signal,
 					exec,
 				}).catch(() => undefined);
+				// The section is completed here — after the preview — because
+				// eligible rows quote the preview's fresh anchors (write-section.ts).
+				let formatSection: FormatSection | undefined;
+				if (formatOutcome !== undefined) {
+					if (formatOutcome.status === "skipped") {
+						formatSection = {
+							status: "skipped",
+							...(formatOutcome.server !== undefined ? { server: formatOutcome.server } : {}),
+							reason: formatOutcome.reason,
+						};
+					} else {
+						formatSection = buildWriteFormatSection({
+							outcome: formatOutcome,
+							modelContent: stripBOM(content).text,
+							sessionKey,
+							preCallServed,
+							created: operation === "create",
+							servedHashes: served?.hashes,
+						});
+					}
+				}
 
 				// ADR-0013 / #245 / #246: a truncated auto-read preview carries a resume
 				// token — consumed with `read {resume}` (file-window), never by re-writing.
@@ -344,6 +411,14 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 								warnings: [WRITE_LOSSY_BEFORE_NOTE],
 							})
 						: `${modelText}\n\n${WRITE_LOSSY_BEFORE_NOTE}`;
+				// map #275: the format section rides both channels — appended prose in
+				// text mode, a field inside the JSON envelope (stays parseable).
+				const withFormats =
+					formatSection === undefined
+						? finalModelText
+						: isJsonOutput() && finalModelText.startsWith("{")
+							? JSON.stringify({ ...(JSON.parse(finalModelText) as object), formats: [formatSection] })
+							: `${finalModelText}\n\n${renderFormatSection(formatSection)}`;
 				// ---- web card channel: structured rows with `行号:锚点` ----
 				// #273 (review M2): no per-line diff against a U+FFFD stand-in — the
 				// `-` side would show bytes the disk never had; the note says why.
@@ -371,7 +446,8 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				...(beforeLossy ? { beforeLossy: true } : {}),
 					...(diffRows !== undefined ? { diffRows } : {}),
 					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
-					modelText: finalModelText,
+				...(formatSection !== undefined ? { formats: [formatSection] as never } : {}),
+					modelText: withFormats,
 				} as WriteValue;
 		}).catch((error: unknown) => ({
 			path: pathFromArgs(args) ?? "",

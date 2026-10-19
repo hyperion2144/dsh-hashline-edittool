@@ -13,6 +13,9 @@
  * @module dsh-hashline-edittool/client/test/settings-card
  */
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	STORE_BUDGET_SPECS,
 	buildFieldOp,
@@ -20,6 +23,7 @@ import {
 	formFace,
 	NOT_READY_SNAPSHOT,
 	requestedView,
+	readFormatFlags,
 	settingsSummaryText,
 	validateStoreBudgetDraft,
 } from "../src/client/settings-model.js";
@@ -316,5 +320,53 @@ describe("validateStoreBudgetDraft — the card's first line of defence", () => 
 		// The HTML `min` attribute prevents this in practice, but a typed
 		// paste bypasses the spinner; the validator must still refuse.
 		expect(validateStoreBudgetDraft(STORE_BUDGET_SPECS[0], "-1").kind).toBe("error");
+	});
+});
+
+describe("readFormatFlags (#275) — both switches opt-in, absent means OFF", () => {
+	const snapshotWith = (format: unknown): ConfigFormSnapshot => ({
+		...READY,
+		value: { ...READY.value, format },
+	});
+
+	it("defaults both to false when the subtree is absent (old logs)", () => {
+		expect(readFormatFlags(READY)).toEqual({ auto: false, editorconfig: false });
+	});
+
+	it("reads explicit true values", () => {
+		expect(readFormatFlags(snapshotWith({ auto: true, editorconfig: true }))).toEqual({
+			auto: true,
+			editorconfig: true,
+		});
+	});
+
+	it("treats explicit false as false, not absent", () => {
+		expect(readFormatFlags(snapshotWith({ auto: false, editorconfig: false }))).toEqual({
+			auto: false,
+			editorconfig: false,
+		});
+	});
+
+	it("ignores garbage values instead of coercing them", () => {
+		expect(readFormatFlags(snapshotWith({ auto: "yes", editorconfig: 1 }))).toEqual({
+			auto: false,
+			editorconfig: false,
+		});
+		expect(readFormatFlags(snapshotWith("on"))).toEqual({ auto: false, editorconfig: false });
+	});
+});
+
+describe("the card's 格式化 group (#275) — wiring pinned against the source", () => {
+	const cardSource = readFileSync(
+		join(dirname(fileURLToPath(import.meta.url)), "..", "src", "client", "settings-card.tsx"),
+		"utf8",
+	);
+
+	it("renders both switches and writes the format subtree wholesale", () => {
+		expect(cardSource).toContain("自动格式化（write / edit / ast_edit 后）");
+		expect(cardSource).toContain("读取 .editorconfig");
+		// Each switch carries BOTH keys: a partial write would clear the sibling.
+		expect(cardSource).toContain('writeField("format", { auto: checked, editorconfig: formatFlags.editorconfig })');
+		expect(cardSource).toContain('writeField("format", { auto: formatFlags.auto, editorconfig: checked })');
 	});
 });

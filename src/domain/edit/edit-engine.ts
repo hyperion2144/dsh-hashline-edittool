@@ -59,8 +59,18 @@ import { anchorForInWorkspace, withWorkspace, workspaceCwd } from "../session/se
 import { probeLines } from "../session/anchor-entry.js";
 import type { ServedVerdict } from "../../hashline/anchor-pipeline.js";
 import { updateAnchorsAfterEdit, takeAlignmentNotice, type EditHunk } from "../session/anchor-state.js";
-import { contextLinesCfg } from "../../hashline/hash-assign.js";
+import { contextLinesCfg, lineHashesPure } from "../../hashline/hash-assign.js";
+import { isAutoFormatEnabled } from "../../infra/settings.js";
+import { runAutoFormat } from "../format/auto-format.js";
+import { computeRowEligibility } from "../format/eligibility.js";
+import {
+	buildFormatSection,
+	formatterChangedLines,
+} from "../format/format-section.js";
+import { composeProvenance, lineMapFromHunks } from "../format/provenance.js";
+import type { FormatSection } from "../format/types.js";
 import { saveUndo } from "./undo-edit.js";
+import { buildServedRowsFromDiff } from "./served-rows.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -328,6 +338,8 @@ servedRows: { position: number; anchor: string }[];
 	 *  `lastChangedLine` in the canonical value). Synthesized by `runFileEdits`. */
 	firstChangedLine?: number;
 	lastChangedLine?: number;
+	/** The automatic format pass's report (G3), when it ran and produced one. */
+	format?: FormatSection;
 }
 
 // ---------------------------------------------------------------------------
@@ -1548,18 +1560,136 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 		}
 	}
 
+	// --- Phase 4 (G3): the automatic format pass, before anything persists. ---
+	// Runs on the in-memory model result; the single disk write below carries
+	// the FINAL text, so undo/diagnostics/preview all describe what the file
+	// actually holds. Switch off / no ready server / no formatter stay silent
+	// (no section, no warning — G3's boundary).
+	let finalResult = result;
+	let finalHashes = resultHashes;
+	let formatSection: FormatSection | undefined;
+	let formatServedRows: { position: number; anchor: string }[] | undefined;
+	if (
+		isAutoFormatEnabled() &&
+		appliedCount > 0 &&
+		result !== originalNormalized &&
+		splitLines(result).length > 0
+	) {
+		const modelLines = splitLines(result);
+		// The engine's hunks, in the coordinates the formatter works in: the
+		// MODEL content's final positions (`hunkShifts` already carries them).
+		const modelHunks = hunkShifts.map((s) => ({
+			originalStartLine: s.originalStartLine,
+			originalEndLine: s.originalEndLine,
+			newStartLine: s.finalStartLine,
+			newLineCount: s.finalEndLine - s.finalStartLine + 1,
+		}));
+		const outcome = await runAutoFormat({
+			io,
+			absolutePath,
+			modelContent: result,
+			ranges: modelHunks.map((h) => ({
+				startLine: h.newStartLine,
+				endLine: h.newStartLine + h.newLineCount - 1,
+			})),
+		});
+		if (outcome.status === "skipped") {
+			// A FAILED attempt is visible (skipped section + warning); the file
+			// keeps the edited (unformatted) content — G3's non-blocking rule.
+			warnings.push(
+				`Auto-format was skipped for ${first.path}: ${outcome.reason ?? "the language server refused the request"}. The file keeps the edited, unformatted content.`,
+			);
+			formatSection = {
+				status: "skipped",
+				...(outcome.server !== undefined ? { server: outcome.server } : {}),
+				...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+			};
+		} else if (outcome.status === "formatted" && outcome.content !== result) {
+			const finalLines = splitLines(outcome.content);
+			const finalToModel = outcome.finalToModel ?? new Map<number, Set<number>>();
+			// final → model → pre-call: one composed map the eligibility gate
+			// reads by CONTENT (a served pre-call anchor transfers through the
+			// chain regardless of how the lines moved).
+			const provenance = composeProvenance(
+				finalToModel,
+				lineMapFromHunks(originalHashes.length, modelHunks),
+			);
+			// Which FINAL lines the MODEL created (its hunk rows, walked through
+			// the same map): those stay eligible whatever the formatter did.
+			const modelRowLines = new Set<number>();
+			for (const s of hunkShifts) {
+				for (let l = s.finalStartLine; l <= s.finalEndLine; l++) modelRowLines.add(l);
+			}
+			const modelTouched = new Set<number>();
+			for (let line = 1; line <= finalLines.length; line++) {
+				const sources = finalToModel.get(line);
+				if (sources === undefined) continue;
+				for (const m of sources) {
+					if (modelRowLines.has(m)) {
+						modelTouched.add(line);
+						break;
+					}
+				}
+			}
+			const eligibility = computeRowEligibility({
+				finalLineCount: finalLines.length,
+				provenance,
+				modelTouched,
+				preCallHashes: originalHashes,
+				served,
+			});
+			const formatterChanged = formatterChangedLines(modelLines, finalLines, finalToModel);
+			finalResult = outcome.content;
+			// Content-derived hashes everywhere: unchanged lines keep their
+			// pre-call anchors by construction; the mint below upgrades the
+			// served window in place.
+			finalHashes = lineHashesPure(finalResult);
+			// The gate exists for text the FORMATTER introduced. A row the
+			// formatter did not touch keeps the engine's normal window behavior
+			// (context stays served — the follow-up edit contract, #171).
+			const eligible = (position: number): boolean => {
+				const line = position + 1;
+				if (!formatterChanged.has(line)) return true;
+				return eligibility.get(line) === true;
+			};
+			const formatServed = await buildServedRowsFromDiff({
+				before: originalNormalized,
+				after: finalResult,
+				resultHashes: finalHashes,
+				eligible,
+				absolutePath,
+				cwd: opts.cwd,
+				sessionKey: opts.sessionKey,
+			});
+			formatServedRows = formatServed;
+			formatSection = buildFormatSection({
+				status: "formatted",
+				...(outcome.server !== undefined ? { server: outcome.server } : {}),
+				...(outcome.mode !== undefined ? { mode: outcome.mode } : {}),
+				...(outcome.requested !== undefined ? { requested: outcome.requested } : {}),
+				...(outcome.applied !== undefined ? { applied: outcome.applied } : {}),
+				finalLines,
+				// Read AFTER the mint: eligible window rows show the anchor the
+				// mint allocated, not the bare content hash.
+				finalHashes,
+				changed: formatterChanged,
+				eligibility,
+				alsoInMain: new Set(formatServed.map((r) => r.position + 1)),
+			});
+		}
+	}
 
 	return {
 		displayPath: first.path,
 		absolutePath,
 		originalNormalized,
-		result,
+		result: finalResult,
 		bom,
 		originalEnding,
 		hadUtf8DecodeErrors,
 		warnings,
 		originalHashes,
-		resultHashes,
+		resultHashes: finalHashes,
 		appliedCount,
 		noopCount,
 		totalAddedLines,
@@ -1570,24 +1700,28 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			endLine: unionEndLine,
 			startHash: unionStartHash,
 			endHash: unionEndHash,
-			delta: splitLines(result).length - splitLines(originalNormalized).length,
+			delta: splitLines(finalResult).length - splitLines(originalNormalized).length,
 		},
 		hunkShifts,
 		// Synthesize the served mirror for the post-edit diff window: the
 		// diff hunks' new-file rows (position, hash) plus context. This is
 		// what `recordServedTruncated` later records so the model's view of
-		// the change region is marked served for the next edit.
+		// the change region is marked served for the next edit. The format
+		// pass built its own (gated) mirror; either way the recording is the
+		// caller's job (`applyFileResultTo`).
 		servedRows:
 			appliedCount > 0
-				? await buildServedRowsFromDiff({
+				? (formatServedRows ??
+					(await buildServedRowsFromDiff({
 						before: originalNormalized,
-						after: result,
-						resultHashes,
+						after: finalResult,
+						resultHashes: finalHashes,
 						absolutePath,
 						cwd: opts.cwd,
 						sessionKey: opts.sessionKey,
-					})
+					})))
 				: [],
+		...(formatSection !== undefined ? { format: formatSection } : {}),
 		...(unionFirstChangedLine !== undefined ? { firstChangedLine: unionFirstChangedLine } : {}),
 		...(unionLastChangedLine !== undefined ? { lastChangedLine: unionLastChangedLine } : {}),
 	};
@@ -1599,68 +1733,6 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
  * removed, or context) are marked served. This is the batch/merge analogue
  * of the single-edit `genDiff().servedRows`.
  */
-async function buildServedRowsFromDiff(input: {
-	before: string;
-	after: string;
-	resultHashes: string[];
-	absolutePath: string;
-	cwd: string | undefined;
-	sessionKey: string;
-}): Promise<{ position: number; anchor: string }[]> {
-	const { before, after, resultHashes, absolutePath, cwd, sessionKey } = input;
-	// The window pads by the CONFIGURED diff context (≥2): the response's
-	// genDiff renders with contextLinesCfg(), and a served set narrower than
-	// the rendered rows would leave context rows uneditable.
-	const ctxPad = Math.max(2, contextLinesCfg());
-	const rows: { position: number; anchor: string }[] = [];
-	const seen = new Set<number>();
-	const resultLines = splitLines(after);
-	const beforeLines = splitLines(before);
-	// Simple LCS-free diff-window: a coarse but safe approximation that marks
-	// the region around the first and last differing line as served, plus the
-	// unchanged lines actually shown in the diff (which the model sees).
-	const minLen = Math.min(beforeLines.length, resultLines.length);
-	let firstDiff = -1;
-	for (let k = 0; k < minLen; k++) {
-		if (beforeLines[k] !== resultLines[k]) { firstDiff = k; break; }
-	}
-	if (firstDiff === -1 && beforeLines.length !== resultLines.length) {
-		firstDiff = minLen;
-	}
-	const push = (pos: number) => {
-		if (pos < 0 || pos >= resultHashes.length || seen.has(pos)) return;
-		seen.add(pos);
-		rows.push({ position: pos, anchor: resultHashes[pos]! });
-	};
-	if (firstDiff === -1) return rows;
-	const lastDiff = (() => {
-		let k = 0;
-		while (
-			k < minLen - firstDiff &&
-			beforeLines[beforeLines.length - 1 - k] === resultLines[resultLines.length - 1 - k]
-		) k++;
-		return Math.max(firstDiff, resultLines.length - 1 - k);
-	})();
-	for (let p = Math.max(0, firstDiff - ctxPad); p <= Math.min(resultHashes.length - 1, lastDiff + ctxPad); p++) {
-		push(p);
-	}
-	// #223: mints AND records served in one transaction, through the entry point.
-	if (rows.length > 0) {
-		const servedLineNos = rows.map((r) => r.position + 1);
-		const allocated = await anchorForInWorkspace({
-			cwd: cwd ?? "",
-			absolutePath,
-			content: after,
-			lines: servedLineNos,
-			sessionKey,
-		});
-		for (let k = 0; k < servedLineNos.length; k++) {
-			resultHashes[servedLineNos[k]! - 1] = allocated[k]!;
-			rows[k] = { position: servedLineNos[k]! - 1, anchor: allocated[k]! };
-		}
-	}
-	return rows;
-}
 
 // ---------------------------------------------------------------------------
 // the write transaction
