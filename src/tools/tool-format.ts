@@ -35,6 +35,7 @@ type FormatCanonicalValue = {
 	requested: number;
 	applied: number;
 	changedLines: number;
+	inMainDiffRows: number;
 	unservedRows: number;
 	rows: FormatRow[];
 	modelText: string;
@@ -88,6 +89,7 @@ export function buildFormatTool(io: FileIO, sandbox: FsSandboxController) {
 					applied: { type: "integer" },
 					changedLines: { type: "integer" },
 					unservedRows: { type: "integer" },
+					inMainDiffRows: { type: "integer" },
 					// The formatter-changed rows, with the anchors they earned.
 					rows: { type: "array" },
 					modelText: { type: "string", required: true },
@@ -112,6 +114,7 @@ export function buildFormatTool(io: FileIO, sandbox: FsSandboxController) {
 							requested: v.requested,
 							applied: v.applied,
 							changedLines: v.changedLines,
+							inMainDiffRows: v.inMainDiffRows ?? 0,
 							unservedRows: v.unservedRows,
 							rows: v.rows,
 						},
@@ -190,6 +193,7 @@ export function buildFormatTool(io: FileIO, sandbox: FsSandboxController) {
 					requested: outcome.requested,
 					applied: outcome.applied,
 					changedLines: outcome.changedLines,
+					inMainDiffRows: section.inMainDiffRows ?? 0,
 					unservedRows: section.unservedRows ?? 0,
 					rows: section.rows ?? [],
 					modelText: streamed.modelText,

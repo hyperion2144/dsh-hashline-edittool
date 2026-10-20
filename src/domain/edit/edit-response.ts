@@ -77,7 +77,9 @@ import type { HunkShift } from "./edit-engine.js";
  * refuses are not IN the section at all (the #275 follow-up ruling: an edit
  * response never surfaces content the model has no standing view of) — only
  * `unservedRows` counts them, and a formatted pass whose rows are all
- * unserved renders the bare header so the counts stay honest.
+ * unserved renders the bare header so the counts stay honest. The same
+ * withholding covers rows the main diff already shows (#312): `inMainDiffRows`
+ * counts them and neither content nor anchor is repeated here.
  */
 export function renderFormatSection(
 	section: FormatSection,
@@ -90,21 +92,26 @@ export function renderFormatSection(
 	if (section.status === "skipped") {
 		return `[${label}: ${server} · skipped · ${section.reason ?? "unspecified"}]`;
 	}
+	// One header template for both the counts-only and the rows path — the
+	// two spellings only ever disagreed in the changed-line fallback (#312
+	// review).
+	const countsHeader = (changed: number): string =>
+		`[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${changed} lines changed · ${section.inMainDiffRows ?? 0} in main diff · ${section.unservedRows ?? 0} unserved]`;
 	if (section.status !== "formatted" || section.rows === undefined || section.rows.length === 0) {
-		// A formatted outcome whose rows are all unserved is NOT "no changes":
-		// the header carries the honest counts (changedLines + unservedRows) and
-		// the ruling on #275's follow-up says those rows return neither content
-		// nor anchors. Only a genuinely change-free pass says "no changes".
-		if (section.status === "formatted" && (section.unservedRows ?? 0) > 0) {
-			return `[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.unservedRows ?? 0} unserved]`;
+		// A formatted outcome whose rows are all withheld is NOT "no changes":
+		// the header carries the honest counts (changedLines + inMainDiffRows +
+		// unservedRows) — #275's follow-up rows return neither content nor
+		// anchors, and #312's in-main rows are already fully visible in the diff.
+		// Only a genuinely change-free pass says "no changes".
+		if (section.status === "formatted" && (section.unservedRows ?? 0) + (section.inMainDiffRows ?? 0) > 0) {
+			return countsHeader(section.changedLines ?? 0);
 		}
 		return `[${label}: ${server} · no changes]`;
 	}
-	const header = `[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${section.changedLines ?? section.rows.length} lines changed · ${section.unservedRows ?? 0} unserved]`;
+	const header = countsHeader(section.changedLines ?? section.rows.length);
 	const rows = section.rows.map((row) => {
 		const marker = row.hash !== "" ? formatRowMarker(row.hash, row.lineNumber, lineNumbers) : "    ";
-		const note = row.alsoInMainDiff ? "  (also in main diff)" : "";
-		return `+${marker} ${row.text}${note}`;
+		return `+${marker} ${row.text}`;
 	});
 	return [header, ...rows].join("\n");
 }

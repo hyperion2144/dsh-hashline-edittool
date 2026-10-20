@@ -68,7 +68,7 @@
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
-**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 开启（默认**关**）后，每次真正改了内容的 `write`/`edit`/`ast_edit` 都会顺带格式化被改到的行：只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、无格式化器时**静默**跳过、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · u unserved]`），主 diff 已有的行标 `also in main diff`，本会话从未 serve 过的行**不带锚点**：格式化器的改写照实展示，但只有 serve 过的行才能按锚点再编辑。
+**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 开启（默认**关**）后，每次真正改了内容的 `write`/`edit`/`ast_edit` 都会顺带格式化被改到的行：只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、无格式化器时**静默**跳过、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312），本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
 
 **插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断、语言服务器空闲回收窗口。改完提交即生效——不用碰 YAML。
 

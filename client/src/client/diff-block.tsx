@@ -102,11 +102,11 @@ const CSS_TEXT = [
 	".dshl-diff-failMessage{color:var(--dsw-alias-label-secondary);font:var(--dsw-font-xs-13);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}",
 	".dshl-diff-panel{padding:12px 14px}",
 	// #275: the auto-format section under a file's main diff — a header line,
-	// then the formatter's rows with the overlap badge and the no-anchor hint.
+	// then the formatter's rows with the no-anchor hint (#312: in-main rows are
+	// counted, not drawn).
 	".dshl-fmt{margin-top:10px;border-top:.5px solid color-mix(in srgb,var(--dsw-alias-label-tertiary) 30%,transparent);padding-top:8px}",
 	".dshl-fmt-head{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);white-space:pre}",
 	".dshl-fmt-noanchor{color:var(--dsw-alias-label-tertiary);font-size:11px}",
-	".dshl-fmt-badge{margin-left:8px;padding:0 6px;border-radius:4px;font-size:10px;line-height:16px;color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 14%,transparent);white-space:nowrap}",
 	".dshl-fmt-skip{display:flex;gap:6px;align-items:baseline;font:var(--dsw-font-xs-13);color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-label-secondary))}",
 ].join("");
 
@@ -149,7 +149,6 @@ const css = {
 	fmt: "dshl-fmt",
 	fmtHead: "dshl-fmt-head",
 	fmtNoanchor: "dshl-fmt-noanchor",
-	fmtBadge: "dshl-fmt-badge",
 	fmtSkip: "dshl-fmt-skip",
 } as const;
 
@@ -232,14 +231,15 @@ function formatHeader(section: FormatSectionMeta): string {
 	if (section.status === "noop") {
 		return `[auto-format: ${section.server ?? "server"} · no changes]`;
 	}
-	return `[auto-format: ${section.server ?? "server"} · ${section.mode ?? "full-file"} · ${section.requested ?? 0} → ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.unservedRows ?? 0} unserved]`;
+	return `[auto-format: ${section.server ?? "server"} · ${section.mode ?? "full-file"} · ${section.requested ?? 0} → ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.inMainDiffRows ?? 0} in main diff · ${section.unservedRows ?? 0} unserved]`;
 }
 
 /**
- * One file's auto-format section: the bracketed header, then the formatter's
- * rows — a gutter like the main diff's, a badge on rows the main diff already
- * shows, and the gray no-anchor hint on rows the formatter introduced that
- * the edit window did not serve.
+ * One file's auto-format section: the bracketed header (its count names the
+ * rows the main diff already shows — #312 withholds those entirely), then the
+ * formatter's own rows — a gutter like the main diff's, and the gray
+ * no-anchor hint on rows the formatter introduced that the edit window did
+ * not serve.
  */
 function FormatSectionView({ section }: { section: FormatSectionMeta }): ReactNode {
 	if (section.status === "skipped") {
@@ -270,9 +270,6 @@ function FormatSectionView({ section }: { section: FormatSectionMeta }): ReactNo
 								row.text,
 								row.hash === ""
 									? jsx_("span", { key: "noanchor", className: css.fmtNoanchor, children: " · no anchor (not served)" })
-									: null,
-								row.alsoInMainDiff
-									? jsx_("span", { key: "badge", className: css.fmtBadge, children: "also in main diff" })
 									: null,
 							],
 						}),

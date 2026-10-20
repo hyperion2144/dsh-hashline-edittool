@@ -24,6 +24,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - `grep` 命中区超过单次响应预算时不再返回空壳：改为按行切分，先返回预算内放得下的行（带锚点、可直接编辑，切点不会落在首个命中之前），其余行经 resume 提示续取（#307）。
 - 锚点库冷开与每次写的预算判定不再随 `anchor_lines` 行数线性变慢：行数改为随写入同事务维护的值（#305）。
 - 锚点库的路径数改为随写入维护的值，预算判定不再随路径数变慢（#311）。
+- 自动格式化段不再逐行重复主 diff 已展示的行：这类行只在 header 计数（`k in main diff`），`write` 更新路径同样塌缩为计数，手动 `format` 全量输出不变（#312）。
 
 ## [0.10.3] - 2026-10-19
 

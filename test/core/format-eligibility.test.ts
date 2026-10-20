@@ -4,7 +4,8 @@
  * The gate: model-touched lines are ALWAYS eligible; formatter-touched lines
  * inherit eligibility from their pre-call sources' served anchors. The
  * The display: changed addressable rows only (ineligible rows are omitted
- * entirely — the #275 follow-up ruling), main-diff duplicates marked, and
+ * entirely — the #275 follow-up ruling), main-diff duplicates counted only
+ * (`inMainDiffRows`, #312 — the main diff already carries them), and
  * `unservedRows` the honest "you cannot address this" count.
  */
 import { describe, expect, it } from "vitest";
@@ -126,11 +127,12 @@ describe("buildFormatSection", () => {
 		// The #275 follow-up ruling: an inline section never surfaces content the
 		// model has no standing view of — line 3 returns nothing, only the count.
 		expect(section.rows).toEqual([
-			{ kind: "+", lineNumber: 2, hash: "h2", text: "  b", alsoInMainDiff: false },
+			{ kind: "+", lineNumber: 2, hash: "h2", text: "  b" },
 		]);
+		expect(section.inMainDiffRows).toBe(0);
 	});
 
-	it("marks rows the main diff already shows and does not count them unserved", () => {
+	it("counts rows the main diff already shows and returns them in no form (#312)", () => {
 		const section = buildFormatSection({
 			status: "formatted",
 			finalLines: ["x", "y!"],
@@ -143,13 +145,27 @@ describe("buildFormatSection", () => {
 			alsoInMain: new Set([1]),
 		});
 		expect(section.unservedRows).toBe(1); // only line 2 (line 1 is in the main diff)
-		expect(section.rows![0]).toEqual({
-			kind: "+",
-			lineNumber: 1,
-			hash: "",
-			text: "x",
-			alsoInMainDiff: true,
+		expect(section.inMainDiffRows).toBe(1);
+		// #312: the main diff already shows line 1 — the section returns it in
+		// NO form (no content, no anchor), only the count.
+		expect(section.rows).toEqual([]);
+	});
+
+	it("counts a served in-main line without re-minting its anchor", () => {
+		const section = buildFormatSection({
+			status: "formatted",
+			finalLines: ["x", "y"],
+			finalHashes: ["h1", "h2"],
+			changed: new Set([1, 2]),
+			eligibility: new Map([
+				[1, true],
+				[2, true],
+			]),
+			alsoInMain: new Set([1]),
 		});
+		expect(section.inMainDiffRows).toBe(1);
+		expect(section.unservedRows).toBe(0);
+		expect(section.rows).toEqual([{ kind: "+", lineNumber: 2, hash: "h2", text: "y" }]);
 	});
 
 	it("renders noop with no rows", () => {

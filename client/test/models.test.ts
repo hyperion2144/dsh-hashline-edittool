@@ -767,10 +767,8 @@ describe("metaFormatSections (#275)", () => {
 		applied: 2,
 		changedLines: 2,
 		unservedRows: 1,
-		rows: [
-			{ kind: "+", lineNumber: 3, hash: "x1", text: "indent();", alsoInMainDiff: false },
-			{ kind: "+", lineNumber: 4, hash: "", text: "\treturn 1;", alsoInMainDiff: true },
-		],
+		rows: [{ kind: "+", lineNumber: 3, hash: "x1", text: "indent();" }],
+		inMainDiffRows: 1,
 	};
 
 	it("passes a well-formed section straight through", () => {
@@ -785,7 +783,7 @@ describe("metaFormatSections (#275)", () => {
 
 	it("drops ONE malformed entry, keeps the rest (failures rule)", () => {
 		const bad = { ...good, status: "reformatted" };
-		const badRow = { ...good, rows: [{ kind: "+", lineNumber: 0, hash: "", text: "x", alsoInMainDiff: false }] };
+		const badRow = { ...good, rows: [{ kind: "+", lineNumber: 0, hash: "", text: "x" }] };
 		const out = metaFormatSections({ formats: [bad, badRow, good] });
 		expect(out).toHaveLength(1);
 		expect(out[0]).toEqual(good);
@@ -799,6 +797,21 @@ describe("metaFormatSections (#275)", () => {
 		});
 		// mode/server/rows malformations drop the entry or are omitted, never cast.
 		expect(garbage).toHaveLength(1);
+	});
+
+	it("drops the retired alsoInMainDiff row flag and parses inMainDiffRows (#312)", () => {
+		// A pre-#312 persisted meta: rows carry the retired flag — tolerated on
+		// read, dropped from the model (the badge is gone, nothing renders it).
+		const legacy = {
+			...good,
+			rows: [{ kind: "+", lineNumber: 3, hash: "x1", text: "indent();", alsoInMainDiff: true }],
+		};
+		const out = metaFormatSections({ formats: [legacy] });
+		expect(out).toHaveLength(1);
+		expect(out[0]?.rows).toEqual([{ kind: "+", lineNumber: 3, hash: "x1", text: "indent();" }]);
+		// The new count rides through when the host sent it.
+		const counted = metaFormatSections({ formats: [{ ...good, inMainDiffRows: 5 }] });
+		expect(counted[0]?.inMainDiffRows).toBe(5);
 	});
 
 	it("attaches to the diff card when present and omits itself otherwise", () => {

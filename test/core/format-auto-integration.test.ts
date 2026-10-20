@@ -33,6 +33,8 @@ interface FormatAnswers {
 	range?: unknown[];
 	full?: unknown[];
 	fail?: Error;
+	/** Capability overrides — a range capability lie falls back to full-file. */
+	caps?: { documentFormattingProvider?: boolean; documentRangeFormattingProvider?: boolean };
 	/** Recorded `syncDocumentContent` payloads — the server's view trail. */
 	syncs: string[];
 }
@@ -40,7 +42,7 @@ interface FormatAnswers {
 /** A ready-only fake manager: formatting answers, no spawn, syncs recorded. */
 function fakeFormatManager(answers: FormatAnswers): void {
 	const session = {
-		serverCapabilities: { documentFormattingProvider: true, documentRangeFormattingProvider: true },
+		serverCapabilities: { documentFormattingProvider: true, documentRangeFormattingProvider: true, ...answers.caps },
 		request: async (method: string) => {
 			if (answers.fail !== undefined) throw answers.fail;
 			if (method === "textDocument/rangeFormatting") return answers.range ?? [];
@@ -68,8 +70,25 @@ function indentEdit(replacement: string) {
 	};
 }
 
+/** Rewrite any 1-based line — `character` past EOL clamps to it (LSP). */
+function editAt(line: number, replacement: string) {
+	return {
+		range: { start: { line: line - 1, character: 0 }, end: { line: line - 1, character: 1000 } },
+		newText: replacement,
+	};
+}
+
 const UNFORMATTED = "function a() {\nreturn 1;\n}\n";
 
+/** 20 lines: the model touches 2, 10 and 19; the formatter reverts 10 exactly. */
+const GAP_FILE = [
+	"function a() {",
+	"return 1;",
+	"}",
+	...Array.from({ length: 15 }, (_, k) => `// l${k + 4}`),
+	"return 19;",
+	"}",
+].join("\n") + "\n";
 /** Read through the hashline `read` tool; return served (hash, content) rows. */
 async function servedRows(
 	harness: ReturnType<typeof setupIntegrationTest>,
@@ -117,11 +136,52 @@ describe("auto-format through edit (map #275 / G3)", () => {
 			// The disk carries the FORMATTED text; the model row survives inside it.
 			expect(await readFile(path, "utf-8")).toBe("function a() {\n\treturn 1; // touched\n}\n");
 			const text = getText(res);
-			expect(text).toContain("[auto-format: fake-ts · range · requested 1 → applied 1 · 1 lines changed · 0 unserved]");
-			// The row the formatter retouched is the one the model just wrote.
-			expect(text).toContain("(also in main diff)");
+			expect(text).toContain(
+				"[auto-format: fake-ts · range · requested 1 → applied 1 · 1 lines changed · 1 in main diff · 0 unserved]",
+			);
+			// #312: the formatter retouched the row the model just wrote — the main
+			// diff already shows it, so the section counts it and does NOT repeat
+			// the content (the old `(also in main diff)` rows are gone).
+			expect(text).toContain("1 in main diff");
+			expect(text).not.toContain("(also in main diff)");
 			// The server saw the MODEL content before the request (pre-write sync).
 			expect(syncs.some((t) => t.includes("// touched"))).toBe(true);
+		});
+	});
+
+	// #312 spec review: a formatter-REVERTED model edit between two rendered
+	// changes sits inside the served window but OUTSIDE the diff's blocks
+	// (the >2×context gap splits them) — rule 3 says it returns as a section
+	// row with its anchor, never as an "in main diff" count.
+	it("returns a formatter-reverted row the main diff never rendered", async () => {
+		await withTempFile("fmt.ts", GAP_FILE, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: true } });
+			const syncs: string[] = [];
+			fakeFormatManager({
+				caps: { documentRangeFormattingProvider: false },
+				full: [editAt(2, "\treturn 1; // touched"), editAt(10, "// l10"), editAt(19, "\treturn 19; // end")],
+				syncs,
+			});
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const ten = served.find((r) => r.content === "// l10")!;
+			const nineteen = served.find((r) => r.content === "return 19;")!;
+			const res = await harness.editTool.execute("edit", {
+				path,
+				edits: [
+					{ op: "replace", anchor_start: two.hash, anchor_end: two.hash, lines: ["return 1; // touched"] },
+					{ op: "replace", anchor_start: ten.hash, anchor_end: ten.hash, lines: ["// l10 "] },
+					{ op: "replace", anchor_start: nineteen.hash, anchor_end: nineteen.hash, lines: ["return 19; // end"] },
+				],
+			});
+			const text = getText(res);
+			expect(text).toContain(
+				"[auto-format: fake-ts · full-file · requested 1 → applied 3 · 3 lines changed · 2 in main diff · 0 unserved]",
+			);
+			// Line 10's final text equals the original — the main diff cannot
+			// show it; only the section row carries content + anchor.
+			expect(text).toMatch(/\+\S+ \/\/ l10$/m);
 		});
 	});
 
@@ -218,7 +278,7 @@ describe("auto-format through write (map #275 / G3)", () => {
 				makeExec(cwd)({ file_path: "fresh.ts", content: UNFORMATTED }) as never,
 			)) as {
 				after: string;
-				formats?: Array<{ status: string; mode?: string; rows?: Array<{ hash: string; text: string; alsoInMainDiff: boolean }> }>;
+				formats?: Array<{ status: string; mode?: string; inMainDiffRows?: number; rows?: Array<{ hash: string; text: string }> }>;
 				modelText: string;
 			};
 			expect(value.after).toBe("function a() {\n\treturn 1;\n}\n");
@@ -229,7 +289,41 @@ describe("auto-format through write (map #275 / G3)", () => {
 			// nor anchors for rows nothing served — a created file's rows are ALL
 			// unseen, so the section counts them and returns none.
 			expect(value.formats?.[0]?.rows).toEqual([]);
+			expect((value.formats?.[0] as { inMainDiffRows?: number }).inMainDiffRows ?? 0).toBe(0);
 			expect((value.formats?.[0] as { unservedRows?: number }).unservedRows ?? 0).toBeGreaterThan(0);
+		});
+	});
+
+	// #312 spec review: an update withholds a changed row only when the
+	// PREVIEW renders it — a line the model left alone (the formatter fixed
+	// stale formatting away from the edit) is invisible in before→model, so
+	// the section must return its row instead of counting it into "in main".
+	it("update keeps a formatter-fixed row the preview never showed", async () => {
+		const syncs: string[] = [];
+		applyEffective({ format: { auto: true } });
+		fakeFormatManager({ full: [editAt(2, "\treturn 2;"), editAt(4, "let x = 1;")], syncs });
+		const BEFORE = "function a() {\nreturn 1;\n}\nlet x=1;\n";
+		await withTempFile("upd.ts", BEFORE, async ({ cwd, path }) => {
+			const harness = setupIntegrationTest(cwd);
+			await servedRows(harness, path); // serve every line — line 4's eligibility
+			const tool = buildWriteShadowTool(localIO(), testSandbox());
+			const model = "function a() {\nreturn 2;\n}\nlet x=1;\n";
+			const value = (await tool.execute(
+				{ file_path: path, content: model },
+				makeExec(cwd)({ file_path: path, content: model }) as never,
+			)) as {
+				formats?: Array<{
+					inMainDiffRows?: number;
+					rows?: Array<{ lineNumber: number; hash: string; text: string }>;
+				}>;
+			};
+			const section = value.formats?.[0];
+			// Line 2: the model rewrote it → the preview renders it → counted.
+			// Line 4: model==before there → the preview shows nothing → a row.
+			expect(section?.inMainDiffRows).toBe(1);
+			expect(section?.rows).toHaveLength(1);
+			expect(section?.rows?.[0]).toMatchObject({ lineNumber: 4, text: "let x = 1;" });
+			expect(section?.rows?.[0]?.hash).not.toBe("");
 		});
 	});
 });
@@ -241,7 +335,7 @@ describe("renderFormatSection (map #275 / decision B)", () => {
 		);
 	});
 
-	it("anchors eligible rows, marks also-in-main rows, leaves ineligible rows bare", () => {
+	it("anchors rows, withholds in-main rows behind the header count (#312)", () => {
 		const text = renderFormatSection({
 			status: "formatted",
 			server: "fake-ts",
@@ -249,16 +343,34 @@ describe("renderFormatSection (map #275 / decision B)", () => {
 			requested: 2,
 			applied: 3,
 			changedLines: 2,
+			inMainDiffRows: 1,
 			unservedRows: 0,
-			rows: [
-				{ kind: "+", lineNumber: 4, hash: "a1b2c", text: "\tindented;", alsoInMainDiff: true },
-				{ kind: "+", lineNumber: 9, hash: "", text: "\tnew line;", alsoInMainDiff: false },
-			],
+			rows: [{ kind: "+", lineNumber: 9, hash: "", text: "\tnew line;" }],
 		});
-		expect(text).toContain("[auto-format: fake-ts · range · requested 2 → applied 3 · 2 lines changed · 0 unserved]");
-		expect(text).toContain("(also in main diff)");
+		expect(text).toContain(
+			"[auto-format: fake-ts · range · requested 2 → applied 3 · 2 lines changed · 1 in main diff · 0 unserved]",
+		);
+		// #312: the in-main row is counted, never repeated — no content, no note.
+		expect(text).not.toContain("(also in main diff)");
+		expect(text).not.toContain("\tindented;");
 		// The ineligible row renders the four-space placeholder where the
 		// anchor would sit — absence, not a copyable marker.
 		expect(text).toContain("+     \tnew line;");
+	});
+
+	it("renders the counts header when every changed row was withheld", () => {
+		// A write-style update: the preview already shows all changed rows, so
+		// the section collapses to its counts instead of "no changes".
+		const text = renderFormatSection({
+			status: "formatted",
+			server: "fake-ts",
+			changedLines: 3,
+			inMainDiffRows: 3,
+			unservedRows: 0,
+			rows: [],
+		});
+		expect(text).toBe(
+			"[auto-format: fake-ts · full-file · requested 1 → applied 0 · 3 lines changed · 3 in main diff · 0 unserved]",
+		);
 	});
 });

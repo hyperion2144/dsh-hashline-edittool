@@ -256,9 +256,9 @@ export interface DiagCapsuleMeta {
 }
 
 /**
- * One auto-format row (#275): a diff row plus whether the call's MAIN diff
- * already shows the same line, so the card can badge the overlap instead of
- * double-drawing it.
+ * One auto-format row (#275): a formatter-changed line the call's MAIN diff
+ * does not already show. The former `alsoInMainDiff` flag is retired (#312) —
+ * an in-main line is counted on the section, never sent as a row.
  */
 export interface FormatRowMeta {
 	kind: "+" | "-" | " ";
@@ -266,7 +266,6 @@ export interface FormatRowMeta {
 	/** The final-content anchor; `""` when the row is not served (formatter-introduced). */
 	hash: string;
 	text: string;
-	alsoInMainDiff: boolean;
 }
 
 /**
@@ -284,6 +283,8 @@ export interface FormatSectionMeta {
 	applied?: number | undefined;
 	changedLines?: number | undefined;
 	unservedRows?: number | undefined;
+	/** Formatter-changed lines the main diff already shows — counted, not returned (#312). */
+	inMainDiffRows?: number | undefined;
 	reason?: string | undefined;
 	rows: readonly FormatRowMeta[];
 }

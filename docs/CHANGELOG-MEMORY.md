@@ -662,3 +662,29 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - **路径数是并集大小**：同一路径在多个族里只算一次；计数只在路径本身出现/消失时移动，与族的写入顺序无关。
 - **`served` 需要 `path` 索引**：主键是 `(session_id, path)`，缺索引时子查询会全表扫描。
 - **验收以语句级断言为主**（数一数有没有「数过并集」的语句），墙钟门（500ms）保留不再放宽。
+ 
+---
+## 2026-10-20 — 自动格式化段不再重复主 diff 已展示的行 (#312)
+
+**Type:** contract（ADR-0019 输出形状段的 2026-10-20 修正案：`alsoInMainDiff` 行级标记退役，改 `inMainDiffRows` 计数）
+**Confidence:** High（根 + client typecheck/test 全绿；行为由 format 套件 + client models/format-block 钉子锁定）
+**Evidence:** 票 [#312](https://github.com/hyperion2144/dsh-hashline-edittool/issues/312)（诊断评论 + 维护者 Q1–Q3 裁决记录）；ADR-0019 修正段。
+
+### Why
+
+- #279 Q4-A 的「in-main 行入段、打 `alsoInMainDiff` 标」基于旧主 diff 形态；#293（ADR-0020）把主 diff 改成统一 diff 后，重复行的锚点与内容在主 diff 行上已完整，标记不省任何 token——重复展示成了纯浪费（报告人规则 2 的缺口；规则 1/3 此前已实现）。
+
+### Path / Affected typed relationships
+
+- `src/domain/format/format-section.ts`：行纳入规则改为 in-main → `inMainDiffRows` 计数、¬in-main∧ineligible → `unservedRows`、其余 → rows（hash 恒取 final）。
+- `src/domain/format/types.ts`：`FormatRow = EditDiffRow`（flag 退役）；`FormatSection.inMainDiffRows`。
+- `src/domain/edit/edit-response.ts`：header 增 `k in main diff`；全被裁时仍出计数 header（非 no changes）。
+- `src/domain/format/write-section.ts`：更新路径按预览可证性裁剪——仅当模型重写了该行的来源行（before≠model）才计入 in-main，否则保留为 row（#312 复核修正，Q2 裁决随之收窄）；client badge 与 `alsoInMainDiff` 校验/类型退役（Q3 裁决），旧持久化 meta 容忍该字段但丢弃。
+- 文档：ADR-0019 输出形状段 2026-10-20 修正案、README ×2、`CHANGELOG.md` `[Unreleased]`。
+
+### 本轮定案（复核时照此）
+
+- **三规则不变式**：`changedLines = inMainDiffRows + unservedRows + rows.length`。
+- **手动 `format` 永不全裁**：`alsoInMain` 恒空，段即主输出。
+- **全被裁 ≠ no changes**：`inMainDiffRows + unservedRows > 0` 时渲染计数 header。
+- **in-main = 主 diff 实际渲染的行**：edit 用 `diffRenderedLines`（逐变更 ±context 并集，非 served 窗口——间隙内被 formatter 还原的行回到 rows）；write 更新只在模型重写来源行时计入；不确定即展示，绝不静默丢弃。

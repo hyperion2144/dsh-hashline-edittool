@@ -103,3 +103,28 @@ export async function buildServedRowsFromDiff(input: {
 	}
 	return rows;
 }
+
+/**
+ * The final lines the model-facing main diff RENDERS: every line within
+ * `ctx` of a before→after difference — the same per-change ±context union
+ * `genDiff` draws its blocks with (a gap wider than 2×context splits and
+ * drops its middle). #312: the served window above is deliberately WIDER
+ * than the rendered rows, so "served" cannot decide what the main diff
+ * already shows — only rendered rows may withhold a formatter-changed line
+ * from the auto-format section (rule 2); the rest come back as rows (rule 3).
+ */
+export function diffRenderedLines(before: string, after: string, ctx: number = contextLinesCfg()): Set<number> {
+	const beforeLines = splitLines(before);
+	const afterLines = splitLines(after);
+	const rendered = new Set<number>();
+	// A missing before-line reads as changed, so a pure tail insertion marks
+	// the appended rows without a separate length branch.
+	for (let k = 0; k < afterLines.length; k++) {
+		if (beforeLines[k] === afterLines[k]) continue;
+		const line = k + 1;
+		for (let p = Math.max(1, line - ctx); p <= Math.min(afterLines.length, line + ctx); p++) {
+			rendered.add(p);
+		}
+	}
+	return rendered;
+}

@@ -70,7 +70,7 @@ import {
 import { composeProvenance, lineMapFromHunks } from "../format/provenance.js";
 import type { FormatSection } from "../format/types.js";
 import { saveUndo } from "./undo-edit.js";
-import { buildServedRowsFromDiff } from "./served-rows.js";
+import { buildServedRowsFromDiff, diffRenderedLines } from "./served-rows.js";
 import {
 	clearNoopLoop,
 	noopPayloadKey,
@@ -1674,7 +1674,11 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 				finalHashes,
 				changed: formatterChanged,
 				eligibility,
-				alsoInMain: new Set(formatServed.map((r) => r.position + 1)),
+				// #312 (spec review): withhold a changed row only where the main
+				// diff RENDERS it — the served window is wider than the diff's
+				// blocks (a >2×context gap splits), so a formatter-reverted row
+				// in a gap comes back as a section row (rule 3), not as a count.
+				alsoInMain: diffRenderedLines(originalNormalized, finalResult),
 			});
 		}
 	}

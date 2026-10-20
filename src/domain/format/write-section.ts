@@ -33,6 +33,13 @@ export interface WriteSectionInput {
 	created: boolean;
 	/** The auto-read preview's per-line anchors (`""` where none was allocated). */
 	servedHashes?: string[];
+	/**
+	 * The pre-disk text, when a faithful per-line view of it exists (absent
+	 * on create and for a lossy pre-write read). #312: update withholding
+	 * compares against it — a changed row is "in main" only when the model
+	 * rewrote the pre-disk line it came from, i.e. the preview renders it.
+	 */
+	beforeContent?: string;
 }
 
 /**
@@ -52,9 +59,25 @@ export function buildWriteFormatSection(input: WriteSectionInput): FormatSection
 		served: input.preCallServed,
 	});
 	const changed = formatterChangedLines(modelLines, finalLines, provenance);
-	// An update's before→after hunks already show every formatter-touched row
-	// (they differ from the pre-disk text); a create renders no diff rows.
-	const alsoInMain = input.created ? new Set<number>() : changed;
+	// #312 (spec review): an update withholds a changed row ONLY when the
+	// preview provably shows it — the model rewrote the (single) pre-disk
+	// line the row came from, so the before→model hunks render that line. A
+	// row the model left alone (the formatter fixing stale formatting away
+	// from the edit), a merged row, and a lossy pre-write read (no honest
+	// before text) all stay section rows — uncertain visibility shows, it
+	// never silently drops.
+	const alsoInMain = new Set<number>();
+	if (!input.created && input.beforeContent !== undefined) {
+		const beforeLines = splitLines(input.beforeContent);
+		for (const line of changed) {
+			const sources = provenance.get(line);
+			if (sources === undefined || sources.size !== 1) continue;
+			const [source] = sources;
+			if (source !== undefined && beforeLines[source - 1] !== modelLines[source - 1]) {
+				alsoInMain.add(line);
+			}
+		}
+	}
 	return buildFormatSection({
 		status: "formatted",
 		...(input.outcome.server !== undefined ? { server: input.outcome.server } : {}),
