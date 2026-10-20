@@ -202,3 +202,72 @@ export function readFormatFlags(snapshot: ConfigFormSnapshot): { auto: boolean; 
 	const f = format as { auto?: unknown; editorconfig?: unknown };
 	return { auto: f.auto === true, editorconfig: f.editorconfig === true };
 }
+
+/**
+ * The LSP idle window (#306), with the same range the schema enforces on the
+ * wire. 0 is legal and means "never reclaim" — the same contract as the AST
+ * worker's idle window.
+ *
+ * Pure and exported so the card and the tests read ONE truth.
+ */
+export interface LspIdleSpec {
+	/** The two-segment path the card's mutate op sends. */
+	readonly path: readonly ["lsp", "idle_timeout_ms"];
+	/** Inclusive lower bound, matching the schema's `z.number().min(...)`. */
+	readonly min: number;
+	/** Inclusive upper bound, matching the schema's `z.number().max(...)`. */
+	readonly max: number;
+	/** The host-side default, in milliseconds. */
+	readonly defaultMs: number;
+}
+
+export const LSP_IDLE_SPEC: LspIdleSpec = {
+	path: ["lsp", "idle_timeout_ms"],
+	min: 0,
+	max: 3_600_000,
+	defaultMs: 300_000,
+};
+
+/**
+ * The outcome of validating one idle-window DRAFT (the raw text in the input
+ * before it ever reaches the wire).
+ *
+ * `unset` is the legitimate "empty input" signal — the user wants the
+ * host-side default, which is the unset op the 恢复默认 button also sends.
+ */
+export type LspIdleDraftResult =
+	| { readonly kind: "unset" }
+	| { readonly kind: "valid"; readonly value: number }
+	| { readonly kind: "error"; readonly message: string };
+
+/**
+ * Classify one idle-window draft against the spec.
+ *
+ * @param raw - the input's current text (NOT the trimmed value).
+ */
+export function validateLspIdleDraft(raw: string): LspIdleDraftResult {
+	const text = raw.trim();
+	if (text === "") return { kind: "unset" };
+	const parsed = Number.parseInt(text, 10);
+	if (!Number.isInteger(parsed) || parsed.toString() !== text) {
+		return { kind: "error", message: `请输入 ${LSP_IDLE_SPEC.min}–${LSP_IDLE_SPEC.max} 之间的整数` };
+	}
+	if (parsed < LSP_IDLE_SPEC.min || parsed > LSP_IDLE_SPEC.max) {
+		return { kind: "error", message: `超出允许范围 ${LSP_IDLE_SPEC.min}–${LSP_IDLE_SPEC.max}` };
+	}
+	return { kind: "valid", value: parsed };
+}
+
+/**
+ * The effective idle window, in milliseconds, read off the snapshot.
+ *
+ * Absent means the host-side default: the card shows it as a placeholder rather
+ * than as a real value, and the written config never carries a number the user
+ * did not pick.
+ */
+export function readLspIdleMs(snapshot: ConfigFormSnapshot): number | undefined {
+	const lsp = snapshot.value?.lsp;
+	if (typeof lsp !== "object" || lsp === null) return undefined;
+	const raw = (lsp as { idle_timeout_ms?: unknown }).idle_timeout_ms;
+	return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+}

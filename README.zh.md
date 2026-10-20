@@ -64,13 +64,13 @@
 
 **动态长度锚点。** 锚点不是定宽哈希。分配最短优先：2 个字符覆盖前 3,844 行，只有文件真需要时才长出新层（上限 62⁸ 行，实际不可达）。全数字编码被跳过，标记永远不会与行号混淆；冲突在分配时探测消解；会话内编辑后幸存的行保持原锚点——分配/释放走统一生命周期门，重写与外部变更按行对齐继承。
 
-**AST + LSP 双语义后端。** `ast_grep` / `ast_edit` 通过沙箱化的 tree-sitter worker 回答「语法在哪里匹配」，配精选语法目录（SHA-256 校验下载、安装/卸载路由）与长文件的可编辑折叠大纲。`lsp` 工具通过每语言一个的真实语言服务器回答「这个符号是什么」——按需启动，与 dsh 自带 `lsp` 服务共享——起不了服务器时降级启发式后端。两者都会 serve 自己的行，结构与语义结果可直接编辑。
+**AST + LSP 双语义后端。** `ast_grep` / `ast_edit` 通过沙箱化的 tree-sitter worker 回答「语法在哪里匹配」，配精选语法目录（SHA-256 校验下载、安装/卸载路由）与长文件的可编辑折叠大纲。`lsp` 工具通过每语言一个的真实语言服务器回答「这个符号是什么」——按需启动，与 dsh 自带 `lsp` 服务共享——起不了服务器时降级启发式后端。两者都会 serve 自己的行，结构与语义结果可直接编辑。没人用的语言服务器会在 `lsp.idle_timeout_ms`（默认五分钟）后被回收，下次用到再重新拉起——一个抱着大仓库索引的 TypeScript 服务器，不该整场会话都常驻。
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
 **语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 开启（默认**关**）后，每次真正改了内容的 `write`/`edit`/`ast_edit` 都会顺带格式化被改到的行：只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、无格式化器时**静默**跳过、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · u unserved]`），主 diff 已有的行标 `also in main diff`，本会话从未 serve 过的行**不带锚点**：格式化器的改写照实展示，但只有 serve 过的行才能按锚点再编辑。
 
-**插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断。改完提交即生效——不用碰 YAML。
+**插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断、语言服务器空闲回收窗口。改完提交即生效——不用碰 YAML。
 
 **处处热切换。** 提交的设置改动**下一次工具调用**即生效——输出格式、分隔符、上下文行数、AST/LSP 开关（已实测：会话中途切换 `output_format`，模型收到的内容立即改变）。影响面最大的开关也有处理：切换 `require_line_content` 会销毁并重挂 `edit` 工具的 schema，模型下一步就看到新的 `{ anchor, line }` 参数集——全程无需重启。
 
@@ -255,6 +255,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
     lsp:
       servers: {}            # 命名服务器：{ <languageId>: <command> }
       auto_diagnostics: true # 写入后内联投递服务器诊断
+      idle_timeout_ms: 300000 # 空闲多久后回收语言服务器（0 = 永不）
     format:
       auto: false           # write/edit/ast_edit 后自动格式化被改文件（LSP）
       editorconfig: false   # 格式化时读取 .editorconfig 缩进设置

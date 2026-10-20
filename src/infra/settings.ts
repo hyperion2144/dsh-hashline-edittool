@@ -17,7 +17,14 @@
  * @module dsh-hashline-edittool/infra/settings
  */
 
-import { RESPONSE_BUDGET_DEFAULT, RESPONSE_BUDGET_MIN, RESPONSE_BUDGET_MAX } from "./constants.js";
+import {
+	DEFAULT_LSP_IDLE_TIMEOUT_MS,
+	LSP_IDLE_TIMEOUT_MAX_MS,
+	LSP_IDLE_TIMEOUT_MIN_MS,
+	RESPONSE_BUDGET_DEFAULT,
+	RESPONSE_BUDGET_MIN,
+	RESPONSE_BUDGET_MAX,
+} from "./constants.js";
 
 export type OutputFormat = "text" | "json";
 
@@ -65,6 +72,14 @@ export interface EffectiveHashlineConfig {
 	 */
 	autoDiagnostics: boolean;
 	/**
+	 * How long a language server may sit unused before it is reclaimed (#306).
+	 *
+	 * 0 means "never reclaim" — the same contract as the AST worker's idle
+	 * window, and the reason the value is read at USE time rather than
+	 * captured when the server starts.
+	 */
+	lspIdleTimeoutMs: number;
+	/**
 	 * Whether write/edit/ast_edit hand the final content to a running language
 	 * server for formatting BEFORE it is written (map #275, G3). Default OFF —
 	 * an edit must never surprise the model with re-indented text.
@@ -87,6 +102,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	astLanguages: new Set<string>(),
 	lspServers: new Map<string, string>(),
 	autoDiagnostics: true,
+	lspIdleTimeoutMs: DEFAULT_LSP_IDLE_TIMEOUT_MS,
 	autoFormat: false,
 	editorconfig: false,
 	grepRespectGitignore: true,
@@ -152,6 +168,27 @@ export function lspConfiguredServers(): ReadonlyMap<string, string> {
  */
 export function isAutoDiagnosticsEnabled(): boolean {
 	return effective.autoDiagnostics;
+}
+
+/**
+ * The idle window before a language server is reclaimed (#306).
+ *
+ * Re-clamped defensively, like `responseBudget`: the schema refuses an
+ * out-of-range value, but the snapshot can also be written by a caller that
+ * bypasses it. 0 is a legal value and means "never reclaim".
+ */
+export function lspIdleTimeoutMs(): number {
+	const v = effective.lspIdleTimeoutMs;
+	if (!Number.isFinite(v) || v < LSP_IDLE_TIMEOUT_MIN_MS || v > LSP_IDLE_TIMEOUT_MAX_MS) {
+		const clamped = Number.isFinite(v)
+			? Math.min(LSP_IDLE_TIMEOUT_MAX_MS, Math.max(LSP_IDLE_TIMEOUT_MIN_MS, v))
+			: DEFAULT_LSP_IDLE_TIMEOUT_MS;
+		console.warn(
+			`[hashline] lsp.idle_timeout_ms ${v} out of range [${LSP_IDLE_TIMEOUT_MIN_MS}, ${LSP_IDLE_TIMEOUT_MAX_MS}]; clamped to ${clamped}.`,
+		);
+		return clamped;
+	}
+	return v;
 }
 
 /**

@@ -11,12 +11,19 @@
  * TypeScript server indexing a large repo can consume gigabytes); never warming
  * would make the first call permanently bad.
  *
+ * The other half of that bargain is that a server nobody is using must not stay
+ * resident for the rest of the session: warming is cheap to undo, but a
+ * TypeScript server holding a large repository's index is not. So every session
+ * remembers when it was last handed out, and an idle timer shuts the quiet
+ * ones down (#306).
+ *
  * Every refusal names its reason, because the reasons have different remedies:
  * a missing server means install one, a timeout means retry, and a too-large
  * file means the heuristic is genuinely the only option.
  *
  * @module dsh-hashline-edittool/lsp/manager
  */
+import { DEFAULT_LSP_IDLE_TIMEOUT_MS } from "../infra/constants.js";
 import { LspSession, type LspTransport } from "./session.js";
 import { canInstallServer, serverEntryFor } from "./install-server.js";
 import {
@@ -88,6 +95,13 @@ export interface LspManagerOptions extends DiscoveryOptions {
 	readonly maxDocumentBytes?: number;
 	/** Called when a server fails to start, for logs. */
 	readonly onFailure?: (languageId: string, message: string) => void;
+	/**
+	 * How long a session may sit unused before it is reclaimed (#306).
+	 *
+	 * A FUNCTION, read at use time: the value comes from the settings surface,
+	 * and a change must take effect without a restart. 0 means "never reclaim".
+	 */
+	readonly idleTimeoutMs?: () => number;
 }
 
 /** The transport shape the manager needs (the session's, plus diagnostics). */
@@ -99,7 +113,15 @@ export interface ServerTransportLike extends LspTransport {
 /** One language's slot. */
 type Slot =
 	| { readonly state: "starting" }
-	| { readonly state: "ready"; readonly session: LspSession; readonly transport: ServerTransportLike }
+	| {
+			readonly state: "ready";
+			readonly session: LspSession;
+			readonly transport: ServerTransportLike;
+			/** When the session was last handed out — the idle clock's zero. */
+			lastUsedAt: number;
+			/** The armed idle shutdown, when there is one. */
+			idleTimer?: ReturnType<typeof setTimeout>;
+	  }
 	| { readonly state: "failed"; readonly reason: BackendReason; readonly message: string };
 
 /** A server this manager launched, for teardown. */
@@ -110,6 +132,14 @@ interface Launched {
 
 /** Default document ceiling, matching the platform LSP provider's. */
 const DEFAULT_MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
+/**
+ * How often an idle session re-checks the setting while reaping is off.
+ *
+ * A probe rather than a decision: turning reaping back on must be noticed even
+ * for a session nobody touches again — and that is exactly the session the
+ * reaper is for.
+ */
+const IDLE_PROBE_MS = 60_000;
 
 /** Owns the sessions. */
 export class LspManager {
@@ -119,6 +149,8 @@ export class LspManager {
 	#disposed = false;
 	#discovered: DiscoveredServer[] | undefined;
 	#discovering: Promise<DiscoveredServer[]> | undefined;
+	/** In-flight idle reclamations, so `dispose` can wait for them. */
+	#reaping = new Set<Promise<void>>();
 
 	constructor(options: LspManagerOptions) {
 		this.#options = options;
@@ -146,6 +178,128 @@ export class LspManager {
 		return this.#discovering;
 	}
 
+	// ── idle reclamation (#306) ───────────────────────────────────────────────
+
+	/**
+	 * The idle window, as the settings surface currently says it.
+	 *
+	 * Read at USE TIME, never captured: the value comes from a volatile
+	 * setting, and a change must take effect without a restart. 0 means
+	 * "never reclaim".
+	 */
+	#idleTimeout(): number {
+		let raw: number;
+		try {
+			raw = this.#options.idleTimeoutMs?.() ?? DEFAULT_LSP_IDLE_TIMEOUT_MS;
+		} catch {
+			// A settings surface that throws must not break the tool call that
+			// happened to read the window.
+			raw = DEFAULT_LSP_IDLE_TIMEOUT_MS;
+		}
+		return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_LSP_IDLE_TIMEOUT_MS;
+	}
+
+	/**
+	 * Mark a session as used, and (re-)arm its idle shutdown.
+	 *
+	 * Handing a session out IS a use — and so is keeping a server in step with
+	 * our writes. The timestamp is the idle clock's zero; the timer is only a
+	 * wake-up, because the window may change while it runs.
+	 */
+	#touchIdle(languageId: string): void {
+		const slot = this.#slots.get(languageId);
+		if (slot?.state !== "ready") return;
+		slot.lastUsedAt = Date.now();
+		const window = this.#idleTimeout();
+		this.#armIdle(languageId, window > 0 ? window : IDLE_PROBE_MS);
+	}
+
+	/**
+	 * Arm the idle shutdown for one language's session.
+	 *
+	 * The timer is unref'd: a language server that is being reclaimed must
+	 * never be the reason the process stays alive.
+	 */
+	#armIdle(languageId: string, delayMs: number): void {
+		const slot = this.#slots.get(languageId);
+		if (slot?.state !== "ready" || this.#disposed) return;
+		if (slot.idleTimer !== undefined) clearTimeout(slot.idleTimer);
+		slot.idleTimer = undefined;
+		const timer = setTimeout(() => {
+			slot.idleTimer = undefined;
+			void this.#reapIdle(languageId);
+		}, delayMs);
+		timer.unref?.();
+		slot.idleTimer = timer;
+	}
+
+	/**
+	 * Reclaim one language's session, if it really is idle.
+	 *
+	 * The SLOT goes first and the PROCESS second: a caller that asks for the
+	 * language while the old server is still shutting down must be told "cold"
+	 * (and warm a fresh one), not handed a session that is about to die.
+	 */
+	async #reapIdle(languageId: string): Promise<void> {
+		if (this.#disposed) return;
+		const slot = this.#slots.get(languageId);
+		if (slot?.state !== "ready") return;
+		const window = this.#idleTimeout();
+		if (window <= 0) {
+			// Reclaim is off. Keep a probe armed so turning it back on is noticed
+			// even for a session nobody touches again.
+			this.#armIdle(languageId, IDLE_PROBE_MS);
+			return;
+		}
+		const elapsed = Date.now() - slot.lastUsedAt;
+		if (elapsed < window) {
+			// The window grew while the timer ran: wait out the rest of it.
+			this.#armIdle(languageId, window - elapsed);
+			return;
+		}
+		if (slot.session.hasPendingRequests) {
+			// A server that is mid-answer is WORKING, not idle: killing it now
+			// would break a request that is already in flight.
+			this.#armIdle(languageId, window);
+			return;
+		}
+		this.#slots.delete(languageId);
+		this.#forget(slot.session);
+		const task = this.#terminate(slot.session, slot.transport);
+		this.#reaping.add(task);
+		// `then` with BOTH handlers, not `finally`: a derived promise that
+		// rejects is an unhandled rejection, and a failed termination must
+		// never take the session down with it.
+		void task.then(
+			() => {
+				this.#reaping.delete(task);
+			},
+			() => {
+				this.#reaping.delete(task);
+			},
+		);
+	}
+
+	/** Stop a session and release its process. */
+	async #terminate(session: LspSession, transport: ServerTransportLike): Promise<void> {
+		try {
+			await session.shutdown();
+		} catch {
+			// A server that will not shut down is still killed below.
+			try {
+				await transport.kill();
+			} catch {
+				/* already gone */
+			}
+		}
+	}
+
+	/** Drop a session from the teardown list: it is being stopped on purpose. */
+	#forget(session: LspSession): void {
+		const index = this.#launched.findIndex((entry) => entry.session === session);
+		if (index >= 0) this.#launched.splice(index, 1);
+	}
+
 	/**
 	 * Start warming a language's server, if it is not already starting or up.
 	 *
@@ -160,6 +314,7 @@ export class LspManager {
 	}
 
 	async #start(languageId: string, workspaceRoot: string): Promise<void> {
+		let session: LspSession | undefined;
 		try {
 			const servers = await this.#servers();
 			const server = serverForLanguage(servers, languageId);
@@ -172,7 +327,7 @@ export class LspManager {
 				return;
 			}
 			const { transport } = this.#options.spawn(server, workspaceRoot);
-			const session = new LspSession(transport, {
+			session = new LspSession(transport, {
 				requestTimeoutMs: this.#options.initializeTimeoutMs ?? 10_000,
 			});
 			this.#launched.push({ transport, session });
@@ -182,9 +337,29 @@ export class LspManager {
 				await session.shutdown();
 				return;
 			}
-			this.#slots.set(languageId, { state: "ready", session, transport });
+			this.#slots.set(languageId, {
+				state: "ready",
+				session,
+				transport,
+				lastUsedAt: Date.now(),
+			});
+			// The idle clock starts now: a server nobody asks for must not hold
+			// its index for the rest of the session.
+			this.#touchIdle(languageId);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			// A handshake that failed leaves a process nobody will talk to
+			// again — the slot is `failed` and `warm` refuses to retry it.
+			// Leaving it running would hold its whole index for the rest of
+			// the session, which is the leak the idle reaper exists to stop.
+			if (session !== undefined) {
+				this.#forget(session);
+				try {
+					await session.shutdown();
+				} catch {
+					/* already gone */
+				}
+			}
 			this.#slots.set(languageId, { state: "failed", reason: reasonFor(error), message });
 			this.#options.onFailure?.(languageId, message);
 		}
@@ -218,6 +393,8 @@ export class LspManager {
 		if (slot.state === "starting") {
 			return { backend: "heuristic", reason: "lsp-unavailable" };
 		}
+		// Handing the session out IS the use that keeps it alive.
+		this.#touchIdle(languageId);
 		return { backend: "lsp", session: slot.session };
 	}
 
@@ -235,8 +412,17 @@ export class LspManager {
 	openDocumentFor(languageId: string, uri: string): ((text: string) => void) | undefined {
 		const slot = this.#slots.get(languageId);
 		if (slot?.state !== "ready") return undefined;
-		const session = slot.session;
+		// Keeping a server in step with our writes is a use too: a server that
+		// is being written to is not idle.
+		this.#touchIdle(languageId);
 		return (text: string) => {
+			this.#touchIdle(languageId);
+			// The session this closure was made for may have been reclaimed since:
+			// the CURRENT one is the server that must learn about the document, and
+			// a dead server must not be written to.
+			const current = this.#slots.get(languageId);
+			if (current?.state !== "ready") return;
+			const session = current.session;
 			// Open-or-change: a document the server has never seen must be opened
 			// before it can be changed.
 			if (!session.openDocuments.includes(uri)) {
@@ -256,7 +442,9 @@ export class LspManager {
 	 */
 	readySessionFor(languageId: string): LspSession | undefined {
 		const slot = this.#slots.get(languageId);
-		return slot?.state === "ready" ? slot.session : undefined;
+		if (slot?.state !== "ready") return undefined;
+		this.#touchIdle(languageId);
+		return slot.session;
 	}
 	/** How long `waitForSession` holds a caller while the server boots. */
 	static readonly START_TIMEOUT_MS = 15_000;
@@ -280,14 +468,20 @@ export class LspManager {
 		timeoutMs: number = LspManager.START_TIMEOUT_MS,
 	): Promise<LspSession | undefined> {
 		const slot = this.#slots.get(languageId);
-		if (slot?.state === "ready") return slot.session;
+		if (slot?.state === "ready") {
+			this.#touchIdle(languageId);
+			return slot.session;
+		}
 		if (this.#disposed) return undefined;
 		this.warm(languageId, workspaceRoot);
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const current = this.#slots.get(languageId);
-			if (current?.state === "ready") return current.session;
+			if (current?.state === "ready") {
+				this.#touchIdle(languageId);
+				return current.session;
+			}
 			if (current?.state === "failed") return undefined;
 		}
 		return undefined;
@@ -296,7 +490,10 @@ export class LspManager {
 	/** The live session for a language, warming it if this is the first ask. */
 	async sessionFor(languageId: string, workspaceRoot: string): Promise<LspSession | undefined> {
 		const slot = this.#slots.get(languageId);
-		if (slot?.state === "ready") return slot.session;
+		if (slot?.state === "ready") {
+			this.#touchIdle(languageId);
+			return slot.session;
+		}
 		this.warm(languageId, workspaceRoot);
 		return undefined;
 	}
@@ -425,11 +622,15 @@ export class LspManager {
 	/** Shut every server down and release the processes. */
 	async dispose(): Promise<void> {
 		this.#disposed = true;
+		for (const slot of this.#slots.values()) {
+			if (slot.state === "ready" && slot.idleTimer !== undefined) clearTimeout(slot.idleTimer);
+		}
 		const launched = this.#launched;
 		this.#launched = [];
+		const reaping = [...this.#reaping];
 		this.#slots.clear();
-		await Promise.all(
-			launched.map(async ({ session, transport }) => {
+		await Promise.all([
+			...launched.map(async ({ session, transport }) => {
 				try {
 					await session.shutdown();
 				} catch {
@@ -441,7 +642,12 @@ export class LspManager {
 					}
 				}
 			}),
-		);
+			// A reclamation that is already in flight owns a process the list
+			// above no longer mentions: wait for it, so `dispose` really does
+			// release every process it started. A failed termination is not a
+			// reason to fail the dispose.
+			...reaping.map((task) => task.catch(() => undefined)),
+		]);
 	}
 }
 

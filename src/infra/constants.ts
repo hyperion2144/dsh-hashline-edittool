@@ -196,3 +196,20 @@ export const AST_SUMMARY_MIN_COMMENT_LINES = 6;
 export const AST_SUMMARY_MIN_SHRINK_RATIO = 0.6;
 export const AST_SUMMARY_UNFOLD_UNTIL = 50;
 export const AST_SUMMARY_UNFOLD_LIMIT = 100;
+
+// ── language-server idle reclamation (#306) ──────────────────────────────────
+/**
+ * Default idle window before a language server is reclaimed (#306).
+ *
+ * Five minutes: long enough that a normal editing session never pays for a
+ * restart, short enough that a server nobody asked for does not hold a whole
+ * repository's index for the rest of the day.
+ */
+export const DEFAULT_LSP_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * The tightest window the setting may ask for. 0 is the one special value:
+ * it means "never reclaim" (the same contract as the AST worker's `idleMs`).
+ */
+export const LSP_IDLE_TIMEOUT_MIN_MS = 0;
+/** The loosest window the setting may ask for: one hour. */
+export const LSP_IDLE_TIMEOUT_MAX_MS = 60 * 60 * 1000;

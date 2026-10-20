@@ -18,14 +18,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	STORE_BUDGET_SPECS,
+	LSP_IDLE_SPEC,
 	buildFieldOp,
 	controllerSnapshot,
 	formFace,
 	NOT_READY_SNAPSHOT,
 	requestedView,
 	readFormatFlags,
+	readLspIdleMs,
 	settingsSummaryText,
 	validateStoreBudgetDraft,
+	validateLspIdleDraft,
 } from "../src/client/settings-model.js";
 import type { ConfigForm, ConfigFormSnapshot } from "../src/client/types.js";
 
@@ -368,5 +371,89 @@ describe("the card's 格式化 group (#275) — wiring pinned against the source
 		// Each switch carries BOTH keys: a partial write would clear the sibling.
 		expect(cardSource).toContain('writeField("format", { auto: checked, editorconfig: formatFlags.editorconfig })');
 		expect(cardSource).toContain('writeField("format", { auto: formatFlags.auto, editorconfig: checked })');
+	});
+});
+
+describe("the card's 语言服务器 group (#306) — wiring pinned against the source", () => {
+	const cardSource = readFileSync(
+		join(dirname(fileURLToPath(import.meta.url)), "..", "src", "client", "settings-card.tsx"),
+		"utf8",
+	);
+
+	it("writes the lsp subtree as LEAF ops, so the idle window survives", () => {
+		// The whole-subtree write is what dropped the idle window: it replaced
+		// the whole `lsp` object, and the new key was not in it. A leaf op
+		// carries its own path, so the siblings are left alone.
+		expect(cardSource).toContain('writeField(["lsp", "auto_diagnostics"], checked)');
+		expect(cardSource).toContain('writeField(["lsp", "servers"], servers)');
+		expect(cardSource).not.toContain('writeField("lsp", {');
+	});
+	it("renders the idle window input and writes it as a leaf op", () => {
+		expect(cardSource).toContain("空闲回收");
+		expect(cardSource).toContain("LSP_IDLE_SPEC.path");
+	});
+});
+
+describe("LSP_IDLE_SPEC — the card's mirror of the host schema (#306)", () => {
+	it("matches the host-side schema ranges exactly", () => {
+		// The divergence hazard: the host side (`src/config.ts`) and the client
+		// side declare the same range independently. The host tests assert the
+		// schema throws at these boundaries; this is the client counterpart.
+		expect(LSP_IDLE_SPEC).toMatchObject({ min: 0, max: 3_600_000, defaultMs: 300_000 });
+	});
+	it("uses the two-segment path shape the mutate op expects", () => {
+		// The card's onBlur handler forwards it to `buildFieldOp(path, value)`,
+		// which only treats a string as a single-segment path.
+		expect(LSP_IDLE_SPEC.path).toEqual(["lsp", "idle_timeout_ms"]);
+	});
+});
+
+describe("validateLspIdleDraft — the card's first line of defence (#306)", () => {
+	it("treats empty input as `unset` (the legitimate 'restore default' signal)", () => {
+		expect(validateLspIdleDraft("")).toEqual({ kind: "unset" });
+		expect(validateLspIdleDraft("   ")).toEqual({ kind: "unset" });
+	});
+	it("accepts 0 — the 'never reclaim' value", () => {
+		expect(validateLspIdleDraft("0")).toEqual({ kind: "valid", value: 0 });
+	});
+	it("accepts values inside the range and the boundaries", () => {
+		expect(validateLspIdleDraft("300000")).toEqual({ kind: "valid", value: 300000 });
+		expect(validateLspIdleDraft("3600000")).toEqual({ kind: "valid", value: 3600000 });
+	});
+	it("rejects values just outside the range with a Chinese error", () => {
+		const over = validateLspIdleDraft("3600001");
+		expect(over.kind).toBe("error");
+		if (over.kind === "error") {
+			expect(over.message).toContain("超出允许范围");
+		}
+		const under = validateLspIdleDraft("-1");
+		expect(under.kind).toBe("error");
+	});
+	it("rejects non-numeric input (does NOT silently treat it as unset)", () => {
+		const result = validateLspIdleDraft("abc");
+		expect(result.kind).toBe("error");
+		if (result.kind === "error") {
+			expect(result.message).toContain("整数");
+		}
+	});
+});
+
+describe("readLspIdleMs — the card's view of the window (#306)", () => {
+	const snapshotWith = (lsp: unknown): ConfigFormSnapshot => ({
+		...READY,
+		value: { ...READY.value, lsp },
+	});
+
+	it("reports an absent subtree as undefined (the host constant applies)", () => {
+		expect(readLspIdleMs(READY)).toBeUndefined();
+		expect(readLspIdleMs(snapshotWith({}))).toBeUndefined();
+	});
+	it("reads an explicit value, 0 included", () => {
+		expect(readLspIdleMs(snapshotWith({ idle_timeout_ms: 60_000 }))).toBe(60_000);
+		expect(readLspIdleMs(snapshotWith({ idle_timeout_ms: 0 }))).toBe(0);
+	});
+	it("ignores garbage values instead of coercing them", () => {
+		expect(readLspIdleMs(snapshotWith({ idle_timeout_ms: "300000" }))).toBeUndefined();
+		expect(readLspIdleMs(snapshotWith("on"))).toBeUndefined();
 	});
 });

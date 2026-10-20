@@ -44,6 +44,9 @@ import {
 	requestedView,
 	settingsSummaryText,
 	validateStoreBudgetDraft,
+	LSP_IDLE_SPEC,
+	readLspIdleMs,
+	validateLspIdleDraft,
 	type SettingsCardView,
 	type SettingsControllerFace,
 	type StoreBudgetSpec,
@@ -603,6 +606,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	const lsp = useLspStatus();
 	const namedServers = readLspServers(snapshot);
 	const autoDiag = readAutoDiagnostics(snapshot);
+	const lspIdleMs = readLspIdleMs(snapshot);
 	const formatFlags = readFormatFlags(snapshot);
 	const store = readStore(snapshot);
 	const storeOverridden = hasAnyStoreField(snapshot);
@@ -619,6 +623,10 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	const [separatorDraft, setSeparatorDraft] = useState(core.separator);
 	/** Same draft-on-blur treatment for the numeric field. */
 	const [contextDraft, setContextDraft] = useState(String(core.contextLines));
+	/** Same draft-on-blur treatment for the LSP idle window (#306). */
+	const [lspIdleDraft, setLspIdleDraft] = useState(lspIdleMs === undefined ? "" : String(lspIdleMs));
+	/** The idle window's out-of-range message, or undefined when it is fine. */
+	const [lspIdleError, setLspIdleError] = useState<string | undefined>(undefined);
 	/** Which of the card's two sections is showing. */
 	const [tab, setTab] = useState<"core" | "ast" | "lsp" | "store">("core");
 	/** Same draft-on-blur treatment for the store-budget fields (#179). */
@@ -1154,10 +1162,45 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					"autoDiag",
 					(checked) =>
 						void write("autoDiag", () =>
-							writeField("lsp", { servers: { ...namedServers }, auto_diagnostics: checked }),
+							writeField(["lsp", "auto_diagnostics"], checked),
 						),
 				)}
 			</div>
+				{/* #306: the idle window. A language server nobody is using must not
+				 * hold its index for the rest of the session: the host reclaims it
+				 * after this many idle milliseconds and warms it again on the next
+				 * use. 0 means "never reclaim". */}
+				<div className="dshl-mgr-master">
+					<span className="dshl-mgr-label">空闲回收</span>
+					<input
+						className="dshl-mgr-search"
+						style={{ maxWidth: "10ch" }}
+						type="number"
+						min={0}
+						max={3600000}
+						step={1}
+						placeholder="300000（默认）"
+						value={lspIdleDraft}
+						disabled={!writable}
+						onChange={(event) => setLspIdleDraft(event.target.value)}
+						onBlur={() => {
+							const result = validateLspIdleDraft(lspIdleDraft);
+							if (result.kind === "error") {
+								setLspIdleError(result.message);
+								return;
+							}
+							setLspIdleError(undefined);
+							void write("lsp.idle", () =>
+								result.kind === "valid"
+									? writeField(LSP_IDLE_SPEC.path, result.value)
+									: writeField(LSP_IDLE_SPEC.path),
+							);
+						}}
+					/>{lspIdleError === undefined ? null : <span className="dshl-mgr-error">{lspIdleError}</span>}
+					<span className="dshl-mgr-hint">
+						毫秒，0–3600000；默认 300000。空闲超过这个时间语言服务器会被回收，下次用到再拉起；填 0 表示永不回收。
+					</span>
+				</div>
 			{/* #275: the format group, beside the servers that power it. Both are
 				OPT-IN: absent means OFF — the opposite of auto-diagnostics above. */}
 			<h4 className="dshl-mgr-section">格式化</h4>
@@ -1215,7 +1258,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 								onClick={() => {
 									const servers = { ...namedServers };
 									delete servers[id];
-									void write(`lsp:${id}`, () => writeField("lsp", { servers, auto_diagnostics: autoDiag }));
+									void write(`lsp:${id}`, () => writeField(["lsp", "servers"], servers));
 								}}
 							>
 								移除
@@ -1245,7 +1288,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						const servers = { ...namedServers, [serverLang.trim()]: serverCommand.trim() };
 						setServerLang("");
 						setServerCommand("");
-						void write(`lsp:${serverLang.trim()}`, () => writeField("lsp", { servers, auto_diagnostics: autoDiag }));
+						void write(`lsp:${serverLang.trim()}`, () => writeField(["lsp", "servers"], servers));
 					}}
 				>
 					指定

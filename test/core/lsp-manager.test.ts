@@ -63,13 +63,17 @@ function fakeServer(opts: { answerInitialize?: boolean } = {}) {
 	};
 }
 
-function managerWith(present: string[], opts: { answerInitialize?: boolean; onSpawn?: () => void } = {}) {
+function managerWith(
+	present: string[],
+	opts: { answerInitialize?: boolean; onSpawn?: () => void; idleTimeoutMs?: () => number } = {},
+) {
 	const servers = new Map<string, ReturnType<typeof fakeServer>>();
 	const manager = new LspManager({
 		pathDirs: ["/bin"],
 		isExecutable: async (p) => present.includes(p),
 		initializeTimeoutMs: 200,
 		maxDocumentBytes: 1_000,
+		...(opts.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: opts.idleTimeoutMs }),
 		spawn: () => {
 			opts.onSpawn?.();
 			const server = fakeServer({ ...(opts.answerInitialize === undefined ? {} : { answerInitialize: opts.answerInitialize }) });
@@ -215,5 +219,233 @@ describe("disposal", () => {
 		const { manager } = managerWith([join("/bin", "pyright-langserver")]);
 		await manager.dispose();
 		expect(manager.decide("python", "/repo", 10)).toEqual({ backend: "heuristic", reason: "lsp-unavailable" });
+	});
+});
+
+/**
+ * Issue #306: a language server nobody is using must not stay resident for the
+ * rest of the session. A TypeScript server holding a large repository's index
+ * can cost gigabytes, and the old contract was "warm once, keep it until the
+ * plugin unloads".
+ *
+ * The window is READ AT USE TIME — the value is a setting, and a setting can
+ * change while the plugin is loaded — so these tests change it mid-flight.
+ */
+describe("idle reclamation (#306)", () => {
+	it("reclaims a session nobody is using", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 60_000,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(1);
+			// The SLOT is gone too: the language is cold again, not stuck on a
+			// session that is about to die.
+			expect(manager.readyLanguages).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps a session that is still in use", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 60_000,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			// Half the window passes, the session is used, then the other half
+			// passes: the clock RESTARTS on use, so it is not idle.
+			vi.advanceTimersByTime(30_000);
+			manager.decide("python", "/repo", 10);
+			vi.advanceTimersByTime(30_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(0);
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("warms a fresh server after a reclaim", async () => {
+		vi.useFakeTimers();
+		try {
+			let spawned = 0;
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 60_000,
+				onSpawn: () => {
+					spawned += 1;
+				},
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			expect(spawned).toBe(1);
+			// The next ask is COLD: a new server is warmed, and it is usable.
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			expect(spawned).toBe(2);
+			expect(manager.readyLanguages).toEqual(["python"]);
+			expect(servers.get("1")).toBeDefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("never reclaims when the window is 0", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 0,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			vi.advanceTimersByTime(600_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(0);
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not reclaim a session that is mid-answer", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 60_000,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			const session = manager.readySessionFor("python")!;
+			// A request the fake server never answers: the session is WORKING, not
+			// idle, and killing it now would break a request already in flight.
+			void session.request("textDocument/definition", {}, 600_000).catch(() => undefined);
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(0);
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reads the window at use time, so a longer window delays the reclaim", async () => {
+		vi.useFakeTimers();
+		try {
+			let window = 60_000;
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => window,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			// The user raises the window while the timer is already running.
+			window = 120_000;
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(0);
+			// …and the session is reclaimed only once the NEW window has passed.
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("shuts the process down when the handshake failed", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				answerInitialize: false,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			vi.advanceTimersByTime(400);
+			await settle();
+			// The slot is failed and the process is GONE: a server nobody will talk
+			// to again must not hold its index until the plugin unloads.
+			expect(servers.get("0")!.killed()).toBe(1);
+			expect(manager.unavailability("python")?.reason).toBe("lsp-timeout");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("does not write to a session that was reclaimed", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 60_000,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			const open = manager.openDocumentFor("python", "file:///repo/a.py")!;
+			open("print(1)");
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			expect(servers.get("0")!.killed()).toBe(1);
+			// The closure outlived its session. Writing to a DEAD server would
+			// push a change into a pipe nobody reads — and, worse, throw on a
+			// closed pipe. The reclaimed session must be left alone.
+			expect(() => open("print(2)")).not.toThrow();
+			expect(servers.get("0")!.received().map((m) => m.method)).not.toContain("textDocument/didChange");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("hands a stale closure to the re-warmed server", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => 60_000,
+			});
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			const open = manager.openDocumentFor("python", "file:///repo/a.py")!;
+			vi.advanceTimersByTime(60_000);
+			await settle();
+			// The language goes cold and is warmed again.
+			manager.decide("python", "/repo", 10);
+			await settle();
+			await settle();
+			open("print(3)");
+			// The CURRENT server is the one that must learn about the document —
+			// the new one has never seen it, so this is a didOpen.
+			expect(servers.get("1")!.received().map((m) => m.method)).toContain("textDocument/didOpen");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("survives a settings surface that throws", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager } = managerWith([join("/bin", "pyright-langserver")], {
+				idleTimeoutMs: () => {
+					throw new Error("the settings surface is broken");
+				},
+			});
+			// Reading the window must never be the thing that breaks a tool call.
+			expect(manager.decide("python", "/repo", 10).backend).toBe("heuristic");
+			await settle();
+			await settle();
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

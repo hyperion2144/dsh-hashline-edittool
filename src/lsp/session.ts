@@ -283,6 +283,16 @@ export class LspSession {
 		return this.#state === "ready";
 	}
 
+	/**
+	 * Whether a request is still in flight.
+	 *
+	 * A server that is mid-answer is WORKING, not idle: the idle reaper must
+	 * not break a request that has already been sent.
+	 */
+	get hasPendingRequests(): boolean {
+		return this.#pending.size > 0;
+	}
+
 	/** Register a handler for an inbound notification or request. */
 	on(method: string, handler: (params: unknown) => unknown): void {
 		this.#handlers.set(method, handler);
