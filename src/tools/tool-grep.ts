@@ -47,6 +47,7 @@ import {
 	type SegmentRow,
 	type ResumeSidecar,
 	takeRowsWithinBudget,
+	takeRowsStrictlyWithinBudget,
 } from "../infra/response-stream.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
@@ -99,6 +100,15 @@ export interface GrepToolOptions {
 }
 
 const DEFAULT_LIMIT = 100;
+
+/**
+ * The per-row allowance the scan charges for a row's marker — the rendered
+ * marker, its separator and the space after it. It is the SAME allowance the
+ * continuation charges for a resumed row (`content + 24`), so a row costs the
+ * same on either side of the cut, and the same one the #205 pointer-ization
+ * measures a single row against.
+ */
+const ROW_MARKER_ALLOWANCE = 24;
 
 /**
  * Pure helper: extract rows from one file's content given a matcher.
@@ -346,7 +356,7 @@ export function buildGrepTool(io: FileIO) {
 					const token = (args as Record<string, unknown>).resume as string;
 					const sidecar = await loadResume(sessionKey, token, "grep");
 					const remaining = await readSpillRows(sidecar, sidecar.total - sidecar.cursor);
-					const take = takeRowsWithinBudget(remaining, budget, (row) => row.content.length + 24);
+					const take = takeRowsWithinBudget(remaining, budget, (row) => codeUnits(row.content) + ROW_MARKER_ALLOWANCE);
 					const servedParts: string[] = [];
 					const cardFiles: GrepFileRows[] = [];
 					const cautions: string[] = [];
@@ -568,7 +578,7 @@ export function buildGrepTool(io: FileIO) {
 				// #205 Q5: a single row over the budget is pointer-ized and the segment
 				// keeps assembling — one pathological line never destroys a section.
 				for (const row of section.contextRows) {
-					if (codeUnits(row.content) + 24 > budget) {
+					if (codeUnits(row.content) + ROW_MARKER_ALLOWANCE > budget) {
 						row.content = `[Line ${row.position + 1} is ~${codeUnits(row.content)} chars, exceeds the ${budget}-char per-response budget; content not shown. Use bash: sed -n '${row.position + 1}p' ${file} | head -c ${budget}]`;
 						row.pointer = true;
 					}
@@ -577,9 +587,15 @@ export function buildGrepTool(io: FileIO) {
 					totalMatches += section.matches.length;
 					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
 					const sectionChars =
-						codeUnits(section.contextRows.map((row) => row.content).join("\n")) + 24 * (section.contextRows.length + 1);
-					if (!spilling && usedChars + sectionChars <= budget) {
-						const positions = section.contextRows.map((row) => row.position + 1);
+						codeUnits(section.contextRows.map((row) => row.content).join("\n")) +
+						ROW_MARKER_ALLOWANCE * (section.contextRows.length + 1);
+					// #307: the admission is per ROW, not per section. A section that does
+					// not fit whole is SPLIT: the prefix that fits the remaining budget is
+					// served (anchored, editable), the tail spills to the resume token. A
+					// file larger than the whole budget used to answer with an empty shell
+					// — the notice and nothing else.
+					const admitRows = async (rows: GrepSectionRow[]): Promise<void> => {
+						const positions = rows.map((row) => row.position + 1);
 						// #223: same single entry point as the section branch above.
 						// A lossy file is not editable (#273): its text carries U+FFFD
 						// stand-ins for undecodable bytes, so `edit` refuses it and an anchor
@@ -596,8 +612,8 @@ export function buildGrepTool(io: FileIO) {
 								});
 						const anchorsByPosition = new Map<number, string>();
 						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
-						section.contextRows.forEach((row, index) => {
-						if (row.pointer) return;
+						rows.forEach((row, index) => {
+							if (row.pointer) return;
 							const anchor = allocated[index] ?? "";
 							anchorsByPosition.set(row.position, anchor);
 							if (anchor !== "") {
@@ -617,12 +633,12 @@ export function buildGrepTool(io: FileIO) {
 							await io.emitObserved(file, exec, signal2).catch(() => undefined);
 						}
 						fileSections.push(
-							renderSection(displayPath, section.contextRows, anchorsByPosition, lineNumbersEnabled(), !headerEmitted),
+							renderSection(displayPath, rows, anchorsByPosition, lineNumbersEnabled(), !headerEmitted),
 						);
 						headerEmitted = true;
 						cardFiles.push({
 							path: displayPath,
-							rows: section.contextRows.map((row) => ({
+							rows: rows.map((row) => ({
 								number: row.position + 1,
 								hash: anchorsByPosition.get(row.position) ?? "",
 								text: row.content,
@@ -642,24 +658,74 @@ export function buildGrepTool(io: FileIO) {
 								const anchor = anchorsByPos.get(position) ?? "";
 								return anchor === "" ? `${position + 1}` : fmtMarker(anchor, position + 1);
 							};
+							// Only the rows THIS response returns are projected (#307): a
+							// partially served section must not claim the rows it spilled.
+							const servedPositions = new Set(rows.map((row) => row.position));
 							for (const match of section.matches) {
+								if (!servedPositions.has(match.position)) continue;
 								matches[keyOf(match.position)] = rowContent(section, match.position);
 								for (let k = Math.max(0, match.position - context); k <= Math.min(section.lineCount - 1, match.position + context); k++) {
 									if (k === match.position) continue;
+									if (!servedPositions.has(k)) continue;
 									matches[keyOf(k)] = rowContent(section, k);
 								}
 							}
 							jsonFiles.push({ path: displayPath, matches });
 						}
+					};
+					if (!spilling && usedChars + sectionChars <= budget) {
+						await admitRows(section.contextRows);
 						usedChars += sectionChars;
 					} else {
+						// The section does not fit whole. Split it per ROW instead of
+						// dropping all of it: the prefix that fits the remaining budget is
+						// served, the tail spills and stays reachable through the resume
+						// token. The row cost is the one the continuation charges, so a row
+						// costs the same on either side of the cut.
+						//
+						// The split is STRICT — a row that does not fit is not taken, so the
+						// response never passes the budget. That is safe for the FIRST
+						// section: what is left of the budget IS the whole budget there, and
+						// a row bigger than that is pointer-ized above (#205) — so the first
+						// row always fits and the response is never the empty shell #307
+						// reported. A LATER section may leave too little room for any
+						// row: then the whole section spills, as it did before.
+						const remaining = Math.max(0, budget - usedChars);
+						const rowCost = (row: GrepSectionRow): number => codeUnits(row.content) + ROW_MARKER_ALLOWANCE;
+						let split = spilling
+							? { included: [] as GrepSectionRow[], overflow: section.contextRows, used: 0 }
+							: takeRowsStrictlyWithinBudget(section.contextRows, remaining, rowCost);
+						if (split.included.length > 0 && !split.included.some((row) => row.isMatch)) {
+							// The window was filled by the section's LEADING context rows: the
+							// response would show context and no hit, and the JSON projection
+							// would read as "this file has no matches". Restart at the first hit —
+							// the skipped context rows go to the SPILL, so the continuation serves
+							// them first and nothing is lost. This is the answer to the ticket's
+							// open question: the cut is per row, but it never lands BEFORE the
+							// section's first hit.
+							const firstHit = section.contextRows.findIndex((row) => row.isMatch);
+							if (firstHit > 0) {
+								const fromHit = takeRowsStrictlyWithinBudget(section.contextRows.slice(firstHit), remaining, rowCost);
+								if (fromHit.included.length > 0) {
+									split = {
+										included: fromHit.included,
+										overflow: [...section.contextRows.slice(0, firstHit), ...fromHit.overflow],
+										used: fromHit.used,
+									};
+								}
+							}
+						}
 						spilling = true;
 						if (!spillStampPaths.has(file)) {
 							spillStampPaths.add(file);
 							const version = await io.statVersion(file, signal2).catch(() => undefined);
 							spillStamps.push({ path: file, version });
 						}
-						for (const row of section.contextRows) {
+						if (split.included.length > 0) {
+							await admitRows(split.included);
+							usedChars += split.used;
+						}
+						for (const row of split.overflow) {
 							spillRows.push({ content: row.content, path: file, line: row.position + 1, kind: row.isMatch ? "row" : "ctx" });
 						}
 					}
@@ -701,6 +767,10 @@ export function buildGrepTool(io: FileIO) {
 					} satisfies GrepCanonicalValue & { modelText: string };
 				}
 				if (fileSections.length === 0) {
+					// Unreachable since the per-row admission (#307): the first section
+					// always contributes at least its first row (a row bigger than the
+					// whole budget is pointer-ized above). Kept as a guard: if it ever
+					// fires, the notice alone is still the honest answer.
 					// everything spilled: the response is the continuation notice alone
 					return {
 						files: [],
