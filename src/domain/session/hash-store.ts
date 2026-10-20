@@ -64,6 +64,15 @@ import {
 	storeBudgetLimits,
 } from "./store-budget.js";
 import { decodeServedAnchors, encodeServedAnchors } from "./served-codec.js";
+import {
+	ANCHOR_LINES_ROWS_KEY,
+	ANCHOR_PATH_TABLES,
+	ANCHOR_PATHS_COUNT_KEY,
+	PATH_UNION_SQL,
+	anchorLinesRowCountTriggerSql,
+	anchorPathCountTriggerSql,
+	createMaintainedCount,
+} from "./store-counts.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
 export function isValidHashList(value: unknown): value is string[] {
@@ -457,32 +466,6 @@ function withTransaction(db: DatabaseSync, path: string, fn: () => void): void {
  *  rows matching `updated_at < cutoff`, so a huge stale backlog is paid down
  *  one page at a time instead of holding the writer for seconds. */
 const TTL_BATCH_LIMIT = 5000;
-/**
- * The meta key that holds the MAINTAINED row count of `anchor_lines` (#305).
- *
- * The count used to be COMPUTED — `SELECT COUNT(*) FROM anchor_lines` — whose
- * plan is a covering-index scan of the biggest table in the store, so the cold
- * open AND every write paid a price that grew with the library. Spec #184
- * promises the opposite ("冷开与库体量无关"), so the count is MAINTAINED
- * instead: the two triggers in `buildStore` move this value in the SAME
- * transaction as the row write, and every read is one meta lookup.
- *
- * This is the canonical explanation; the places that implement it (the
- * triggers, the repair, the read) point back here.
- */
-const ANCHOR_LINES_ROWS_KEY = "anchor_lines_rows";
-
-/**
- * Whether a stored count is a plain decimal — the only shape the triggers know
- * how to move and the only one a reader trusts.
- *
- * A value that is not (empty, left over, tampered with) is left alone by the
- * triggers rather than being arithmetically mangled into a wrong number; the
- * open path re-establishes it from the table.
- */
-function isDecimalCount(value: string | undefined): value is string {
-	return value !== undefined && /^[0-9]+$/.test(value);
-}
 
 function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec("PRAGMA journal_mode = WAL");
@@ -519,12 +502,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	// behind it), and the statement map below reuses this one.
 	const metaDeleteStmt = db.prepare("DELETE FROM meta WHERE key = ?");
 	/**
-	 * Drop the maintained count: the rows it described are gone or changed, so
-	 * the open path re-establishes it from the table (see
-	 * `ANCHOR_LINES_ROWS_KEY`).
+	 * Drop the maintained counts: the rows they described are gone or changed, so
+	 * the open path re-establishes them from the tables (see
+	 * `ANCHOR_LINES_ROWS_KEY` and `ANCHOR_PATHS_COUNT_KEY`).
 	 */
-	const invalidateMaintainedCount = (): void => {
+	const invalidateMaintainedCounts = (): void => {
 		metaDeleteStmt.run(ANCHOR_LINES_ROWS_KEY);
+		metaDeleteStmt.run(ANCHOR_PATHS_COUNT_KEY);
 	};
 	db.exec(UNDO_TABLE_DDL);
 	// Migration for a store written before #151/P5: the table exists in its old
@@ -576,8 +560,9 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec(
 		"CREATE INDEX IF NOT EXISTS anchor_lines_by_anchor ON anchor_lines (path, anchor)",
 	);
-	// The maintained row count of `anchor_lines` (#305) — the canonical
-	// explanation lives on `ANCHOR_LINES_ROWS_KEY`.
+	// The maintained row count of `anchor_lines` (#305). The mechanism — the meta
+	// key, the trigger DDL, the reader and the one-statement repair — lives in
+	// `store-counts.ts`.
 	//
 	// Triggers rather than bookkeeping inside the write methods, because the
 	// count has to stay exact for EVERY write path — including the ones this
@@ -585,30 +570,8 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	// the orphan cleanup, and writes made by another connection (the test suite
 	// seeds rows over its own sqlite handle). A path that forgot to report its
 	// delta would silently drift the budget judgement.
-	//
-	// INVARIANT: an `anchor_lines` row is written with `ON CONFLICT DO UPDATE`,
-	// never with `INSERT OR REPLACE`. A REPLACE suppresses the DELETE trigger,
-	// so replacing an existing row would leave the count one too high. The one
-	// place that REPLACEs (the legacy migration) drops the maintained count
-	// first, so the open path re-establishes it from the table.
-	db.exec(
-		"CREATE TRIGGER IF NOT EXISTS anchor_lines_rows_insert AFTER INSERT ON anchor_lines " +
-			"BEGIN " +
-			"UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) " +
-			"WHERE key = '" +
-			ANCHOR_LINES_ROWS_KEY +
-			"' AND value <> '' AND value NOT GLOB '*[^0-9]*'; " +
-			"END",
-	);
-	db.exec(
-		"CREATE TRIGGER IF NOT EXISTS anchor_lines_rows_delete AFTER DELETE ON anchor_lines " +
-			"BEGIN " +
-			"UPDATE meta SET value = CAST(CAST(value AS INTEGER) - 1 AS TEXT) " +
-			"WHERE key = '" +
-			ANCHOR_LINES_ROWS_KEY +
-			"' AND value <> '' AND value NOT GLOB '*[^0-9]*'; " +
-			"END",
-	);
+	db.exec(anchorLinesRowCountTriggerSql("insert"));
+	db.exec(anchorLinesRowCountTriggerSql("delete"));
 	// TTL / recency indexes (#180, spec #184) are NOT created here. They are the
 	// one cost that scales with row count, and at open time we may be about to
 	// rebuild or sweep the store — building them first measured ~5 s of wasted
@@ -625,10 +588,11 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	}[];
 	if (legacyAnchorColumns.length > 0 && legacyAnchorColumns.some((c) => c.name === "anchors")) {
 		// The legacy rows land with INSERT OR REPLACE, and a REPLACE does NOT
-		// fire the delete trigger — so the maintained count would drift. Drop it
-		// here; the open path re-establishes it from the table once, after the
-		// migration has run.
-		invalidateMaintainedCount();
+		// The legacy rows land with INSERT OR REPLACE, and a REPLACE does NOT
+		// fire the delete trigger — so the maintained counts would drift. Drop
+		// them here; the open path re-establishes them from the tables once,
+		// after the migration has run.
+		invalidateMaintainedCounts();
 		const legacyRows = db
 			.prepare("SELECT path, checksum, line_count, anchors, line_keys FROM anchor_state")
 			.all() as Record<string, unknown>[];
@@ -674,10 +638,10 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	// wiping them would make the next launch look like an unclean shutdown and
 	// defeat the 24h rebuild throttle.
 	if (versionChanged) {
-		// The wipe drops every anchor line, so the maintained count goes stale the
-		// moment it starts. Drop it with the rows: the open path re-establishes it
-		// from the (now empty) table.
-		invalidateMaintainedCount();
+		// The wipe drops every anchor line and every path, so the maintained
+		// counts go stale the moment it starts. Drop them with the rows: the
+		// open path re-establishes them from the (now empty) tables.
+		invalidateMaintainedCounts();
 		db.exec("DELETE FROM undo");
 		db.exec("DELETE FROM anchor_meta");
 		db.exec("DELETE FROM anchor_lines");
@@ -697,6 +661,10 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		!servedColumns.some((column) => column.name === "session_id")
 	) {
 		db.exec("DROP TABLE IF EXISTS served");
+		// The `served` indexes died with the table — and the path-count triggers
+		// look paths up in it, so a missing index turns every path lookup into a
+		// full scan. Drop the marker so the open path rebuilds the indexes.
+		metaDeleteStmt.run("maintenance_indexes");
 	}
 	db.exec(
 		"CREATE TABLE IF NOT EXISTS served (" +
@@ -708,13 +676,23 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"PRIMARY KEY (session_id, path)" +
 			")",
 	);
+	// The maintained PATH count (#311): one trigger per (row family × insert/
+	// delete). They move the count in the same transaction as the row write, so
+	// the number the budget check reads is never a guess.
+	//
+	// The triggers are created HERE, after `served` exists: a trigger cannot be
+	// created on a table that does not exist yet, and the version wipe drops
+	// `served` (and with it these triggers) — the next open recreates them.
+	for (const table of ANCHOR_PATH_TABLES) {
+		for (const event of ["insert", "delete"] as const) {
+			db.exec(anchorPathCountTriggerSql(table, event));
+		}
+	}
 	db.prepare(
 		"INSERT INTO meta (key, value) VALUES ('version', ?) " +
 			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 	).run(String(HASH_STORE_VERSION));
-	const allStmt = db.prepare(
-		"SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta",
-	);
+	const allStmt = db.prepare(PATH_UNION_SQL);
 	// "Which file holds all of these anchors?" — the query the deleted `snapshots`
 	// table used to answer. `anchor_lines` holds one row per (path, line, anchor),
 	// and `anchor_lines_by_anchor` is exactly the index for this: select the
@@ -821,8 +799,6 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"SELECT (page_count - freelist_count) * page_size AS bytes " +
 			"FROM pragma_page_count(), pragma_page_size(), pragma_freelist_count()",
 	);
-	const anchorRowCountStmt = db.prepare("SELECT COUNT(*) AS n FROM anchor_lines");
-	const anchorPathCountStmt = db.prepare("SELECT COUNT(*) AS n FROM (SELECT path FROM undo UNION SELECT path FROM served UNION SELECT path FROM anchor_meta)");
 	// One row per path, oldest first: the LRU order across every row family that
 	// outlives a session (served is per-session, but still ages the path).
 	const pathRecencyStmt = db.prepare(
@@ -842,47 +818,17 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"INSERT INTO meta (key, value) VALUES (?, ?) " +
 			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 	);
-	/**
-	 * The maintained row count of `anchor_lines` — O(1), whatever the library size.
-	 *
-	 * The maintained value is the truth (spec #184's "与库体量无关"). A store
-	 * written before #305 carries no value: the open path re-establishes it once
-	 * (see `repairAnchorRowsStmt`), and from then on this is one meta lookup.
-	 *
-	 * If the value is missing or untrustworthy anywhere else — another process
-	 * wiped it, a hand-edited meta table — the count is taken from the table ONCE
-	 * and written back, so the triggers take over from that point. A read never
-	 * trusts a value it cannot vouch for, and never keeps scanning.
-	 */
-	const maintainedAnchorRowCount = (): number => {
-		const raw = (
-			metaGetStmt.get(ANCHOR_LINES_ROWS_KEY) as { value?: string } | undefined
-		)?.value;
-		if (isDecimalCount(raw)) return Number(raw);
-		const counted = Number(
-			(anchorRowCountStmt.get() as { n?: number } | undefined)?.n ?? 0,
-		);
-		try {
-			metaSetStmt.run(ANCHOR_LINES_ROWS_KEY, String(counted));
-		} catch {
-			// Best-effort: a store that cannot be written to still gets the right
-			// number for this call; the next open re-establishes the value.
-		}
-		return counted;
-	};
-	/**
-	 * The one statement that repairs a missing or malformed maintained count.
-	 *
-	 * ONE statement, so the count and the write cannot disagree: SQLite takes the
-	 * write lock for the statement, so a writer that commits while this runs either
-	 * committed BEFORE the count (and is counted) or waits for the lock (and its
-	 * trigger moves the count afterwards).
-	 */
-	const repairAnchorRowsStmt = db.prepare(
-		"INSERT INTO meta (key, value) VALUES ('" +
-			ANCHOR_LINES_ROWS_KEY +
-			"', (SELECT CAST(COUNT(*) AS TEXT) FROM anchor_lines)) " +
-			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+	// The two maintained counts — the mechanism (meta key, trigger DDL, reader,
+	// one-statement repair) lives in `store-counts.ts`.
+	const anchorRowsCount = createMaintainedCount(
+		db,
+		ANCHOR_LINES_ROWS_KEY,
+		"SELECT COUNT(*) AS n FROM anchor_lines",
+	);
+	const anchorPathsCount = createMaintainedCount(
+		db,
+		ANCHOR_PATHS_COUNT_KEY,
+		`SELECT COUNT(*) AS n FROM (${PATH_UNION_SQL})`,
 	);
 	// Anchor lines whose meta row is gone (a TTL prune that caught only one side,
 	// or a crashed writer): unreachable state that still costs pages.
@@ -1012,9 +958,8 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		// ---- budget / maintenance (#180) ----
 		storeBytes: () =>
 			Number((storeBytesStmt.get() as { bytes?: number } | undefined)?.bytes ?? 0),
-		anchorRowCount: () => maintainedAnchorRowCount(),
-		anchorPathCount: () =>
-			Number((anchorPathCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
+		anchorRowCount: () => anchorRowsCount.read(),
+		anchorPathCount: () => anchorPathsCount.read(),
 		pathRecency: () => pathRecencyStmt.all() as Record<string, unknown>[],
 		undoBudget: (...params) =>
 			undoBudgetStmt.get(...params) as Record<string, unknown> | undefined,
@@ -1039,18 +984,16 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			db.exec("VACUUM");
 		},
 	};
-	// Re-establish the maintained count ONCE per store: a store written before
-	// #305 has no value, and this is the one place that can afford to count the
-	// table — the open path, once, before anything reads the count. From then on
-	// the maintained value answers every read.
-	//
-	// ONE statement, so the count and the write cannot disagree (see
-	// `repairAnchorRowsStmt`).
-	const maintainedRow = stmts.metaGet(ANCHOR_LINES_ROWS_KEY) as
-		| { value?: string }
-		| undefined;
-	if (!isDecimalCount(maintainedRow?.value)) {
-		repairAnchorRowsStmt.run();
+	// Re-establish the maintained counts ONCE per store: a store written before
+	// #305/#311 carries no value, and this is the one place that can afford to
+	// count the tables — the open path, once, before anything reads the counts.
+	// From then on the maintained values answer every read. Each repair is ONE
+	// statement, so the count and the write cannot disagree.
+	if (!anchorRowsCount.hasTrustedValue()) {
+		anchorRowsCount.repair();
+	}
+	if (!anchorPathsCount.hasTrustedValue()) {
+		anchorPathsCount.repair();
 	}
 	return { db, stmts };
 }
@@ -1151,20 +1094,17 @@ function makeDomainStore(
 		// then delete an additional ~10% to amortise the next sweep.
 		const lruPool = recency.filter((r) => !deleted.has(r.path));
 		let lruDeleted = 0;
-		// The path count is taken ONCE, not per iteration: every cascade below
-		// removes that path from all three tables the count unions (undo, served,
-		// anchor_meta), so the count moves by exactly one per deleted path. The
-		// row count comes from the maintained value (O(1)), and the byte count is a
-		// page-header read.
-		let lruPaths = stmts.anchorPathCount();
+		// Every budget metric is read from its maintained value (O(1)). The
+		// cascade below removes a path from all three families the path count
+		// unions, and the triggers move the count with it — exactly one per
+		// deleted path — so the loop can ask the count itself.
 		while (
 			lruDeleted < lruPool.length &&
 			(stmts.storeBytes() > limits.bytes ||
-				lruPaths > limits.paths ||
+				stmts.anchorPathCount() > limits.paths ||
 				stmts.anchorRowCount() > limits.rows)
 		) {
 			deletePathCascade(lruPool[lruDeleted].path);
-			lruPaths--;
 			deleted.add(lruPool[lruDeleted].path);
 			lruDeleted++;
 		}
@@ -1416,8 +1356,13 @@ function formatBytes(n: number): string {
  * They are still needed before the TTL prunes and the LRU order, both of which
  * read `updated_at` and would otherwise walk the tables linearly.
  *
+ * The path index (`served_by_path`) belongs here for a different reason: the
+ * path-count triggers ask whether another row family holds a path, and
+ * `served` is keyed by (session_id, path) — a lookup by path alone would scan
+ * the table.
+ *
  * Guarded by a meta marker rather than `IF NOT EXISTS` alone, so the check on
- * every subsequent open is one row read instead of four catalog lookups, and so
+ * every subsequent open is one row read instead of five catalog lookups, and so
  * a fresh (rebuilt) store gets them immediately — there they are free.
  *
  * @param db - the open store connection.
@@ -1426,12 +1371,17 @@ function ensureMaintenanceIndexes(db: DatabaseSync): void {
 	const done = db.prepare("SELECT value FROM meta WHERE key = 'maintenance_indexes'").get() as
 		| { value?: string }
 		| undefined;
-	if (done?.value === "1") return;
+	if (done?.value === "2") return;
 	db.exec("CREATE INDEX IF NOT EXISTS anchor_meta_updated_at ON anchor_meta (updated_at)");
 	db.exec("CREATE INDEX IF NOT EXISTS anchor_lines_updated_at ON anchor_lines (updated_at)");
 	db.exec("CREATE INDEX IF NOT EXISTS undo_updated_at ON undo (updated_at)");
 	db.exec("CREATE INDEX IF NOT EXISTS served_updated_at ON served (updated_at)");
-	db.prepare("INSERT INTO meta (key, value) VALUES ('maintenance_indexes', '1') ON CONFLICT(key) DO UPDATE SET value = '1'").run();
+	// The path index (#311) is here for a different reason than the four above:
+	// the path-count triggers ask whether another family holds a path, and
+	// `served` is keyed by (session_id, path) — a lookup by path alone would
+	// scan the whole table, which is the cost this count exists to remove.
+	db.exec("CREATE INDEX IF NOT EXISTS served_by_path ON served (path)");
+	db.prepare("INSERT INTO meta (key, value) VALUES ('maintenance_indexes', '2') ON CONFLICT(key) DO UPDATE SET value = '2'").run();
 }
 
 function isHealthy(db: DatabaseSync): boolean {

@@ -33,19 +33,18 @@ import {
 	isOverRebuildLimit,
 } from "../../src/domain/session/store-budget.js";
 import { storeDbPath, withStoreHome } from "../support/fixtures.js";
+import {
+	clearMaintained,
+	maintainedValue,
+	recordStatements,
+	setMaintained,
+	withDb,
+} from "../support/store-counts.js";
 
 /** The meta key that holds the maintained row count. */
 const ROWS_KEY = "anchor_lines_rows";
 
 
-function withDb(home: string, fn: (db: DatabaseSync) => void): void {
-	const db = new DatabaseSync(storeDbPath(home));
-	try {
-		fn(db);
-	} finally {
-		db.close();
-	}
-}
 
 /**
  * Seed anchor rows the way a reader does — but through its OWN connection, so
@@ -59,7 +58,9 @@ function seedLines(
 ): void {
 	withDb(home, (db) => {
 		db.prepare(
-			"INSERT OR REPLACE INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?)",
+			"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?) " +
+			"ON CONFLICT(path) DO UPDATE SET checksum = excluded.checksum, " +
+			"line_count = excluded.line_count, updated_at = excluded.updated_at",
 		).run(path, "checksum", count, updatedAt);
 		const insert = db.prepare(
 			"INSERT INTO anchor_lines (path, line, anchor, content_key, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -100,59 +101,6 @@ function realRowCount(home: string): number {
 	return count;
 }
 
-/** The maintained value, as it is stored. */
-function maintainedValue(home: string): string | undefined {
-	let value: string | undefined;
-	withDb(home, (db) => {
-		const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(ROWS_KEY) as
-			| { value?: string }
-			| undefined;
-		value = row?.value;
-	});
-	return value;
-}
-
-function setMaintained(home: string, value: string): void {
-	withDb(home, (db) => {
-		db.prepare("UPDATE meta SET value = ? WHERE key = ?").run(value, ROWS_KEY);
-	});
-}
-
-function clearMaintained(home: string): void {
-	withDb(home, (db) => {
-		db.prepare("DELETE FROM meta WHERE key = ?").run(ROWS_KEY);
-	});
-}
-
-/**
- * Record the SQL every statement EXECUTES.
- *
- * The prototype is taken from a live statement rather than from the exported
- * class, so this works the same on Node's `node:sqlite` and on Bun's.
- */
-function recordStatements(): { sql: string[]; restore(): void } {
-	const probeDb = new DatabaseSync(":memory:");
-	const probe = probeDb.prepare("SELECT 1");
-	const proto = Object.getPrototypeOf(probe) as Record<string, unknown>;
-	const seen: string[] = [];
-	const originals: Record<string, unknown> = {};
-	for (const method of ["get", "run", "all"]) {
-		const original = proto[method];
-		if (typeof original !== "function") continue;
-		originals[method] = original;
-		proto[method] = function (this: { sourceSQL?: string }, ...args: unknown[]): unknown {
-			seen.push(String(this.sourceSQL ?? ""));
-			return (original as (...a: unknown[]) => unknown).apply(this, args);
-		};
-	}
-	probeDb.close();
-	return {
-		sql: seen,
-		restore: () => {
-			for (const [method, original] of Object.entries(originals)) proto[method] = original;
-		},
-	};
-}
 
 /** The statements that counted the whole table. */
 function countsTheTable(sql: string[]): string[] {
@@ -173,7 +121,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 			// counted the table would report 3; one that reads the maintained
 			// value reports 7 — the observable proof that no scan happened.
 			shutdownHashStore();
-			setMaintained(home, "7");
+			setMaintained(home, ROWS_KEY, "7");
 
 			const reopened = await loadHashStore();
 			expect(reopened.stats().rows).toBe(7);
@@ -210,7 +158,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 			shutdownHashStore();
 
 			// A store written before #305 carries no maintained value.
-			clearMaintained(home);
+			clearMaintained(home, ROWS_KEY);
 
 			// The repair is the ONE count the open path is allowed to pay.
 			const repairing = recordStatements();
@@ -222,7 +170,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 			}
 			expect(countsTheTable(repairing.sql).length).toBeGreaterThan(0);
 			expect(repairedRows).toBe(4);
-			expect(maintainedValue(home)).toBe("4");
+			expect(maintainedValue(home, ROWS_KEY)).toBe("4");
 			shutdownHashStore();
 
 			// The second open finds the value and counts nothing.
@@ -242,26 +190,26 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 
 			// 1. Rows written by a writer that is NOT the store.
 			seedLines(home, "/a.ts", 3);
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 
 			// 2. Re-writing a row that exists changes no count.
 			upsertLine(home, "/a.ts", 1, "ZZZ");
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 
 			// 3. Deleting one row.
 			deleteLine(home, "/a.ts", 1);
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 
 			// 4. The TTL prune — the sweep's first phase — drops the rows that
 			//    aged out.
 			seedLines(home, "/old.ts", 2, Date.now() - 40 * 24 * 60 * 60 * 1000);
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 			store.sweep();
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 
 			// 5. The paths that are gone from disk go with them.
 			await store.pruneMissing();
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 			expect(store.stats().rows).toBe(0);
 		});
 	});
@@ -280,7 +228,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 
 			const reopened = await loadHashStore();
 			expect(reopened.stats().rows).toBe(0);
-			expect(maintainedValue(home)).toBe("0");
+			expect(maintainedValue(home, ROWS_KEY)).toBe("0");
 		});
 	});
 
@@ -320,7 +268,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 			// The legacy row expanded into two sparse lines, and the maintained
 			// count says exactly that.
 			expect(realRowCount(home)).toBe(2);
-			expect(maintainedValue(home)).toBe("2");
+			expect(maintainedValue(home, ROWS_KEY)).toBe("2");
 		});
 	});
 
@@ -334,7 +282,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 			await loadHashStore();
 
 			expect(realRowCount(home)).toBe(0);
-			expect(maintainedValue(home)).toBe("0");
+			expect(maintainedValue(home, ROWS_KEY)).toBe("0");
 		});
 	});
 
@@ -344,14 +292,14 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 			seedLines(home, "/a.ts", 3);
 
 			// Another process (or a hand-edited meta table) dropped the key.
-			clearMaintained(home);
+			clearMaintained(home, ROWS_KEY);
 			expect(store.stats().rows).toBe(3);
 
 			// The count was taken from the table ONCE and written back, so the
 			// value is there again — and the triggers maintain it from now on.
-			expect(maintainedValue(home)).toBe("3");
+			expect(maintainedValue(home, ROWS_KEY)).toBe("3");
 			upsertLine(home, "/a.ts", 4, "ZZZ");
-			expect(maintainedValue(home)).toBe(String(realRowCount(home)));
+			expect(maintainedValue(home, ROWS_KEY)).toBe(String(realRowCount(home)));
 		});
 	});
 
