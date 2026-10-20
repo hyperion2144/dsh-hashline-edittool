@@ -65,6 +65,34 @@ export function takeRowsWithinBudget<T>(
 	return { included, overflow: rows.slice(index), used };
 }
 
+/**
+ * Take whole rows up to `budgetChars`, STRICTLY: a row that does not fit is
+ * not taken, so the caller's budget is never overrun.
+ *
+ * `takeRowsWithinBudget` takes the first row even when it does not fit, so the
+ * walk always makes progress on a row that slipped past the caller's
+ * pointer-ization. The SCAN needs the opposite: its budget is what is LEFT of
+ * the response, so a row that does not fit must not be taken — a later
+ * section must not push the response past the budget.
+ */
+export function takeRowsStrictlyWithinBudget<T>(
+	rows: T[],
+	budgetChars: number,
+	sizeOf: (row: T) => number,
+): { included: T[]; overflow: T[]; used: number } {
+	const included: T[] = [];
+	let used = 0;
+	let index = 0;
+	while (index < rows.length) {
+		const size = sizeOf(rows[index]!);
+		if (used + size > budgetChars) break;
+		included.push(rows[index]!);
+		used += size;
+		index += 1;
+	}
+	return { included, overflow: rows.slice(index), used };
+}
+
 // --- spill store ---
 
 const SPILL_ROOT = join(tmpdir(), "dsh-hashline");
