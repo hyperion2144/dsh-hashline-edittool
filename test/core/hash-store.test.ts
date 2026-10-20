@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeAll } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile, stat, readdir } from "fs/promises";
+import { describe, expect, it } from "vitest";
+import { mkdir, writeFile, stat, readdir } from "fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,45 +10,11 @@ import {
 	type HashStore,
 } from "../../src/domain/session/hash-store.js";
 import { HASH_STORE_VERSION } from "../../src/infra/constants.js";
-import { getWritableTempRoot } from "../support/fixtures.js";
+import { storeConfigHome, storeDbPath, withStoreHome } from "../support/fixtures.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
 
-let tmpHome: string;
-beforeAll(async () => {
-});
-
-async function withTempHome(
-	run: (home: string) => Promise<void>,
-): Promise<void> {
-	tmpHome = await mkdtemp(
-		join(await getWritableTempRoot(), "pi-hashline-hashstore-test-"),
-	);
-	vi.stubEnv("HOME", tmpHome);
-	vi.stubEnv("USERPROFILE", tmpHome);
-	// Point the harness home at the TEMP home explicitly — an EMPTY stub leans on
-	// `homedir()/.dsh`, which is a different directory on Windows
-	// (`os.homedir()` reads USERPROFILE).
-	vi.stubEnv("DSH_HOME", join(tmpHome, ".dsh"));
-	vi.stubEnv("XDG_CONFIG_HOME", "");
-	try {
-		await run(tmpHome);
-	} finally {
-		shutdownHashStore();
-		vi.unstubAllEnvs();
-		await rm(tmpHome, { recursive: true, force: true });
-	}
-}
-
-function configHome(home: string): string {
-	return join(home, ".dsh", "plugins", "dsh-hashline-edittool");
-}
-
-function sqlitePath(home: string): string {
-	return join(configHome(home), "hash-store.sqlite");
-}
-
 function legacyPath(home: string): string {
-	return join(configHome(home), "hash-store.json");
+	return join(storeConfigHome(home), "hash-store.json");
 }
 
 /**
@@ -68,7 +34,7 @@ function put(
 	content: string,
 	hashes: string[],
 ): void {
-	const db = new DatabaseSync(sqlitePath(home));
+	const db = new DatabaseSync(storeDbPath(home));
 	try {
 		db.prepare(
 			"INSERT OR REPLACE INTO anchor_meta (path, checksum, line_count, updated_at) VALUES (?, ?, ?, ?)",
@@ -97,7 +63,7 @@ function snapshotOf(
 	path: string,
 	content: string,
 ): string[] | undefined {
-	const db = new DatabaseSync(sqlitePath(home), { readOnly: true });
+	const db = new DatabaseSync(storeDbPath(home), { readOnly: true });
 	try {
 		const meta = db
 			.prepare("SELECT checksum FROM anchor_meta WHERE path = ?")
@@ -115,7 +81,7 @@ function snapshotOf(
 
 /** Row count in one table, read through a separate connection. */
 function countRows(home: string, table: string): number {
-	const db = new DatabaseSync(sqlitePath(home), { readOnly: true });
+	const db = new DatabaseSync(storeDbPath(home), { readOnly: true });
 	try {
 		return (
 			db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }
@@ -129,7 +95,7 @@ async function writeLegacyStore(
 	home: string,
 	snapshots: unknown,
 ): Promise<void> {
-	await mkdir(configHome(home), { recursive: true });
+	await mkdir(storeConfigHome(home), { recursive: true });
 	await writeFile(
 		legacyPath(home),
 		JSON.stringify({ version: 1, snapshots }),
@@ -139,17 +105,17 @@ async function writeLegacyStore(
 
 describe("hash-store — loadHashStore", () => {
 	it("opens a fresh sqlite database when none exists", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
-			expect(existsSync(sqlitePath(home))).toBe(true);
+			expect(existsSync(storeDbPath(home))).toBe(true);
 			expect(store.allKnownPaths()).toEqual([]);
 		});
 	});
 
 	it("creates the config directory", async () => {
-		await withTempHome(async () => {
+		await withStoreHome(async (home) => {
 			await loadHashStore();
-			const s = await stat(configHome(tmpHome));
+			const s = await stat(storeConfigHome(home));
 			expect(s.isDirectory()).toBe(true);
 		});
 	});
@@ -161,10 +127,10 @@ describe("hash-store — loadHashStore", () => {
 	 * checks the table is gone from a store that predates the change.
 	 */
 	it("drops the redundant snapshots table and does not recreate it", async () => {
-		await withTempHome(async (home) => {
-			await mkdir(configHome(home), { recursive: true });
+		await withStoreHome(async (home) => {
+			await mkdir(storeConfigHome(home), { recursive: true });
 			// A store from before the change: the table exists and holds a row.
-			const old = new DatabaseSync(sqlitePath(home));
+			const old = new DatabaseSync(storeDbPath(home));
 			old.exec(
 				"CREATE TABLE snapshots (path TEXT PRIMARY KEY, checksum TEXT NOT NULL, line_count INTEGER NOT NULL, hashes TEXT NOT NULL, updated_at INTEGER NOT NULL)",
 			);
@@ -175,7 +141,7 @@ describe("hash-store — loadHashStore", () => {
 
 			await loadHashStore();
 
-			const check = new DatabaseSync(sqlitePath(home), { readOnly: true });
+			const check = new DatabaseSync(storeDbPath(home), { readOnly: true });
 			const row = check
 				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'")
 				.get();
@@ -195,7 +161,7 @@ describe("hash-store — migration from legacy hash-store.json", () => {
 	 * not re-examined on every open.
 	 */
 	it("does not import the payload but retires the file to .bak", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			await writeLegacyStore(home, {
 				"/valid.ts": { content: "ok\n", hashes: ["ABC"] },
 				"/also.ts": { content: "good\nmore\n", hashes: ["XYZ", "QWE"] },
@@ -213,7 +179,7 @@ describe("hash-store — migration from legacy hash-store.json", () => {
 	});
 
 	it("retires a legacy file whose snapshots field is malformed", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			await writeLegacyStore(home, ["not-an-object"]);
 			const store = await loadHashStore();
 			expect(store.allKnownPaths()).toEqual([]);
@@ -222,7 +188,7 @@ describe("hash-store — migration from legacy hash-store.json", () => {
 	});
 
 	it("does not run migration when no legacy file exists", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			expect(store.allKnownPaths()).toEqual([]);
 			expect(existsSync(`${legacyPath(home)}.bak`)).toBe(false);
@@ -230,7 +196,7 @@ describe("hash-store — migration from legacy hash-store.json", () => {
 	});
 
 	it("migrates only once even if legacy file reappears", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			await writeLegacyStore(home, {
 				"/one.ts": { content: "1\n", hashes: ["AAA"] },
 			});
@@ -256,11 +222,11 @@ describe("hash-store — migration from legacy hash-store.json", () => {
 
 describe("hash-store — concurrency (issue #10)", () => {
 	it("preserves anchors written by a separately-opened connection", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/a.ts", "alpha\n", ["AAB"]);
 
-			const second = new DatabaseSync(sqlitePath(home), {
+			const second = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			second.exec("BEGIN IMMEDIATE");
@@ -285,7 +251,7 @@ describe("hash-store — concurrency (issue #10)", () => {
 	});
 
 	it("a fresh reopen sees anchors written by a prior session", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const a = await loadHashStore();
 			put(home, "/first.ts", "one\n", ["111"]);
 			shutdownHashStore();
@@ -303,7 +269,7 @@ describe("hash-store — concurrency (issue #10)", () => {
 
 describe("hash-store — incremental writes (issue #8)", () => {
 	it("upserting a new path does not alter an existing path's stored hashes", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			const bigContent = "x\n".repeat(2000);
 			const bigHashes = bigContent
@@ -321,11 +287,11 @@ describe("hash-store — incremental writes (issue #8)", () => {
 
 describe("hash-store — WAL checkpoint on shutdown", () => {
 	it("truncates the WAL file after shutdownHashStore", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "x\n", ["XYZ"]);
 
-			const walPath = sqlitePath(home) + "-wal";
+			const walPath = storeDbPath(home) + "-wal";
 			expect(existsSync(walPath)).toBe(true);
 
 			shutdownHashStore();
@@ -345,10 +311,10 @@ describe("hash-store — WAL checkpoint on shutdown", () => {
 
 describe("hash-store — corrupt database recovery", () => {
 	it("rebuilds the store when the database file is corrupt", async () => {
-		await withTempHome(async (home) => {
-			await mkdir(configHome(home), { recursive: true });
+		await withStoreHome(async (home) => {
+			await mkdir(storeConfigHome(home), { recursive: true });
 			await writeFile(
-				sqlitePath(home),
+				storeDbPath(home),
 				"this is not a sqlite database",
 				"utf-8",
 			);
@@ -362,24 +328,24 @@ describe("hash-store — corrupt database recovery", () => {
 	});
 
 	it("quarantines the corrupt file instead of deleting it", async () => {
-		await withTempHome(async (home) => {
-			await mkdir(configHome(home), { recursive: true });
-			await writeFile(sqlitePath(home), "garbage bytes", "utf-8");
+		await withStoreHome(async (home) => {
+			await mkdir(storeConfigHome(home), { recursive: true });
+			await writeFile(storeDbPath(home), "garbage bytes", "utf-8");
 
 			await loadHashStore();
 
-			const entries = await readdir(configHome(home));
+			const entries = await readdir(storeConfigHome(home));
 			expect(entries.some((name) => name.includes(".corrupt-"))).toBe(true);
-			expect(existsSync(sqlitePath(home))).toBe(true);
+			expect(existsSync(storeDbPath(home))).toBe(true);
 		});
 	});
 
 	it("keeps working when the store is healthy", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "b\n", ["BBB"]);
 			expect(snapshotOf(home, "/p.ts", "b\n")).toEqual(["BBB"]);
-			const entries = await readdir(configHome(home));
+			const entries = await readdir(storeConfigHome(home));
 			expect(entries.some((name) => name.includes(".corrupt-"))).toBe(false);
 		});
 	});
@@ -387,12 +353,12 @@ describe("hash-store — corrupt database recovery", () => {
 
 describe("hash-store — schema versioning", () => {
 	it("writes the current version on first open", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "x\n", ["XYZ"]);
 			shutdownHashStore();
 
-			const db = new DatabaseSync(sqlitePath(home), {
+			const db = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			const row = db
@@ -405,7 +371,7 @@ describe("hash-store — schema versioning", () => {
 	});
 
 	it("keeps anchors when the stored version matches", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "x\n", ["XYZ"]);
 			shutdownHashStore();
@@ -423,7 +389,7 @@ describe("hash-store — schema versioning", () => {
 	 * liveness condition while the model was told it had read the file.
 	 */
 	it("invalidates anchors AND served when the stored version differs", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "x\n", ["XYZ"]);
 			store.upsertServed("session-1", "/p.ts", ["XYZ"]);
@@ -436,7 +402,7 @@ describe("hash-store — schema versioning", () => {
 			});
 			shutdownHashStore();
 
-			const db = new DatabaseSync(sqlitePath(home), {
+			const db = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			db.prepare("UPDATE meta SET value = '999' WHERE key = 'version'").run();
@@ -449,7 +415,7 @@ describe("hash-store — schema versioning", () => {
 			expect(countRows(home, "anchor_lines")).toBe(0);
 			expect(countRows(home, "served")).toBe(0);
 
-			const check = new DatabaseSync(sqlitePath(home), {
+			const check = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			const row = check
@@ -473,12 +439,12 @@ describe("hash-store — schema versioning", () => {
 	 * not a key being lost.
 	 */
 	it("preserves operational meta keys across a version change", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			store.metaSet("last_rebuild_at", "1700000000000");
 			shutdownHashStore();
 
-			const db = new DatabaseSync(sqlitePath(home), {
+			const db = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			db.prepare("UPDATE meta SET value = '999' WHERE key = 'version'").run();
@@ -491,12 +457,12 @@ describe("hash-store — schema versioning", () => {
 	});
 
 	it("keeps anchors from a pre-versioning database and writes the version", async () => {
-		await withTempHome(async (home) => {
+		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "x\n", ["XYZ"]);
 			shutdownHashStore();
 
-			const db = new DatabaseSync(sqlitePath(home), {
+			const db = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			db.exec("DROP TABLE meta");
@@ -505,7 +471,7 @@ describe("hash-store — schema versioning", () => {
 			const reloaded = await loadHashStore();
 			expect(snapshotOf(home, "/p.ts", "x\n")).toEqual(["XYZ"]);
 
-			const check = new DatabaseSync(sqlitePath(home), {
+			const check = new DatabaseSync(storeDbPath(home), {
 				defensive: false,
 			} as any);
 			const row = check

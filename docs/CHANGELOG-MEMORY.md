@@ -610,3 +610,32 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - **关机契约 = 不留未落盘的 WAL 帧**，不是「文件一定被删」。
 - **墙钟预算在没有机器基准时只是「机器速度门」**：冷开成本随 `anchor_lines` 行数线性增长（`stats()` 里的 `SELECT COUNT(*) FROM anchor_lines`），同一个 open 在开发机 8ms、CI 冷缓存 131ms、Windows 125ms ⇒ ceiling 统一提到 **500ms**（原 50ms / win32 400ms），smoke 门与姊妹门统一用「3 次取中位数」。**这让门不再误报，但没有兑现规格 #184 的「与库体量无关」承诺**——store 侧的真修法单独立票 **#305**（行数增量维护，或预算判定改有界扫描）。
 - **不要手动删 `-wal`/`-shm`**：另一个连接还开着时删掉 `-shm` 会毁掉它的共享内存映射——实测把 hash-store 的另外 8 个用例打成 `disk I/O error`（第一版就是这么写的，已回退）。
+---
+
+## 2026-10-20 — 锚点库行数改为维护值：冷开与每次写的预算判定不再随库体量变慢 (#305)
+
+**Type:** contract（store 内部的行数记账方式）+ perf（冷开与写路径的成本）
+**Confidence:** High（本机同一脚本前后两轮实测：24 万行库冷开 7.92ms → 5.62ms，且随行数增长的那一项（`SELECT COUNT(*) FROM anchor_lines`）开库不再执行；语句级验收在修前代码上 8/10 红）
+**Evidence:** 本机探针（`.tmp/cold-open-scale.mjs`，同一台机、同一脚本）：30/3k/30k/60k/120k/240k 行的冷开中位数 7.20/6.25/6.45/6.83/6.87/7.92ms → 修后 6.86/6.32/6.54/6.24/6.28/5.62ms，且**冷开减去 `COUNT(*)` 恒定 6.0–6.6ms** ⇒ 随体量增长的项只有那一项；`test/core/hash-store-row-count.test.ts` 10 例（语句级断言，8 例在修前代码上红）；`npm run typecheck` 干净、`npm test` 1757 过 / 1 挂（既有环境例）、`npm test -w client` 8 files / 207 tests 全过。
+
+### Why
+
+- **规格 #184 承诺「与库体量无关」，而行数是算出来的**：`stats()` 里的 `SELECT COUNT(*) FROM anchor_lines` 每次开库、每次写（`overBudget()`）都要付一次 O(行数) 的索引扫描 ⇒ 上一条（#303）只是把墙钟门抬到 500ms，**没有兑现承诺**，store 侧的真修法就是本票。
+- **票面给的两个方向里，「有界扫描」实测更慢**：`SELECT COUNT(*) FROM (SELECT 1 FROM anchor_lines LIMIT 300001)` 在 24 万行上要 **4.08ms**，比原 `COUNT(*)`（1.35ms）还慢约 3 倍（`SELECT 1` 不带索引列 → 走表扫描），而且只对超预算库有界 ⇒ 兑现不了「与库体量无关」；**只有「行数维护值」能满足验收**。
+- **维护值落 meta + 触发器，而不是在域内加减**：域内记账会漏掉「域外写者」——既有测试就是用第二条 `DatabaseSync` 连接直写 `anchor_lines` 的；触发器对任何写者都精确。代价是每新增一行约 1µs（10 万行 INSERT：80.7ms → 177.6ms），且只付在**新增**行上（重放 UPSERT：77.7 → 88.5ms）。
+
+### Path / Affected typed relationships
+
+- `src/domain/session/hash-store.ts`：`meta.anchor_lines_rows` + 两个触发器（`AFTER INSERT` / `AFTER DELETE` on `anchor_lines`）随行的增删同事务移动维护值；`maintainedAnchorRowCount()` 读维护值，**缺失或不可信时扫一次并写回**（写回 best-effort）；开库做**一次**修复（一条语句，计数与写回不能分叉）；旧库迁移与版本清空作废维护值（迁移用 `INSERT OR REPLACE`，会抑制 delete 触发器）；LRU 循环把路径计数提出循环（每删一个路径恰好 -1，不再每轮重数）。
+- `src/domain/session/store-budget.ts`：新增纯函数 `isOverRebuildLimit` / `isOverEvictLimit`（阈值判定与它比较的限值住在一处，测试可以钉在线的两侧）。
+- `test/support/fixtures.ts`：共享 `withStoreHome` / `storeConfigHome` / `storeDbPath` —— 三个 store 套件不再各写一份临时 home。
+- `test/core/hash-store-row-count.test.ts`（新，10 例：维护值被读、存量库首开补算、旧库迁移后重算、库重建后重算、每条写路径后仍等于 `COUNT(*)`、预算线两侧、运行期缺失后写回）；`test/core/hash-store-budget.test.ts`（写入从 `INSERT OR REPLACE` 改成 `ON CONFLICT … DO UPDATE`）；`test/core/hash-store.test.ts`。
+- 文档：ADR-0010 决策 5 增 2026-10-20 amendment（维护值与「REPLACE 会漂移」这条不变量）、`CHANGELOG.md` `[Unreleased]`。
+
+### 本轮定案（复核时照此）
+
+- **维护值是维护出来的，不是算出来的**：读路径永远读 meta；只有「缺失/不可信」才扫一次，并当场写回。
+- **写回只发生在开库那一次修复里**；运行期的兜底写回是 best-effort（写回失败只影响性能，不影响计数的正确性）。
+- **`INSERT OR REPLACE` 会让计数漂移**（它抑制 delete 触发器）：`anchor_lines` 一律 `ON CONFLICT … DO UPDATE`；唯一的历史 REPLACE（旧库迁移）先作废维护值。
+- **验收以语句级断言为主**（数一数有没有「数过整张表」的语句），墙钟门（500ms）保留但不再放宽 —— 墙钟是机器速度门，语句级才是行为门。
+- **剩余成本不在本票范围**：路径数（`undo ∪ served ∪ anchor_meta` 的 UNION）仍随路径数增长，与行数无关；本票只解「随行数变慢」这一半。

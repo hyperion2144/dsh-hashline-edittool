@@ -63,6 +63,14 @@ stops scaling with the store's contents.
    - The promise, stated accurately: **a store inside the budgets opens within
      50 ms**; an over-budget store spends time healing at open and the *next*
      open is back inside the budget.
+   - **Amendment (2026-10-20, [#305](https://github.com/hyperion2144/dsh-hashline-edittool/issues/305))** —
+     "no longer scales with rows" now covers the row COUNT too, not just `quick_check`:
+     the number of `anchor_lines` rows is **maintained** in `meta.anchor_lines_rows` and
+     moved by two SQLite triggers in the same transaction as the row write, so the budget
+     gate and `stats().rows` read a number instead of scanning the table. A store written
+     before this change re-establishes the count once at open, in one statement.
+     **Invariant:** `anchor_lines` rows are written with `ON CONFLICT … DO UPDATE` — an
+     `INSERT OR REPLACE` suppresses the delete trigger and would drift the count.
 6. **Reclamation at close**: `VACUUM` + `wal_checkpoint(TRUNCATE)` on the
    shutdown path, with `pending_vacuum` repairing a hard kill on the next open —
    which checkpoints before measuring, so a sticky WAL is never counted as

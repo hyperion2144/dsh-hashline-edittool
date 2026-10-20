@@ -19,9 +19,11 @@
  * @module dsh-hashline-edittool/domain/session/store-budget
  */
 import {
+	HASH_STORE_EVICT_RATIO,
 	HASH_STORE_MAX_BYTES,
 	HASH_STORE_MAX_PATHS,
 	HASH_STORE_MAX_ROWS,
+	HASH_STORE_REBUILD_RATIO,
 } from "../../infra/constants.js";
 
 /** The three budgets a sweep enforces. */
@@ -66,6 +68,46 @@ export function storeBudgetLimits(): StoreBudgetLimits {
 		paths: overrides.paths ?? HASH_STORE_MAX_PATHS,
 		rows: overrides.rows ?? HASH_STORE_MAX_ROWS,
 	};
+}
+
+/** What the store measured about itself when it opened. */
+export interface StoreBudgetStats {
+	readonly bytes: number;
+	readonly paths: number;
+	readonly rows: number;
+}
+
+/**
+ * Is this store so far over budget that it should be torn down and rebuilt?
+ *
+ * The rule lives HERE, next to the limits it compares against: the open path
+ * asks the question, and the tests pin the answer AT the line (one below is
+ * fine, the line itself is over). The row half is the one the maintained count
+ * feeds (#305) — it must decide exactly like the counted rows would.
+ */
+export function isOverRebuildLimit(
+	stats: StoreBudgetStats,
+	limits: StoreBudgetLimits,
+): boolean {
+	return (
+		stats.bytes >= limits.bytes * HASH_STORE_REBUILD_RATIO ||
+		stats.paths >= limits.paths * HASH_STORE_REBUILD_RATIO ||
+		stats.rows >= limits.rows * HASH_STORE_REBUILD_RATIO
+	);
+}
+
+/**
+ * Is this store over budget enough to be swept in place (short of a rebuild)?
+ */
+export function isOverEvictLimit(
+	stats: StoreBudgetStats,
+	limits: StoreBudgetLimits,
+): boolean {
+	return (
+		stats.bytes >= limits.bytes * HASH_STORE_EVICT_RATIO ||
+		stats.paths >= limits.paths * HASH_STORE_EVICT_RATIO ||
+		stats.rows >= limits.rows * HASH_STORE_EVICT_RATIO
+	);
 }
 
 /** Test seam: drop any published overrides so suites do not leak into each other. */
