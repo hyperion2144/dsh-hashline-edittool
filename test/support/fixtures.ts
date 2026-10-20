@@ -29,6 +29,43 @@ export async function getWritableTempRoot(): Promise<string> {
 }
 
 /**
+ * A temp HOME for the hash-store suites: the store lives under
+ * `<home>/.dsh/plugins/dsh-hashline-edittool/`, and the env stubs point the
+ * store at THAT home (an empty DSH_HOME stub leans on `homedir()/.dsh`, a
+ * different directory on Windows).
+ *
+ * The suites share this one helper: the store's location is a property of
+ * the HOME, not of the test that happens to need it.
+ */
+export async function withStoreHome<T>(
+	run: (home: string) => Promise<T>,
+	prefix = "pi-hashline-store-test-",
+): Promise<T> {
+	const home = await mkdtemp(join(await getWritableTempRoot(), prefix));
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	vi.stubEnv("DSH_HOME", join(home, ".dsh"));
+	vi.stubEnv("XDG_CONFIG_HOME", "");
+	try {
+		return await run(home);
+	} finally {
+		shutdownHashStore();
+		vi.unstubAllEnvs();
+		await rm(home, { recursive: true, force: true });
+	}
+}
+
+/** The plugin's config directory inside a temp home. */
+export function storeConfigHome(home: string): string {
+	return join(home, ".dsh", "plugins", "dsh-hashline-edittool");
+}
+
+/** The hash store's database file inside a temp home. */
+export function storeDbPath(home: string): string {
+	return join(storeConfigHome(home), "hash-store.sqlite");
+}
+
+/**
  * #244: the line-number switch belongs to the USER now and defaults OFF. Most
  * of this suite was written when every row carried `<anchor>:<line>`, so the
  * suites that assert numbered rows pin the switch ON through this helper, and

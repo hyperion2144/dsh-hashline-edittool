@@ -47,8 +47,6 @@ import {
 	HASH_STORE_MAX_PATHS,
 	HASH_STORE_MAX_ROWS,
 	HASH_STORE_SWEEP_WRITES,
-	HASH_STORE_EVICT_RATIO,
-	HASH_STORE_REBUILD_RATIO,
 	HASH_STORE_REBUILD_THROTTLE_MS,
 	UNDO_MAX_PATH_BYTES,
 } from "../../infra/constants.js";
@@ -60,7 +58,11 @@ import {
 	type AnchorStatePersistence,
 } from "./anchor-state.js";
 import { registerAnchorReader } from "../../hashline/anchor-pipeline.js";
-import { storeBudgetLimits } from "./store-budget.js";
+import {
+	isOverEvictLimit,
+	isOverRebuildLimit,
+	storeBudgetLimits,
+} from "./store-budget.js";
 import { decodeServedAnchors, encodeServedAnchors } from "./served-codec.js";
 // ---- validators (owned here; the store's corruption handling uses them) ----
 
@@ -455,6 +457,32 @@ function withTransaction(db: DatabaseSync, path: string, fn: () => void): void {
  *  rows matching `updated_at < cutoff`, so a huge stale backlog is paid down
  *  one page at a time instead of holding the writer for seconds. */
 const TTL_BATCH_LIMIT = 5000;
+/**
+ * The meta key that holds the MAINTAINED row count of `anchor_lines` (#305).
+ *
+ * The count used to be COMPUTED — `SELECT COUNT(*) FROM anchor_lines` — whose
+ * plan is a covering-index scan of the biggest table in the store, so the cold
+ * open AND every write paid a price that grew with the library. Spec #184
+ * promises the opposite ("冷开与库体量无关"), so the count is MAINTAINED
+ * instead: the two triggers in `buildStore` move this value in the SAME
+ * transaction as the row write, and every read is one meta lookup.
+ *
+ * This is the canonical explanation; the places that implement it (the
+ * triggers, the repair, the read) point back here.
+ */
+const ANCHOR_LINES_ROWS_KEY = "anchor_lines_rows";
+
+/**
+ * Whether a stored count is a plain decimal — the only shape the triggers know
+ * how to move and the only one a reader trusts.
+ *
+ * A value that is not (empty, left over, tampered with) is left alone by the
+ * triggers rather than being arithmetically mangled into a wrong number; the
+ * open path re-establishes it from the table.
+ */
+function isDecimalCount(value: string | undefined): value is string {
+	return value !== undefined && /^[0-9]+$/.test(value);
+}
 
 function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec("PRAGMA journal_mode = WAL");
@@ -486,6 +514,18 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			"value TEXT NOT NULL" +
 			")",
 	);
+	// Prepared early: the open path drops the maintained count before it can be
+	// trusted (the legacy migration and the version wipe both change the rows
+	// behind it), and the statement map below reuses this one.
+	const metaDeleteStmt = db.prepare("DELETE FROM meta WHERE key = ?");
+	/**
+	 * Drop the maintained count: the rows it described are gone or changed, so
+	 * the open path re-establishes it from the table (see
+	 * `ANCHOR_LINES_ROWS_KEY`).
+	 */
+	const invalidateMaintainedCount = (): void => {
+		metaDeleteStmt.run(ANCHOR_LINES_ROWS_KEY);
+	};
 	db.exec(UNDO_TABLE_DDL);
 	// Migration for a store written before #151/P5: the table exists in its old
 	// single-row shape. Rebuild it IN PLACE rather than bumping
@@ -536,6 +576,39 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	db.exec(
 		"CREATE INDEX IF NOT EXISTS anchor_lines_by_anchor ON anchor_lines (path, anchor)",
 	);
+	// The maintained row count of `anchor_lines` (#305) — the canonical
+	// explanation lives on `ANCHOR_LINES_ROWS_KEY`.
+	//
+	// Triggers rather than bookkeeping inside the write methods, because the
+	// count has to stay exact for EVERY write path — including the ones this
+	// module does not own: a rebuild's `DELETE FROM anchor_lines`, the TTL prune,
+	// the orphan cleanup, and writes made by another connection (the test suite
+	// seeds rows over its own sqlite handle). A path that forgot to report its
+	// delta would silently drift the budget judgement.
+	//
+	// INVARIANT: an `anchor_lines` row is written with `ON CONFLICT DO UPDATE`,
+	// never with `INSERT OR REPLACE`. A REPLACE suppresses the DELETE trigger,
+	// so replacing an existing row would leave the count one too high. The one
+	// place that REPLACEs (the legacy migration) drops the maintained count
+	// first, so the open path re-establishes it from the table.
+	db.exec(
+		"CREATE TRIGGER IF NOT EXISTS anchor_lines_rows_insert AFTER INSERT ON anchor_lines " +
+			"BEGIN " +
+			"UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) " +
+			"WHERE key = '" +
+			ANCHOR_LINES_ROWS_KEY +
+			"' AND value <> '' AND value NOT GLOB '*[^0-9]*'; " +
+			"END",
+	);
+	db.exec(
+		"CREATE TRIGGER IF NOT EXISTS anchor_lines_rows_delete AFTER DELETE ON anchor_lines " +
+			"BEGIN " +
+			"UPDATE meta SET value = CAST(CAST(value AS INTEGER) - 1 AS TEXT) " +
+			"WHERE key = '" +
+			ANCHOR_LINES_ROWS_KEY +
+			"' AND value <> '' AND value NOT GLOB '*[^0-9]*'; " +
+			"END",
+	);
 	// TTL / recency indexes (#180, spec #184) are NOT created here. They are the
 	// one cost that scales with row count, and at open time we may be about to
 	// rebuild or sweep the store — building them first measured ~5 s of wasted
@@ -551,6 +624,11 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		name: string;
 	}[];
 	if (legacyAnchorColumns.length > 0 && legacyAnchorColumns.some((c) => c.name === "anchors")) {
+		// The legacy rows land with INSERT OR REPLACE, and a REPLACE does NOT
+		// fire the delete trigger — so the maintained count would drift. Drop it
+		// here; the open path re-establishes it from the table once, after the
+		// migration has run.
+		invalidateMaintainedCount();
 		const legacyRows = db
 			.prepare("SELECT path, checksum, line_count, anchors, line_keys FROM anchor_state")
 			.all() as Record<string, unknown>[];
@@ -596,6 +674,10 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	// wiping them would make the next launch look like an unclean shutdown and
 	// defeat the 24h rebuild throttle.
 	if (versionChanged) {
+		// The wipe drops every anchor line, so the maintained count goes stale the
+		// moment it starts. Drop it with the rows: the open path re-establishes it
+		// from the (now empty) table.
+		invalidateMaintainedCount();
 		db.exec("DELETE FROM undo");
 		db.exec("DELETE FROM anchor_meta");
 		db.exec("DELETE FROM anchor_lines");
@@ -760,7 +842,48 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		"INSERT INTO meta (key, value) VALUES (?, ?) " +
 			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
 	);
-	const metaDeleteStmt = db.prepare("DELETE FROM meta WHERE key = ?");
+	/**
+	 * The maintained row count of `anchor_lines` — O(1), whatever the library size.
+	 *
+	 * The maintained value is the truth (spec #184's "与库体量无关"). A store
+	 * written before #305 carries no value: the open path re-establishes it once
+	 * (see `repairAnchorRowsStmt`), and from then on this is one meta lookup.
+	 *
+	 * If the value is missing or untrustworthy anywhere else — another process
+	 * wiped it, a hand-edited meta table — the count is taken from the table ONCE
+	 * and written back, so the triggers take over from that point. A read never
+	 * trusts a value it cannot vouch for, and never keeps scanning.
+	 */
+	const maintainedAnchorRowCount = (): number => {
+		const raw = (
+			metaGetStmt.get(ANCHOR_LINES_ROWS_KEY) as { value?: string } | undefined
+		)?.value;
+		if (isDecimalCount(raw)) return Number(raw);
+		const counted = Number(
+			(anchorRowCountStmt.get() as { n?: number } | undefined)?.n ?? 0,
+		);
+		try {
+			metaSetStmt.run(ANCHOR_LINES_ROWS_KEY, String(counted));
+		} catch {
+			// Best-effort: a store that cannot be written to still gets the right
+			// number for this call; the next open re-establishes the value.
+		}
+		return counted;
+	};
+	/**
+	 * The one statement that repairs a missing or malformed maintained count.
+	 *
+	 * ONE statement, so the count and the write cannot disagree: SQLite takes the
+	 * write lock for the statement, so a writer that commits while this runs either
+	 * committed BEFORE the count (and is counted) or waits for the lock (and its
+	 * trigger moves the count afterwards).
+	 */
+	const repairAnchorRowsStmt = db.prepare(
+		"INSERT INTO meta (key, value) VALUES ('" +
+			ANCHOR_LINES_ROWS_KEY +
+			"', (SELECT CAST(COUNT(*) AS TEXT) FROM anchor_lines)) " +
+			"ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+	);
 	// Anchor lines whose meta row is gone (a TTL prune that caught only one side,
 	// or a crashed writer): unreachable state that still costs pages.
 	const orphanAnchorLinesStmt = db.prepare(
@@ -889,8 +1012,7 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 		// ---- budget / maintenance (#180) ----
 		storeBytes: () =>
 			Number((storeBytesStmt.get() as { bytes?: number } | undefined)?.bytes ?? 0),
-		anchorRowCount: () =>
-			Number((anchorRowCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
+		anchorRowCount: () => maintainedAnchorRowCount(),
 		anchorPathCount: () =>
 			Number((anchorPathCountStmt.get() as { n?: number } | undefined)?.n ?? 0),
 		pathRecency: () => pathRecencyStmt.all() as Record<string, unknown>[],
@@ -917,6 +1039,19 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			db.exec("VACUUM");
 		},
 	};
+	// Re-establish the maintained count ONCE per store: a store written before
+	// #305 has no value, and this is the one place that can afford to count the
+	// table — the open path, once, before anything reads the count. From then on
+	// the maintained value answers every read.
+	//
+	// ONE statement, so the count and the write cannot disagree (see
+	// `repairAnchorRowsStmt`).
+	const maintainedRow = stmts.metaGet(ANCHOR_LINES_ROWS_KEY) as
+		| { value?: string }
+		| undefined;
+	if (!isDecimalCount(maintainedRow?.value)) {
+		repairAnchorRowsStmt.run();
+	}
 	return { db, stmts };
 }
 
@@ -1016,13 +1151,20 @@ function makeDomainStore(
 		// then delete an additional ~10% to amortise the next sweep.
 		const lruPool = recency.filter((r) => !deleted.has(r.path));
 		let lruDeleted = 0;
+		// The path count is taken ONCE, not per iteration: every cascade below
+		// removes that path from all three tables the count unions (undo, served,
+		// anchor_meta), so the count moves by exactly one per deleted path. The
+		// row count comes from the maintained value (O(1)), and the byte count is a
+		// page-header read.
+		let lruPaths = stmts.anchorPathCount();
 		while (
 			lruDeleted < lruPool.length &&
 			(stmts.storeBytes() > limits.bytes ||
-				stmts.anchorPathCount() > limits.paths ||
+				lruPaths > limits.paths ||
 				stmts.anchorRowCount() > limits.rows)
 		) {
 			deletePathCascade(lruPool[lruDeleted].path);
+			lruPaths--;
 			deleted.add(lruPool[lruDeleted].path);
 			lruDeleted++;
 		}
@@ -1546,12 +1688,7 @@ async function openStore(storePath: string): Promise<HashStore> {
 	// Limits come from the settings layer when it has published any (#179), and
 	// from the constants otherwise — `storeBudgetLimits()` is the single seam.
 	const limits = storeBudgetLimits();
-	const evictThreshold = limits.bytes * HASH_STORE_EVICT_RATIO;
-	const rebuildThreshold = limits.bytes * HASH_STORE_REBUILD_RATIO;
-	const needsRebuild =
-		initialStats.bytes >= rebuildThreshold ||
-		initialStats.paths >= limits.paths * HASH_STORE_REBUILD_RATIO ||
-		initialStats.rows >= limits.rows * HASH_STORE_REBUILD_RATIO;
+	const needsRebuild = isOverRebuildLimit(initialStats, limits);
 	const { lastAt: lastRebuildAt, now: nowMs } = readRebuildThrottle(stmts);
 	const throttled = nowMs - lastRebuildAt < HASH_STORE_REBUILD_THROTTLE_MS;
 
@@ -1608,10 +1745,7 @@ async function openStore(storePath: string): Promise<HashStore> {
 
 	// Above the evict threshold (or always when we deferred the rebuild
 	// because of throttle): run an in-place sweep.
-	const overEvict =
-		initialStats.bytes >= evictThreshold ||
-		initialStats.paths >= limits.paths * HASH_STORE_EVICT_RATIO ||
-		initialStats.rows >= limits.rows * HASH_STORE_EVICT_RATIO;
+	const overEvict = isOverEvictLimit(initialStats, limits);
 	if (overEvict) {
 		const report = store.sweep();
 		if (report.evictedPaths > 0) {
