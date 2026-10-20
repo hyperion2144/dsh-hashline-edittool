@@ -71,6 +71,24 @@ stops scaling with the store's contents.
      before this change re-establishes the count once at open, in one statement.
      **Invariant:** `anchor_lines` rows are written with `ON CONFLICT … DO UPDATE` — an
      `INSERT OR REPLACE` suppresses the delete trigger and would drift the count.
+   - **Amendment (2026-10-20, [#311](https://github.com/hyperion2144/dsh-hashline-edittool/issues/311))** —
+     the same promise now covers the PATH count too: the number of distinct paths the store
+     holds across `undo`, `served` and `anchor_meta` is **maintained** in
+     `meta.anchor_paths_count` and moved by six SQLite triggers (one per row family ×
+     insert/delete) in the same transaction as the row write, so the budget gate and
+     `stats().paths` read a number instead of running a UNION over the three tables. The
+     count is the size of the UNION, not the sum: a path held by several families counts
+     once, and it moves by one only when the path itself appears or vanishes — so it does
+     not depend on the order in which the families are written. A store written before
+     this change re-establishes the count once at open, in one statement.
+     **Invariant:** the triggers ask "does another family hold this path?", so `served`
+     needs an index on `path` (`served_by_path`) — its primary key is `(session_id, path)`,
+     and a lookup by path alone would scan the table. The index is rebuilt whenever
+     the `served` table is recreated, because a version change drops the table with
+     its indexes.
+     **Invariant:** rows of `undo`, `served` and `anchor_meta` are written with
+     `ON CONFLICT … DO UPDATE` — an `INSERT OR REPLACE` suppresses the delete trigger
+     and would drift the count.
 6. **Reclamation at close**: `VACUUM` + `wal_checkpoint(TRUNCATE)` on the
    shutdown path, with `pending_vacuum` repairing a hard kill on the next open —
    which checkpoints before measuring, so a sticky WAL is never counted as
