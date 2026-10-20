@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- `lsp.idle_timeout_ms` 设置：语言服务器空闲超过该窗口（默认 5 分钟，0 = 永不）即被回收，下次用到再拉起（#306）。
+
 ### Changed
 
 - 编辑 diff 改为 unified diff 形态：文件头 `--- path` / `+++ path`，段头 `@@ -old,count +new,count @@ 函数名()` 给出改动前后的行区间与所在函数；删除行留原位，其失效的旧锚点以 `~` 标记（#293，ADR-0020）。
@@ -16,6 +20,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 ### Fixed
 
 - 关闭哈希存储时在写完关闭标记后再做一次 WAL 检查点：干净关机后不留未落盘的 WAL 帧，下一次打开是普通读而不是恢复（#303）。
+- 语言服务器子进程不再常驻到插件卸载：握手失败的进程立即关闭，空闲超时的会话被回收（#306）。
 
 ## [0.10.3] - 2026-10-19
 

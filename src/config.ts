@@ -27,6 +27,8 @@ import {
 	HASH_STORE_MAX_BYTES,
 	HASH_STORE_MAX_PATHS,
 	HASH_STORE_MAX_ROWS,
+	LSP_IDLE_TIMEOUT_MAX_MS,
+	LSP_IDLE_TIMEOUT_MIN_MS,
 } from "./infra/constants.js";
 export const HASHLINE_SETTINGS_NAMESPACE = "hashline";
 
@@ -94,6 +96,13 @@ lsp?: {
 		 * fails because of diagnostics — this switch only governs the delivery.
 		 */
 		auto_diagnostics?: boolean;
+		/**
+		 * How long a language server may sit unused before it is reclaimed
+		 * (issue #306), in milliseconds. 0 means "never reclaim"; the default
+		 * is 300000 (five minutes). A reclaimed server is warmed again on the
+		 * next use, so a short window only costs one restart.
+		 */
+		idle_timeout_ms?: number;
 	};
 	/**
 	 * The formatting capability's namespace entry (map #275).
@@ -165,6 +174,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 			.object({
 				servers: z.dict(z.string()),
 				auto_diagnostics: z.boolean(),
+				idle_timeout_ms: z.number().min(LSP_IDLE_TIMEOUT_MIN_MS).max(LSP_IDLE_TIMEOUT_MAX_MS),
 			})
 			.volatile(),
 	// Formatting (map #275). Volatile on the OUTERMOST node only — the same
@@ -326,6 +336,7 @@ export {
 	isAstLanguageEnabled,
 	astDisabledLanguages,
 	lspConfiguredServers,
+	lspIdleTimeoutMs,
 	isAutoDiagnosticsEnabled,
 	isAutoFormatEnabled,
 	isEditorconfigEnabled,
@@ -451,6 +462,13 @@ const sep =
 		typeof settings?.lsp?.auto_diagnostics === "boolean"
 			? settings.lsp.auto_diagnostics
 			: defaults.autoDiagnostics;
+	// The idle window before a language server is reclaimed (#306). Absent means
+	// the default; the schema refuses an out-of-range value, and the getter
+	// re-clamps defensively, so a number that survives both is taken as given.
+	const lspIdleTimeout =
+		typeof settings?.lsp?.idle_timeout_ms === "number" && Number.isFinite(settings.lsp.idle_timeout_ms)
+			? settings.lsp.idle_timeout_ms
+			: defaults.lspIdleTimeoutMs;
 	// Formatting defaults OFF (G3): an edit must never re-shape text the
 	// model did not ask to re-shape. Absent = off, like `ast.enabled`. The
 	// single source of defaults is `infra/settings`; this only reads them.
@@ -477,6 +495,7 @@ const sep =
 		astLanguages: astLangs,
 		lspServers: lspServers,
 		autoDiagnostics: autoDiag,
+		lspIdleTimeoutMs: lspIdleTimeout,
 		autoFormat,
 		editorconfig: editorconfigCfg,
 		grepRespectGitignore,

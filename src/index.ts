@@ -29,6 +29,7 @@ import {
 	HashlineSettingsSchema,
 	installHashlineSettings,
 	lspConfiguredServers,
+	lspIdleTimeoutMs,
 } from "./config.js";
 import { registerUndoTool } from "./tools/tool-undo.js";
 import { registerGrepTool } from "./tools/tool-grep.js";
@@ -412,6 +413,10 @@ function installLspIntegration(rootCtx: Context): void {
 		// a fact the status surface reports, and refusing it here would make a typo
 		// invisible at exactly the place that could show it.
 		configured: configuredServers(),
+		// Read at CALL time, like `configured`: the window comes from a setting
+		// the user can change while the plugin is loaded, and the change must take
+		// effect without a restart.
+		idleTimeoutMs: () => lspIdleTimeoutMs(),
 		onFailure: (languageId, message) => {
 			rootCtx.logger.warn(`dsh-hashline-edittool: language server for ${languageId} did not start: ${message}`);
 		},

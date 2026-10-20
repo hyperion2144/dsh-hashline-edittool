@@ -87,7 +87,10 @@ syntax match" through a sandboxed tree-sitter worker, with a curated grammar cat
 long files. The `lsp` tool answers "what does this symbol mean" through a real language
 server per language — started on demand, shared with dsh's own `lsp` service — and falls
 back to a heuristic backend when none can be had. Both serve their rows, so structural and
-semantic results are directly editable.
+semantic results are directly editable. A server nobody is using is reclaimed after
+`lsp.idle_timeout_ms` (five minutes by default) and warmed again on the next use — a
+TypeScript server holding a large repository's index is not something to keep
+resident for the whole session.
 
 **Diagnostics on write.** After an edit/write lands, the plugin baselines the language server with the pre-write text, pulls diagnostics, and delivers them per written file — an inline, severity-tinted capsule under the card within a short window, with bounded async delivery at the model's next natural step, riding both the JSON envelope and the text channel. One switch (`lsp.auto_diagnostics`) turns it off.
 
@@ -96,7 +99,8 @@ semantic results are directly editable.
 **A settings panel rendered by the plugin itself.** The bundled `HashlineSettingsCard` is
 a full settings UI in the web: separator, output format, context lines, line numbers
 (the model-facing marker shape — the user's call, not the agent's), require_line_content,
-the AST master switch plus per-language toggles, named LSP servers, auto-diagnostics.
+the AST master switch plus per-language toggles, named LSP servers, auto-diagnostics,
+the language server's idle-reclaim window.
 Edit, commit, done — no YAML editing required.
 
 **Hot switching, everywhere.** A committed settings change takes effect on the **next
@@ -312,6 +316,7 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
     lsp:
       servers: {}            # named servers: { <languageId>: <command> }
       auto_diagnostics: true # deliver server diagnostics inline after writes
+      idle_timeout_ms: 300000 # reclaim an idle language server after 5 min (0 = never)
     format:
       auto: false           # format edited files after write/edit/ast_edit (LSP)
       editorconfig: false   # honor .editorconfig indent settings when formatting
