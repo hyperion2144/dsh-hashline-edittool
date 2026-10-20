@@ -52,7 +52,7 @@ function fakeFormatManager(answers: FormatAnswers): void {
 			if (method === "textDocument/formatting") return answers.full ?? [];
 			return undefined;
 		},
-		notify: async () => {},
+		notify: async () => { },
 	};
 	setLspManager({
 		readyLanguages: ["typescript"],
@@ -122,7 +122,7 @@ describe("the manual format tool (map #275 / G1)", () => {
 			const text = getText(res);
 			expect(text).toContain(`[format result] ${path}`);
 			expect(text).toContain(
-				"[format: fake-ts · full-file · requested 1 → applied 1 · 1 lines changed · 0 unserved]",
+				"[format: fake-ts · full-file · requested 1 → applied 1 · 1 lines changed · 0 in main diff · 0 unserved]",
 			);
 			// The undo covers the whole call: content back to the pre-format text,
 			// result checksum over the disk form.
@@ -321,13 +321,13 @@ describe("the manual format tool (map #275 / G1)", () => {
 			changedLines: 2,
 			unservedRows: 1,
 			rows: [
-				{ kind: "+" as const, lineNumber: 2, hash: "B1", text: "\treturn 1;", alsoInMainDiff: false },
-				{ kind: "+" as const, lineNumber: 3, hash: "", text: "\t// never served", alsoInMainDiff: false },
+				{ kind: "+" as const, lineNumber: 2, hash: "B1", text: "\treturn 1;" },
+				{ kind: "+" as const, lineNumber: 3, hash: "", text: "\t// never served" },
 			],
 		};
 		const text = renderFormatSection(section, false, "format");
 		expect(text).toContain(
-			"[format: fake-ts · full-file · requested 1 → applied 2 · 2 lines changed · 1 unserved]",
+			"[format: fake-ts · full-file · requested 1 → applied 2 · 2 lines changed · 0 in main diff · 1 unserved]",
 		);
 		expect(text).toContain("+B1 \treturn 1;");
 		// The unserved row renders with the four-space placeholder, not a lie.

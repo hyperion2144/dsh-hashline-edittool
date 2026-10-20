@@ -1,6 +1,8 @@
 # ADR-0019 — The format tool contract: LSP formatting as an observed, anchor-aware write
 
 > **Status**: Proposed (2026-10-18; decided on [map #275](https://github.com/hyperion2144/dsh-hashline-edittool/issues/275) — G1 [#277](https://github.com/hyperion2144/dsh-hashline-edittool/issues/277), G2 [#279](https://github.com/hyperion2144/dsh-hashline-edittool/issues/279), G3 [#280](https://github.com/hyperion2144/dsh-hashline-edittool/issues/280)). Extends [ADR-0004](0004-edit-multi-file-response.md) / [ADR-0006](0006-anchor-lifecycle-inheritance.md) / [ADR-0009](0009-sparse-lazy-anchors.md) / [ADR-0014](0014-read-window-cursor-and-summary.md).
+>
+> **Amendment** (2026-10-20, #312): the section no longer repeats a formatter-changed row the main diff renders — the `alsoInMainDiff` row flag is retired, `inMainDiffRows` counts the withheld rows, and the header reads `… · n lines changed · k in main diff · u unserved` (see "Output shares one shape with the automatic path" below).
 
 ## Problem Statement
 
@@ -52,10 +54,17 @@ win inside the server.
 
 **Output shares one shape with the automatic path** (G2): a `FormatSection` per file —
 `status / server / mode ("range" | "full-file") / requested / applied / changedLines /
-unservedRows / alsoInMainDiff / rows / reason` — with `rows: FormatRow[]`,
-`FormatRow = EditDiffRow & { alsoInMainDiff: boolean }`. Text renders it as a separate
-segment after the main diff (`[format: <server> · …]` header, four-space placeholder for
-anchor-less rows, `(also in main diff)` suffix); JSON via `details.formats`; the card
+inMainDiffRows / unservedRows / rows / reason` — with `rows: FormatRow[]`, `FormatRow =
+EditDiffRow`. Amended 2026-10-20 by [#312](https://github.com/hyperion2144/dsh-hashline-edittool/issues/312),
+superseding G2's original display ruling (#279 Q4-A): under ADR-0020's unified main
+diff a formatter-changed line the diff already shows carries its anchor and content on
+the diff row, so the section no longer repeats it — it is not a `FormatRow` at all (the
+former `alsoInMainDiff` flag is retired) and `inMainDiffRows` counts it; the header
+reads `… · n lines changed · k in main diff · u unserved`, and a pass whose rows are
+all withheld renders the bare header. Rendered means the diff's own row set — the per-change ±context union `genDiff` draws (`diffRenderedLines`), not the wider served window; on `write` updates the preview must provably show the row (the model rewrote the pre-disk line it came from) — uncertain visibility stays a row, never a silent drop. The manual `format` call has no separate main
+diff, so nothing is withheld for it — its section still lists every changed row. Text
+renders it as a separate segment after the main diff (`[format: <server> · …]` header,
+four-space placeholder for anchor-less rows); JSON via `details.formats`; the card
 channel via `presentationMeta.formats`. `noop` (already formatted) is a real status:
 `rows: []`, no disk write, no undo entry, no anchor changes.
 

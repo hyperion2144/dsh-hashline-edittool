@@ -9,9 +9,9 @@
  * {@link FormatSection}, rendered as its own block by the web card.
  *
  * Rows reuse {@linkcode EditDiffRow} — the shape the web diff card already
- * renders — plus one format-specific flag: whether the row also appears in
- * the main diff, so a line the model AND the formatter both touched is shown
- * once in full and marked, not shown twice.
+ * renders. Since #312 a row exists only for a formatter-changed line the
+ * main diff does NOT already show — a line the main diff carries is counted
+ * by `inMainDiffRows` and never duplicated here.
  *
  * @module dsh-hashline-edittool/domain/format/types
  */
@@ -29,11 +29,13 @@ export type FormatStatus =
 /** Which request shape the formatter served. */
 export type FormatMode = "range" | "full-file";
 
-/** One row of the format section: a formatter-changed final line. */
-export type FormatRow = EditDiffRow & {
-	/** The same line is already visible in the main diff. */
-	alsoInMainDiff: boolean;
-};
+/**
+ * One row of the format section: a formatter-changed final line the model may
+ * address — the web diff card's own row shape. The former `alsoInMainDiff`
+ * flag is retired (#312): an in-main line is not a row at all any more, only
+ * a count on the section.
+ */
+export type FormatRow = EditDiffRow;
 
 /** One file's formatting report, rendered beside that file's main diff. */
 export type FormatSection = {
@@ -50,6 +52,8 @@ export type FormatSection = {
 	changedLines?: number;
 	/** Formatter-changed lines NOT shown in the main diff and NOT eligible for an anchor. */
 	unservedRows?: number;
+	/** Formatter-changed lines the main diff already shows — counted, not returned (#312). */
+	inMainDiffRows?: number;
 	/** Why formatting was skipped (status `skipped` only). */
 	reason?: string;
 	/** The formatter-changed rows (status `formatted` only). */

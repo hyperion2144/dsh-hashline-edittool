@@ -344,6 +344,10 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 							preCallServed,
 							created: operation === "create",
 							servedHashes: served?.hashes,
+							// #312: a lossy pre-write read has no honest before text —
+							// withholding against U+FFFD stand-ins would silently drop
+							// rows, so the section stays conservative (shows).
+							beforeContent: beforeLossy ? undefined : (before ?? undefined),
 						});
 					}
 				}

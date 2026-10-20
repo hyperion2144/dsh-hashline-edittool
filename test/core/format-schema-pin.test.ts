@@ -24,7 +24,8 @@ const SECTION = {
 	applied: 2,
 	changedLines: 1,
 	unservedRows: 0,
-	rows: [{ kind: " ", lineNumber: 3, hash: "", text: "x", alsoInMainDiff: true }],
+	inMainDiffRows: 2,
+	rows: [{ kind: " ", lineNumber: 3, hash: "", text: "x" }],
 };
 
 describe("format section schema pins (map #275)", () => {
@@ -80,6 +81,7 @@ describe("format section schema pins (map #275)", () => {
 			applied: 2,
 			changedLines: 1,
 			unservedRows: 0,
+			inMainDiffRows: 0,
 			rows: SECTION.rows,
 			modelText: "m",
 		};
@@ -95,7 +97,7 @@ describe("format section schema pins (map #275)", () => {
 		// defineTool normalizes the per-property flags into a top-level array.
 		const required = (schema as { required?: readonly string[] }).required ?? [];
 		expect(required).toEqual(["modelText"]);
-		for (const field of ["path", "operation", "status", "server", "mode", "requested", "applied", "changedLines", "unservedRows"]) {
+		for (const field of ["path", "operation", "status", "server", "mode", "requested", "applied", "changedLines", "inMainDiffRows", "unservedRows"]) {
 			expect(required).not.toContain(field);
 		}
 		expect(schemaViolations(schema, { modelText: "[E_LSP_NO_SERVER] no language…", error: { code: "E_LSP_NO_SERVER", message: "no language" } })).toEqual([]);

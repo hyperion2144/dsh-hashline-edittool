@@ -4,9 +4,10 @@
  * Decision B's display contract, as a builder:
  *
  * - A row exists for every final line the FORMATTER changed that the main
- *   diff does not already show; a formatter-changed line the main diff ALSO
- *   shows appears with `alsoInMainDiff: true` so the card can mark the
- *   duplicate instead of double-rendering it.
+ *   diff does not already show. A formatter-changed line the main diff ALSO
+ *   shows is not returned in any form — the diff already carries its anchor
+ *   and content — `inMainDiffRows` counts it instead (#312: repeating it in
+ *   the section was pure token waste under ADR-0020's unified diff).
  * - A row's hash is the FINAL content's anchor when the line is eligible
  * - A row the eligibility gate refuses is NOT returned at all — no content,
  *   no anchor, not even a placeholder. The inline section is part of an edit
@@ -94,20 +95,25 @@ export function buildFormatSection(params: {
 	}
 	const rows: FormatRow[] = [];
 	let unserved = 0;
+	let inMain = 0;
 	for (let line = 1; line <= params.finalLines.length; line++) {
 		if (!params.changed.has(line)) continue;
-		const alsoInMainDiff = params.alsoInMain.has(line);
+		// #312: the main diff already carries this line's anchor and content —
+		// repeating them in the section is pure token waste. Count, never re-show.
+		if (params.alsoInMain.has(line)) {
+			inMain += 1;
+			continue;
+		}
 		const eligible = params.eligibility.get(line) === true;
-		if (!alsoInMainDiff && !eligible) {
+		if (!eligible) {
 			unserved += 1;
 			continue;
 		}
 		rows.push({
 			kind: "+",
 			lineNumber: line,
-			hash: eligible ? (params.finalHashes[line - 1] ?? "") : "",
+			hash: params.finalHashes[line - 1] ?? "",
 			text: params.finalLines[line - 1] ?? "",
-			alsoInMainDiff,
 		});
 	}
 	return {
@@ -117,6 +123,7 @@ export function buildFormatSection(params: {
 		...(params.requested !== undefined ? { requested: params.requested } : {}),
 		...(params.applied !== undefined ? { applied: params.applied } : {}),
 		changedLines: params.changed.size,
+		inMainDiffRows: inMain,
 		unservedRows: unserved,
 		rows,
 	};

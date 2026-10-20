@@ -780,13 +780,12 @@ export function metaFormatSections(meta: unknown): FormatSectionMeta[] {
 					!Number.isInteger(r.lineNumber) ||
 					r.lineNumber < 1 ||
 					typeof r.hash !== "string" ||
-					typeof r.text !== "string" ||
-					typeof r.alsoInMainDiff !== "boolean"
+					typeof r.text !== "string"
 				) {
 					valid = false;
 					break;
 				}
-				rows.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text, alsoInMainDiff: r.alsoInMainDiff });
+				rows.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text });
 			}
 			if (!valid) continue;
 		}
@@ -799,6 +798,7 @@ export function metaFormatSections(meta: unknown): FormatSectionMeta[] {
 			...(typeof s.applied === "number" ? { applied: s.applied } : {}),
 			...(typeof s.changedLines === "number" ? { changedLines: s.changedLines } : {}),
 			...(typeof s.unservedRows === "number" ? { unservedRows: s.unservedRows } : {}),
+			...(typeof s.inMainDiffRows === "number" ? { inMainDiffRows: s.inMainDiffRows } : {}),
 			...(typeof s.reason === "string" && s.reason !== "" ? { reason: s.reason } : {}),
 			rows,
 		});

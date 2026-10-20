@@ -4,7 +4,7 @@
  * This environment cannot render, so — the same split the read card made —
  * the PURE half is covered by models.test.ts (`metaFormatSections`), and this
  * file pins the STRUCTURAL promises of the renderer: the literals a reader
- * sees (the no-anchor hint, the overlap badge, the bracketed header), the
+ * sees (the no-anchor hint, the in-main count, the bracketed header), the
  * rule that routes sections to their file's tab, and the fact that the
  * shipped BUNDLE carries all of it (a source-only pin would pass while the
  * build went stale).
@@ -29,9 +29,15 @@ describe("the auto-format section in the diff card (#275)", () => {
 		expect(bundleSource).toContain("no anchor (not served)");
 	});
 
-	it("badges rows the main diff already shows instead of hiding them", () => {
-		expect(blockSource).toContain("also in main diff");
-		expect(bundleSource).toContain("also in main diff");
+	it("withholds in-main rows: no badge, only the header count (#312)", () => {
+		// The retired overlap badge must be gone from source AND bundle — an
+		// in-main row is counted by the header's `n in main diff`, never drawn.
+		expect(blockSource).not.toContain("also in main diff");
+		expect(bundleSource).not.toContain("also in main diff");
+		expect(blockSource).toContain(" in main diff ");
+		// esbuild escapes non-ASCII in the bundle (· → \xB7), so assert the
+		// count phrase without the middot there; the source keeps the full form.
+		expect(bundleSource).toContain(" in main diff ");
 	});
 
 	it("carries the bracketed header the host's text contract mirrors", () => {
