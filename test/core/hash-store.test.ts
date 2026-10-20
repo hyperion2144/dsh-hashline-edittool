@@ -330,7 +330,15 @@ describe("hash-store — WAL checkpoint on shutdown", () => {
 
 			shutdownHashStore();
 
-			expect(existsSync(walPath)).toBe(false);
+			// A clean shutdown must leave NO uncheckpointed frame behind. The WAL
+			// is either gone (SQLite deletes it when the last connection closes)
+			// or empty (a runtime that keeps the file around — Bun's node:sqlite
+			// does, when prepared statements were still alive at close — but a
+			// clean close still truncates it). A WAL with frames in it would make
+			// the next open a recovery instead of a plain read.
+			if (existsSync(walPath)) {
+				expect((await stat(walPath)).size).toBe(0);
+			}
 		});
 	});
 });

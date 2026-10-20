@@ -142,16 +142,45 @@ export interface DiffCardProps {
 	diffs: readonly FileDiff[];
 }
 
-/** One rendered diff row from the persisted meta (rendering channel, issue #71). */
-export interface DiffRowMeta {
+/**
+ * One CONTENT row of the diff (rendering channel, issue #71): added, removed
+ * or context, with the gutter facts the card draws beside the code.
+ */
+export interface DiffContentRowMeta {
 	/** `+` added, `-` removed, ` ` context. */
 	kind: "+" | "-" | " ";
 	/** `+` / context: the post-edit line number. `-`: the pre-edit line number. */
 	lineNumber: number;
 	/** `+` / context: the served post-edit anchor. `-`: the stale pre-edit anchor. Empty when unknown. */
 	hash: string;
+	/** The row's verbatim text. */
 	text: string;
 }
+
+/**
+ * One SEGMENT HEADER row (#295): the `@@ -oldStart,oldCount +newStart,newCount @@ scope()`
+ * line that opens a diff segment.
+ *
+ * It is STRUCTURE, not content: no line number, no anchor, nothing to copy —
+ * the card draws it as the segment's title (the model-visible text carries the
+ * same header, and the two channels never parse each other).
+ */
+export interface DiffHunkRowMeta {
+	kind: "hunk";
+	/** The header's full text, e.g. `@@ -194,7 +194,7 @@ myersRange()`. */
+	text: string;
+}
+
+/**
+ * One rendered diff row from the persisted meta (rendering channel, issue #71).
+ *
+ * A discriminated union, not one flat row: a segment header (#295) has NEITHER
+ * a line number NOR an anchor, and a flat shape would leave every reader of
+ * `lineNumber` to defend against an `undefined` it can never have. The wire
+ * shape is unchanged: the host writes the same JSON either way.
+ */
+export type DiffRowMeta = DiffContentRowMeta | DiffHunkRowMeta;
+
 /** One file's diff rows in a multi-file group (issue #82: per-file tab rendering). */
 export interface DiffRowGroup {
 	path: string;

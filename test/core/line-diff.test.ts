@@ -48,8 +48,8 @@ const jsdiffParts = (oldText: string, newText: string): LineDiffPart[] =>
 /** Render the same pair through both producers and compare everything. */
 function expectSameRendering(label: string, before: string, after: string): void {
 	const { beforeHashes, afterHashes } = bothSides(before, after);
-	const reference = genDiff(before, after, contextLinesCfg(), afterHashes, beforeHashes, true, jsdiffParts);
-	const bounded = genDiff(before, after, contextLinesCfg(), afterHashes, beforeHashes, true, diffLinesBounded);
+	const reference = genDiff(before, after, contextLinesCfg(), afterHashes, beforeHashes, true, { partsFor: jsdiffParts });
+	const bounded = genDiff(before, after, contextLinesCfg(), afterHashes, beforeHashes, true, { partsFor: diffLinesBounded });
 	expect(bounded.diff, `${label}: rendered diff`).toBe(reference.diff);
 	expect(bounded.rows, `${label}: rows`).toEqual(reference.rows);
 	expect(bounded.servedRows, `${label}: servedRows`).toEqual(reference.servedRows);

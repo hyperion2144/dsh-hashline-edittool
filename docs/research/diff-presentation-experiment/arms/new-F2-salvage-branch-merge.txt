@@ -1,0 +1,17 @@
+Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function; `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.
+--- src/hashline/anchor-pipeline.ts
++++ src/hashline/anchor-pipeline.ts
+@@ -550,10 +550,9 @@ salvageAnchorRef()
+  h4:		let message: string;
+  MJ:		if (/\r\n?|\n/.test(rest)) {
+  1X:			message = `[E_BAD_REF] ${fieldLabel} got a multi-line block; only the first row's anchor "${anchor}" was used, the rest was ignored.`;
+-~ku:		} else if (match[1] === "+") {
+-~OK:			message = `[E_BAD_REF] stripped diff-preview "+" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+-~pu:		} else if (match[1] === "-") {
+-~Nx:			message = `[E_BAD_REF] stripped leading "-" marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
++ 8M:		} else if (match[1] === "+" || match[1] === "-") {
++ hr:			const which = match[1] === "+" ? `diff-preview "+"` : `leading "-"`;
++ lm:			message = `[E_BAD_REF] stripped ${which} marker and trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+  Ne:		} else {
+  8s:			message = `[E_BAD_REF] stripped trailing content — using "${anchor}" (from "${clipLine(trimmed, 60)}").`;
+  zx:		}

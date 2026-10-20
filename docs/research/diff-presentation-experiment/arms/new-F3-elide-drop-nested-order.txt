@@ -1,0 +1,12 @@
+Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function; `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.
+--- src/ast/elide.ts
++++ src/ast/elide.ts
+@@ -149,7 +149,7 @@ dropNested()
+  wz:
+  EU:/** Remove spans fully contained in another; the outer fold already covers them. */
+  P5:function dropNested(spans: readonly ElisionSpan[]): ElisionSpan[] {
+-~Y0:	const sorted = [...spans].sort((a, b) => a.startLine - b.startLine || b.endLine - a.endLine);
++ 1X:	const sorted = [...spans].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+  Sv:	const out: ElisionSpan[] = [];
+  R2:	let coveredTo = 0;
+  u5:	for (const span of sorted) {

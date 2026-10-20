@@ -1,0 +1,10 @@
+Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.
+ ...
+ B1:		trace.push(v.slice());
+ Yc:		for (let k = -d; k <= d; k += 2) {
+ jt:			let x: number;
+-Tl:			if (k === -d || (k !== d && v[mid + k - 1]! < v[mid + k + 1]!)) x = v[mid + k + 1]!;
++bj:			if (k === -d || (k !== d && v[mid + k - 1]! <= v[mid + k + 1]!)) x = v[mid + k + 1]!;
+ 5X:			else x = v[mid + k - 1]! + 1;
+ Tg:			let y = x - k;
+ nm:			while (x < n && y < m && a[aLo + x] === b[bLo + y]) {

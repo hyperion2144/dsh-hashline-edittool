@@ -78,8 +78,8 @@ import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/s
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { genDiff } from "../render/edit-diff.js";
-import { EDIT_DIFF_LEGEND, renderFormatSection } from "../domain/edit/edit-response.js";
-import { diffDictFrom, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
+import { editDiffLegend, renderFileDiffGroup, renderFormatSection } from "../domain/edit/edit-response.js";
+import { diffDictFrom, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
 
 import {
 	deliverDiagnosticsAfterWrite,
@@ -106,7 +106,7 @@ type EditCanonicalValue = {
 	driftNotice?: string;
 	noop: boolean;
 	/** Structured diff-window rows for the web card (rendering channel, issue #71). */
-	diffRows?: EditDiffRow[];
+	diffRows?: EditCardDiffRow[];
 	modelText: string;
 } & { [key: string]: unknown };
 /**
@@ -462,7 +462,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				// 渲染通道（issue #71）: genDiff 的结构化行（新旧行号 + 锚点），
 				// web diff 卡的 gutter 直接渲染它，绝不解析 modelText。
-				// v.diffRows 已是 diffRowsFromGenDiff 的产物（EditDiffRow[]），
+				// v.diffRows 已是 diffRowsFromBlocks 的产物（EditCardDiffRow[]），
 				// 非空即透传（diffRowsFromMeta 的入参是 meta 对象，不能传数组）。
 				const diffRows = Array.isArray(v.diffRows) && v.diffRows.length > 0 ? v.diffRows : undefined;
 				return {
@@ -639,7 +639,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 
 				// issue #82: compute per-file diffs + diffRowGroups for multi-file presentationMeta
 				const multiDiffs: FileDiff[] = [];
-				const multiDiffRowGroups: { path: string; rows: EditDiffRow[] }[] = [];
+				const multiDiffRowGroups: { path: string; rows: EditCardDiffRow[] }[] = [];
 				const multiFormats: FormatSection[] = [];
 				for (const o of successes) {
 					const file = o.file;
@@ -647,8 +647,11 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					multiDiffs.push(...computeHunkDiffs(o.displayPath, file.originalNormalized, file.result));
 					multiDiffRowGroups.push({
 						path: o.displayPath,
-						rows: diffRowsFromGenDiff(
-							genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true, undefined, replacedOriginalRanges(file.hunkShifts)).rows,
+						rows: diffRowsFromBlocks(
+							genDiff(file.originalNormalized, file.result, contextLinesCfg(), file.resultHashes, file.originalHashes, true, {
+								path: o.displayPath,
+								changedRanges: replacedOriginalRanges(file.hunkShifts),
+							}).blocks,
 						),
 					});
 				}
@@ -687,15 +690,35 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					const summary =
 						`Successfully edited ${successes.length} file(s) — ${appliedTotal} of ${totalEdits} edit(s) applied` +
 						`${noopTotal > 0 ? ` (${noopTotal} noop)` : ""}.`;
-					const blocks = outcomes.map((o) => {
+					// ONE legend for the whole batch: the diff reads as one unified diff,
+					// and each file's group opens with its own file header. A failed file
+					// gets its own error block and never enters the diff.
+					const fileGroups: string[] = [];
+					const failureBlocks: string[] = [];
+					// A file whose edits were all noops has no diff, so the batch's
+					// legend is only there when something actually changed.
+					let hasDiff = false;
+					for (const o of outcomes) {
 						if (o.ok) {
-							return `--- ${o.displayPath} ---\n${buildChangedModelText(o.file, o.displayPath, lineNumbers)}`;
+							if (o.file.appliedCount > 0) hasDiff = true;
+							fileGroups.push(buildFileGroupText(o.file, o.displayPath, lineNumbers));
+							continue;
 						}
 						const message = o.error instanceof Error ? o.error.message : String(o.error);
 						const detected = extractFailure(message);
-						return `Edit for ${o.displayPath} failed: ${detected.code} ${detected.message}`;
-					});
-				const multiStreamed = await spillModelTextOverflow({ sessionKey, producer: "edit", consumer: "read", kind: "report-segment", modelText: multiDiagSection === "" ? `${summary}\n\n${blocks.join("\n\n")}` : `${summary}\n\n${blocks.join("\n\n")}\n\n${multiDiagSection}`, budgetChars: responseBudgetChars() });
+						failureBlocks.push(`Edit for ${o.displayPath} failed: ${detected.code} ${detected.message}`);
+					}
+					const sections = [summary];
+					if (fileGroups.length > 0) {
+						sections.push(
+							hasDiff
+								? `${editDiffLegend(lineNumbers)}\n${fileGroups.join("\n\n")}`
+								: fileGroups.join("\n\n"),
+						);
+					}
+					sections.push(...failureBlocks);
+					const body = sections.filter((part) => part !== "").join("\n\n");
+				const multiStreamed = await spillModelTextOverflow({ sessionKey, producer: "edit", consumer: "read", kind: "report-segment", modelText: multiDiagSection === "" ? body : `${body}\n\n${multiDiagSection}`, budgetChars: responseBudgetChars() });
 				return { success, fail, ...(allFailedError !== undefined ? { error: allFailedError } : {}), ...(multiDiagMeta.length > 0 ? { diagnostics: multiDiagMeta } : {}), ...(multiFormats.length > 0 ? { formats: multiFormats as never } : {}), multiDiffs: multiDiffs as never, multiDiffRowGroups: multiDiffRowGroups as never, modelText: multiStreamed.modelText };
 				}
 
@@ -897,7 +920,7 @@ export function buildCanonicalFromFileResult(
 	// 渲染通道（issue #71）: genDiff 的结构化 diff 行（新旧行号 + 会话锚点）。
 	// 与 modelText 同源同算法，但作为结构化数据走 presentationMeta，
 	// web diff 卡的 gutter 直接渲染它，绝不解析 modelText 文本。
-	const diffRows = diffRowsFromGenDiff(
+	const diffRows = diffRowsFromBlocks(
 		genDiff(
 			file.originalNormalized,
 			file.result,
@@ -905,9 +928,11 @@ export function buildCanonicalFromFileResult(
 			file.resultHashes,
 			file.originalHashes,
 			true,
-			undefined,
-			replacedOriginalRanges(file.hunkShifts),
-		).rows,
+			{
+				path: displayPath,
+				changedRanges: replacedOriginalRanges(file.hunkShifts),
+			},
+		).blocks,
 	);
 	const result = {
 		path: displayPath,
@@ -936,10 +961,22 @@ export function buildCanonicalFromFileResult(
  *    4. Trailing success prefix + line summary
  *    5. Trailing warnings / drift notice
  *  Kept inline so this tool file owns the projection end-to-end. */
-function buildChangedModelText(
+/**
+ * One file's block of the model text: the file header (`--- path` / `+++ path`),
+ * the diff's blocks, the format section and the status line.
+ *
+ * The LEGEND is not here: the caller places it once — above a single file's
+ * block, or above the whole batch — so the diff reads as ONE unified diff.
+ *
+ * @param file - the file's result.
+ * @param displayPath - the file's display path.
+ * @param lineNumbers - whether the line-number switch is on.
+ * @returns the file's block.
+ */
+function buildFileGroupText(
 	file: FileEditResult,
 	displayPath: string,
-	lineNumbers = lineNumbersEnabled(),
+	lineNumbers: boolean,
 ): string {
 	if (file.appliedCount === 0) {
 		const warningsBlock =
@@ -947,8 +984,6 @@ function buildChangedModelText(
 		const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
 		return `No changes made. All ${file.appliedCount + file.noopCount} edit(s) in the batch produced identical content.\nClassification: noop${warningsBlock}${driftBlock}`;
 	}
-	const linesAdded = file.totalAddedLines;
-	const linesRemoved = file.totalRemovedLines;
 	const diffResult = genDiff(
 		file.originalNormalized,
 		file.result,
@@ -956,14 +991,34 @@ function buildChangedModelText(
 		file.resultHashes,
 		file.originalHashes,
 		lineNumbers,
-		undefined,
-		replacedOriginalRanges(file.hunkShifts),
+		{
+			path: displayPath,
+			changedRanges: replacedOriginalRanges(file.hunkShifts),
+		},
 	);
-	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
+	// An empty diff has no file header: the legend and the status line are the
+	// whole answer (spec §7).
+	const group =
+		diffResult.blocks.length === 0 ? "" : renderFileDiffGroup(displayPath, diffResult.blocks, lineNumbers);
 	// P1's layout: the format section hangs directly off the main diff —
 	// the formatter's answer to "what did it change on top".
 	const formatBlock =
 		file.format !== undefined ? `\n\n${renderFormatSection(file.format, lineNumbers)}` : "";
+	const head = `${group}${formatBlock}`;
+	return `${head === "" ? "" : `${head}\n\n`}${buildFileStatusText(file, displayPath)}`;
+}
+
+/**
+ * One file's status line: the success prefix, the line counts, the warnings and
+ * the drift notice. A status line is not part of the diff's shape.
+ *
+ * @param file - the file's result.
+ * @param displayPath - the file's display path.
+ * @returns the status line.
+ */
+function buildFileStatusText(file: FileEditResult, displayPath: string): string {
+	const linesAdded = file.totalAddedLines;
+	const linesRemoved = file.totalRemovedLines;
 	const successPrefix = `Successfully edited in ${displayPath}.`;
 	const lineSummary =
 		linesAdded > 0 || linesRemoved > 0
@@ -972,10 +1027,30 @@ function buildChangedModelText(
 	const warningsBlock =
 		file.warnings.length > 0 ? `\n\nWarnings:\n${file.warnings.join("\n")}` : "";
 	const driftBlock = file.driftNotice ? `\n\n${file.driftNotice}` : "";
-	return `${diffBody}${formatBlock}\n\n${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
-
-
+	return `${successPrefix}${lineSummary}${warningsBlock}${driftBlock}`;
 }
+
+/** Project the FileEditResult into the model-facing text. Mirrors the layout
+ *  of `buildChanged` in `edit-response.ts` so the 0.4 contract holds:
+ *    1. the legend
+ *    2. the file header and the diff's blocks (a block header line, then the
+ *       block's rows — only the changed hunks, with `context_lines` lines of
+ *       context on each side)
+ *    3. One `Shift:` block per hunk
+ *    4. Trailing success prefix + line summary
+ *    5. Trailing warnings / drift notice
+ *  Kept inline so this tool file owns the projection end-to-end. */
+function buildChangedModelText(
+	file: FileEditResult,
+	displayPath: string,
+	lineNumbers = lineNumbersEnabled(),
+): string {
+	const group = buildFileGroupText(file, displayPath, lineNumbers);
+	// A noop has no diff, so it carries no legend either — the legend opens a diff.
+	if (file.appliedCount === 0) return group;
+	return `${editDiffLegend(lineNumbers)}\n${group}`;
+}
+
 
 /**
  * Register the hashline tool on the calling agent’s scope (own layer).

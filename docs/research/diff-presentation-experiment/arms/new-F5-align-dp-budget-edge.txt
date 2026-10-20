@@ -1,0 +1,12 @@
+Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function; `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.
+--- src/hashline/align-bounded.ts
++++ src/hashline/align-bounded.ts
+@@ -171,7 +171,7 @@ alignPreservedBounded()
+  Bg:	// DP table bytes = 8 · m · n. Below the threshold, run the full DP; the
+  7R:	// trim already collapsed the typical "small edit, large file" case down
+  GG:	// to the changed region.
+-~6N:	if (mMid * nMid <= effective) {
++ Hg:	if (mMid * nMid < effective) {
+  mx:		const midPairs = lcsBacktrace(
+  9J:			oldSeg as readonly unknown[],
+  go:			newSeg as readonly unknown[],

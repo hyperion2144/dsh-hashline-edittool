@@ -16,6 +16,13 @@ const HEAVY_TEST_FILES = [
 	"test/core/anchor-state-persistence.test.ts",
 	"test/core/tool-ast.test.ts",
 	"test/core/visible-rows-ast.test.ts",
+	// The store's own files: the Windows leg reports 5000 ms per-test timeouts
+	// on them while the same tests pass on Linux, and the cold-open file
+	// ASSERTS a wall-clock budget — contention with the other ninety files is
+	// not noise there, it is the thing being measured (the baseline run read
+	// 61-119 ms under a parallel suite against a 50 ms ceiling).
+	"test/core/hash-store.test.ts",
+	"test/core/hash-store-cold-open.test.ts",
 ];
 
 /**

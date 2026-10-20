@@ -11,7 +11,7 @@
  */
 import { diffLinesBoundedResult } from "./line-diff.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
-import { genDiff, formatRowMarker, type ChangedOriginalRange } from "./edit-diff.js";
+import { genDiff, formatRowMarker, type ChangedOriginalRange, type DiffBlock } from "./edit-diff.js";
 
 /** One applied hunk: prior and new content for the same range, with 3 lines of context on each side. */
 export type FileDiff = {
@@ -106,6 +106,19 @@ export type EditDiffRow = {
 };
 
 /**
+ * One block header — STRUCTURE, not a line: it names a range, so it carries
+ * neither a line number nor an anchor.
+ */
+export type EditHunkRow = {
+	kind: "hunk";
+	/** The header line, e.g. `@@ -194,7 +194,7 @@ myersRange()`. */
+	text: string;
+};
+
+/** One row of the card's diff: a line row, or a block header. */
+export type EditCardDiffRow = EditDiffRow | EditHunkRow;
+
+/**
  * The JSON-mode diff dictionary: `{"<anchor>:<line>": content}` with `+`/`-`
  * prefixes on changed rows, exactly the keys the edit tool's json envelope
  * uses. ONE implementation, so `edit` and `ast_edit` cannot name a row
@@ -135,8 +148,7 @@ export function diffDictFrom(
 		afterHashes === undefined ? undefined : [...afterHashes],
 		beforeHashes === undefined ? undefined : [...beforeHashes],
 		true,
-		undefined,
-		changedRanges,
+		{ changedRanges },
 	);
 	const dict: Record<string, string> = {};
 	for (const row of rows) {
@@ -145,19 +157,35 @@ export function diffDictFrom(
 	}
 	return dict;
 }
-export function diffRowsFromGenDiff(
-	rows: ReadonlyArray<{ kind: "+" | "-" | " "; content: string; lineNumber: number; hash: string }>,
-): EditDiffRow[] {
-	return rows.map((row) => ({
-		kind: row.kind,
-		lineNumber: row.lineNumber,
-		hash: row.hash ?? "",
-		text: row.content,
-	}));
+/**
+ * The card's rows for a diff: every block's header row, then the block's rows.
+ *
+ * The header row is the block's STRUCTURE — the same text the model sees in the
+ * diff, so both channels describe the same blocks. The card keeps the OLD hash
+ * form: a removed row's anchor is stale there too, but the gutter shows it as
+ * information, not as something to copy (spec §6 — the `~` is model-text side).
+ *
+ * @param blocks - the diff's blocks, in order.
+ * @returns the card's rows.
+ */
+export function diffRowsFromBlocks(blocks: readonly DiffBlock[]): EditCardDiffRow[] {
+	const out: EditCardDiffRow[] = [];
+	for (const block of blocks) {
+		out.push({ kind: "hunk", text: block.header });
+		for (const row of block.rows) {
+			out.push({
+				kind: row.prefix,
+				lineNumber: row.lineNumber,
+				hash: row.oldHash ?? row.hash ?? "",
+				text: row.line,
+			});
+		}
+	}
+	return out;
 }
 
 /** Soft-validate the persisted diff rows meta. Returns the validated shape, or `undefined`. */
-export function diffRowsFromMeta(meta: unknown): EditDiffRow[] | undefined {
+export function diffRowsFromMeta(meta: unknown): EditCardDiffRow[] | undefined {
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined;
 	const v = meta as { diffRows?: unknown };
 	if (!Array.isArray(v.diffRows) || v.diffRows.length === 0) return undefined;
@@ -165,6 +193,17 @@ export function diffRowsFromMeta(meta: unknown): EditDiffRow[] | undefined {
 		!v.diffRows.every((row) => {
 			if (typeof row !== "object" || row === null) return false;
 			const r = row as { kind?: unknown; lineNumber?: unknown; hash?: unknown; text?: unknown };
+			if (r.kind === "hunk") {
+				// A block header is STRUCTURE: it names a range, so it has no line
+				// number and no anchor. A row that carries either is not a header we
+				// wrote, and the whole projection is refused (the card degrades to
+				// "no diff" — silently, which is why this whitelist has a test).
+				return (
+					(r.lineNumber === undefined || r.lineNumber === null) &&
+					(r.hash === undefined || r.hash === null) &&
+					typeof r.text === "string"
+				);
+			}
 			return (
 				(r.kind === "+" || r.kind === "-" || r.kind === " ") &&
 				typeof r.lineNumber === "number" &&
@@ -177,7 +216,7 @@ export function diffRowsFromMeta(meta: unknown): EditDiffRow[] | undefined {
 	) {
 		return undefined;
 	}
-	return v.diffRows as EditDiffRow[];
+	return v.diffRows as EditCardDiffRow[];
 }
 /** Soft-validate the persisted diffs meta. Returns the validated shape, or `undefined`. */
 export function diffsFromMeta(meta: unknown): FileDiff[] | undefined {

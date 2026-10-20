@@ -58,6 +58,10 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 				"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. One element is ONE line — only an element that itself carries a newline becomes several. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
 				"`edit`: anchors are variable-length Base62 markers copied from the leftmost column of a read/grep/diff row; the legacy `<line>#<hash>` form is rejected (`E_BAD_REF`). Identical content lines get DISTINCT anchors — declare the line you mean.",
 				"`edit`: ALL anchors (and declarations) in one call come from the same ORIGINAL read. One file's edits are one atomic batch — any failure in that file rejects its batch ([E_BATCH_ABORT]) and writes nothing for that file; files are independent, and partial success is reported per file, each failure with its own code. Do not issue several `edit` calls in one message — one call, one `edits` array.",
+				"`edit`: the diff's `--- path` / `+++ path` file header and its `@@ -old,count +new,count @@ scope()` block header are STRUCTURE, not file content — never paste them into an edit and never treat them as lines.",
+				"`edit`: a block header may name SEVERAL scopes (`a() / b()`) — then the block changes more than one of them, not just the first.",
+				"`edit`: a `-` row's anchor belongs to the PRE-edit line and is marked `~` — that line is gone, so the anchor is DEAD: never use it in an edit.",
+				"`edit`: a `+` row and an unchanged row carry FRESH anchors for the post-edit code — copy those for the next edit.",
 			],
 		};
 	}
@@ -77,6 +81,10 @@ export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 			"`edit`: ALL anchors in one call come from the same ORIGINAL read — never shift them to positions a previous hunk would produce in sequence (there is no 'after the previous edit' coordinate; the batch applies against the original snapshot). The response's diff rows show the FINAL positions; there is no `Shift:` block — re-read for fresh anchors after an edit.",
 			"`edit`: a stale or never-served range is hard-rejected (`[E_STALE]` / `[E_RANGE_UNVERIFIED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
 			"`edit`: one file's edits are one atomic batch — any failure in that file rejects its batch ([E_BATCH_ABORT]) and writes nothing for that file (its already-resolved hunks are not applied, so there is nothing to roll back there); files are independent, and partial success is reported per file, each failure with its own code; a file that did commit keeps its own undo slot. Do not issue several `edit` calls in one message — one call, one `edits` array.",
+			"`edit`: the diff's `--- path` / `+++ path` file header and its `@@ -old,count +new,count @@ scope()` block header are STRUCTURE, not file content — never paste them into an edit and never treat them as lines.",
+			"`edit`: a block header may name SEVERAL scopes (`a() / b()`) — then the block changes more than one of them, not just the first.",
+			"`edit`: a `-` row's anchor belongs to the PRE-edit line and is marked `~` — that line is gone, so the anchor is DEAD: never use it in an edit.",
+			"`edit`: a `+` row and an unchanged row carry FRESH anchors for the post-edit code — copy those for the next edit.",
 		],
 	};
 }
@@ -124,7 +132,7 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 	intro: "Revert the last edit on a file.",
 	lines: [
 		"`undo_last_edit`: reverts only the most recent edit — any write clears history, so call it immediately after a bad edit.",
-		"`undo_last_edit`: the restored diff's `+<anchor>:` rows are fresh anchors for follow-up edits.",
+		"`undo_last_edit`: the restored diff's `+<anchor>:` rows are fresh anchors for follow-up edits; a `-` row's `~` anchor is the pre-revert line and is dead.",
 	],
 };
 

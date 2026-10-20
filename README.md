@@ -146,6 +146,32 @@ ur:2|export const APP = "hashline";
 D0:4|export function greet(name: string): string {
 ```
 
+### Edit diffs (unified diff)
+
+Every edit answers with a **unified diff** — file header, segment headers, then the
+rows — not a floating list of changed lines:
+
+```text
+Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function(s); `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.
+--- src/render/line-diff.ts
++++ src/render/line-diff.ts
+@@ -194,7 +194,7 @@ myersRange()
+  B1:		trace.push(v.slice());
+  Yc:		for (let k = -d; k <= d; k += 2) {
+  jt:			let x: number;
+-~Tl:			if (k === -d || (k !== d && v[mid + k - 1]! < v[mid + k + 1]!)) x = v[mid + k + 1]!;
++ bj:			if (k === -d || (k !== d && v[mid + k - 1]! <= v[mid + k + 1]!)) x = v[mid + k + 1]!;
+  5X:			else x = v[mid + k - 1]! + 1;
+  Tg:			let y = x - k;
+  nm:			while (x < n && y < m && a[aLo + x] === b[bLo + y]) {
+```
+
+- `--- path` / `+++ path` — the file. A multi-file edit prints one group per file.
+- `@@ -oldStart,oldCount +newStart,newCount @@ scope()` — one **segment**: the line range before and after the edit (context lines counted, git convention) plus the enclosing function or class — every scope the segment's changes fall into, joined by ` / ` when one segment touches more than one. The language is chosen by file extension or name (TS/JS, Vue/Svelte, Python, Ruby, Go, Rust, Zig, Java, Kotlin, Scala, C#, Swift, the C family, Dart, Groovy, Solidity, PHP, Perl, Shell, PowerShell, Lua, Elixir, Julia — the same way git picks its pattern table, and table-driven so a new language is one row). The name is information only — a file whose scope cannot be detected simply has no name.
+- `-` rows are the **pre-edit** lines. Their anchor is stale and carries a `~`, so a model that copies it gets a clean `[E_BAD_REF]` instead of a rescued-then-stale anchor.
+- `+` and unchanged rows are the **post-edit** code, and their anchors are fresh and editable.
+- How much of the file a segment covers follows `hashline.context_lines`: raise it to see more of the function around the change, lower it to split a distant change into several segments.
+
 ### Served-state verification (reject-and-serve)
 
 A row becomes **served** when a tool result shows it to the model (`read`, `grep`, edit

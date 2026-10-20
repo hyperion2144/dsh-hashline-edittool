@@ -624,6 +624,27 @@ function readMetaPath(meta: unknown): string | undefined {
 //#endregion
 
 //#region diff rows meta (rendering channel, issue #71)
+/**
+ * Soft-validate ONE persisted diff row (#295).
+ *
+ * A content row carries its line number and its anchor; a SEGMENT HEADER — the
+ * `@@ -a,b +c,d @@ scope()` line — carries NEITHER: it is structure, and the
+ * card draws it as the segment's title. A header that also carries a line
+ * number is still a header (the extra field is ignored), but a header without
+ * text is not a row at all.
+ */
+function diffRowFromUnknown(row: unknown): DiffRowMeta | null {
+	if (typeof row !== "object" || row === null || Array.isArray(row)) return null;
+	const r = row as Record<string, unknown>;
+	if (typeof r.text !== "string") return null;
+	if (r.kind === "hunk") {
+		return { kind: "hunk", text: r.text };
+	}
+	if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") return null;
+	if (typeof r.lineNumber !== "number" || !Number.isInteger(r.lineNumber) || r.lineNumber < 1) return null;
+	if (typeof r.hash !== "string") return null;
+	return { kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text };
+}
 
 /**
  * Soft-validate the persisted diff rows meta: per-row kind, line number,
@@ -638,12 +659,9 @@ export function metaDiffRows(meta: unknown): DiffRowMeta[] | null {
 	if (!Array.isArray(rows) || rows.length === 0) return null;
 	const out: DiffRowMeta[] = [];
 	for (const row of rows) {
-		if (typeof row !== "object" || row === null) return null;
-		const r = row as Record<string, unknown>;
-		if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") return null;
-		if (typeof r.lineNumber !== "number" || !Number.isInteger(r.lineNumber) || r.lineNumber < 1) return null;
-		if (typeof r.hash !== "string" || typeof r.text !== "string") return null;
-		out.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text });
+		const parsed = diffRowFromUnknown(row);
+		if (parsed === null) return null;
+		out.push(parsed);
 	}
 	return out;
 }
@@ -692,12 +710,9 @@ export function metaDiffRowGroups(meta: unknown): DiffRowGroup[] | null {
 		if (!Array.isArray(g.rows)) return null;
 		const rows: DiffRowMeta[] = [];
 		for (const row of g.rows) {
-			if (typeof row !== "object" || row === null) return null;
-			const r = row as Record<string, unknown>;
-			if (r.kind !== "+" && r.kind !== "-" && r.kind !== " ") return null;
-			if (typeof r.lineNumber !== "number" || !Number.isInteger(r.lineNumber) || r.lineNumber < 1) return null;
-			if (typeof r.hash !== "string" || typeof r.text !== "string") return null;
-			rows.push({ kind: r.kind, lineNumber: r.lineNumber, hash: r.hash, text: r.text });
+			const parsed = diffRowFromUnknown(row);
+			if (parsed === null) return null;
+			rows.push(parsed);
 		}
 		out.push({ path: g.path, rows });
 	}

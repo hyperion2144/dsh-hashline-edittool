@@ -1,0 +1,28 @@
+Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.
+ ...
+ vd: */
+ 3x:
+ df:export function alpha(n: number): number {
+-Ob:	let total = 0;
++wP:	let total = 1;
+ ZV:	for (let i = 0; i < n; i += 1) {
+ Ot:		total += i * 2;
+ WQ:	}
+ ...
+ SG:	if (trimmed.length === 0) {
+ cc:		return "";
+ 2h:	}
+-eP:	return trimmed.toUpperCase();
++vi:	return trimmed.toLowerCase();
+ sa:}
+ Vi:
+ lJ:export function delta(rows: readonly string[]): string[] {
+ ...
+ c5:export function theta(xs: readonly number[]): number {
+ xZ:	let out = 0;
+ OR:	for (const x of xs) {
+-Dr:		out += x * x;
++e1:		out += x * x * x;
+ 2V:	}
+ FP:	return out;
+ sO:}

@@ -41,6 +41,7 @@ import { lineNumbersEnabled } from "../infra/settings.js";
 import type { ServedRow } from "../hashline/anchor-pipeline.js";
 import { splitLines } from "../infra/utils.js";
 
+import { currentScopeLabelAt, type ScopeLabelAt } from "./scope-registry.js";
 export type LineEnding = "\r\n" | "\n" | "\r";
 
 export function detectEnding(content: string): LineEnding {
@@ -86,9 +87,6 @@ export function formatRowMarker(anchor: string, lineNumber: number, lineNumbers 
 }
 
 
-const ELLIPSIS_MARKER: unique symbol = Symbol("ellipsis");
-const isEllipsisMarker = (line: string | symbol): line is symbol =>
-	line === ELLIPSIS_MARKER;
 
 export interface DiffRow {
 	prefix: "+" | "-" | " ";
@@ -107,6 +105,94 @@ export interface ChangedOriginalRange {
 	originalEndLine: number;
 }
 
+/**
+ * ONE hunk of a unified diff: the lines it covers on each side of the edit,
+ * the header line that names them, and the rows it holds.
+ *
+ * The ranges follow the git convention: they COUNT the context lines, and
+ * they come from the diff's own line counters — never parsed back out of the
+ * rendered text (a wrong range sends the model's next edit to the wrong
+ * place, and the header is the only place the range is stated).
+ */
+export interface DiffBlock {
+	/** The block's header line, e.g. `@@ -194,7 +194,7 @@ myersRange()`. */
+	header: string;
+	/** The block's first line in the PRE-edit file (1-based). */
+	oldStart: number;
+	/** How many pre-edit lines the block covers (context lines included). */
+	oldCount: number;
+	/** The block's first line in the POST-edit file (1-based). */
+	newStart: number;
+	/** How many post-edit lines the block covers (context lines included). */
+	newCount: number;
+	/** The enclosing named symbol, when one was detected. Information only. */
+	scope?: string;
+	/** Every distinct named symbol the block's changes fall into, in order. */
+	scopes?: readonly string[];
+	/** The block's rows: `+` added, `-` removed, ` ` unchanged. */
+	rows: DiffRow[];
+}
+
+/** A row while it is being built: BOTH sides' line numbers are known. */
+interface WorkRow {
+	prefix: "+" | "-" | " ";
+	line: string;
+	/** The post-edit anchor (`+` and unchanged rows). */
+	hash: string | undefined;
+	/** The pre-edit anchor (`-` rows). */
+	oldHash?: string;
+	/** The post-edit line number, for the rows the new file has. */
+	newLine: number | undefined;
+	/** The pre-edit line number, for the rows the old file had. */
+	oldLine: number | undefined;
+	/** The post-edit position a removed row leaves behind: the place in the new
+	 * file where the old one had text. A removed row has no post-edit line of
+	 * its own, but the scope of the place it came from is still worth naming. */
+	removedAt?: number;
+}
+
+/** A block while it is being built. */
+interface WorkBlock {
+	rows: WorkRow[];
+	/** The pre-edit counter where the block started (a block with no pre-edit line). */
+	oldBase: number;
+	/** The post-edit counter where the block started (a block with no post-edit line). */
+	newBase: number;
+}
+
+/**
+ * The knobs `genDiff` accepts beyond the content itself.
+ *
+ * They used to be three trailing positional parameters, which every call site
+ * had to pad with `undefined` to reach the one it wanted — the reason the file
+ * path could not be added at all. One object says what each slot is.
+ */
+export interface GenDiffOptions {
+	/**
+	 * The file this diff belongs to. It picks the scope detector's language the
+	 * way git picks a pattern table by file name, so a Python or Go file can
+	 * still get a named scope in its block header.
+	 */
+	path?: string;
+	/**
+	 * The original-file ranges this render's hunks covered, ascending. Their lines
+	 * are the pool a `-` row's attribution is drawn from; omitted (a whole-file
+	 * `write` / `undo` diff) leaves the text walk in charge.
+	 */
+	changedRanges?: readonly ChangedOriginalRange[];
+	/**
+	 * The scope lookup a block header's name comes from. Defaults to the
+	 * registered detector (see `./scope-registry`); a build without one has no
+	 * scope names, which is a legal shape — the name is information, never a
+	 * correctness input.
+	 */
+	scopeLabelAt?: ScopeLabelAt;
+	/**
+	 * The line-diff producer. Production callers pass nothing; the tests pass the
+	 * reference producer to check the bounded one field-for-field.
+	 */
+	partsFor?: (oldText: string, newText: string) => LineDiffPart[];
+}
 export function genDiff(
 	oldContent: string,
 	newContent: string,
@@ -114,20 +200,18 @@ export function genDiff(
 	newContentHashes?: string[],
 	oldContentHashes?: string[],
 	lineNumbers = lineNumbersEnabled(),
-	partsFor?: (oldText: string, newText: string) => LineDiffPart[],
-	/**
-	 * The original-file ranges this render's hunks covered, ascending. Their lines are
-	 * the pool a `-` row's attribution is drawn from; omitted (a whole-file `write` /
-	 * `undo` diff) leaves the text walk in charge.
-	 */
-	changedRanges?: readonly ChangedOriginalRange[],
+	options: GenDiffOptions = {},
 ): {
 	diff: string;
 	rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }>;
+	/** The diff's blocks — the unified-diff hunks, with their ranges. */
+	blocks: DiffBlock[];
 	firstChangedLine: number | undefined;
 	servedRows: ServedRow[];
 } {
 	const effectiveNewHashes = newContentHashes ?? lineHashesPure(newContent);
+	const { path, changedRanges, scopeLabelAt = currentScopeLabelAt(), partsFor } = options;
+
 
 	// `partsFor` exists so the bounded producer can be checked field-for-field
 	// against jsdiff's: the reference implementation stays in the tests, not in
@@ -136,10 +220,10 @@ export function genDiff(
 		partsFor === undefined
 			? diffLinesBounded(oldContent, newContent)
 			: partsFor(oldContent, newContent);
-	const output: (DiffRow | string)[] = [];
 	const servedRows: ServedRow[] = [];
 	let newLineNum = 1;
 	let oldLineNum = 1;
+	let firstChangedLine: number | undefined;
 	// Which `-` row is which LINE is not something the text can answer when two
 	// lines are identical: a head-first alignment calls the LATER twin removed,
 	// while the engine spliced the range's own line out and released its anchor
@@ -166,8 +250,42 @@ export function genDiff(
 		}
 		return walked;
 	};
-	let lastWasChange = false;
-	let firstChangedLine: number | undefined;
+
+	// The BLOCK under construction, the finished ones, and the block the next
+	// change will open (a context run may head a block that starts later).
+	let block: WorkBlock | undefined;
+	const finished: WorkBlock[] = [];
+	let pending: WorkBlock | undefined;
+
+	const isChange = (part: LineDiffPart): boolean => part.added === true || part.removed === true;
+
+	/** A block that starts at the current position of both counters. */
+	const startBlock = (): WorkBlock => ({
+		rows: [],
+		oldBase: oldLineNum,
+		newBase: newLineNum,
+	});
+
+	/** Append the unchanged lines `[from, to)` of a context run to a block. */
+	const appendContext = (
+		target: WorkBlock,
+		lines: readonly string[],
+		from: number,
+		to: number,
+		newBase: number,
+		oldBase: number,
+	): void => {
+		for (let k = from; k < to; k++) {
+			const content = lines[k]!;
+			const newLine = newBase + k;
+			const oldLine = oldBase + k;
+			const hash = effectiveNewHashes[newLine - 1];
+			target.rows.push({ prefix: " ", line: content, hash, newLine, oldLine });
+			if (hash !== undefined) {
+				servedRows.push({ position: newLine - 1, anchor: hash, contentKey: contentChecksum(canon(content)) });
+			}
+		}
+	};
 
 	for (let i = 0; i < parts.length; i++) {
 		const part = parts[i]!;
@@ -175,109 +293,214 @@ export function genDiff(
 		if (raw[raw.length - 1] === "") raw.pop();
 		const displayLines = raw;
 
-		if (part.added || part.removed) {
+		if (isChange(part)) {
 			if (firstChangedLine === undefined) firstChangedLine = newLineNum;
-			for (let k = 0; k < displayLines.length; k++) {
-				if (part.added) {
+			// The change either continues the block under construction or opens
+			// the one the pending context heads.
+			const target = block ?? pending ?? startBlock();
+			if (block === undefined) {
+				block = target;
+				pending = undefined;
+			}
+			for (const content of displayLines) {
+				if (part.added === true) {
 					const hash = effectiveNewHashes[newLineNum - 1];
-					output.push({ prefix: "+", line: displayLines[k]!, hash, lineNumber: newLineNum });
+					target.rows.push({ prefix: "+", line: content, hash, newLine: newLineNum, oldLine: undefined });
 					if (hash !== undefined) {
-					servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChecksum(canon(displayLines[k]!)) });
+						servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChecksum(canon(content)) });
 					}
 					newLineNum++;
 				} else {
-					const content = displayLines[k]!;
 					const lineNumber = attributedRemovedLine(content, oldLineNum);
-					const oldHash = oldContentHashes?.[lineNumber - 1];
-					output.push({ prefix: "-", line: content, hash: undefined, lineNumber, oldHash });
+					target.rows.push({
+						prefix: "-",
+						line: content,
+						hash: undefined,
+						oldHash: oldContentHashes?.[lineNumber - 1],
+						newLine: undefined,
+						oldLine: lineNumber,
+						removedAt: Math.max(1, newLineNum - 1),
+					});
 					oldLineNum++;
 				}
 			}
-			lastWasChange = true;
 			continue;
 		}
 
-		const nextPartIsChange =
-			i < parts.length - 1 && (parts[i + 1]!.added || parts[i + 1]!.removed);
-		if (lastWasChange || nextPartIsChange) {
-			let linesToShow: (string | symbol)[] = displayLines;
-			let skipStart = 0;
-			let skipMiddle = 0;
+		// A context run: how much of it is shown depends on its neighbours.
+		const leftIsChange = i > 0 && isChange(parts[i - 1]!);
+		const rightIsChange = i < parts.length - 1 && isChange(parts[i + 1]!);
+		const length = displayLines.length;
+		const newBase = newLineNum;
+		const oldBase = oldLineNum;
+		newLineNum += length;
+		oldLineNum += length;
 
-			if (!lastWasChange) {
-				skipStart = Math.max(0, displayLines.length - contextLines);
-				linesToShow = displayLines.slice(skipStart);
-			} else if (nextPartIsChange && displayLines.length > contextLines * 2) {
-				const tail = displayLines.slice(-contextLines);
-				linesToShow = [
-					...displayLines.slice(0, contextLines),
-					ELLIPSIS_MARKER,
-					...tail,
-				];
-				skipMiddle = displayLines.length - contextLines * 2;
-			} else if (!nextPartIsChange && linesToShow.length > contextLines) {
-				// Trailing context after the LAST change: keep only the lines adjacent
-				// to it. Between two changes this branch must NOT fire — trimming the
-				// tail there breaks adjacency to the next hunk AND skips the line
-				// counters, misnumbering every following row (found by issue #71).
-				linesToShow = linesToShow.slice(0, contextLines);
+		// `head` closes the block under construction, `tail` opens the next one.
+		let headFrom = 0;
+		let headTo = 0;
+		let tailFrom = 0;
+		let tailTo = 0;
+		if (leftIsChange && rightIsChange) {
+			if (length <= contextLines * 2) {
+				// The gap is narrow enough: the whole run belongs to this block.
+				headFrom = 0;
+				headTo = length;
+			} else {
+				// git's compact rule: a gap wider than `2 × context_lines` splits the
+				// diff — the head closes this block, the tail opens the next one.
+				headFrom = 0;
+				headTo = contextLines;
+				tailFrom = Math.max(0, length - contextLines);
+				tailTo = length;
 			}
-
-			if (skipStart > 0) {
-				output.push(" ...");
-				newLineNum += skipStart;
-				oldLineNum += skipStart;
-			}
-			for (const line of linesToShow) {
-				if (isEllipsisMarker(line)) {
-					output.push(" ...");
-					newLineNum += skipMiddle;
-					oldLineNum += skipMiddle;
-					continue;
-				}
-				const hash = effectiveNewHashes[newLineNum - 1];
-				output.push({ prefix: " ", line, hash, lineNumber: newLineNum });
-				if (hash !== undefined) {
-servedRows.push({ position: newLineNum - 1, anchor: hash, contentKey: contentChecksum(canon(line)) });
-				}
-				newLineNum++;
-				oldLineNum++;
-			}
-		} else {
-			newLineNum += displayLines.length;
-			oldLineNum += displayLines.length;
+		} else if (leftIsChange) {
+			headFrom = 0;
+			headTo = Math.min(contextLines, length);
+		} else if (rightIsChange) {
+			tailFrom = Math.max(0, length - contextLines);
+			tailTo = length;
 		}
-		lastWasChange = false;
+
+		if (headTo > headFrom && block !== undefined) {
+			appendContext(block, displayLines, headFrom, headTo, newBase, oldBase);
+		}
+		if (tailTo > tailFrom) {
+			if (leftIsChange && rightIsChange && block !== undefined) {
+				finished.push(block);
+				block = undefined;
+			}
+			const next = startBlock();
+			appendContext(next, displayLines, tailFrom, tailTo, newBase, oldBase);
+			pending = next;
+		}
+	}
+	if (block !== undefined) finished.push(block);
+
+	// The BLOCKS, in order. Their ranges come from the walk's own counters — a
+	// header that claims the wrong range sends the model's next edit to the
+	// wrong place, and the header is the only place the range is stated.
+	const blocks: DiffBlock[] = finished.map((b) => {
+		const oldSide = b.rows.filter((row) => row.oldLine !== undefined);
+		const newSide = b.rows.filter((row) => row.newLine !== undefined);
+		const oldStart = oldSide.length > 0 ? oldSide[0]!.oldLine! : Math.max(0, b.oldBase - 1);
+		const oldCount = oldSide.length;
+		const newStart = newSide.length > 0 ? newSide[0]!.newLine! : Math.max(0, b.newBase - 1);
+		const newCount = newSide.length;
+		// The scope names are looked up in the POST-edit text, at EVERY changed
+		// line: a symbol the edit removed is not a scope, and a block that spans
+		// two functions names both — one name per distinct symbol, in the order
+		// the changes appear.
+		const scopes: string[] = [];
+		for (const row of b.rows) {
+			if (row.prefix === " ") continue;
+			const at = row.prefix === "+" ? row.newLine : row.removedAt;
+			if (at === undefined) continue;
+			const label = scopeLabelAt(newContent, at, path);
+			if (label === undefined || label === "") continue;
+			if (!scopes.includes(label)) scopes.push(label);
+		}
+		const scope = scopes.length === 0 ? undefined : scopes.join(" / ");
+		const header =
+			`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@` +
+			(scope === undefined || scope === "" ? "" : ` ${scope}`);
+		return {
+			header,
+			oldStart,
+			oldCount,
+			newStart,
+			newCount,
+			...(scope === undefined ? {} : { scope, scopes }),
+			rows: b.rows.map((row) => ({
+				prefix: row.prefix,
+				line: row.line,
+				hash: row.hash,
+				lineNumber: row.prefix === "-" ? row.oldLine! : row.newLine!,
+				...(row.oldHash === undefined ? {} : { oldHash: row.oldHash }),
+			})),
+		};
+	});
+
+	// The flat row list the structured channels consume (the JSON diff dict, the
+	// card's gutter) — the same rows, in the same order as the blocks.
+	const rows: Array<{
+		kind: "+" | "-" | " ";
+		anchor: string;
+		content: string;
+		lineNumber: number;
+		hash: string;
+	}> = [];
+	for (const b of blocks) {
+		for (const row of b.rows) {
+			rows.push({
+				kind: row.prefix,
+				anchor: rowMarker(row, lineNumbers),
+				content: row.line,
+				lineNumber: row.lineNumber,
+				// 纯 hash（不含行号前缀）—— json diff 的 key 构造需要它与行号分开拼接，
+				// 否则 lineNumbers 开启时 anchor 已含 "<line>:" 会出现双行号（issue #69）。
+				hash: row.oldHash ?? row.hash ?? "",
+			});
+		}
 	}
 
-	// Right-align the anchor column across the whole diff block so the left
-	// marker is a stable visual column (copy boundary for the model). Built
-	// from the structured fields — anchored on the LIVE shape (anchor length /
-	// separator), no regex parsing of rendered rows.
-	// The ANCHOR comes first and its line number trails it, so the token a
-	// caller copies first is the one that identifies the line.
-	const markerFor = (row: DiffRow): string =>
-		formatRowMarker(row.oldHash ?? row.hash ?? " ".repeat(4), row.lineNumber, lineNumbers);
-	let anchorWidth = 0;
-	const rows: Array<{ kind: "+" | "-" | " "; anchor: string; content: string; lineNumber: number; hash: string }> = [];
-	for (const row of output) {
-		if (typeof row === "string") continue;
-		const anchor = markerFor(row);
-		if (anchor.length > anchorWidth) anchorWidth = anchor.length;
-		rows.push({
-			kind: row.prefix,
-			anchor,
-			content: row.line,
-			lineNumber: row.lineNumber,
-			// 纯 hash（不含行号前缀）—— json diff 的 key 构造需要它与行号分开拼接，
-			// 否则 lineNumbers 开启时 anchor 已含 "<line>:" 会出现双行号（issue #69）。
-			hash: (row.oldHash ?? row.hash ?? ""),
-		});
+	return { diff: renderDiffLines(blocks, lineNumbers).join("\n"), rows, blocks, firstChangedLine, servedRows };
+}
+
+/**
+ * One row's MARKER — the anchor, with its line number when the user's switch
+ * is on, plus the `~` that marks a pre-edit anchor as dead.
+ *
+ * The ANCHOR comes first and its line number trails it, so the token a caller
+ * copies first is the one that identifies the line.
+ *
+ * @param row - the row to mark.
+ * @param lineNumbers - whether the line number trails the anchor.
+ * @returns the marker, without the row's prefix.
+ */
+function rowMarker(row: DiffRow, lineNumbers: boolean): string {
+	const anchor = row.prefix === "-" ? row.oldHash : row.hash;
+	if (anchor === undefined) {
+		// A row with no anchor at all — a removed line whose pre-edit hash the
+		// caller did not supply — keeps the placeholder column.
+		return formatRowMarker(" ".repeat(4), row.lineNumber, lineNumbers);
 	}
-	const aligned = output.map((row) => {
-		if (typeof row === "string") return row; // " ..." ellipsis rows etc.
-		const anchor = markerFor(row);
-		return `${row.prefix}${anchor.padStart(anchorWidth)}${hashSep()}${row.line}`;
-	});
-	return { diff: aligned.join("\n"), rows, firstChangedLine, servedRows };
+	// A `-` row names a line that no longer exists: its anchor is STALE, and the
+	// `~` makes it unmistakably not a Base62 marker — a model that copies it gets a
+	// clean `[E_BAD_REF]` instead of a rescued-then-stale anchor.
+	return formatRowMarker(row.prefix === "-" ? `~${anchor}` : anchor, row.lineNumber, lineNumbers);
+}
+
+/**
+ * The rendered lines of a diff: every block's header, then the block's rows.
+ *
+ * The anchor column is right-aligned across the WHOLE diff, so the marker a
+ * reader copies always starts at the same column. Built from the structured
+ * fields — anchored on the LIVE shape (anchor length / separator), no regex
+ * parsing of rendered rows.
+ *
+ * @param blocks - the diff's blocks, in order.
+ * @param lineNumbers - whether the line number trails the anchor.
+ * @returns the lines, headers included.
+ */
+export function renderDiffLines(
+	blocks: readonly DiffBlock[],
+	lineNumbers = lineNumbersEnabled(),
+): string[] {
+	let width = 0;
+	for (const block of blocks) {
+		for (const row of block.rows) {
+			const marker = rowMarker(row, lineNumbers);
+			if (marker.length > width) width = marker.length;
+		}
+	}
+	const lines: string[] = [];
+	for (const block of blocks) {
+		lines.push(block.header);
+		for (const row of block.rows) {
+			const marker = rowMarker(row, lineNumbers);
+			lines.push(`${row.prefix}${marker.padStart(width)}${hashSep()}${row.line}`);
+		}
+	}
+	return lines;
 }

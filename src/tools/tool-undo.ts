@@ -23,11 +23,12 @@ import { getUndo, clearUndo, popUndo, undoDepth } from "../domain/edit/undo-edit
 import { recordServedTruncated, reconcileServed, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { restoreAnchorBinding } from "../domain/session/anchor-entry.js";
 import { UNDO_DESCRIPTION } from "../domain/edit/prompts.js";
+import { renderUnifiedDiff } from "../domain/edit/edit-response.js";
 import { anchorsFor } from "../domain/session/anchor-state.js";
 import {
 	computeHunkDiffs,
 	diffsFromMeta,
-	diffRowsFromGenDiff,
+	diffRowsFromBlocks,
 	type FileDiff,
 } from "../render/edit-card.js";
 import type { FileIO } from "../infra/fs-bridge.js";
@@ -217,6 +218,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				undefined,
 				undo.hashes,
 				lineNumbers,
+				{ path: absolutePath },
 			);
 			const linesAddedByEdit = cntDiff(diffResult.diff, "+");
 			const linesRemovedByEdit = cntDiff(diffResult.diff, "-");
@@ -259,6 +261,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				undefined,
 				undefined,
 				lineNumbers,
+				{ path: absolutePath },
 			);
 			const restoredHashes = anchorsFor(absolutePath, undo.content);
 			const windowLineNos = [
@@ -285,8 +288,9 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				restoredHashes,
 				currentHashes,
 				lineNumbers,
+				{ path: absolutePath },
 			);
-			const undoDiff = undoDiffResult.diff;
+			const undoDiff = renderUnifiedDiff([{ path, blocks: undoDiffResult.blocks }], lineNumbers);
 			// #131: the revert is a real write, so it reports like one — inline
 			// inside the window, else the bounded async wait. OUTSIDE the write
 			// try on purpose: delivery never throws, and a diagnostics problem
@@ -384,7 +388,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 				// The CARD's rows: the revert's own diff, built once and used by both
 				// the meta and the model text, so the gutter anchors the same lines
 				// the reader sees (ADR-0005 — never a re-parse of `modelText`).
-				diffRows: diffRowsFromGenDiff(undoDiffResult.rows),
+				diffRows: diffRowsFromBlocks(undoDiffResult.blocks),
 				...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 				modelText: streamedUndo.modelText,
 				empty: false,

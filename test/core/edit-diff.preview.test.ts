@@ -22,7 +22,9 @@ describe("genDiff", () => {
 			["AAA", "BBB", "CCC"],
 			false,
 		);
-		expect(diff).toMatch(/^-\s*BBB:beta$/m);
+		// The deleted row names the PRE-edit line, and its `~` marks that anchor
+		// as dead (`~` is not Base62 — a model that copies it gets a clean error).
+		expect(diff).toMatch(/^-\s*~BBB:beta$/m);
 		expect(diff).toMatch(/^\+\s*[A-Za-z0-9]{2,8}:BETA$/m);
 	});
 
@@ -35,8 +37,8 @@ describe("genDiff", () => {
 			["H1", "H2", "H3", "H4"],
 			true,
 		);
-		expect(diff).toMatch(/-H2:\d+:b/);
-		expect(diff).toMatch(/-H3:\d+:c/);
+		expect(diff).toMatch(/-~H2:\d+:b/);
+		expect(diff).toMatch(/-~H3:\d+:c/);
 	});
 
 	it("marks every diff row with the line#hash marker prefix", () => {
@@ -67,7 +69,7 @@ describe("genDiff", () => {
 		expect(lines).toContainEqual(expect.stringMatching(/^\+\s*[A-Za-z0-9]{2,8}: {2}return `Hello, \$\{name\}`$/));
 		expect(lines).toContainEqual(expect.stringMatching(/^ \s*[A-Za-z0-9]{2,8}:\}$/));
 	});
-	it("truncates context between two distant changes", () => {
+	it("splits two distant changes into two blocks instead of an ellipsis", () => {
 		const lines = [];
 		for (let i = 1; i <= 1000; i++) lines.push("line " + i);
 		const before = "BEFORE\n" + lines.join("\n") + "\nAFTER";
@@ -81,15 +83,13 @@ describe("genDiff", () => {
 
 		expect(diffLines.length).toBeLessThan(50);
 
-		const ellipsisCount = diffLines.filter((l: string) => l.trim() === "...").length;
-		expect(ellipsisCount).toBe(1);
-
-		const ellipsisIdx = diffLines.findIndex((l: string) => l.trim() === "...");
-		expect(ellipsisIdx).toBeGreaterThan(0);
-		expect(ellipsisIdx).toBeLessThan(diffLines.length - 1);
-
-		expect(diffLines[ellipsisIdx - 1]).toContain("line 4");
-		expect(diffLines[ellipsisIdx + 1]).toContain("line 997");
+		// The ` ... ` marker is GONE: the gap is expressed by the block headers,
+		// so the reader learns the range from the header instead.
+		expect(diffLines.some((l: string) => l.trim() === "...")).toBe(false);
+		expect(diffLines.filter((l: string) => l.startsWith("@@"))).toEqual([
+			"@@ -1,5 +1,5 @@",
+			"@@ -998,5 +998,5 @@",
+		]);
 
 		expect(diff).toContain("BEFORE_CHANGED");
 		expect(diff).toContain("AFTER_CHANGED");

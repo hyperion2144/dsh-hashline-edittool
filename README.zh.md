@@ -113,6 +113,31 @@ ur:2|export const APP = "hashline";
 D0:4|export function greet(name: string): string {
 ```
 
+### 编辑 diff（unified diff）
+
+每次编辑回给模型的是**统一 diff**——文件头、段头、然后是行——而不是一堆浮空的改动行：
+
+```text
+Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function; `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.
+--- src/render/line-diff.ts
++++ src/render/line-diff.ts
+@@ -194,7 +194,7 @@ myersRange()
+  B1:		trace.push(v.slice());
+  Yc:		for (let k = -d; k <= d; k += 2) {
+  jt:			let x: number;
+-~Tl:			if (k === -d || (k !== d && v[mid + k - 1]! < v[mid + k + 1]!)) x = v[mid + k + 1]!;
++ bj:			if (k === -d || (k !== d && v[mid + k - 1]! <= v[mid + k + 1]!)) x = v[mid + k + 1]!;
+  5X:			else x = v[mid + k - 1]! + 1;
+  Tg:			let y = x - k;
+  nm:			while (x < n && y < m && a[aLo + x] === b[bLo + y]) {
+```
+
+- `--- path` / `+++ path`——文件本身。多文件编辑每个文件一组。
+- `@@ -oldStart,oldCount +newStart,newCount @@ scope()`——一个**段**：改动前后各自的行区间（含上下文行，git 惯例），外加每一处改动所在的最内层函数或类——一段跨到多个函数时全部列出，用 ` / ` 连接。语言按**文件扩展名/文件名**选（TS/JS、Vue/Svelte、Python、Ruby、Go、Rust、Zig、Java、Kotlin、Scala、C#、Swift、C/C++、Dart、Groovy、Solidity、PHP、Perl、Shell、PowerShell、Lua、Elixir、Julia —— 与 git 选正则模式表同一套路，表驱动、可扩展）。这个名字只是信息——检测不到作用域名时就留空。
+- `-` 行是**改前**的旧行：锚点已失效并带 `~`，模型误抄会得到干净的 `[E_BAD_REF]`，而不是先被救活、再死在 stale 检查上。
+- `+` 行与未改行是**改后**的代码，锚点是新鲜的，可以直接拿去编辑。
+- 一段覆盖多大范围由 `hashline.context_lines` 决定：调大看得见函数更多上下文，调小则远距改动分成好几段。
+
 ### 已读状态校验（reject-and-serve）
 
 工具结果向模型展示过的行即成为 **served**（`read`、`grep`、编辑 diff、结构结果、LSP

@@ -1,0 +1,10 @@
+Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.
+ ...
+ hW:		}
+ ng:		const openerLine = child.startPosition.row + 1;
+ Mb:		const closerLine = last.endPosition.row + 1;
+-5c:		if (closerLine - openerLine - 1 < 1) return out;
+-qY:		out.push({ startLine: openerLine + 1, endLine: closerLine - 1, openerLine, closerLine, kind: "imports" });
+ FO:		return out;
+ HP:	}
+ FP:	return out;

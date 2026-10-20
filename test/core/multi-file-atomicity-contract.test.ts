@@ -53,9 +53,9 @@ describe("multi-file edit — ADR-0004 response shape", () => {
 			const text = getText(res);
 
 			expect(text).toContain("Successfully edited 2 file(s) — 2 of 2 edit(s) applied.");
-			expect(text).toContain("--- b1.txt ---");
+			expect(text).toContain("--- b1.txt\n+++ b1.txt");
 			expect(text).toContain("Successfully edited in b1.txt. Added 1 line(s), removed 1 line(s).");
-			expect(text).toContain("--- b2.txt ---");
+			expect(text).toContain("--- b2.txt\n+++ b2.txt");
 			expect(text).toContain("Successfully edited in b2.txt. Added 1 line(s), removed 1 line(s).");
 			// 两个文件都落盘
 			expect(await readFile(p1, "utf-8")).toBe("A1!\nbeta\ngamma\n");
