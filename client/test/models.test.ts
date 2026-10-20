@@ -14,6 +14,7 @@ import {
 	readCardModel,
 	toolRowModel,
 } from "../src/client/models.js";
+import { isContentRowMeta } from "../src/client/diff-rows.js";
 import type { ToolCallBlock } from "../src/client/types.js";
 
 /** Build a settled result node fixture. */
@@ -450,7 +451,7 @@ describe("metaDiffRows (rendering channel, issue #71)", () => {
 
 	it("exposes structured rows on the card for the `行号:锚点` gutter", () => {
 		const card = diffCardModel(block);
-		expect(card?.rows?.map((row) => `${row.lineNumber}:${row.hash}`)).toEqual(["1:a1", "2:old", "2:n9"]);
+		expect(card?.rows?.filter(isContentRowMeta).map((row) => `${row.lineNumber}:${row.hash}`)).toEqual(["1:a1", "2:old", "2:n9"]);
 		expect(card?.diffs).toHaveLength(1);
 	});
 
@@ -469,6 +470,52 @@ describe("metaDiffRows (rendering channel, issue #71)", () => {
 		expect(metaDiffRows("nope")).toBeNull();
 		expect(metaDiffRows({ diffRows: "rows" })).toBeNull();
 		expect(metaDiffRows({ diffRows: [] })).toBeNull();
+	});
+});
+
+describe("diff rows meta: the SEGMENT HEADER kind (#295)", () => {
+	it("accepts a segment header row and keeps only its text", () => {
+		expect(
+			metaDiffRows({
+				diffRows: [
+					{ kind: "hunk", text: "@@ -194,7 +194,7 @@ myersRange()" },
+					{ kind: "-", lineNumber: 194, hash: "C7", text: "old" },
+					{ kind: "+", lineNumber: 194, hash: "h2", text: "new" },
+				],
+			}),
+		).toEqual([
+			{ kind: "hunk", text: "@@ -194,7 +194,7 @@ myersRange()" },
+			{ kind: "-", lineNumber: 194, hash: "C7", text: "old" },
+			{ kind: "+", lineNumber: 194, hash: "h2", text: "new" },
+		]);
+	});
+
+	it("drops the extra fields a header may carry — it has no line number and no anchor", () => {
+		expect(metaDiffRows({ diffRows: [{ kind: "hunk", text: "@@ -1,1 +1,1 @@", lineNumber: 1, hash: "a1" }] })).toEqual([
+			{ kind: "hunk", text: "@@ -1,1 +1,1 @@" },
+		]);
+	});
+
+	it("still refuses an unknown kind", () => {
+		expect(metaDiffRows({ diffRows: [{ kind: "x" }] })).toBeNull();
+	});
+
+	it("refuses a header without text", () => {
+		expect(metaDiffRows({ diffRows: [{ kind: "hunk" }] })).toBeNull();
+	});
+
+	it("keeps a header inside a per-file group", () => {
+		const groups = metaDiffRowGroups({
+			diffRowGroups: [
+				{
+					path: "a.txt",
+					rows: [{ kind: "hunk", text: "@@ -1,1 +1,1 @@" }, { kind: "+", lineNumber: 1, hash: "a1", text: "new" }],
+				},
+			],
+		});
+		expect(groups).not.toBeNull();
+		expect(groups![0]!.rows[0]).toEqual({ kind: "hunk", text: "@@ -1,1 +1,1 @@" });
+		expect(groups![0]!.rows).toHaveLength(2);
 	});
 });
 

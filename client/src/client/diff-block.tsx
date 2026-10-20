@@ -25,6 +25,8 @@ import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { ErrorCard } from "./error-card.js";
 import { diffCardGroups } from "./models.js";
+import { buildDisplayRows, copyText, foldWindow } from "./diff-rows.js";
+import type { DisplayRow, DisplayRowKind } from "./diff-rows.js";
 import { markerColumnCh } from "./read-meta.js";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { DiffBlockLabels } from "./labels.js";
@@ -78,6 +80,12 @@ const CSS_TEXT = [
 	".dshl-diff-del{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-diff-add{color:var(--dsw-alias-state-success-primary)}",
 	".dshl-diff-ctx{color:var(--dsw-alias-label-secondary)}",
+	// #295: the SEGMENT HEADER (`@@ -a,b +c,d @@ scope()`) is a TITLE, not a
+	// line of code: the accent colour on the text, a band of its own on the row.
+	// The band is a translucent mix of the SAME accent, so it reads on the light
+	// and the dark code surface without a hard-coded colour anywhere.
+	".dshl-diff-hunk{color:var(--dsw-alias-brand-primary);font-weight:600}",
+	".dshl-diff-hunkRow{padding:3px 0;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,transparent);border-top:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 30%,transparent);border-bottom:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,transparent)}",
 	".dshl-diff-expand{flex:1 1 auto;display:block;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-diff-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-diff-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
@@ -126,6 +134,8 @@ const css = {
 	del: "dshl-diff-del",
 	add: "dshl-diff-add",
 	ctx: "dshl-diff-ctx",
+	hunk: "dshl-diff-hunk",
+	hunkRow: "dshl-diff-hunkRow",
 	expand: "dshl-diff-expand",
 	footer: "dshl-diff-footer",
 	panel: "dshl-diff-panel",
@@ -157,65 +167,24 @@ export interface DiffRowsLabels {
 }
 
 /**
- * The gutter label of one row — ONE cell carrying marker + number + anchor:
- * `-21:C7` for removed lines (the pre-edit anchor, stale but informative),
- * `+21:h2` for added lines (the served chained-edit anchor), `20:Cg` for
- * context. The marker never separates from the number:anchor pair.
+ * The diff class of one drawn row — the anchor cell and the code cell wear it
+ * together, so a removed line's `-21:C7` is red and an added line's `+21:h2`
+ * is green, the way the shipped diff card drew them. A SEGMENT HEADER (#295)
+ * wears the accent class; the `⋯` gap draws in the tertiary tone.
  */
-function gutterLabel(row: DiffRowMeta): string {
-	if (row.kind === "-") {
-		return row.hash !== "" ? `-${row.lineNumber}:${row.hash}` : `-${row.lineNumber}`;
+function rowClassOf(kind: DisplayRowKind): string {
+	switch (kind) {
+		case "del":
+			return css.del;
+		case "add":
+			return css.add;
+		case "hunk":
+			return css.hunk;
+		case "gap":
+			return css.gap;
+		default:
+			return css.ctx;
 	}
-	if (row.kind === "+") {
-		return row.hash !== "" ? `+${row.lineNumber}:${row.hash}` : `+${row.lineNumber}`;
-	}
-	return row.hash !== "" ? `${row.lineNumber}:${row.hash}` : `${row.lineNumber}`;
-}
-
-interface DisplayRow {
-	kind: "del" | "add" | "ctx" | "gap";
-	gutter: string;
-	text: string;
-	/** The diff class for the anchor and content cells (del/add/ctx); gap draws bare. */
-	rowClass: string;
-}
-
-/**
- * Flatten the structured rows into display rows: gutter labels and hunk gaps.
- *
- * There is NO in-body path row any more (issue #96): the tab strip always
- * carries the file identity, so a second copy inside the body was pure
- * repetition — the same call the grep card made in #92.
- */
-function buildDisplayRows(rows: readonly DiffRowMeta[]): DisplayRow[] {
-	const out: DisplayRow[] = [];
-	let prevNew: number | null = null;
-	for (const row of rows) {
-		if (row.kind !== "-" && prevNew !== null && row.lineNumber > prevNew + 1) {
-			out.push({ kind: "gap", gutter: "", text: "⋯", rowClass: css.gap });
-		}
-		if (row.kind === "-") {
-			out.push({ kind: "del", gutter: gutterLabel(row), text: row.text, rowClass: css.del });
-		} else if (row.kind === "+") {
-			out.push({ kind: "add", gutter: gutterLabel(row), text: row.text, rowClass: css.add });
-			prevNew = row.lineNumber;
-		} else {
-			out.push({ kind: "ctx", gutter: gutterLabel(row), text: row.text, rowClass: css.ctx });
-			prevNew = row.lineNumber;
-		}
-	}
-	return out;
-}
-
-/** The diff text a reader copies: the shown rows minus the anchor column. */
-function copyText(rows: readonly DisplayRow[]): string {
-	return rows
-		.map((row) => {
-			if (row.kind === "del") return `- ${row.text}`;
-			if (row.kind === "add") return `+ ${row.text}`;
-			return row.text;
-		})
-		.join("\n");
 }
 
 /** One tab of the strip: a successful file's rows, or a failed file's error. */
@@ -423,12 +392,11 @@ export function DiffRowsBlock({
 	const added = activeRows.filter((row) => row.kind === "+").length;
 	const removed = activeRows.filter((row) => row.kind === "-").length;
 
-	const hidden = display.length - maxLines;
-	const capped = hidden > 0 && !expanded;
-	const headLines = Math.ceil(maxLines / 2);
-	const tailLines = maxLines - headLines;
-	const head = capped ? display.slice(0, headLines) : display;
-	const tail = capped ? display.slice(display.length - tailLines) : [];
+	// The fold window (#295): it counts CODE rows only — a segment header is a
+	// title and a `⋯` a hint, neither is a line of the file — and a segment
+	// header is drawn with the section it opens, never alone. The math lives in
+	// `diff-rows.ts`, where it is unit-tested without a DOM.
+	const fold = useMemo(() => foldWindow(display, maxLines, expanded), [display, maxLines, expanded]);
 
 	return jsx_("div", {
 		className: `${css.block} ${className ?? ""}`.trim(),
@@ -517,10 +485,10 @@ export function DiffRowsBlock({
 							// Each cell takes its ROW's class too: a removed line's `-21:C7` is
 							// red and an added line's `+21:h2` is green, the way the shipped
 							// diff card drew them. The fold toggle spans the full row.
-							...head.map((row, index) => foldRow(row, index)),
+							...fold.head.map((row, index) => foldRow(row, `head-${index}`)),
 							// The fold toggle stays rendered whenever rows are hidden OR the fold
 							// is open — otherwise an opened fold could never be closed again.
-							...(hidden > 0
+							...(fold.hidden > 0
 								? [
 										jsx_("div", {
 											key: "fold-row",
@@ -532,7 +500,7 @@ export function DiffRowsBlock({
 												jsx_(FoldToggle, {
 													className: css.expand,
 													expanded,
-													hidden,
+													hidden: fold.hidden,
 													labels,
 													onToggle,
 												}),
@@ -540,7 +508,7 @@ export function DiffRowsBlock({
 										}),
 									]
 								: []),
-							...tail.map((row, index) => foldRow(row, index)),
+							...fold.tail.map((row, index) => foldRow(row, `tail-${index}`)),
 							// #275: the auto-format section rides BELOW the main diff rows,
 							// inside the same body (so the gutter width applies) and outside
 							// the fold (changed rows are bounded; folding them hides the one
@@ -567,17 +535,21 @@ export function DiffRowsBlock({
  * One drawn diff row: a flex container with the anchor cell + the content
  * cell, in DOM order (per-row drag semantics, #131 field feedback).
  */
-function foldRow(row: DisplayRow, index: number): ReactNode {
+function foldRow(row: DisplayRow, key: string): ReactNode {
+	const rowClass = rowClassOf(row.kind);
 	return jsx_("div", {
-		key: index,
-		className: css.row,
+		key,
+		// A SEGMENT HEADER (#295) is a row like any other — an empty gutter cell
+		// and the header text in the code cell — but the ROW carries the band
+		// that makes it a title rather than a line of code.
+		className: row.kind === "hunk" ? `${css.row} ${css.hunkRow}`.trim() : css.row,
 		children: [
 			jsx_("span", {
-				className: `${css.gutterLine} ${row.rowClass}`.trim(),
+				className: `${css.gutterLine} ${rowClass}`.trim(),
 				children: row.gutter,
 			}),
 			jsx_("span", {
-				className: `${css.content} ${row.rowClass}`.trim(),
+				className: `${css.content} ${rowClass}`.trim(),
 				children: row.text,
 			}),
 		],

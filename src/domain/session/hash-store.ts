@@ -1365,8 +1365,41 @@ function shutdownDb(
 			console.error("[hash-store] shutdown bookkeeping failed:", error);
 		}
 	}
+	// A final checkpoint AFTER the bookkeeping: the clean_shutdown marker and
+	// any VACUUM result live in the WAL until they are copied into the
+	// database file. Truncating it here means a clean shutdown leaves no
+	// uncheckpointed frame behind — the contract the WAL-truncation test
+	// pins, and the one that makes the next open a plain read instead of a
+	// recovery.
+	checkpointFully(db);
 	db.close();
 }
+
+/**
+ * Run a TRUNCATE checkpoint and report whether it copied EVERY WAL frame into
+ * the main database file.
+ *
+ * `PRAGMA wal_checkpoint` answers `[busy, log, checkpointed]`: `busy` is 1 when
+ * another connection held a read lock and blocked the checkpoint, and then
+ * `checkpointed < log` — some frames still live only in the WAL and must NOT
+ * be thrown away. `log === -1` means the database has no WAL at all.
+ */
+function checkpointFully(db: DatabaseSync): boolean {
+	try {
+		const row = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+			| { busy?: number; log?: number; checkpointed?: number }
+			| undefined;
+		if (!row) return false;
+		const busy = Number(row.busy ?? 1);
+		const log = Number(row.log ?? 0);
+		const checkpointed = Number(row.checkpointed ?? -1);
+		return busy === 0 && (log === -1 || checkpointed === log);
+	} catch {
+		// An unknown answer is not a "fully flushed" answer.
+		return false;
+	}
+}
+
 
 /** Run VACUUM on a worker so the main thread stays responsive, and abort
  *  after `timeoutMs`. On timeout the worker is detached (its VACUUM keeps

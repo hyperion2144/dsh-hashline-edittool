@@ -48,7 +48,7 @@ interface WriteOut {
 	operation: string;
 	before: string | null;
 	after: string;
-	diffRows?: Array<{ kind: string; lineNumber: number; hash: string; text: string }>;
+	diffRows?: Array<{ kind: string; lineNumber?: number; hash?: string; text: string }>;
 	modelText: string;
 }
 
@@ -107,14 +107,17 @@ describe("write shadow", () => {
 		)) as WriteOut;
 		const rows = result.diffRows ?? [];
 		expect(rows.length).toBeGreaterThan(0);
-		// A create diffs against "" -> every row is an addition with an anchor.
+		// A create diffs against "" -> every LINE row is an addition with an
+		// anchor; the block header names the range, so it carries no line.
+		expect(rows[0]?.kind).toBe("hunk");
+		expect(rows[0]?.text).toBe("@@ -0,0 +1,3 @@");
 		for (const row of rows) {
+			if (row.kind === "hunk") continue;
 			expect(row.kind).toBe("+");
 			expect(row.lineNumber).toBeGreaterThanOrEqual(1);
 			expect(row.hash).toMatch(/^[A-Za-z0-9]{2,8}$/);
 		}
-		const texts = rows.map((row) => row.text);
-		expect(texts).toEqual(["one", "two", "three"]);
+		const texts = rows.filter((row) => row.kind !== "hunk").map((row) => row.text);
 	});
 
 	it("update rows mix context/removals/additions — each carrying an anchor where known", async () => {

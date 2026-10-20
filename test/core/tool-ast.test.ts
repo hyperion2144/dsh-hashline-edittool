@@ -257,8 +257,11 @@ describe("ast_edit", () => {
 		const text = String((value as unknown as { modelText: string }).modelText);
 		expect(text).toContain("Diff rows:");
 		// Diff rows carry no space after the separator (unlike read rows).
-		expect(text).toMatch(/^-[A-Za-z0-9]{2,8}:\d+:const x = f\(1, 2\);$/m);
-		expect(text).toMatch(/^\+[A-Za-z0-9]{2,8}:\d+:const x = g\(1, 2\);$/m);
+		expect(text).toMatch(/^-~[A-Za-z0-9]{2,8}:\d+:const x = f\(1, 2\);$/m);
+		expect(text).toMatch(/^\+\s*[A-Za-z0-9]{2,8}:\d+:const x = g\(1, 2\);$/m);
+		// The unified-diff shape: the file header, then a block header.
+		expect(text).toContain("--- ");
+		expect(text).toMatch(/^@@ -\d+,\d+ \+\d+,\d+ @@/m);
 		expect(text).toContain("Successfully edited in");
 		// And the JSON mode is the edit envelope, its diff keyed `anchor:line`.
 		// The file is reset first: the run above already applied the change, and

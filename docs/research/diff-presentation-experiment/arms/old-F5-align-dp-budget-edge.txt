@@ -1,0 +1,10 @@
+Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.
+ ...
+ Bg:	// DP table bytes = 8 · m · n. Below the threshold, run the full DP; the
+ 7R:	// trim already collapsed the typical "small edit, large file" case down
+ GG:	// to the changed region.
+-6N:	if (mMid * nMid <= effective) {
++Hg:	if (mMid * nMid < effective) {
+ mx:		const midPairs = lcsBacktrace(
+ 9J:			oldSeg as readonly unknown[],
+ go:			newSeg as readonly unknown[],

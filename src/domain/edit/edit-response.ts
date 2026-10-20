@@ -1,5 +1,5 @@
 import type { ServedRow } from "../../hashline/anchor-pipeline.js";
-import { genDiff, formatRowMarker } from "../../render/edit-diff.js";
+import { genDiff, formatRowMarker, renderDiffLines, type DiffBlock } from "../../render/edit-diff.js";
 import { visLines, clipLine } from "../../infra/utils.js";
 import { lineNumbersEnabled } from "../../infra/settings.js";
 import { contextLinesCfg } from "../../hashline/index.js";
@@ -8,10 +8,66 @@ import { contextLinesCfg } from "../../hashline/index.js";
  * Compact legend opening every edit diff block. Replaces the long
  * `ANCHOR:FILELINE` header (issue #69 / A): the generic web card shows this
  * text raw, so it must read like a diff at a glance, while still telling the
- * model that + and context rows carry fresh edit anchors.
+ * model what the diff IS — a unified diff, whose block header carries the line
+ * range and the enclosing function(s), whose `-` rows name pre-edit lines whose
+ * anchors are stale, and whose `+` and unchanged rows carry fresh anchors.
  */
 export const EDIT_DIFF_LEGEND =
-	"Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.";
+	"Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function(s); `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.";
+
+/**
+ * The legend for the CURRENT line-number switch: with the switch on, a row
+ * carries its line number between the anchor and the content.
+ *
+ * @param lineNumbers - whether the line-number switch is on.
+ * @returns the legend text.
+ */
+export function editDiffLegend(lineNumbers = lineNumbersEnabled()): string {
+	return lineNumbers
+		? EDIT_DIFF_LEGEND.replace("<+|-><anchor>:<content>", "<+|-><anchor>:<line>:<content>")
+		: EDIT_DIFF_LEGEND;
+}
+
+/**
+ * One file's group of the unified diff: the file header, then the file's
+ * blocks — a block header line, then the block's rows.
+ *
+ * @param path - the file's display path.
+ * @param blocks - the file's blocks, in order.
+ * @param lineNumbers - whether the line-number switch is on.
+ * @returns the group's lines, joined by newlines.
+ */
+export function renderFileDiffGroup(
+	path: string,
+	blocks: readonly DiffBlock[],
+	lineNumbers = lineNumbersEnabled(),
+): string {
+	return [`--- ${path}`, `+++ ${path}`, ...renderDiffLines(blocks, lineNumbers)].join("\n");
+}
+
+/**
+ * The model-visible unified diff: the legend, then one group per file.
+ *
+ * ONE renderer for the four edit tools (`edit`, `write`, `undo_last_edit`,
+ * `ast_edit`): they all describe the same edit to the model, and a second copy
+ * of this projection is a second shape to keep in sync.
+ *
+ * @param files - the files, in order, with their blocks.
+ * @param lineNumbers - whether the line-number switch is on.
+ * @returns the legend and the groups — one blank line between groups.
+ */
+export function renderUnifiedDiff(
+	files: ReadonlyArray<{ path: string; blocks: readonly DiffBlock[] }>,
+	lineNumbers = lineNumbersEnabled(),
+): string {
+	const legend = editDiffLegend(lineNumbers);
+	// A file with no blocks has no diff to show, so it gets no file header: an
+	// empty diff answers with the legend alone (spec §7).
+	const groups = files
+		.filter((file) => file.blocks.length > 0)
+		.map((file) => renderFileDiffGroup(file.path, file.blocks, lineNumbers));
+	return groups.length === 0 ? legend : `${legend}\n${groups.join("\n\n")}`;
+}
 import type { HunkShift } from "./edit-engine.js";
 
 /**
@@ -248,8 +304,10 @@ export function buildChanged(input: SuccessInput): TResult {
 		resultHashes,
 		originalHashes,
 		input.lineNumbers ?? lineNumbersEnabled(),
-		undefined,
-		replacedOriginalRanges(input.hunkShifts ?? []),
+		{
+			path,
+			changedRanges: replacedOriginalRanges(input.hunkShifts ?? []),
+		},
 	);
 	const addedLines = editMeta.addedLines;
 	const removedLines = editMeta.removedLines;
@@ -260,7 +318,10 @@ export function buildChanged(input: SuccessInput): TResult {
 			? ` Added ${addedLines} line(s), removed ${removedLines} line(s).`
 			: "";
 	const noticeBlock = driftBlock(driftNotice);
-	const diffBody = diffResult.diff ? `${EDIT_DIFF_LEGEND}\n${diffResult.diff}` : "";
+	const diffBody = renderUnifiedDiff(
+		[{ path, blocks: diffResult.blocks }],
+		input.lineNumbers ?? lineNumbersEnabled(),
+	);
 	const formatBlock =
 		input.format !== undefined ? `\n\n${renderFormatSection(input.format, input.lineNumbers ?? lineNumbersEnabled())}` : "";
 	const text =
@@ -348,7 +409,7 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 	}
 
 	const servedByPath: Array<{ path: string; servedRows: ServedRow[] }> = [];
-	const diffParts: string[] = [];
+	const diffFiles: Array<{ path: string; blocks: readonly DiffBlock[] }> = [];
 	for (const s of appliedFiles) {
 		const diffResult = genDiff(
 			s.originalNormalized,
@@ -357,17 +418,17 @@ export function buildBatchResult(sections: BatchSection[]): TResult {
 			s.resultHashes,
 			s.originalHashes,
 			undefined,
-			undefined,
-			replacedOriginalRanges(s.hunkShifts),
+			{
+				path: s.path,
+				changedRanges: replacedOriginalRanges(s.hunkShifts),
+			},
 		);
-		diffParts.push(
-			`--- ${s.path} ---\n${EDIT_DIFF_LEGEND}\n${diffResult.diff}`
-		);
+		diffFiles.push({ path: s.path, blocks: diffResult.blocks });
 		if (diffResult.servedRows.length > 0) {
 			servedByPath.push({ path: s.path, servedRows: diffResult.servedRows });
 		}
 	}
-	const diff = diffParts.join("\n\n");
+	const diff = renderUnifiedDiff(diffFiles);
 
 	const lineSummary =
 		addedLines > 0 || removedLines > 0

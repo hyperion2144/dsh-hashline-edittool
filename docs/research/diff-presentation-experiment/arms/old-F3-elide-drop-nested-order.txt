@@ -1,0 +1,10 @@
+Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.
+ ...
+ wz:
+ EU:/** Remove spans fully contained in another; the outer fold already covers them. */
+ P5:function dropNested(spans: readonly ElisionSpan[]): ElisionSpan[] {
+-Y0:	const sorted = [...spans].sort((a, b) => a.startLine - b.startLine || b.endLine - a.endLine);
++1X:	const sorted = [...spans].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+ Sv:	const out: ElisionSpan[] = [];
+ R2:	let coveredTo = 0;
+ u5:	for (const span of sorted) {

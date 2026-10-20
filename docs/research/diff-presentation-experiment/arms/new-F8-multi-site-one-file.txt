@@ -1,0 +1,30 @@
+Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count @@ scope()` gives the line range and the enclosing function; `-` rows are the pre-edit lines (their `~` anchors are stale), `+` rows and unchanged rows are the post-edit code.
+--- docs/research/diff-presentation-experiment/synthetic/multi-site.ts
++++ docs/research/diff-presentation-experiment/synthetic/multi-site.ts
+@@ -7,7 +7,7 @@ alpha()
+  vd: */
+  3x:
+  df:export function alpha(n: number): number {
+-~Ob:	let total = 0;
++ wP:	let total = 1;
+  ZV:	for (let i = 0; i < n; i += 1) {
+  Ot:		total += i * 2;
+  WQ:	}
+@@ -29,7 +29,7 @@ gamma()
+  SG:	if (trimmed.length === 0) {
+  cc:		return "";
+  2h:	}
+-~eP:	return trimmed.toUpperCase();
++ vi:	return trimmed.toLowerCase();
+  sa:}
+  Vi:
+  lJ:export function delta(rows: readonly string[]): string[] {
+@@ -71,7 +71,7 @@ theta()
+  c5:export function theta(xs: readonly number[]): number {
+  xZ:	let out = 0;
+  OR:	for (const x of xs) {
+-~Dr:		out += x * x;
++ e1:		out += x * x * x;
+  2V:	}
+  FP:	return out;
+  sO:}

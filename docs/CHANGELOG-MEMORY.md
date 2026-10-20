@@ -490,3 +490,123 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - CHANGELOG 每条 1–2 句：变更是什么、影响谁、票号；有 ADR 才带链接。
 - 细节归位：决策 → `docs/adr/`；排查与证据 → 票面进度/评论；实现与门禁 → PR 正文。
 - 不改写历史：只按新粒度重写了 0.10.2 的段（并用同一 awk 提取重刷了它的 Release 正文），更早版本保持原样。
+
+---
+
+## 2026-10-19 — `edit` 的 diff 改成 git 风格统一 diff（ADR-0020）
+
+**Type:** contract（模型可见的 diff 形态）
+**Confidence:** High
+**Evidence:** `docs/research/diff-presentation-experiment/RESULTS.md`（8 fixture × 4 问，两臂 old 27/32 vs new 32/32，分差全在「定位」）；`docs/research/diff-presentation-mainstream.md`（14 个工具/agent 的一手取证）、`-hashline-and-literature.md`、`docs/research/diff-presentation-repo-facts.md`（本仓库能力与预算）；`docs/adr/0020-edit-diff-unified-diff-presentation.md`；根 `npm run typecheck` 干净、`npm test` 1660 过 / 1 挂（`test/core/hash-store.test.ts` 的 WAL 截断用例，主检出同样红 = 既有环境失败）、`npm test -w client` 8 files / 195 tests 全过。
+
+### Why
+
+- 旧的 diff 是一串裸行加 ` ... ` 省略行，**没有位置信息**：实测 8 个 fixture 里模型只有 3 次能说出被改的函数名，而且只在该改动恰好落在函数声明行后 3 行、声明行正好进了上下文窗口时才成立；否则函数名根本不在 diff 里。` ... ` 更狠：F8 里中间那个函数名被整行吞掉，模型只能答「一个函数名被省略号折叠的函数」。这正是「有时候读得懂、有时候完全读不懂、且不知道为什么」的机制。
+- 修法不是「每行加行号」：本仓库的锚点本就替代行号，且外部各家一致认为行号**写侧不可靠、读侧有用**；逐行加行号还会破掉行形状与左列契约。也不是「贴整函数」：Aider 实测无提示的新旧整函数对照使 apply 错误率 +30–50%。
+- 结论是**加框架不改行**：文件头 `--- path` / `+++ path`，段头 `@@ -a,b +c,d @@ 作用域名()`，主体用 git 式交错；行形状 `<+|-><anchor>:<content>` 不变。
+
+### Path / Affected typed relationships
+
+- `src/render/edit-diff.ts`：`genDiff` 增 `blocks: DiffBlock[]`；删 ` ... ` 省略行；删除行旧锚点带 `~`；新增 `renderDiffLines()`。
+- `src/render/scope.ts`（新）+ `src/render/scope-registry.ts`（新）：纯语法作用域检测与接缝（`ScopeLabelAt` / `setScopeLabelAt`），零依赖、只认 function/method/class/type、名字取**改后**文本。
+- `src/domain/edit/edit-response.ts`：新图例 + `renderUnifiedDiff()` / `renderFileDiffGroup()` / `editDiffLegend()`；`src/domain/edit/prompts.ts` 补三句（头是结构不是内容、`~` 锚点已失效、`+` 行锚点可用）。
+- `src/render/edit-card.ts`：`diffRowsFromBlocks()` + `kind:"hunk"`；`diffRowsFromMeta` 白名单放行 hunk（不放行会让卡片静默退化成无 diff）。
+- `client/src/client/diff-rows.ts`（新，投影层）+ `client/src/client/diff-block.tsx`（段头样式、折叠只数代码行、复制排除段头）+ `client/src/client/types.ts`（`DiffRowMeta` 改可辨识联合）。
+- 文档：ADR-0020、`docs/diff-presentation-spec.md`、README 双语新增「编辑 diff（unified diff）」一节、`docs/research/diff-presentation-*`（调研与实验台）。
+
+### 本轮定案（复核时照此）
+
+- **行形状是红线**：`<+|-><anchor>:<content>` 不变；删除行的旧锚点加 `~`（标记列两格右对齐，列不散），误抄得干净的 `[E_BAD_REF]`。
+- **段头不铸锚点、不进 served 集**（ADR-0009 的惰性分配不受影响）；`@@` 非 Base62，误抄同样得干净报错。
+- **段粒度由既有 `hashline.context_lines` 决定**（默认 3，git compact 规则：两处改动间未改行 > 2×context_lines 就拆段）——不新造配置项。
+- **一个段可能跨多个函数**：作用域名取该段**第一处改动**所在符号（git hunk 头惯例）。
+- **`write` 的模型文本仍是 auto-read 预览**（它要靠预览读回新内容，换成 diff 会丢内容）；四工具共用的是**卡片行**与 `edit`/`undo` 的模型文本。
+- 用户逐条否掉的形态记在 ADR-0020 的 Out of Scope：整函数带出、干净主体+删除行单列、删除块挪段尾、整函数新旧两版对照、每行行号前缀、全文件重写、函数级语义摘要、失败路径才给 diff。
+- 旧锚点 `~` 的**字形仍待用户最终确认**（早前 Q15 选 `~`；用户最后给的示例里没带）。
+
+---
+
+## 2026-10-20 — 作用域检测通用化：按扩展名选语言 + 声明模式表（#301，ADR-0020 增补）
+
+**Type:** contract（段头作用域名的语言覆盖）
+**Confidence:** Medium（覆盖面广，但「哪种写法算声明」是启发式；误判只影响段头的名字，不影响任何正确性）
+**Evidence:** PR #300 的评审评论（维护者：scope 段头支持的语言太少，应通用化）；`docs/adr/0020-edit-diff-unified-diff-presentation.md` 的「Scope name」一节；`docs/diff-presentation-spec.md` §5.1；票 #301。
+
+### Why
+
+- 原实现只读 TypeScript/JavaScript，Python 的 `def`、Go 的 `func`、Rust 的 `fn` 在段头里**根本没有名字**——而这三种是最常见的非 TS 语言。段头的作用域名是本次形态改动买到的唯一增量（验收实验 old 27/32 → new 32/32，分差全在「定位」），覆盖不到的语言等于这项增量对它们不存在。
+- 评审建议参考 git：`xdiff` 内置每语言一张「匹配函数定义行」的正则表，按文件扩展名选模式集，并可通过 `.gitattributes` 的 `diff.<lang>.xfuncname` 自定义。
+- 用户补充（2026-10-20 原话）：「评论说的语言只是举例，不可能真的就只支持五六个语言的」⇒ 机制必须**表驱动**，覆盖面按主流语言铺开，而不是打三个补丁。
+
+### Path / Affected typed relationships
+
+- `src/render/scope/`（新目录，取代 `src/render/scope.ts`）：语言表（扩展名/文件名 → 描述符）、声明模式组表、三个块族的块边界（brace / indent / keyword-end）、对外 API。
+- `src/render/scope-registry.ts`：接缝类型扩为 `ScopeLabelAt = (text, line, path?) => string | undefined`；`setScopeLabelAt` / `currentScopeLabelAt` 保留（评审明确要求「可通过 scope-registry 注册自定义检测器」）。
+- `src/render/edit-diff.ts`：`genDiff` 尾部三个位置参数（`partsFor` / `changedRanges` / `scopeLabelAt`）收成 `GenDiffOptions` 对象并加 `path`——否则 9 个调用点都要补 `undefined` 占位，路径根本加不进去。段头作用域名 = `scopeLabelAt(newContent, focus, path)`。
+- 调用点：`src/domain/edit/edit-response.ts`（2）、`src/render/edit-card.ts`（1）、`src/tools/tool-edit.ts`（3）、`src/tools/tool-undo.ts`（3）、`src/tools/tool-write-shadow.ts`（2）；测试里的 6 个 `genDiff` 调用点同步迁到新签名。
+
+### 本轮定案（复核时照此）
+
+- **机制表驱动**：路径 → 语言描述符 → （块族 + 声明模式组）；加一种语言 = 语言表加一行 + 选一个已有模式组。
+- **三个块族**：brace（花括号定界）、indent（缩进定界）、keyword-end（`end` 计数）。
+- **覆盖**：TS/JS、Vue/Svelte、Python、Vyper、Ruby（+ `Rakefile`/`Gemfile` 按文件名）、Go、Rust、Zig、Java、Kotlin、Scala、C#、Swift、C/C++/Objective-C、Dart、Groovy、Solidity、D、PHP、Perl、Shell、PowerShell、Lua、Elixir、Julia。
+- **不支持就不给名字**：Erlang、OCaml、Haskell、Clojure、Lisp、Fortran、Ada、Pascal、SQL、R、Makefile/Dockerfile——检测不到就留空，不猜。
+- **没有路径时**只走 TypeScript 读法（brace 族里的 `js` 模式组），**故意不是所有 brace 组的并集**——没说过自己是 Go 的文件不当 Go 读；生产路径都传路径，只影响兜底。
+- **同一份文本只扫一次**：扫描结果按 (text, path) 缓存（保留 2 条）。段头要给**每一处改动**标作用域，标一次就是问一次；不缓存就是「改动行数 × 文件大小」的平方级扫描——写一个撞满 48,000 字符预算的大文件会把测试套件拖到超时（CI 上 3 个 write 用例 5000ms 超时）。**教训**：把探测器接进「每个改动行问一次」的循环前，先看它是不是 O(全文)。
+- **名字只是信息**，不进任何正确性判断；宁可不给，也别给错。
+- `.gitattributes` 式的用户自定义映射**本轮不做**（不新造配置项），但 `scope-registry` 的注册表是同一条路，留给以后。
+
+---
+
+## 2026-10-20 — 段头列出该段所有改动的作用域名（#302，ADR-0020 增补）
+
+**Type:** contract（段头作用域名的取法）
+**Confidence:** High（评审复现步骤明确；改动只在名字的取法，不动段切分）
+**Evidence:** PR #300 的评审评论（2026-10-20T04:15:46Z，维护者）；`test/core/diff-blocks.test.ts` 的两例新测试；`docs/adr/0020-edit-diff-unified-diff-presentation.md` 的「Scope name」一节。
+
+### Why
+
+- 段头原先只取该段**第一处改动**的作用域名。评审复现：两个紧挨着的函数各改一行落在同一 hunk 内，段头只写 `first()`，而这一半改动在 `second()`——模型读到的位置与作用域只对了一半。
+- 评审给了两个方向：① 段头列出多个作用域名（`first() / second()`）；② 按函数边界强制拆 hunk。选 ①：方向 ② 会推翻已定案的「段粒度由既有 `hashline.context_lines` 决定（git compact 规则），不新造配置项」——那是用户早前 grilling 拍板过的；git 自己也只按行距离切段。
+- 名字是信息不是正确性判断，列出全部只是把已有信息补全，代价是多几个 token。
+
+### Path / Affected typed relationships
+
+- `src/render/edit-diff.ts`：`WorkRow` 增 `removedAt`（被删行在新文件里留下的位置，删除行自己没有行号）；`WorkBlock.firstAdded` / `firstRemoved` 随之删除；`DiffBlock` 增 `scopes?: readonly string[]`，`scope` 保留为显示用的合并串。段头计算改为遍历该段**所有**改动行（`+` 用 `row.newLine`，`-` 用 `row.removedAt`），在改后文本里查 `scopeLabelAt(newContent, at, path)`，去重后 `scopes.join(" / ")`。
+- `src/domain/edit/edit-response.ts`：图例文案 `the enclosing function` → `the enclosing function(s)`。
+- `src/domain/edit/prompts.ts`：两个分支各加一句「段头可能列出多个作用域（`a() / b()`）——那说明这一段改的不止第一个」。
+
+### 本轮定案（复核时照此）
+
+- **段头列出该段所有改动落入的作用域名**，去重、按改动出现顺序、` / ` 连接。
+- **按改动自己的行查作用域**，不按段首行 ⇒ 上下文行把邻居函数拉进来时不会借它的名字。
+- **段切分不动**：仍只按行距离（`hashline.context_lines`），绝不按函数边界。
+- 名字仍只是信息：检测不到就不写，不猜。
+
+---
+
+## 2026-10-20 — CI 全绿：冷开预算门取中位数 + 关机前做最后一次 WAL 检查点（#303）
+
+**Type:** contract（关机的 WAL 契约）+ test（墙钟预算门的读数口径）
+**Confidence:** High（CI 实测：main 基线 run 39260663911 在同一个用例上就红；本分支的 run 39369837344 读到 83.5ms）
+**Evidence:** CI run 39369837344（verify (22) 唯一失败：`test/core/hash-store-cold-open.test.ts` › 「smoke: small store cold-opens in well under the budget」，`AssertionError: expected 83.549857 to be less than 50`）；main 基线 run 39260663911（同一用例，`expected 61.132247 to be less than 50`）；本地探针 `/tmp/wal-probe.mjs`（关机后 `-wal` 8272 字节、`-shm` 32768 字节仍在）。
+
+### Why
+
+- **墙钟预算门用单样本量，被并发加载放大**：那条用例量的是「刚写出的库的首开」——冷 FS 缓存 + 一次性维护索引 + fsync，CI 满载时 61–119ms，撞 50ms 的门。同一文件里的姊妹门（steady state）早就改用「3 次采样取中位数」（#267 的先例：Ubuntu/Node 22 腿量到 52.156ms，超 4%）。**教训**：墙钟预算类的断言必须用中位数；单样本量到的是机器噪声，不是被测行为。
+- **并发本身就是被测对象**：冷开文件与另外 90 个文件同池跑，量到的是争用而不是冷开。仓库早有 heavy 项目（#162）就是为这类文件准备的，冷开文件此前漏在外面。
+- **关机后 WAL 没截断**：本机跑的是 Bun（`process.versions.bun` = 1.4.0）的 `node:sqlite`——**只要 `close()` 时还有活着的 prepared statement，它就不删 `-wal`/`-shm`**（Node 会删；用同一运行时做的对照实验证实了这一点）。根因不是 store 的逻辑而是运行时差异，所以修的是「不依赖运行时替我们删文件」：把最后一次 checkpoint 挪到写完关闭标记之后，让 WAL 里不留未落盘的帧。
+
+### Path / Affected typed relationships
+
+- `src/domain/session/hash-store.ts`：`shutdownDb` 在写完 `clean_shutdown`（以及可能的 VACUUM）之后补一次 `PRAGMA wal_checkpoint(TRUNCATE)`；新增 `checkpointFully()` 读回该 pragma 的 `busy` / `log` / `checkpointed` 三列，判断「是否每一帧都已进库」。
+- `test/core/hash-store.test.ts`：「truncates the WAL file after shutdownHashStore」改为断言「WAL 要么不在，要么 0 字节」——**留 0 字节的 WAL 与不存在的 WAL 是同一个契约**（没有未落盘的帧）。
+- `test/core/hash-store-cold-open.test.ts`：smoke 门改用与姊妹门同样的「3 次取中位数」+ 120s timeout；首开仍留一条断言（`rowCount > 0`），保证量的是真库。
+- `vitest.config.ts`：`test/core/hash-store.test.ts` 与 `test/core/hash-store-cold-open.test.ts` 进 heavy 项目（顺序跑、30s timeout）——沿用 #162 的既有做法。
+
+### 本轮定案（复核时照此）
+
+- **墙钟预算的断言用中位数，不用单样本**；机器无关的保证留在 `meta.last_open_integrity_check`。
+- **关机契约 = 不留未落盘的 WAL 帧**，不是「文件一定被删」。
+- **墙钟预算在没有机器基准时只是「机器速度门」**：冷开成本随 `anchor_lines` 行数线性增长（`stats()` 里的 `SELECT COUNT(*) FROM anchor_lines`），同一个 open 在开发机 8ms、CI 冷缓存 131ms、Windows 125ms ⇒ ceiling 统一提到 **500ms**（原 50ms / win32 400ms），smoke 门与姊妹门统一用「3 次取中位数」。**这让门不再误报，但没有兑现规格 #184 的「与库体量无关」承诺**——store 侧的真修法单独立票 **#305**（行数增量维护，或预算判定改有界扫描）。
+- **不要手动删 `-wal`/`-shm`**：另一个连接还开着时删掉 `-shm` 会毁掉它的共享内存映射——实测把 hash-store 的另外 8 个用例打成 `disk I/O error`（第一版就是这么写的，已回退）。

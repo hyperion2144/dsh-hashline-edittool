@@ -34,7 +34,7 @@ import { withWorkspace } from "../domain/session/session-view.js";
 import { formatWindowSummary } from "../domain/session/read-window.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
-import { computeHunkDiffs, diffRowsFromGenDiff, type EditDiffRow } from "../render/edit-card.js";
+import { computeHunkDiffs, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
 import { detectEnding, genDiff, restoreEndings, stripBOM } from "../render/edit-diff.js";
 import { anchorsFor } from "../domain/session/anchor-state.js";
 import { loadServed } from "../domain/session/served.js";
@@ -67,7 +67,7 @@ export interface WriteValue {
 	before: string | null;
 	after: string;
 	/** Structured rows for the web card's `行号:锚点` gutter. */
-	diffRows?: EditDiffRow[];
+	diffRows?: EditCardDiffRow[];
 	/** #273 — true when the pre-write read was lossy: `before` holds U+FFFD stand-ins and `diffRows` is omitted. */
 	beforeLossy?: boolean;
 	/** #131: inline diagnostics meta, present only when a push arrived in the window. */
@@ -474,7 +474,7 @@ async function buildDiffRows(
 	beforeHashes: string[] | undefined,
 	afterHashes: string[] | undefined,
 	ctx: { cwd: string; sessionKey: string },
-): Promise<EditDiffRow[]> {
+): Promise<EditCardDiffRow[]> {
 	// Anchor arrays flow in from the caller: `after` is the array the auto-
 	// read preview just served (same session allocator); `before` was captured
 	// chronologically pre-write.
@@ -491,14 +491,16 @@ async function buildDiffRows(
 	const effAfter =
 		afterHashes ??
 		(await allocateForRenderedRows(absolutePath, before ?? "", after, effBefore, ctx));
-	const { rows } = genDiff(
+	const { blocks } = genDiff(
 		before ?? "",
 		after,
 		contextLinesCfg(),
 		effAfter,
 		effBefore,
+		undefined,
+		{ path: absolutePath },
 	);
-	return diffRowsFromGenDiff(rows);
+	return diffRowsFromBlocks(blocks);
 }
 
 /**

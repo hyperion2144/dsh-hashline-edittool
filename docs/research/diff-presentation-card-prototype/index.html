@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>diff 卡片原型 · git 风格统一 diff + @@ 段头</title>
+<style>
+  :root {
+    --bg: light-dark(#ffffff, #0d1117);
+    --fg: light-dark(#1f2328, #e6edf3);
+    --muted: light-dark(#57606a, #8b949e);
+    --line: light-dark(#d0d7de, #30363d);
+    --panel: light-dark(#f6f8fa, #161b22);
+    --del: light-dark(#cf222e, #f85149);
+    --add: light-dark(#1a7f37, #3fb950);
+    --hunk: light-dark(#0550ae, #79c0ff);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 14px; line-height: 1.6; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  .btn { font: inherit; font-size: 13px; padding: 5px 12px; cursor: pointer; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .btn[aria-pressed="true"] { background: var(--hunk); border-color: var(--hunk); color: light-dark(#fff, #0d1117); }
+  .example { margin-bottom: 28px; }
+  .example > h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+  .example > p { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); }
+  .card-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); font-family: var(--mono); font-size: 12px; }
+  .card-head .path { font-weight: 600; }
+  .card-head .tag { color: var(--muted); }
+  .rows { font-family: var(--mono); font-size: 12.5px; line-height: 20px; }
+  .row { display: flex; align-items: flex-start; }
+  .gutter { flex: 0 0 92px; text-align: right; padding: 0 10px 0 6px; color: var(--muted); white-space: pre; user-select: none; }
+  .body { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; padding-right: 12px; }
+  .row.del .body { color: var(--del); }
+  .row.add .body { color: var(--add); }
+  .row.ctx .body { color: var(--fg); }
+  .row.gap .body { color: var(--muted); }
+  .row.hunk { background: var(--panel); }
+  .row.hunk .body { color: var(--hunk); font-weight: 600; }
+  .note { margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+  .note code, .sub code, .example > p code { font-family: var(--mono); background: var(--panel); padding: 1px 4px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>diff 卡片原型 · git 风格统一 diff + <code>@@</code> 段头</h1>
+  <p class="sub">
+    模型可见文本与卡片是两条独立通道（卡片数据只来自 <code>presentationMeta.diffRows</code>），所以两侧各画各的，但形态必须一致。
+    切到「新形态」看段头怎么把「这段在文件哪个行区间、属于哪个函数」一次说清。
+  </p>
+
+  <div class="controls">
+    <button class="btn" id="old" aria-pressed="true">现状（今天）</button>
+    <button class="btn" id="new" aria-pressed="false">新形态（git 风格 + @@ 段头）</button>
+  </div>
+
+  <div class="example">
+    <h2>例 1 · 改一行比较符</h2>
+    <p>文件：<code>src/render/line-diff.ts</code>（464 行）· 上下文 3 行</p>
+    <div class="card" id="card-f1"></div>
+    <p class="note">
+      现状里模型看到的是「文件里的一段浮空行」：没有行区间、没有函数名、花括号不配对。
+      新形态的段头 <code>@@ -194,7 +194,7 @@ myersRange()</code> 一次给全：行区间（旧 7 行 → 新 7 行）、所属函数、改动位置。
+    </p>
+  </div>
+
+  <div class="example">
+    <h2>例 2 · 一个文件里三处相距很远的改动</h2>
+    <p>文件：<code>docs/research/diff-presentation-experiment/synthetic/multi-site.ts</code>（81 行）· 上下文 3 行</p>
+    <div class="card" id="card-f8"></div>
+    <p class="note">
+      段粒度不是新概念：就是既有配置 <code>context_lines</code> 的后果——调小 → 多段（各带段头），调大 → 合成一大段。
+    </p>
+  </div>
+</div>
+
+<script>
+  const F1_OLD = [
+    { t: "gap", gutter: "", text: "⋯" },
+    { t: "ctx", gutter: "194:B1", text: "\t\ttrace.push(v.slice());" },
+    { t: "ctx", gutter: "195:Yc", text: "\t\tfor (let k = -d; k <= d; k += 2) {" },
+    { t: "ctx", gutter: "196:jt", text: "\t\t\tlet x: number;" },
+    { t: "del", gutter: "-197:Tl", text: "\t\t\tif (k === -d || (k !== d && v[mid + k - 1]! < v[mid + k + 1]!)) x = v[mid + k + 1]!;" },
+    { t: "add", gutter: "+197:bj", text: "\t\t\tif (k === -d || (k !== d && v[mid + k - 1]! <= v[mid + k + 1]!)) x = v[mid + k + 1]!;" },
+    { t: "ctx", gutter: "198:5X", text: "\t\t\telse x = v[mid + k - 1]! + 1;" },
+    { t: "ctx", gutter: "199:Tg", text: "\t\t\tlet y = x - k;" },
+    { t: "ctx", gutter: "200:nm", text: "\t\t\twhile (x < n && y < m && a[aLo + x] === b[bLo + y]) {" }
+  ];
+  const F1_NEW = [
+    { t: "hunk", gutter: "", text: "@@ -194,7 +194,7 @@ myersRange()" },
+    { t: "ctx", gutter: "194:B1", text: "\t\ttrace.push(v.slice());" },
+    { t: "ctx", gutter: "195:Yc", text: "\t\tfor (let k = -d; k <= d; k += 2) {" },
+    { t: "ctx", gutter: "196:jt", text: "\t\t\tlet x: number;" },
+    { t: "del", gutter: "-197:Tl", text: "\t\t\tif (k === -d || (k !== d && v[mid + k - 1]! < v[mid + k + 1]!)) x = v[mid + k + 1]!;" },
+    { t: "add", gutter: "+197:bj", text: "\t\t\tif (k === -d || (k !== d && v[mid + k - 1]! <= v[mid + k + 1]!)) x = v[mid + k + 1]!;" },
+    { t: "ctx", gutter: "198:5X", text: "\t\t\telse x = v[mid + k - 1]! + 1;" },
+    { t: "ctx", gutter: "199:Tg", text: "\t\t\tlet y = x - k;" },
+    { t: "ctx", gutter: "200:nm", text: "\t\t\twhile (x < n && y < m && a[aLo + x] === b[bLo + y]) {" }
+  ];
+  const F8_OLD = [
+    { t: "gap", gutter: "", text: "⋯" },
+    { t: "ctx", gutter: "7:vd", text: " */" },
+    { t: "ctx", gutter: "8:3x", text: "" },
+    { t: "ctx", gutter: "9:df", text: "export function alpha(n: number): number {" },
+    { t: "del", gutter: "-10:Ob", text: "\tlet total = 0;" },
+    { t: "add", gutter: "+10:wP", text: "\tlet total = 1;" },
+    { t: "ctx", gutter: "11:ZV", text: "\tfor (let i = 0; i < n; i += 1) {" },
+    { t: "ctx", gutter: "12:Ot", text: "\t\ttotal += i * 2;" },
+    { t: "ctx", gutter: "13:WQ", text: "\t}" },
+    { t: "gap", gutter: "", text: "⋯" },
+    { t: "ctx", gutter: "29:SG", text: "\tif (trimmed.length === 0) {" },
+    { t: "ctx", gutter: "30:cc", text: "\t\treturn \"\";" },
+    { t: "ctx", gutter: "31:2h", text: "\t}" },
+    { t: "del", gutter: "-32:eP", text: "\treturn trimmed.toUpperCase();" },
+    { t: "add", gutter: "+32:vi", text: "\treturn trimmed.toLowerCase();" },
+    { t: "ctx", gutter: "33:sa", text: "}" },
+    { t: "gap", gutter: "", text: "⋯" },
+    { t: "ctx", gutter: "71:c5", text: "export function theta(xs: readonly number[]): number {" },
+    { t: "ctx", gutter: "72:xZ", text: "\tlet out = 0;" },
+    { t: "ctx", gutter: "73:OR", text: "\tfor (const x of xs) {" },
+    { t: "del", gutter: "-74:Dr", text: "\t\tout += x * x;" },
+    { t: "add", gutter: "+74:e1", text: "\t\tout += x * x * x;" },
+    { t: "ctx", gutter: "75:2V", text: "\t}" },
+    { t: "ctx", gutter: "76:FP", text: "\treturn out;" },
+    { t: "ctx", gutter: "77:sO", text: "}" }
+  ];
+  const F8_NEW = [
+    { t: "hunk", gutter: "", text: "@@ -7,7 +7,7 @@ alpha()" },
+    { t: "ctx", gutter: "7:vd", text: " */" },
+    { t: "ctx", gutter: "8:3x", text: "" },
+    { t: "ctx", gutter: "9:df", text: "export function alpha(n: number): number {" },
+    { t: "del", gutter: "-10:Ob", text: "\tlet total = 0;" },
+    { t: "add", gutter: "+10:wP", text: "\tlet total = 1;" },
+    { t: "ctx", gutter: "11:ZV", text: "\tfor (let i = 0; i < n; i += 1) {" },
+    { t: "ctx", gutter: "12:Ot", text: "\t\ttotal += i * 2;" },
+    { t: "ctx", gutter: "13:WQ", text: "\t}" },
+    { t: "hunk", gutter: "", text: "@@ -29,7 +29,7 @@ gamma()" },
+    { t: "ctx", gutter: "29:SG", text: "\tif (trimmed.length === 0) {" },
+    { t: "ctx", gutter: "30:cc", text: "\t\treturn \"\";" },
+    { t: "ctx", gutter: "31:2h", text: "\t}" },
+    { t: "del", gutter: "-32:eP", text: "\treturn trimmed.toUpperCase();" },
+    { t: "add", gutter: "+32:vi", text: "\treturn trimmed.toLowerCase();" },
+    { t: "ctx", gutter: "33:sa", text: "}" },
+    { t: "ctx", gutter: "34:Vi", text: "" },
+    { t: "ctx", gutter: "35:lJ", text: "export function delta(rows: readonly string[]): string[] {" },
+    { t: "hunk", gutter: "", text: "@@ -71,7 +71,7 @@ theta()" },
+    { t: "ctx", gutter: "71:c5", text: "export function theta(xs: readonly number[]): number {" },
+    { t: "ctx", gutter: "72:xZ", text: "\tlet out = 0;" },
+    { t: "ctx", gutter: "73:OR", text: "\tfor (const x of xs) {" },
+    { t: "del", gutter: "-74:Dr", text: "\t\tout += x * x;" },
+    { t: "add", gutter: "+74:e1", text: "\t\tout += x * x * x;" },
+    { t: "ctx", gutter: "75:2V", text: "\t}" },
+    { t: "ctx", gutter: "76:FP", text: "\treturn out;" },
+    { t: "ctx", gutter: "77:sO", text: "}" }
+  ];
+  const DATA = {
+    f1: { path: "src/render/line-diff.ts", old: F1_OLD, new: F1_NEW },
+    f8: { path: "docs/research/diff-presentation-experiment/synthetic/multi-site.ts", old: F8_OLD, new: F8_NEW }
+  };
+  let mode = "old";
+  function render(id) {
+    const spec = DATA[id];
+    const rows = spec[mode];
+    const card = document.getElementById("card-" + id);
+    const parts = [];
+    parts.push('<div class="card-head"><span class="path">' + spec.path + '</span><span class="tag">' + (mode === "new" ? "unified diff · @@ 段头" : "现状") + '</span></div>');
+    parts.push('<div class="rows">');
+    for (const r of rows) {
+      parts.push('<div class="row ' + r.t + '"><span class="gutter">' + (r.gutter || "") + '</span><span class="body">' + r.text + "</span></div>");
+    }
+    parts.push("</div>");
+    card.innerHTML = parts.join("");
+  }
+  function paint() { render("f1"); render("f8"); }
+  document.getElementById("old").addEventListener("click", function () {
+    mode = "old";
+    this.setAttribute("aria-pressed", "true");
+    document.getElementById("new").setAttribute("aria-pressed", "false");
+    paint();
+  });
+  document.getElementById("new").addEventListener("click", function () {
+    mode = "new";
+    this.setAttribute("aria-pressed", "false");
+    document.getElementById("old").setAttribute("aria-pressed", "true");
+    paint();
+  });
+  paint();
+</script>
+</body>
+</html>

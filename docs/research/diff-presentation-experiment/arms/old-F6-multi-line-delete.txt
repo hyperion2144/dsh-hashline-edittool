@@ -1,0 +1,11 @@
+Diff rows: <+|-><anchor>:<content> — + and context rows carry fresh anchors for follow-up edits.
+ ...
+ nn:}
+ Ou:
+ hP:/** Overlapping spans are not representable by the renderer; this is the check. */
+-6b:export function spansAreDisjoint(spans: readonly ElisionSpan[]): boolean {
+-Wb:	for (let i = 1; i < spans.length; i++) {
+-Qr:		if (spans[i]!.startLine <= spans[i - 1]!.endLine) return false;
+-Ng:	}
+-bi:	return true;
+-d9:}

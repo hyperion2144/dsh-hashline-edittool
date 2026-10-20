@@ -4,6 +4,19 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Changed
+
+- 编辑 diff 改为 unified diff 形态：文件头 `--- path` / `+++ path`，段头 `@@ -old,count +new,count @@ 函数名()` 给出改动前后的行区间与所在函数；删除行留原位，其失效的旧锚点以 `~` 标记（#293，ADR-0020）。
+- 段头的作用域名由纯语法作用域检测给出（`src/render/scope/`）：检测不到就留空，不猜（#294）。
+- 作用域检测按文件扩展名/文件名选语言与声明模式表（git 的做法），覆盖 TS/JS、Python、Go、Rust、Java 系、C 系、Ruby、Lua/Elixir/Julia 等语言；表驱动，加一种语言是一行（#301）。
+- 段头列出该段**所有**改动落入的作用域名（`first() / second()`），不再只报第一个（#302）。
+- 作用域检测对同一份文本只扫一次（缓存键含路径）：写大文件时不再按改动行重复全文扫描（#303）。
+- web diff 卡片同步新形态：段头作分组标题，折叠只数代码行，复制文本不再带上段头（#295）。
+
+### Fixed
+
+- 关闭哈希存储时在写完关闭标记后再做一次 WAL 检查点：干净关机后不留未落盘的 WAL 帧，下一次打开是普通读而不是恢复（#303）。
+
 ## [0.10.3] - 2026-10-19
 
 ### Added

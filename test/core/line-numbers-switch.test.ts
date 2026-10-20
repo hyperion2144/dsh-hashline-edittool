@@ -260,14 +260,18 @@ describe("#244 the line-number switch", () => {
 		// uses `diffRowGroups`); both carry the card's gutter, so both are read here.
 		const { presentationMeta } = edit.output as unknown as {
 			presentationMeta?: (args: unknown, value: unknown) => {
-				diffRows?: Array<{ lineNumber?: number }>;
-				diffRowGroups?: Array<{ rows: Array<{ lineNumber?: number }> }>;
+				diffRows?: Array<{ kind?: string; lineNumber?: number }>;
+				diffRowGroups?: Array<{ rows: Array<{ kind?: string; lineNumber?: number }> }>;
 			};
 		};
 		const meta = presentationMeta?.(params(anchor), off) ?? {};
 		const rows = [...(meta.diffRows ?? []), ...(meta.diffRowGroups ?? []).flatMap((group) => group.rows)];
 		expect(rows.length).toBeGreaterThan(0);
-		for (const row of rows) expect(Number.isInteger(row.lineNumber)).toBe(true);
+		for (const row of rows) {
+			// A block header is STRUCTURE: it names a range, not a line.
+			if (row.kind === "hunk") continue;
+			expect(Number.isInteger(row.lineNumber)).toBe(true);
+		}
 
 		// JSON mode: the keys are the model-side names for the same rows, so they
 		// must follow the switch in both states. In this mode the envelope IS the
