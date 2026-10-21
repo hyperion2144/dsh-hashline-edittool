@@ -60,7 +60,7 @@ import { probeLines } from "../session/anchor-entry.js";
 import type { ServedVerdict } from "../../hashline/anchor-pipeline.js";
 import { updateAnchorsAfterEdit, takeAlignmentNotice, type EditHunk } from "../session/anchor-state.js";
 import { contextLinesCfg, lineHashesPure } from "../../hashline/hash-assign.js";
-import { isAutoFormatEnabled } from "../../infra/settings.js";
+import { autoFormatMode } from "../../infra/settings.js";
 import { runAutoFormat } from "../format/auto-format.js";
 import { computeRowEligibility } from "../format/eligibility.js";
 import {
@@ -1570,7 +1570,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 	let formatSection: FormatSection | undefined;
 	let formatServedRows: { position: number; anchor: string }[] | undefined;
 	if (
-		isAutoFormatEnabled() &&
+		autoFormatMode() !== "off" &&
 		appliedCount > 0 &&
 		result !== originalNormalized &&
 		splitLines(result).length > 0
@@ -1679,6 +1679,14 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 				// blocks (a >2×context gap splits), so a formatter-reverted row
 				// in a gap comes back as a section row (rule 3), not as a count.
 				alsoInMain: diffRenderedLines(originalNormalized, finalResult),
+				// #315 PR review: formatter-reverted rows carry no content — each
+				// contiguous run becomes a `@@ ~start,count @@ scope` locator plus a
+				// restored summary, anchored to the PRE-EDIT content for drift
+				// detection. The main diff already renders every net formatter
+				// change, so the section only has to say WHERE the text is stable.
+				preEditLines: splitLines(originalNormalized),
+				finalText: finalResult,
+				path: absolutePath,
 			});
 		}
 	}

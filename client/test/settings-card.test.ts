@@ -326,51 +326,73 @@ describe("validateStoreBudgetDraft — the card's first line of defence", () => 
 	});
 });
 
-describe("readFormatFlags (#275) — both switches opt-in, absent means OFF", () => {
+describe("readFormatFlags (#315) — tri-state auto, legacy booleans, fallback", () => {
 	const snapshotWith = (format: unknown): ConfigFormSnapshot => ({
 		...READY,
 		value: { ...READY.value, format },
 	});
 
-	it("defaults both to false when the subtree is absent (old logs)", () => {
-		expect(readFormatFlags(READY)).toEqual({ auto: false, editorconfig: false });
+	it("defaults to off / no fallback when the subtree is absent (old logs)", () => {
+		expect(readFormatFlags(READY)).toEqual({ auto: "off", editorconfig: false, fallback: false });
 	});
 
-	it("reads explicit true values", () => {
+	it("maps legacy booleans: true → full, false → off", () => {
 		expect(readFormatFlags(snapshotWith({ auto: true, editorconfig: true }))).toEqual({
-			auto: true,
+			auto: "full",
 			editorconfig: true,
+			fallback: false,
+		});
+		expect(readFormatFlags(snapshotWith({ auto: false, editorconfig: false }))).toEqual({
+			auto: "off",
+			editorconfig: false,
+			fallback: false,
 		});
 	});
 
-	it("treats explicit false as false, not absent", () => {
-		expect(readFormatFlags(snapshotWith({ auto: false, editorconfig: false }))).toEqual({
-			auto: false,
-			editorconfig: false,
+	it("passes the enum through, with the fallback switch", () => {
+		expect(readFormatFlags(snapshotWith({ auto: "range", fallback_full_file: true, editorconfig: true }))).toEqual({
+			auto: "range",
+			editorconfig: true,
+			fallback: true,
 		});
+		expect(readFormatFlags(snapshotWith({ auto: "full" }))).toEqual({
+			auto: "full",
+			editorconfig: false,
+			fallback: false,
+		});
+		expect(readFormatFlags(snapshotWith({ auto: "off" }))).toMatchObject({ auto: "off" });
 	});
 
 	it("ignores garbage values instead of coercing them", () => {
 		expect(readFormatFlags(snapshotWith({ auto: "yes", editorconfig: 1 }))).toEqual({
-			auto: false,
+			auto: "off",
 			editorconfig: false,
+			fallback: false,
 		});
-		expect(readFormatFlags(snapshotWith("on"))).toEqual({ auto: false, editorconfig: false });
+		expect(readFormatFlags(snapshotWith("on"))).toEqual({ auto: "off", editorconfig: false, fallback: false });
 	});
 });
 
-describe("the card's 格式化 group (#275) — wiring pinned against the source", () => {
+describe("the card's 格式化 group (#315) — wiring pinned against the source", () => {
 	const cardSource = readFileSync(
 		join(dirname(fileURLToPath(import.meta.url)), "..", "src", "client", "settings-card.tsx"),
 		"utf8",
 	);
 
-	it("renders both switches and writes the format subtree wholesale", () => {
+	it("renders the tri-state mode control, the fallback switch, and writes the format subtree wholesale", () => {
 		expect(cardSource).toContain("自动格式化（write / edit / ast_edit 后）");
+		expect(cardSource).toContain("范围不可用时回退全文");
 		expect(cardSource).toContain("读取 .editorconfig");
-		// Each switch carries BOTH keys: a partial write would clear the sibling.
-		expect(cardSource).toContain('writeField("format", { auto: checked, editorconfig: formatFlags.editorconfig })');
-		expect(cardSource).toContain('writeField("format", { auto: formatFlags.auto, editorconfig: checked })');
+		// Every write carries ALL THREE keys: a partial write would clear a sibling.
+		expect(cardSource).toContain(
+			'writeField("format", { auto: mode, editorconfig: formatFlags.editorconfig, fallback_full_file: formatFlags.fallback })',
+		);
+		expect(cardSource).toContain(
+			'writeField("format", { auto: formatFlags.auto, editorconfig: formatFlags.editorconfig, fallback_full_file: checked })',
+		);
+		expect(cardSource).toContain(
+			'writeField("format", { auto: formatFlags.auto, editorconfig: checked, fallback_full_file: formatFlags.fallback })',
+		);
 	});
 });
 

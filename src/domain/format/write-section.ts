@@ -89,5 +89,11 @@ export function buildWriteFormatSection(input: WriteSectionInput): FormatSection
 		changed,
 		eligibility,
 		alsoInMain,
+		// #315 PR review: stable runs get locators + a restored summary instead
+		// of content rows; drift rows (same-text occurrence shifted) stay rows.
+		// Create and lossy pre-writes have no honest pre-edit lines — skip.
+		...(input.created || input.beforeContent === undefined
+			? {}
+			: { preEditLines: splitLines(input.beforeContent), finalText: input.outcome.content }),
 	});
 }

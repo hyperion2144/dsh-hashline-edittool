@@ -181,4 +181,61 @@ describe("buildFormatSection", () => {
 		expect(section.status).toBe("noop");
 		expect(section.rows).toBeUndefined();
 	});
+
+	describe("restored runs (#315 PR review)", () => {
+		it("collapses a pre-edit-identical line into restoredRows + a cluster, not a row", () => {
+			const section = buildFormatSection({
+				status: "formatted",
+				finalLines: ["return 1;", "brandNew"],
+				finalHashes: ["h1", "h2"],
+				changed: new Set([1, 2]),
+				eligibility: new Map([
+					[1, true],
+					[2, true],
+				]),
+				alsoInMain: new Set(),
+				preEditLines: ["return 1;", "old"],
+				finalText: "return 1;\nbrandNew",
+				path: "a.ts",
+			});
+			// Line 1's final text exists in the pre-edit lines — old news, the
+			// locator+summary carries it; line 2's text is genuinely new (k >
+			// preCount) so it stays a drift row.
+			expect(section.restoredRows).toBe(1);
+			expect(section.rows).toEqual([{ kind: "+", lineNumber: 2, hash: "h2", text: "brandNew" }]);
+			expect(section.clusters).toEqual([{ startLine: 1, lines: 2, restored: 1 }]);
+		});
+
+		it("keeps the second occurrence of duplicated text as a drift row", () => {
+			const section = buildFormatSection({
+				status: "formatted",
+				finalLines: ["NEW", "NEW"],
+				finalHashes: ["h1", "h2"],
+				changed: new Set([1, 2]),
+				eligibility: new Map([
+					[1, true],
+					[2, true],
+				]),
+				alsoInMain: new Set(),
+				preEditLines: ["NEW"],
+			});
+			expect(section.restoredRows).toBe(1);
+			expect(section.rows).toEqual([{ kind: "+", lineNumber: 2, hash: "h2", text: "NEW" }]);
+			expect(section.clusters).toEqual([{ startLine: 1, lines: 2, restored: 1 }]);
+		});
+
+		it("emits nothing when there are no pre-edit lines to compare (manual)", () => {
+			const section = buildFormatSection({
+				status: "formatted",
+				finalLines: ["x"],
+				finalHashes: ["h1"],
+				changed: new Set([1]),
+				eligibility: new Map([[1, true]]),
+				alsoInMain: new Set(),
+			});
+			expect(section.restoredRows).toBeUndefined();
+			expect(section.clusters).toBeUndefined();
+			expect(section.rows).toEqual([{ kind: "+", lineNumber: 1, hash: "h1", text: "x" }]);
+		});
+	});
 });

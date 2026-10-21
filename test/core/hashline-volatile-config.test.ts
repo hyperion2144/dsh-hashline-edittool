@@ -107,7 +107,8 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			autoDiagnostics: true,
 			lspIdleTimeoutMs: 300000,
 			grepRespectGitignore: true,
-			autoFormat: false,
+			autoFormatMode: "off",
+			formatFallbackFullFile: false,
 			editorconfig: false,
 			maxResponseChars: 48000,
 		});

@@ -285,9 +285,29 @@ export interface FormatSectionMeta {
 	unservedRows?: number | undefined;
 	/** Formatter-changed lines the main diff already shows — counted, not returned (#312). */
 	inMainDiffRows?: number | undefined;
+	/**
+	 * Formatter-reverted lines whose final text equals the pre-edit text
+	 * (#315 review): the section quotes a locator + a summary instead of
+	 * content, so this only counts them.
+	 */
+	restoredRows?: number | undefined;
+	/** Contiguous stable runs (`@@ ~start,count @@ scope` locators, #315 review). */
+	clusters?: readonly FormatClusterMeta[] | undefined;
+
 	reason?: string | undefined;
 	rows: readonly FormatRowMeta[];
 }
+
+/** One contiguous run of restored/drift lines inside a format section (#315 review). */
+export interface FormatClusterMeta {
+	startLine: number;
+	lines: number;
+	/** How many of the run's lines were restored to their pre-edit text (anchor unchanged). */
+	restored: number;
+	/** Enclosing scope label (function/…), absent when the scope is the file body. */
+	scope?: string | undefined;
+}
+
 
 /** One rendered slice of a card row: plain text, or a highlighted occurrence. */
 export interface GrepSegment {

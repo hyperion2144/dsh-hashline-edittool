@@ -7,6 +7,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 ### Added
 
 - `lsp.idle_timeout_ms` 设置：语言服务器空闲超过该窗口（默认 5 分钟，0 = 永不）即被回收，下次用到再拉起（#306）。
+- `format.fallback_full_file` 设置（默认关）：range 模式下服务器不支持局部格式化时的回退必须是显式选择——自动路径静默跳过，`format` 工具显式带 range 则以 `E_FORMAT_UNSUPPORTED` 拒绝而不是悄悄格式化整文件（#315）。
 
 ### Changed
 
@@ -16,9 +17,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - 段头列出该段**所有**改动落入的作用域名（`first() / second()`），不再只报第一个（#302）。
 - 作用域检测对同一份文本只扫一次（缓存键含路径）：写大文件时不再按改动行重复全文扫描（#303）。
 - web diff 卡片同步新形态：段头作分组标题，折叠只数代码行，复制文本不再带上段头（#295）。
+- `format.auto` 从布尔改为三态模式 `off`（默认）/ `full` / `range`，存量 `true`→`full`、`false`→`off` 自动迁移；range 模式只格式化本次调用改到的行，`write` 无改动区间视同 `full`（#315）。
+- 自动格式化段的 restored 折叠：被格式化器改回编辑前原文的行不再引用内容，每段连续行折叠为一条 `@@ ~start,count @@ scope` 定位行加一句 restored 摘要，仅锚点真漂移的行保留内容行；header 增加 `r restored` 计数（#315）
 
 ### Fixed
 
+- format 工具的 range 边界修复：`<line>:<anchor>` 组合形式（数字在前的行号提示）的行号曾被当锚点查找而误报 `E_RANGE_UNVERIFIED`，现在两种行号顺序都正确解析（#316）
 - 关闭哈希存储时在写完关闭标记后再做一次 WAL 检查点：干净关机后不留未落盘的 WAL 帧，下一次打开是普通读而不是恢复（#303）。
 - 语言服务器子进程不再常驻到插件卸载：握手失败的进程立即关闭，空闲超时的会话被回收（#306）。
 - `grep` 命中区超过单次响应预算时不再返回空壳：改为按行切分，先返回预算内放得下的行（带锚点、可直接编辑，切点不会落在首个命中之前），其余行经 resume 提示续取（#307）。

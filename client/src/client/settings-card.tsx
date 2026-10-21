@@ -242,6 +242,18 @@ interface SwitchLike {
 }
 const Switch = (primitives as unknown as { Switch?: SwitchLike }).Switch;
 
+/**
+ * The tri-state `format.auto` (#315), in display order, and the label each
+ * state shows. A switch cannot carry three states — the mode is a user
+ * decision the card renders as a segmented row of buttons.
+ */
+const FORMAT_MODES = ["off", "full", "range"] as const;
+const FORMAT_MODE_LABEL: Record<(typeof FORMAT_MODES)[number], string> = {
+	off: "关",
+	full: "全文",
+	range: "范围",
+};
+
 /** Human-readable byte size; the figure a user judges a download by. */
 function bytesText(size: number | undefined): string {
 	if (size === undefined) return "";
@@ -1206,15 +1218,36 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			<h4 className="dshl-mgr-section">格式化</h4>
 			<div className="dshl-mgr-master">
 				<span className="dshl-mgr-label">自动格式化（write / edit / ast_edit 后）</span>
-				<span className="dshl-mgr-hint">落盘前用语言服务器格式化被改的行；不支持局部格式化的语言回退全文（默认关）</span>
+				<span className="dshl-mgr-hint">关 = 不格式化；全文 = 整文件；范围 = 只格式化被改的行（默认关）</span>
+				<span className="dshl-mgr-grow" />
+				{/* #315: three states, not a switch — the mode IS the user's decision. */}
+				{FORMAT_MODES.map((mode) => (
+					<Button
+						key={mode}
+						size="sm"
+						variant={formatFlags.auto === mode ? "primary" : undefined}
+						disabled={!writable}
+						onClick={() =>
+							void write(`formatAuto:${mode}`, () =>
+								writeField("format", { auto: mode, editorconfig: formatFlags.editorconfig, fallback_full_file: formatFlags.fallback }),
+							)
+						}
+					>
+						{FORMAT_MODE_LABEL[mode]}
+					</Button>
+				))}
+			</div>
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">范围不可用时回退全文</span>
+				<span className="dshl-mgr-hint">开 = 局部格式化不可用时用整文件代替；关 = 自动路径静默跳过、format 工具显式报错（默认关）</span>
 				<span className="dshl-mgr-grow" />
 				{renderSwitch(
-					formatFlags.auto,
+					formatFlags.fallback,
 					!writable,
-					"formatAuto",
+					"formatFallback",
 					(checked) =>
-						void write("formatAuto", () =>
-							writeField("format", { auto: checked, editorconfig: formatFlags.editorconfig }),
+						void write("formatFallback", () =>
+							writeField("format", { auto: formatFlags.auto, editorconfig: formatFlags.editorconfig, fallback_full_file: checked }),
 						),
 				)}
 			</div>
@@ -1228,7 +1261,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					"formatEditorconfig",
 					(checked) =>
 						void write("formatEditorconfig", () =>
-							writeField("format", { auto: formatFlags.auto, editorconfig: checked }),
+							writeField("format", { auto: formatFlags.auto, editorconfig: checked, fallback_full_file: formatFlags.fallback }),
 						),
 				)}
 			</div>

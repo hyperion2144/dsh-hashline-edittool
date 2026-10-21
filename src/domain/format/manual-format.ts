@@ -27,6 +27,7 @@ import { E_LSP_NO_SERVER } from "../../lsp/provider.js";
 import {
 	applyTextEdits,
 	detectFormattingCapability,
+	E_FORMAT_UNSUPPORTED,
 	FormatUnsupportedError,
 	requestFormatting,
 	requestRangeFormatting,
@@ -34,10 +35,10 @@ import {
 } from "../../lsp/format/index.js";
 import { notifyDocumentWritten, syncDocumentContent } from "../../lsp/sync.js";
 import { restoreEndings } from "../../render/edit-diff.js";
-import { lineHintOf } from "../../hashline/declaration.js";
+import { anchorRefOf } from "../../hashline/declaration.js";
 import { lineHashesPure } from "../../hashline/hash-assign.js";
 import { splitLines } from "../../infra/utils.js";
-import { isEditorconfigEnabled } from "../../infra/settings.js";
+import { formatFallbackFullFile, isEditorconfigEnabled } from "../../infra/settings.js";
 import { normFromText } from "../session/file-view.js";
 import { loadServed } from "../session/served.js";
 import { recordServedTruncated } from "../session/session-view.js";
@@ -96,13 +97,8 @@ function resolveBound(
 	fileHashes: readonly string[],
 	label: string,
 ): { line: number; anchor: string } {
-	const trimmed = ref.trim();
-	const hint = lineHintOf(trimmed);
-	// `lineHintOf` understands both `<line>:<anchor>` (legacy) and
-	// `<anchor>:<line>` (current); strip whichever hint spelling came in.
-	const colon = trimmed.lastIndexOf(":");
-	const anchor =
-		hint !== undefined && colon > 0 ? trimmed.slice(0, colon).trim() : trimmed;
+
+	const { anchor, hint } = anchorRefOf(ref);
 	const matches: number[] = [];
 	fileHashes.forEach((hash, index) => {
 		if (hash === anchor) matches.push(index + 1);
@@ -185,6 +181,15 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 	if (!capability.full) {
 		throw new FormatUnsupportedError(language.id);
 	}
+	// #315: an explicit range call is a CONTRACT — if the server cannot serve
+	// it, the fallback switch decides between whole-file and a refusal. There
+	// is no silent degradation: the model asked for exactly this range.
+	if (range !== undefined && !capability.range && !formatFallbackFullFile()) {
+		throw new Error(
+			`${E_FORMAT_UNSUPPORTED} ${language.id} advertises no range formatting provider, and format.fallback_full_file is false. ` +
+			`Enable it to fall back to whole-file formatting, or call format without the range bounds.`,
+		);
+	}
 	let server = language.id;
 	try {
 		const row = (await manager.status([language.id]))[0];
@@ -236,9 +241,15 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 						return true;
 					} catch (error) {
 						// -32601 on the range request: the capability table said range
-						// but the server lied — fall back to the whole document (G1,
-						// no warning).
+						// but the server lied. #315: the fallback switch decides — off
+						// means the call FAILS (never a silent whole-file).
 						if (!(error instanceof FormatUnsupportedError)) throw error;
+						if (!formatFallbackFullFile()) {
+							throw new Error(
+								`${E_FORMAT_UNSUPPORTED} ${language.id} refused the range formatting request (-32601), and format.fallback_full_file is false. ` +
+								`Enable it to fall back to whole-file formatting, or call format without the range bounds.`,
+							);
+						}
 						return false;
 					}
 				}

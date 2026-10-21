@@ -799,6 +799,23 @@ describe("metaFormatSections (#275)", () => {
 		expect(garbage).toHaveLength(1);
 	});
 
+	it("parses restored clusters (#315 review): well-formed kept, garbage drops the list", () => {
+		const withClusters = {
+			...good,
+			restoredRows: 1,
+			clusters: [{ startLine: 10, lines: 1, restored: 1, scope: "alpha()" }],
+		};
+		expect(metaFormatSections({ formats: [withClusters] })).toEqual([withClusters]);
+		const badCluster = { ...withClusters, clusters: [{ startLine: 0, lines: 1, restored: 1 }] };
+		const out = metaFormatSections({ formats: [badCluster] });
+		// A malformed cluster drops the LIST, never the section — same fail-soft.
+		expect(out).toHaveLength(1);
+		expect(out[0]).not.toHaveProperty("clusters");
+		// Empty or non-array clusters are simply absent.
+		const empty = metaFormatSections({ formats: [{ ...good, clusters: [] }] });
+		expect(empty[0]).not.toHaveProperty("clusters");
+	});
+
 	it("drops the retired alsoInMainDiff row flag and parses inMainDiffRows (#312)", () => {
 		// A pre-#312 persisted meta: rows carry the retired flag — tolerated on
 		// read, dropped from the model (the badge is gone, nothing renders it).

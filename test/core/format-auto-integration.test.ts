@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { renderFormatSection } from "../../src/domain/edit/edit-response.js";
+import { FormatUnsupportedError } from "../../src/lsp/format/index.js";
 import { applyEffective } from "../../src/config.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
@@ -33,6 +34,8 @@ interface FormatAnswers {
 	range?: unknown[];
 	full?: unknown[];
 	fail?: Error;
+	/** Thrown ONLY for the range request (the -32601 capability lie, #315). */
+	rangeFail?: Error;
 	/** Capability overrides — a range capability lie falls back to full-file. */
 	caps?: { documentFormattingProvider?: boolean; documentRangeFormattingProvider?: boolean };
 	/** Recorded `syncDocumentContent` payloads — the server's view trail. */
@@ -45,7 +48,10 @@ function fakeFormatManager(answers: FormatAnswers): void {
 		serverCapabilities: { documentFormattingProvider: true, documentRangeFormattingProvider: true, ...answers.caps },
 		request: async (method: string) => {
 			if (answers.fail !== undefined) throw answers.fail;
-			if (method === "textDocument/rangeFormatting") return answers.range ?? [];
+			if (method === "textDocument/rangeFormatting") {
+				if (answers.rangeFail !== undefined) throw answers.rangeFail;
+				return answers.range ?? [];
+			}
 			if (method === "textDocument/formatting") return answers.full ?? [];
 			return undefined;
 		},
@@ -123,8 +129,8 @@ afterEach(() => {
 describe("auto-format through edit (map #275 / G3)", () => {
 	it("formats after the model's change and renders a separate section", async () => {
 		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
-			applyEffective({ format: { auto: true } });
 			const syncs: string[] = [];
+			applyEffective({ format: { auto: "range" } });
 			fakeFormatManager({ range: [indentEdit("\treturn 1; // touched")], syncs });
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, path);
@@ -137,7 +143,7 @@ describe("auto-format through edit (map #275 / G3)", () => {
 			expect(await readFile(path, "utf-8")).toBe("function a() {\n\treturn 1; // touched\n}\n");
 			const text = getText(res);
 			expect(text).toContain(
-				"[auto-format: fake-ts · range · requested 1 → applied 1 · 1 lines changed · 1 in main diff · 0 unserved]",
+				"[auto-format: fake-ts · range · requested 1 → applied 1 · 1 lines changed · 1 in main diff · 0 restored · 0 unserved]",
 			);
 			// #312: the formatter retouched the row the model just wrote — the main
 			// diff already shows it, so the section counts it and does NOT repeat
@@ -155,7 +161,7 @@ describe("auto-format through edit (map #275 / G3)", () => {
 	// row with its anchor, never as an "in main diff" count.
 	it("returns a formatter-reverted row the main diff never rendered", async () => {
 		await withTempFile("fmt.ts", GAP_FILE, async ({ cwd, path }) => {
-			applyEffective({ format: { auto: true } });
+			applyEffective({ format: { auto: "full" } });
 			const syncs: string[] = [];
 			fakeFormatManager({
 				caps: { documentRangeFormattingProvider: false },
@@ -176,18 +182,22 @@ describe("auto-format through edit (map #275 / G3)", () => {
 				],
 			});
 			const text = getText(res);
+
 			expect(text).toContain(
-				"[auto-format: fake-ts · full-file · requested 1 → applied 3 · 3 lines changed · 2 in main diff · 0 unserved]",
+				"[auto-format: fake-ts · full-file · requested 1 → applied 3 · 3 lines changed · 2 in main diff · 1 restored · 0 unserved]",
 			);
 			// Line 10's final text equals the original — the main diff cannot
-			// show it; only the section row carries content + anchor.
-			expect(text).toMatch(/\+\S+ \/\/ l10$/m);
+			// show it, and (#315 PR review) the section no longer re-quotes old
+			// news either: the run collapses into a locator + a restored summary.
+			expect(text).toContain("@@ ~10,1 @@");
+			expect(text).toContain("1 line(s) restored to their pre-edit content · anchors unchanged");
+			expect(text).not.toContain("// l10");
 		});
 	});
 
 	it("degrades a failing formatter to a warning and keeps the model content", async () => {
 		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
-			applyEffective({ format: { auto: true } });
+			applyEffective({ format: { auto: "range" } });
 			fakeFormatManager({ fail: new Error("clangd exploded"), syncs: [] });
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, path);
@@ -219,7 +229,7 @@ describe("auto-format through edit (map #275 / G3)", () => {
 			expect(await readFile(path, "utf-8")).toBe("function a() {\nreturn 9;\n}\n");
 
 			// Switch ON but no manager: silent skip (an edit must never spawn).
-			applyEffective({ format: { auto: true } });
+			applyEffective({ format: { auto: "range" } });
 			setLspManager(undefined);
 			harness = setupIntegrationTest(cwd);
 			served = await servedRows(harness, path);
@@ -235,7 +245,7 @@ describe("auto-format through edit (map #275 / G3)", () => {
 
 	it("renders nothing when the formatter answers but nothing changes", async () => {
 		await withTempFile("fmt.ts", "function a() {\n\treturn 1;\n}\n", async ({ cwd, path }) => {
-			applyEffective({ format: { auto: true } });
+			applyEffective({ format: { auto: "range" } });
 			fakeFormatManager({ range: [], syncs: [] });
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, path);
@@ -250,7 +260,7 @@ describe("auto-format through edit (map #275 / G3)", () => {
 
 	it("undo rolls back the whole call — the edit AND its format", async () => {
 		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
-			applyEffective({ format: { auto: true } });
+			applyEffective({ format: { auto: "range" } });
 			fakeFormatManager({ range: [indentEdit("\treturn 1; // touched")], syncs: [] });
 			const harness = setupIntegrationTest(cwd);
 			const served = await servedRows(harness, path);
@@ -266,10 +276,139 @@ describe("auto-format through edit (map #275 / G3)", () => {
 	});
 });
 
+describe("format.auto modes (#315)", () => {
+	const RANGE_LIE = () => new FormatUnsupportedError("typescript");
+
+	it("full mode ignores the hunks and asks for the whole file", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: "full" } });
+			fakeFormatManager({ range: [indentEdit("\treturn 1; // rangemode")], full: [editAt(2, "return 1; // fullmode")], syncs: [] });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const res = await harness.editTool.execute("edit", {
+				path,
+				edits: [{ op: "replace", anchor_start: two.hash, anchor_end: two.hash, lines: ["return 1; // touched"] }],
+			});
+			expect(getText(res)).toContain("[auto-format: fake-ts · full-file · requested 1 → applied 1 ·");
+			expect(await readFile(path, "utf-8")).toBe("function a() {\nreturn 1; // fullmode\n}\n");
+		});
+	});
+
+	it("range mode without range capability stays silent when fallback is off (default)", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: "range" } });
+			fakeFormatManager({ caps: { documentRangeFormattingProvider: false }, full: [indentEdit("\treturn 1; // fullfb")], syncs: [] });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const res = await harness.editTool.execute("edit", {
+				path,
+				edits: [{ op: "replace", anchor_start: two.hash, anchor_end: two.hash, lines: ["return 9;"] }],
+			});
+			expect(getText(res)).not.toContain("[auto-format");
+			expect(await readFile(path, "utf-8")).toBe("function a() {\nreturn 9;\n}\n");
+		});
+	});
+
+	it("range mode falls back to the whole file only when the fallback switch is on", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: "range", fallback_full_file: true } });
+			fakeFormatManager({ caps: { documentRangeFormattingProvider: false }, full: [indentEdit("\treturn 1; // fullfb")], syncs: [] });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const res = await harness.editTool.execute("edit", {
+				path,
+				edits: [{ op: "replace", anchor_start: two.hash, anchor_end: two.hash, lines: ["return 9;"] }],
+			});
+			expect(getText(res)).toContain("[auto-format: fake-ts · full-file · requested 1 → applied 1 ·");
+			expect(await readFile(path, "utf-8")).toBe("function a() {\n\treturn 1; // fullfb\n}\n");
+		});
+	});
+
+	it("range mode treats a -32601 lie as no-capability: silent off, fallback on", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: "range" } });
+			fakeFormatManager({ rangeFail: RANGE_LIE(), full: [indentEdit("\treturn 1; // fullfb")], syncs: [] });
+			let harness = setupIntegrationTest(cwd);
+			let served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const res = await harness.editTool.execute("edit", {
+				path,
+				edits: [{ op: "replace", anchor_start: two.hash, anchor_end: two.hash, lines: ["return 9;"] }],
+			});
+			expect(getText(res)).not.toContain("[auto-format");
+			expect(await readFile(path, "utf-8")).toBe("function a() {\nreturn 9;\n}\n");
+
+			// The same lie WITH the fallback switch → the whole file.
+			applyEffective({ format: { auto: "range", fallback_full_file: true } });
+			fakeFormatManager({ rangeFail: RANGE_LIE(), full: [indentEdit("\treturn 1; // fullfb")], syncs: [] });
+			harness = setupIntegrationTest(cwd);
+			served = await servedRows(harness, path);
+			const nine = served.find((r) => r.content === "return 9;")!;
+			const res2 = await harness.editTool.execute("edit", {
+				path,
+				edits: [{ op: "replace", anchor_start: nine.hash, anchor_end: nine.hash, lines: ["return 8;"] }],
+			});
+			expect(getText(res2)).toContain("[auto-format: fake-ts · full-file ·");
+			expect(await readFile(path, "utf-8")).toBe("function a() {\n\treturn 1; // fullfb\n}\n");
+		});
+	});
+
+	it("a deletion-only edit collapses every hunk: silent unless the fallback switch is on", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			// The server HAS range capability — the collapse (no range left to
+			// request) must NOT fall through to the whole file (#315 blocker).
+			applyEffective({ format: { auto: "range" } });
+			fakeFormatManager({ full: [editAt(2, "// wholefile")], syncs: [] });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const res = await harness.editTool.execute("edit", {
+				path,
+				edits: [{ op: "del", anchor_start: two.hash }],
+			});
+			expect(getText(res)).not.toContain("[auto-format");
+			expect(await readFile(path, "utf-8")).toBe("function a() {\n}\n");
+
+			// The same collapse WITH the fallback switch → the whole file. A
+			// SECOND deletion keeps the hunk collapsed (the point of the case)
+			// while still changing content.
+			applyEffective({ format: { auto: "range", fallback_full_file: true } });
+			fakeFormatManager({ full: [editAt(1, "// wholefile")], syncs: [] });
+			const harness2 = setupIntegrationTest(cwd);
+			const served2 = await servedRows(harness2, path);
+			const head = served2.find((r) => r.content === "function a() {")!;
+			const res2 = await harness2.editTool.execute("edit", {
+				path,
+				edits: [{ op: "del", anchor_start: head.hash }],
+			});
+			expect(getText(res2)).toContain("[auto-format: fake-ts · full-file · requested 1 → applied 1 ·");
+			expect(await readFile(path, "utf-8")).toBe("// wholefile\n");
+		});
+	});
+
+	it("write has no hunks: range mode treats it as full (Q3)", async () => {
+		const syncs: string[] = [];
+		applyEffective({ format: { auto: "range" } });
+		fakeFormatManager({ full: [indentEdit("\treturn 1;")], syncs });
+		await withTempFile("holder.txt", "holder\n", async ({ cwd }) => {
+			const tool = buildWriteShadowTool(localIO(), testSandbox());
+			const value = (await tool.execute(
+				{ file_path: "q3.ts", content: UNFORMATTED },
+				makeExec(cwd)({ file_path: "q3.ts", content: UNFORMATTED }) as never,
+			)) as { modelText: string };
+			expect(value.modelText).toContain("[auto-format: fake-ts · full-file");
+			expect(await readFile(join(cwd, "q3.ts"), "utf-8")).toBe("function a() {\n\treturn 1;\n}\n");
+		});
+	});
+});
+
 describe("auto-format through write (map #275 / G3)", () => {
 	it("formats a created file; unseen rows are omitted and only counted", async () => {
 		const syncs: string[] = [];
-		applyEffective({ format: { auto: true } });
+		applyEffective({ format: { auto: "full" } });
 			fakeFormatManager({ full: [indentEdit("\treturn 1;")], syncs });
 		await withTempFile("holder.txt", "holder\n", async ({ cwd }) => {
 			const tool = buildWriteShadowTool(localIO(), testSandbox());
@@ -300,7 +439,7 @@ describe("auto-format through write (map #275 / G3)", () => {
 	// the section must return its row instead of counting it into "in main".
 	it("update keeps a formatter-fixed row the preview never showed", async () => {
 		const syncs: string[] = [];
-		applyEffective({ format: { auto: true } });
+		applyEffective({ format: { auto: "full" } });
 		fakeFormatManager({ full: [editAt(2, "\treturn 2;"), editAt(4, "let x = 1;")], syncs });
 		const BEFORE = "function a() {\nreturn 1;\n}\nlet x=1;\n";
 		await withTempFile("upd.ts", BEFORE, async ({ cwd, path }) => {
@@ -348,7 +487,7 @@ describe("renderFormatSection (map #275 / decision B)", () => {
 			rows: [{ kind: "+", lineNumber: 9, hash: "", text: "\tnew line;" }],
 		});
 		expect(text).toContain(
-			"[auto-format: fake-ts · range · requested 2 → applied 3 · 2 lines changed · 1 in main diff · 0 unserved]",
+			"[auto-format: fake-ts · range · requested 2 → applied 3 · 2 lines changed · 1 in main diff · 0 restored · 0 unserved]",
 		);
 		// #312: the in-main row is counted, never repeated — no content, no note.
 		expect(text).not.toContain("(also in main diff)");
@@ -370,7 +509,7 @@ describe("renderFormatSection (map #275 / decision B)", () => {
 			rows: [],
 		});
 		expect(text).toBe(
-			"[auto-format: fake-ts · full-file · requested 1 → applied 0 · 3 lines changed · 3 in main diff · 0 unserved]",
+			"[auto-format: fake-ts · full-file · requested 1 → applied 0 · 3 lines changed · 3 in main diff · 0 restored · 0 unserved]",
 		);
 	});
 });

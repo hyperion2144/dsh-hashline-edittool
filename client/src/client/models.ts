@@ -26,6 +26,7 @@ import type {
 	ErrorCardModel,
 	FileDiff,
 	FileFailureMeta,
+	FormatClusterMeta,
 	FormatRowMeta,
 	FormatSectionMeta,
 	GrepCardModel,
@@ -652,6 +653,37 @@ function diffRowFromUnknown(row: unknown): DiffRowMeta | null {
  * presentationMeta by the main plugin's genDiff projection, never parsed
  * from the model-facing text (which may change shape at any time).
  */
+
+/**
+ * Parse the section's cluster list (#315 review): one contiguous run per
+ * entry, each with a 1-based `startLine`, a positive run length, a
+ * non-negative restored count, and an optional scope label. A malformed
+ * cluster drops the whole list — the section still renders (locator-less),
+ * same fail-soft rule as the rows.
+ */
+function metaFormatClusters(value: unknown): { clusters?: readonly FormatClusterMeta[] } {
+	if (!Array.isArray(value)) return {};
+	const out: FormatClusterMeta[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return {};
+		const c = entry as Record<string, unknown>;
+		if (
+			typeof c.startLine !== "number" || !Number.isInteger(c.startLine) || c.startLine < 1 ||
+			typeof c.lines !== "number" || !Number.isInteger(c.lines) || c.lines < 1 ||
+			typeof c.restored !== "number" || !Number.isInteger(c.restored) || c.restored < 0
+		) {
+			return {};
+		}
+		out.push({
+			startLine: c.startLine,
+			lines: c.lines,
+			restored: c.restored,
+			...(typeof c.scope === "string" && c.scope !== "" ? { scope: c.scope } : {}),
+		});
+	}
+	return out.length > 0 ? { clusters: out } : {};
+}
+
 export function metaDiffRows(meta: unknown): DiffRowMeta[] | null {
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
 	const value = meta as Record<string, unknown>;
@@ -799,6 +831,8 @@ export function metaFormatSections(meta: unknown): FormatSectionMeta[] {
 			...(typeof s.changedLines === "number" ? { changedLines: s.changedLines } : {}),
 			...(typeof s.unservedRows === "number" ? { unservedRows: s.unservedRows } : {}),
 			...(typeof s.inMainDiffRows === "number" ? { inMainDiffRows: s.inMainDiffRows } : {}),
+			...(typeof s.restoredRows === "number" ? { restoredRows: s.restoredRows } : {}),
+			...metaFormatClusters(s.clusters),
 			...(typeof s.reason === "string" && s.reason !== "" ? { reason: s.reason } : {}),
 			rows,
 		});

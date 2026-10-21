@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { renderFormatSection } from "../../src/domain/edit/edit-response.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
+import { applyEffective } from "../../src/config.js";
+import { FormatUnsupportedError } from "../../src/lsp/format/index.js";
 import { localIO } from "../../src/infra/fs-bridge.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { getUndo } from "../../src/domain/edit/undo-edit.js";
@@ -32,6 +34,8 @@ interface FormatAnswers {
 	full?: unknown[];
 	/** Every request throws this (after the capability check). */
 	requestFail?: Error;
+	/** Thrown ONLY for the range request (the -32601 capability lie, #315). */
+	rangeFail?: Error;
 	/** `waitForSession` resolves to undefined (the server never came up). */
 	noSession?: boolean;
 	/** Recorded request method calls, for asserting the range path. */
@@ -48,7 +52,10 @@ function fakeFormatManager(answers: FormatAnswers): void {
 		request: async (method: string, params: Record<string, unknown>) => {
 			answers.requests.push({ method, params });
 			if (answers.requestFail !== undefined) throw answers.requestFail;
-			if (method === "textDocument/rangeFormatting") return answers.range ?? [];
+			if (method === "textDocument/rangeFormatting") {
+				if (answers.rangeFail !== undefined) throw answers.rangeFail;
+				return answers.range ?? [];
+			}
 			if (method === "textDocument/formatting") return answers.full ?? [];
 			return undefined;
 		},
@@ -105,6 +112,7 @@ async function servedRows(
 
 afterEach(() => {
 	setLspManager(undefined);
+	applyEffective({});
 });
 
 describe("the manual format tool (map #275 / G1)", () => {
@@ -122,7 +130,7 @@ describe("the manual format tool (map #275 / G1)", () => {
 			const text = getText(res);
 			expect(text).toContain(`[format result] ${path}`);
 			expect(text).toContain(
-				"[format: fake-ts · full-file · requested 1 → applied 1 · 1 lines changed · 0 in main diff · 0 unserved]",
+				"[format: fake-ts · full-file · requested 1 → applied 1 · 1 lines changed · 0 in main diff · 0 restored · 0 unserved]",
 			);
 			// The undo covers the whole call: content back to the pre-format text,
 			// result checksum over the disk form.
@@ -140,6 +148,42 @@ describe("the manual format tool (map #275 / G1)", () => {
 			// The server saw the model text (pre-write sync), then the final text
 			// (post-write notify) — and nothing asked for diagnostics.
 			expect(syncs).toEqual([UNFORMATTED, FORMATTED]);
+		});
+	});
+
+	it("ignores format.auto mode entirely (Q4): a whole-file call works under range mode", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: "range" } });
+			fakeFormatManager({ full: [indentEdit("\treturn 1;")], requests: [], syncs: [] });
+			const harness = setupIntegrationTest(cwd);
+			const res = await harness.formatTool.execute("format", { path });
+			expect(getText(res)).toContain(
+				"[format: fake-ts · full-file · requested 1 → applied 1 · 1 lines changed · 0 in main diff · 0 restored · 0 unserved]",
+			);
+			expect(await readFile(path, "utf-8")).toBe(FORMATTED);
+		});
+	});
+
+	it("pins the matrix cell in RANGE mode too: explicit range + no range provider + fallback off refuses", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { auto: "range" } });
+			const requests: FormatAnswers["requests"] = [];
+			fakeFormatManager({
+				caps: { documentFormattingProvider: true, documentRangeFormattingProvider: false },
+				full: [indentEdit("\treturn 1;")],
+				requests,
+				syncs: [],
+			});
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const three = served.find((r) => r.content === "}")!;
+			const res = await harness.formatTool.execute("format", {
+				path,
+				range: { start: two.hash, end: three.hash },
+			});
+			expect(getText(res)).toContain("[E_FORMAT_UNSUPPORTED]");
+			expect(requests).toHaveLength(0);
 		});
 	});
 
@@ -181,6 +225,30 @@ describe("the manual format tool (map #275 / G1)", () => {
 			expect(requests).toHaveLength(1);
 			expect(requests[0]!.method).toBe("textDocument/rangeFormatting");
 			// 0-based lines: 2..3 in the file → { line: 1 } .. { line: 2 }.
+			expect(requests[0]!.params.range).toEqual({
+				start: { line: 1, character: 0 },
+				end: { line: 2, character: 1 },
+			});
+		});
+	});
+
+	it("accepts the <line>:<anchor> composite a numbered row hands out (#316 review)", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			const requests: FormatAnswers["requests"] = [];
+			fakeFormatManager({ range: [indentEdit("\treturn 1;")], requests, syncs: [] });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const three = served.find((r) => r.content === "}")!;
+			// Copied straight off a numbered read row: `2:<anchor>` — the line
+			// half is a HINT; the anchor AFTER the colon is the key. (The bug:
+			// the strip took the part BEFORE the colon, so the line number was
+			// looked up as an anchor and every composite bound refused.)
+			const res = await harness.formatTool.execute("format", {
+				path,
+				range: { start: `2:${two.hash}`, end: `3:${three.hash}` },
+			});
+			expect(getText(res)).toContain("[format: fake-ts · range · requested 1 → applied 1 ·");
 			expect(requests[0]!.params.range).toEqual({
 				start: { line: 1, character: 0 },
 				end: { line: 2, character: 1 },
@@ -327,10 +395,103 @@ describe("the manual format tool (map #275 / G1)", () => {
 		};
 		const text = renderFormatSection(section, false, "format");
 		expect(text).toContain(
-			"[format: fake-ts · full-file · requested 1 → applied 2 · 2 lines changed · 0 in main diff · 1 unserved]",
+			"[format: fake-ts · full-file · requested 1 → applied 2 · 2 lines changed · 0 in main diff · 0 restored · 1 unserved]",
 		);
 		expect(text).toContain("+B1 \treturn 1;");
 		// The unserved row renders with the four-space placeholder, not a lie.
 		expect(text).toContain("+     \t// never served");
+	});
+});
+
+describe("range availability vs format.fallback_full_file (#315)", () => {
+	it("refuses a range request with [E_FORMAT_UNSUPPORTED] when the server lacks range and fallback is off (default)", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			const requests: FormatAnswers["requests"] = [];
+			const syncs: string[] = [];
+			fakeFormatManager({
+				caps: { documentFormattingProvider: true, documentRangeFormattingProvider: false },
+				full: [indentEdit("\treturn 1;")],
+				requests,
+				syncs,
+			});
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const three = served.find((r) => r.content === "}")!;
+			const res = await harness.formatTool.execute("format", {
+				path,
+				range: { start: two.hash, end: three.hash },
+			});
+			expect(getText(res)).toContain("[E_FORMAT_UNSUPPORTED]");
+			expect(getText(res)).toContain("format.fallback_full_file");
+			// The refusal happens BEFORE any request: never a silent whole-file.
+			expect(requests).toHaveLength(0);
+			expect(await readFile(path, "utf-8")).toBe(UNFORMATTED);
+		});
+	});
+
+	it("refuses when the server lies about range (-32601) and fallback is off", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			const requests: FormatAnswers["requests"] = [];
+			const syncs: string[] = [];
+			fakeFormatManager({ rangeFail: new FormatUnsupportedError("typescript"), full: [indentEdit("\treturn 1;")], requests, syncs });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const three = served.find((r) => r.content === "}")!;
+			const res = await harness.formatTool.execute("format", {
+				path,
+				range: { start: two.hash, end: three.hash },
+			});
+			expect(getText(res)).toContain("[E_FORMAT_UNSUPPORTED]");
+			// Only the range attempt happened; no silent whole-file retry.
+			expect(requests).toHaveLength(1);
+			expect(requests[0]!.method).toBe("textDocument/rangeFormatting");
+			expect(await readFile(path, "utf-8")).toBe(UNFORMATTED);
+		});
+	});
+
+	it("falls back to the whole file only when format.fallback_full_file is on", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { fallback_full_file: true } });
+			const requests: FormatAnswers["requests"] = [];
+			const syncs: string[] = [];
+			fakeFormatManager({
+				caps: { documentFormattingProvider: true, documentRangeFormattingProvider: false },
+				full: [indentEdit("\treturn 1;")],
+				requests,
+				syncs,
+			});
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const three = served.find((r) => r.content === "}")!;
+			const res = await harness.formatTool.execute("format", {
+				path,
+				range: { start: two.hash, end: three.hash },
+			});
+			// The header names the ACTUAL mode: the fallback ran, and it says so.
+			expect(getText(res)).toContain("[format: fake-ts · full-file · requested 1 → applied 1 ·");
+			expect(await readFile(path, "utf-8")).toBe(FORMATTED);
+		});
+	});
+
+	it("a -32601 lie also honors the fallback switch", async () => {
+		await withTempFile("fmt.ts", UNFORMATTED, async ({ cwd, path }) => {
+			applyEffective({ format: { fallback_full_file: true } });
+			const requests: FormatAnswers["requests"] = [];
+			const syncs: string[] = [];
+			fakeFormatManager({ rangeFail: new FormatUnsupportedError("typescript"), full: [indentEdit("\treturn 1;")], requests, syncs });
+			const harness = setupIntegrationTest(cwd);
+			const served = await servedRows(harness, path);
+			const two = served.find((r) => r.content === "return 1;")!;
+			const three = served.find((r) => r.content === "}")!;
+			const res = await harness.formatTool.execute("format", {
+				path,
+				range: { start: two.hash, end: three.hash },
+			});
+			expect(getText(res)).toContain("[format: fake-ts · full-file · requested 1 → applied 1 ·");
+			expect(await readFile(path, "utf-8")).toBe(FORMATTED);
+		});
 	});
 });

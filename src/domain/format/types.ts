@@ -54,10 +54,31 @@ export type FormatSection = {
 	unservedRows?: number;
 	/** Formatter-changed lines the main diff already shows — counted, not returned (#312). */
 	inMainDiffRows?: number;
+	/** Formatter-changed lines outside the main diff whose pre-edit anchor still holds — summarized, not returned (#315 review). */
+	restoredRows?: number;
+	/** Contiguous runs of restored/drift lines, for the section's locator lines (#315 review). */
+	clusters?: FormatCluster[];
 	/** Why formatting was skipped (status `skipped` only). */
 	reason?: string;
 	/** The formatter-changed rows (status `formatted` only). */
 	rows?: FormatRow[];
 	/** The file the section belongs to (multi-file calls; omitted when redundant). */
 	path?: string;
+};
+
+/**
+ * One contiguous run of formatter-changed lines outside the main diff. The
+ * section renders one `@@ ~start,count @@ scope` locator per cluster, then a
+ * restored summary for the lines whose pre-edit anchor still holds, then the
+ * drift rows (rare: an anchor genuinely changed vs pre-edit).
+ */
+export type FormatCluster = {
+	/** First final line of the run (1-based). */
+	startLine: number;
+	/** How many final lines the run spans (contiguous). */
+	lines: number;
+	/** How many of those lines are restored summaries (anchor unchanged vs pre-edit). */
+	restored: number;
+	/** Scope name at the run's first line, same detector as the main diff's hunk headers. */
+	scope?: string;
 };
