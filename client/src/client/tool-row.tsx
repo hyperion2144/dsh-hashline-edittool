@@ -27,9 +27,9 @@ import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readCardLabels } from "./labels.js";
 import { GrepCard } from "./grep-card.js";
-import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, metaFormatSections, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, lspStatusCardModel, metaFormatSections, readCardModel, toolRowModel, writeCardModel } from "./models.js";
 import { ReadCard } from "./read-card.js";
-import { LspDiagBlock } from "./lsp-block.js";
+import { LspDiagBlock, LspStatusBlock } from "./lsp-block.js";
 import { ErrorCard } from "./error-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import { grepCardLabels, lspBlockLabels } from "./labels.js";
@@ -74,6 +74,8 @@ interface ToolRowProps {
 	/** The structured error card (meta.error, or synthesised for legacy logs). */
 	error: ReturnType<typeof errorCardModel>;
 	lsp: ReturnType<typeof lspCardModel>;
+	/** The `lsp` status card (#320): `status`/`warm` answers draw their slots here. */
+	lspStatus: ReturnType<typeof lspStatusCardModel>;
 	/** #131: inline diagnostics capsules, one per written file ([] = none). */
 	diag: readonly DiagCapsuleMeta[];
 	state: "running" | "ok" | "error" | "stopped";
@@ -165,6 +167,7 @@ function ToolRow({
 	diff,
 	grep,
 	lsp,
+	lspStatus,
 	error,
 	diag,
 	state,
@@ -179,6 +182,7 @@ function ToolRow({
 	const readBody = read ?? null;
 	const grepBody = grep ?? null;
 	const lspBody = lsp ?? null;
+	const lspStatusBody = lspStatus ?? null;
 	const errorBody = error ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
@@ -199,7 +203,7 @@ function ToolRow({
 	// `error` first: a failed call leads with the structured failure card.
 	// `lsp` next: it owns its body outright (frame included), so the read body
 	// never sees diagnostic rows masquerading as lines of a file.
-	const card = errorBody ?? lspBody ?? diffBody ?? grepBody ?? readBody;
+	const card = errorBody ?? lspStatusBody ?? lspBody ?? diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -390,7 +394,9 @@ function ToolRow({
 									maxLines: 16,
 									className: css.readBody,
 								})
-								: lspBody !== null
+									: lspStatusBody !== null
+										? jsx_(LspStatusBlock, { model: lspStatusBody })
+										: lspBody !== null
 									? jsx_(LspDiagBlock, {
 										model: lspBody,
 										labels: lspLabels,
@@ -479,6 +485,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		diag: [],
 		error,
 		grep: null,
+		lspStatus: null,
 		diff: null,
 		state: model.state,
 		filePath: model.filePath,
@@ -521,6 +528,7 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		errorSummary: model.errorSummary,
 		read: null,
 		grep: null,
+		lspStatus: null,
 		diff,
 		error,
 		diag,
@@ -556,6 +564,7 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		errorSummary: model.errorSummary,
 		read: null,
 		grep: null,
+		lspStatus: null,
 		diff,
 		diag,
 		error,
@@ -596,6 +605,7 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		errorSummary: model.errorSummary,
 		read: null,
 		diff: null,
+		lspStatus: null,
 		diag: [],
 		grep,
 		error,
@@ -656,6 +666,7 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 	// The diagnostics rows are drawn by our own block below, so the read/grep/diff
 	// bodies stay out of it — this row owns its body.
 	const lsp = lspCardModel(block);
+	const lspStatus = lspStatusCardModel(block);
 	return jsx_(ToolRow, {
 		t,
 		variant: model.variant,
@@ -670,6 +681,7 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		grep: null,
 		diff: null,
 		lsp,
+		lspStatus,
 		error,
 		// The lsp row IS the diagnostics card; a second capsule would duplicate it.
 		diag: [],

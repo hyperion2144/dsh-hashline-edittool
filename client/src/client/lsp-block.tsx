@@ -25,7 +25,7 @@ import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { TabStripLabels } from "./tab-strip.js";
 import { markerColumnCh } from "./read-meta.js";
-import type { LspCardModel, LspRowMeta } from "./types.js";
+import type { LspCardModel, LspRowMeta, LspStatusModel } from "./types.js";
 
 const CSS_TEXT = [
 	// Same frame as the diff card: one card look across the plugin.
@@ -53,6 +53,15 @@ const CSS_TEXT = [
 	".dshl-lsp-expand{display:block;width:100%;padding:0;border:none;background-color:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font:inherit;text-align:left}",
 	".dshl-lsp-expand:hover{color:var(--dsw-alias-label-secondary)}",
 	".dshl-lsp-footer{padding:0 14px 12px;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
+	".dshl-lsp-slot{display:flex;align-items:baseline;gap:8px;min-height:22px;line-height:22px;font:var(--dsw-font-markdown-code-block)}",
+	".dshl-lsp-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;align-self:center;background:var(--dsw-alias-label-tertiary)}",
+	".dshl-lsp-slot[data-state=ready] .dshl-lsp-dot{background:var(--dsw-alias-state-success-primary)}",
+	".dshl-lsp-slot[data-state=starting] .dshl-lsp-dot{background:var(--dsw-alias-state-warning-primary)}",
+	".dshl-lsp-slot[data-state=failed] .dshl-lsp-dot{background:var(--dsw-alias-state-error-primary)}",
+	".dshl-lsp-slot-lang{font-weight:600}",
+	".dshl-lsp-slot-state{color:var(--dsw-alias-label-secondary)}",
+	".dshl-lsp-slot[data-state=failed] .dshl-lsp-slot-state{color:var(--dsw-alias-state-error-primary)}",
+	".dshl-lsp-slot-note{color:var(--dsw-alias-label-tertiary);white-space:pre-wrap;word-break:break-word}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/lsp-block.css";
@@ -81,6 +90,11 @@ const css = {
 	diag: "dshl-lsp-diag",
 	expand: "dshl-lsp-expand",
 	footer: "dshl-lsp-footer",
+	slot: "dshl-lsp-slot",
+	dot: "dshl-lsp-dot",
+	slotLang: "dshl-lsp-slot-lang",
+	slotState: "dshl-lsp-slot-state",
+	slotNote: "dshl-lsp-slot-note",
 } as const;
 
 /** Localized chrome for the diagnostics card. */
@@ -262,4 +276,44 @@ function copyText(rows: readonly LspRowMeta[]): string {
 	return rows
 		.flatMap((row) => [row.text, ...row.messages.map((message) => `   ↳ ${message}`)])
 		.join("\n");
+}
+
+/** The `lsp` status card's props: the slots and nothing else — the state
+ * words (`ready`/`starting`/`failed`) are protocol vocabulary, not locale
+ * text, so this block carries no labels of its own. */
+export interface LspStatusBlockProps {
+	model: LspStatusModel;
+}
+
+/**
+ * Draw the status card (#320): one row per language slot. The state dot is
+ * the at-a-glance channel (green up, amber booting, red failed); the failed
+ * row's note carries WHY — reason, message, attempts — because a red dot
+ * without a reason is a second investigation, not an answer.
+ */
+export function LspStatusBlock({ model }: LspStatusBlockProps): ReactNode {
+	ensureStyles();
+	if (model.slots.length === 0) return null;
+	return jsx_("div", {
+		className: css.block,
+		children: jsx_("div", {
+			className: css.body,
+			children: model.slots.map((slot, index) => {
+				const note = [slot.reason, slot.message, slot.attempts !== undefined ? `attempt ${slot.attempts}` : ""]
+					.filter((part) => part !== "" && part !== undefined)
+					.join(" — ");
+				return jsx_("div", {
+					key: `${slot.languageId}:${index}`,
+					className: css.slot,
+					"data-state": slot.state,
+					children: [
+						jsx_("span", { className: css.dot, "aria-hidden": true }),
+						jsx_("span", { className: css.slotLang, children: slot.languageId }),
+						jsx_("span", { className: css.slotState, children: slot.state }),
+						note !== "" && jsx_("span", { className: css.slotNote, children: note }),
+					],
+				});
+			}),
+		}),
+	});
 }

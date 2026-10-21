@@ -64,7 +64,7 @@
 
 **动态长度锚点。** 锚点不是定宽哈希。分配最短优先：2 个字符覆盖前 3,844 行，只有文件真需要时才长出新层（上限 62⁸ 行，实际不可达）。全数字编码被跳过，标记永远不会与行号混淆；冲突在分配时探测消解；会话内编辑后幸存的行保持原锚点——分配/释放走统一生命周期门，重写与外部变更按行对齐继承。
 
-**AST + LSP 双语义后端。** `ast_grep` / `ast_edit` 通过沙箱化的 tree-sitter worker 回答「语法在哪里匹配」，配精选语法目录（SHA-256 校验下载、安装/卸载路由）与长文件的可编辑折叠大纲。`lsp` 工具通过每语言一个的真实语言服务器回答「这个符号是什么」——按需启动，与 dsh 自带 `lsp` 服务共享——起不了服务器时降级启发式后端。两者都会 serve 自己的行，结构与语义结果可直接编辑。没人用的语言服务器会在 `lsp.idle_timeout_ms`（默认五分钟）后被回收，下次用到再重新拉起——一个抱着大仓库索引的 TypeScript 服务器，不该整场会话都常驻。
+**AST + LSP 双语义后端。** `ast_grep` / `ast_edit` 通过沙箱化的 tree-sitter worker 回答「语法在哪里匹配」，配精选语法目录（SHA-256 校验下载、安装/卸载路由）与长文件的可编辑折叠大纲。`lsp` 工具通过每语言一个的真实语言服务器回答「这个符号是什么」——按需启动，与 dsh 自带 `lsp` 服务共享——起不了服务器时降级启发式后端。两者都会 serve 自己的行，结构与语义结果可直接编辑。没人用的语言服务器会在 `lsp.idle_timeout_ms`（默认五分钟）后被回收，下次用到再重新拉起——一个抱着大仓库索引的 TypeScript 服务器，不该整场会话都常驻。启动失败的语言服务器会在退避窗口（首次 5 秒、指数翻倍、上限 1 分钟，成功后计数清零）过后在下一次使用时重试；`lsp` 工具的 `warm` 操作可跳过退避立即重拉，`status` 操作只读查询各已启动语言的服务器状态（#318）。
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
@@ -222,7 +222,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | `undo_last_edit` | `{ path }` 撤销该文件最后一次 hashline 编辑 —— 仅当文件仍与存储的编辑后内容一致时；可跨重启。 |
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
 | `ast_edit` | 结构改写：按形状找到位置，把变更交给 `edit` **同一引擎** —— served 校验、undo 记录、diff 与语法门全部生效。 |
-| `lsp` | 能起语言服务器就做符号级工作（按语言启动，与 dsh 的 `lsp` 服务共享）；否则降级启发式后端。其行会被 serve，因此 LSP 输出可直接编辑。 |
+| `lsp` | 能起语言服务器就做符号级工作（按语言启动，与 dsh 的 `lsp` 服务共享）；否则降级启发式后端。其行会被 serve，因此 LSP 输出可直接编辑。`status` 只读查询已启动语言的服务器状态；`warm` 跳过退避立即启动/重拉。 |
 | `format` | 用该文件语言服务器的格式化器格式化——全文，或 `range: {start, end}`（**两端都是本会话 served 锚点**）。文件须已 observed（否则 `[E_NOT_OBSERVED]`）；格式化器无改动即 `noop`；与 `edit` 一样进 undo。手动调用允许冷启动（15s）——因为你点名要它。 |
 
 ### 输出模式
@@ -308,7 +308,8 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | 语法目录：内置名冲突 / 该语言无描述符 / 未知语言。 |
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | 语法下载失败 / SHA-256 不匹配 / tarball 中缺少条目。 |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` / `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP：该语言无服务器 / 操作无效 / 服务器不可用 / 请求中止 / 通道已关闭 / 仍在启动 / 超时。 |
-| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | 格式化：服务器无 document formatting provider（显式 range 调用时，还包括无 range provider 且回退开关关闭的情形，#315）/ 格式化器返回了无法应用的 edit（行越界、重叠）。 |
+ | `[E_LSP_UNEXPECTED]` | LSP：词汇表之外的意外失败——包装进错误词汇表，拒绝仍走错误卡片，而不是以宿主无法无损序列化告终。 |
+ | `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | 格式化：服务器无 document formatting provider（显式 range 调用时，还包括无 range provider 且回退开关关闭的情形，#315）/ 格式化器返回了无法应用的 edit（行越界、重叠）。 |
 | `[E_BARE_HASH_PREFIX]` | `lines` 中粘入了带锚点前缀的行；剥除并警告。 |
 | `[E_ANCHOR_AMBIGUOUS]` | 锚点同时活在多行上（被释放的锚点在模型仍持旧绑定时被重新分配）——拒绝；请重新 read。该文件未写入任何内容。 |
 

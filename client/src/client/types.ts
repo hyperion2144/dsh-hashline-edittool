@@ -246,6 +246,26 @@ export interface LspCardModel {
 }
 
 /**
+ * One language-server slot in the status card (#320): `snapshot()`'s row,
+ * persisted verbatim by the host's `lsp-status` meta projection.
+ */
+export interface LspSlotMeta {
+	readonly languageId: string;
+	readonly state: string;
+	/** Why the slot is unavailable (`lsp-timeout`, `server-missing`, …). */
+	readonly reason?: string;
+	/** The failure's own message — the stderr tail, the timeout sentence. */
+	readonly message?: string;
+	/** How many starts this slot has burned (failed slots only). */
+	readonly attempts?: number;
+}
+
+/** The `lsp` status card: one row per language slot, `warm` included. */
+export interface LspStatusModel {
+	readonly slots: readonly LspSlotMeta[];
+}
+
+/**
  * One INLINE diagnostics capsule (#131): one written file's reported rows,
  * persisted beside the diff card's meta. The same row shape the `lsp` card
  * draws, so the expanded capsule renders with that block unchanged.

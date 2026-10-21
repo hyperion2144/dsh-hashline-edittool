@@ -17,8 +17,8 @@
 import { pathToFileURL } from "node:url";
 import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
-import { languageForPath } from "../ast/language.js";
-import { getLspManager } from "../lsp/manager.js";
+import { LANGUAGES, languageForPath } from "../ast/language.js";
+import { getLspManager, type LspManager } from "../lsp/manager.js";
 import { E_LSP_NO_SERVER } from "../lsp/provider.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import type { FileIO } from "../infra/fs-bridge.js";
@@ -105,6 +105,8 @@ function lspDescription(): string {
 		"- `code_actions` — what the server offers at a position (`line`, and `symbol` for the token). Listed, not applied.",
 		"- `diagnostics` — what the server has REPORTED for the file. Waits briefly for its first push; \"no answer yet\" and \"no problems\" are reported as the different things they are.",
 		"- `request` — any LSP method, for anything not yet wrapped (see `query` and `payload`).",
+		"- `status` — every language's server state (or one `language`'s) WITHOUT starting anything: ready / starting / failed, with reason and attempt count when failed.",
+		"- `warm` — start (or restart) one `language`'s server NOW, skipping the retry backoff, and wait for the outcome.",
 		"",
 		"This REFUSES rather than returning nothing when no server can be started, and says why: \"no server\" and \"no symbols\" are different facts.",
 	].join("\n");
@@ -162,12 +164,15 @@ export function buildLspTool(io: FileIO) {
 				type: "string",
 				required: true,
 				description:
-					"`symbols` for one file's symbols, `code_actions` for what a server offers at a position (see `line` / `symbol`), or `request` to send an LSP method directly.",
+					"`symbols` for one file's symbols, `code_actions` for what a server offers at a position (see `line` / `symbol`), `request` to send an LSP method directly, `status` to report per-language server state without starting anything, or `warm` to start (or restart) one language's server and wait for the outcome.",
 			},
 			path: {
 				type: "string",
-				required: true,
-				description: "The file to work on. Its extension decides which language server is asked for.",
+				description: "The file to work on. Its extension decides which language server is asked for. Every operation needs it EXCEPT `status` and `warm`, which are language-level.",
+			},
+			language: {
+				type: "string",
+				description: "For `status` and `warm`: the language id, e.g. `typescript`. `status` without it reports every language that has a slot.",
 			},
 			query: {
 				type: "string",
@@ -183,9 +188,9 @@ export function buildLspTool(io: FileIO) {
 				type: "object",
 				additionalProperties: false,
 				properties: {
-					path: { type: "string", required: true },
+					path: { type: "string" },
 					operation: { type: "string", required: true },
-					server: { type: "string", required: true },
+					server: { type: "string" },
 					symbols: {
 						type: "array",
 						required: true,
@@ -234,6 +239,22 @@ export function buildLspTool(io: FileIO) {
 					// error a returned-but-undeclared field produces).
 					modelText: { type: "string", required: true },
 					error: errorFieldSchema,
+					// The status card's data (#318): the slots a status/warm answer
+					// reports, exactly as `snapshot()` holds them.
+					slots: {
+						type: "array",
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								languageId: { type: "string", required: true },
+								state: { type: "string", required: true },
+								reason: { type: "string" },
+								message: { type: "string" },
+								attempts: { type: "integer" },
+							},
+						},
+					},
 				},
 			},
 			// The model reads modelText, built by the wrapper below for EVERY branch
@@ -248,16 +269,8 @@ export function buildLspTool(io: FileIO) {
 		// `lines` must be an ARRAY ({number, text}), not an object: the read meta's
 		// soft-validator rejects an object outright, which silently dropped the
 		// whole projection and left the call as raw input/output.
-		presentationMeta: (_args: unknown, value: { readonly path: string; readonly hashlines: readonly { readonly number: number; readonly text: string }[]; readonly totalLines: number; readonly error?: ErrorMeta }) => {
-			if (value.error !== undefined) return { error: value.error } as never;
-			return ({
-				path: value.path,
-				offset: 1,
-				lines: value.hashlines.map(({ number, text }) => ({ number, text })),
-				totalLines: value.totalLines,
-				hashlines: value.hashlines,
-			}) as never;
-		},
+			presentationMeta: (_args: unknown, value: Parameters<typeof lspPresentationMeta>[0]) =>
+				lspPresentationMeta(value) as never,
 		},
 		// THE CARD ITSELF: `presentResult` is what makes the web draw one. The meta
 		// alone drew nothing — without this the call stayed raw input/output, which
@@ -286,7 +299,9 @@ export function buildLspTool(io: FileIO) {
 		async execute(
 			args: {
 				readonly operation: string;
-				readonly path: string;
+				readonly path?: string;
+				/** For `status`/`warm`: which language. `status` without it lists every slot. */
+				readonly language?: string;
 				readonly query?: string;
 				readonly payload?: string;
 				/** For position-based operations: the 1-indexed line. */
@@ -301,6 +316,37 @@ export function buildLspTool(io: FileIO) {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		): Promise<any> {
 			const cwd = execCwd(exec);
+			// `status` and `warm` are LANGUAGE-level: they answer "what is up"
+			// and "make it up" without a document, so they branch before the
+			// path is even resolved (#318).
+			if (args.operation === "status" || args.operation === "warm") {
+				const manager = getLspManager();
+				if (manager === undefined) {
+					throw new Error(`${E_LSP_NO_SERVER} the language-server client is not enabled in this deployment.`);
+				}
+				const languageId = args.language;
+				const entry = languageId === undefined ? undefined : LANGUAGES.find((candidate) => candidate.id === languageId);
+				if (languageId !== undefined && entry === undefined) {
+					throw new Error(`[E_LSP_BAD_OPERATION] \`${languageId}\` is not a registered language id.`);
+				}
+				if (args.operation === "status") return statusValue(manager, languageId);
+				if (languageId === undefined) {
+					throw new Error(`[E_LSP_BAD_OPERATION] \`warm\` needs \`language\` — the registry id, e.g. \`typescript\`.`);
+				}
+				// An explicit warm-up is the caller asking for a start, so the
+				// retry backoff does not apply: forceWarm restarts a failed slot
+				// right now, and the outcome — either way — is reported.
+				const session = await manager.forceWarm(languageId, process.cwd());
+				if (session === undefined) {
+					const why = manager.unavailability(languageId);
+					throw new Error(`${E_LSP_NO_SERVER} ${languageId} did not start: ${why?.message ?? "it did not start in time"}.`);
+				}
+				const displayName = entry?.displayName ?? languageId;
+				return { operation: "warm", server: displayName, symbols: [], hashlines: [], totalLines: 0, slots: [{ languageId, state: "ready" }], raw: `${displayName} is ready.` };
+			}
+			if (args.path === undefined) {
+				throw new Error(`[E_LSP_BAD_OPERATION] \`${args.operation}\` needs \`path\` — the file to work on.`);
+			}
 			const absolutePath = await io.resolve(args.path, cwd);
 			const language = languageForPath(absolutePath);
 			if (language === undefined) {
@@ -320,7 +366,10 @@ export function buildLspTool(io: FileIO) {
 				const why = manager.unavailability(language.id);
 				throw new Error(
 					`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${why?.message ?? "it did not start in time"}. ` +
-						`Install one, or name it under hashline.lsp.servers. The AST tools (\`ast_grep\`, \`read\`) still work without a server.`,
+					(why?.reason === "server-missing"
+						? `Install one, or name it under hashline.lsp.servers. `
+						: `Failed starts retry on their own once the backoff passes; \`lsp { operation: "warm", language: "${language.id}" }\` forces one now. `) +
+					`The AST tools (\`ast_grep\`, \`read\`) still work without a server.`,
 				);
 			}
 			const uri = pathToFileURL(absolutePath).href;
@@ -606,39 +655,116 @@ export function buildLspTool(io: FileIO) {
 	// because the wrapped field is what the host validates.
 	return {
 		...tool,
-		async execute(args: never, exec: never) {
+		async execute(args: Record<string, unknown>, exec: ToolRunContext) {
 			let value: Record<string, unknown>;
 			try {
-				value = (await tool.execute(args, exec)) as unknown as Record<string, unknown>;
+				value = (await tool.execute(args as never, exec)) as unknown as Record<string, unknown>;
 			} catch (error) {
+				// An ABORT keeps its host semantics — interruption records, failure
+				// accounting — and is never converted (ADR-0007).
+				if (exec.signal.aborted) throw error;
 				// THE HOST VALIDATES THE WRAPPED VALUE — errors included — so the
-				// converted error must carry EVERY required field. The fields below
-				// are witnesses, not data: the card reads `error` alone
-				// (`presentationMeta` short-circuits on it) and the model reads
-				// `modelText`. A bare `thrownErrorResult` here — `{ modelText, error }`
-				// only — had the host reject every converted failure at the session
-				// boundary with six "missing required property" lines (#317), a shape
-				// every direct-call test passed because only the host checks it.
-				// The same witness-fill the data-shaped tools ship (read, write,
-				// undo, grep, ast_*). format/edit instead demand only `modelText`
-				// — not on offer here, where the six fields are the card's
-				// SUCCESS data and stay required. The conversion spreads LAST
-				// so `modelText`/`error` win.
-				const relatedPath = pathFromArgs(args);
-				return {
-					path: relatedPath,
-					operation: operationFromArgs(args),
-					server: "",
-					symbols: [],
-					hashlines: [],
-					totalLines: 0,
-					...(thrownErrorResult(error, { path: relatedPath }) as unknown as Record<string, unknown>),
-				} as never;
+				// converted refusal must carry every REQUIRED field (the #317
+				// witness fill). But a witness is not a lie about data: `path` is
+				// OPTIONAL since #318, and `status`/`warm` pass none — the literal
+				// `path: undefined` the fill used to write is not lossless JSON,
+				// and the host rejected every path-less refusal outright
+				// (`value is not lossless JSON`, #320). Omitted, not undefined.
+				// The conversion spreads LAST so `modelText`/`error` win, and BOTH
+				// conversions (the direct one and the `[E_LSP_UNEXPECTED]` wrap)
+				// ride this one helper so neither shape can regress.
+				const convertError = (err: unknown): Record<string, unknown> => {
+					const relatedPath = pathFromArgs(args);
+					return {
+						operation: operationFromArgs(args),
+						server: "",
+						symbols: [],
+						hashlines: [],
+						totalLines: 0,
+						...(relatedPath !== undefined ? { path: relatedPath } : {}),
+						...thrownErrorResult(err, { path: relatedPath }),
+					} as Record<string, unknown>;
+				};
+				try {
+					return convertError(error) as never;
+				} catch {
+					// Not in the E_* vocabulary. Re-throwing it would make the host
+					// persist an isError result whose Error object cannot survive
+					// lossless JSON — every lsp call then dies with `value is not
+					// lossless JSON` (#320). An unexpected lsp failure is still an
+					// lsp refusal: wrapped into the vocabulary, it rides the error card.
+					const message = error instanceof Error ? error.message : String(error);
+					return convertError(new Error(`[E_LSP_UNEXPECTED] the lsp call failed unexpectedly: ${message}`)) as never;
+				}
 			}
 			const streamedLsp = await spillModelTextOverflow({ sessionKey: execSessionKey(exec), producer: "lsp", consumer: "read", modelText: lspModelText(value), budgetChars: responseBudgetChars() });
 			return { ...value, modelText: streamedLsp.modelText };
 		},
 	} as typeof tool;
+}
+
+/**
+ * The `status` operation's value: every slot's state, READ-ONLY.
+ *
+ * A status question with side effects stops being one — no boot, no
+ * restart, no document sync. Without a `language` every slot is listed;
+ * with one, just that language, and a language with no slot yet says so
+ * plainly instead of implying a failure (#318).
+ */
+function statusValue(manager: LspManager, languageId: string | undefined): Record<string, unknown> {
+	const wanted = manager.snapshot().filter((row) => languageId === undefined || row.languageId === languageId);
+	const described = wanted.map((row) => {
+		if (row.state === "failed") {
+			return `  ${row.languageId}: failed — ${row.reason}: ${row.message} (attempt ${row.attempts ?? 1})`;
+		}
+		return `  ${row.languageId}: ${row.state}`;
+	});
+	const raw =
+		described.length === 0
+			? languageId === undefined
+				? "No language has a server slot yet — nothing has been started. `warm` with a `language` starts one."
+				: `${languageId} has no slot yet — it has not been started. \`warm\` with this language starts one.`
+			: `Language-server slots:\n${described.join("\n")}`;
+	return { operation: "status", symbols: [], hashlines: [], totalLines: 0, raw, slots: wanted };
+}
+
+/**
+ * The status/warm card's meta: the slots, verbatim, under an explicit card
+ * name. The client's status block reads `card: "lsp-status"` + `slots` from
+ * the persisted meta — a read-shaped projection would draw a file card for an
+ * answer about LANGUAGES. Exported because the projection has no surface on
+ * the tool object (the DSL consumes it), so the unit test asserts it here.
+ */
+export function lspStatusMeta(slots: unknown): Record<string, unknown> {
+	return { card: "lsp-status", slots: Array.isArray(slots) ? slots : [] };
+}
+
+/**
+ * The WHOLE projection — error card, status card, or read card — in one place
+ * the unit test can reach (the DSL consumes `presentationMeta`, leaving no
+ * surface on the tool object). THE ERROR CHECK COMES FIRST: a converted
+ * refusal carries a witness `operation` (#317), and a status/warm refusal's
+ * witness is literally "status"/"warm" — matching on the operation first
+ * turned every refusal into an EMPTY status card, and the client fell back
+ * to the bare LSP row (#320).
+ */
+export function lspPresentationMeta(value: {
+	readonly operation?: string;
+	readonly path?: string;
+	readonly hashlines?: readonly { readonly number: number; readonly text: string }[];
+	readonly totalLines?: number;
+	readonly error?: ErrorMeta;
+	readonly slots?: unknown;
+}): Record<string, unknown> {
+	if (value.error !== undefined) return { error: value.error };
+	if (value.operation === "status" || value.operation === "warm") return lspStatusMeta(value.slots);
+	return {
+		path: value.path,
+		offset: 1,
+		lines: (value.hashlines ?? []).map(({ number, text }) => ({ number, text })),
+		totalLines: value.totalLines ?? 0,
+		hashlines: value.hashlines,
+	};
 }
 /**
  * The `lsp` tool's model channel, in BOTH modes, from the value the branch built.
@@ -678,7 +804,7 @@ function lspModelText(value: Record<string, unknown>): string {
 	// `symbols`: diagnostics carry rows and no symbols, and keying off `symbols`
 	// meant their rows were never shown to the model at all — the whole point of
 	// building them.
-	const head = `${value.server ?? "lsp"} — ${value.operation ?? "?"} for ${value.path ?? "?"}`;
+	const head = `${value.server ?? "lsp"} — ${value.operation ?? "?"}${value.path === undefined ? "" : ` for ${value.path}`}`;
 	if (rows.length === 0) {
 		const raw = typeof value.raw === "string" && value.raw !== "" ? value.raw : "nothing to report";
 		return `${head}\n${raw}`;

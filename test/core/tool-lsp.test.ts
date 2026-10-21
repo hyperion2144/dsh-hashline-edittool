@@ -13,7 +13,8 @@ import { applyEffective } from "../../src/config.js";
 import { NUMBERED } from "../support/fixtures.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { setLspManager } from "../../src/lsp/manager.js";
-import { buildLspTool } from "../../src/tools/tool-lsp.js";
+import { buildLspTool, lspPresentationMeta, lspStatusMeta } from "../../src/tools/tool-lsp.js";
+import { LANGUAGES } from "../../src/ast/language.js";
 import { E_LSP_NO_SERVER } from "../../src/tools/tool-lsp.js";
 import { pathToFileURL } from "node:url";
 
@@ -358,5 +359,176 @@ describe("lsp — request", () => {
 		expect(requested[2]!.params).toEqual({
 			textDocument: { languageId: "typescript", uri: FILE_URI },
 		});
+	});
+});
+
+describe("lsp — status and warm (#318)", () => {
+	/** A manager fake with the STATUS surface: slots, forceWarm, and spies. */
+	function statusFake(
+		opts: {
+			snapshot?: Array<{ languageId: string; state: string; reason?: string; message?: string; attempts?: number }>;
+			forceWarm?: "ready" | "failed" | "throws";
+			unavailable?: { reason?: string; message: string };
+		} = {},
+	) {
+		const calls = { waitForSession: 0, openDocumentFor: 0, forceWarm: 0 };
+		setLspManager({
+			waitForSession: async () => {
+				calls.waitForSession += 1;
+				return undefined;
+			},
+			unavailability: () => opts.unavailable ?? { message: "no server is installed for python" },
+			openDocumentFor: () => {
+				calls.openDocumentFor += 1;
+				return () => undefined;
+			},
+			snapshot: () => opts.snapshot ?? [],
+			forceWarm: async () => {
+				calls.forceWarm += 1;
+				if (opts.forceWarm === "throws") throw new Error("spawn ENOENT");
+				return opts.forceWarm === "ready" ? ({ marker: "fake" } as never) : undefined;
+			},
+		} as never);
+		return calls;
+	}
+
+	const execute = (args: Record<string, unknown>) => buildLspTool(io).execute(args, exec) as Promise<Record<string, unknown>>;
+
+	it("status lists every slot and starts NOTHING", async () => {
+		const calls = statusFake({
+			snapshot: [
+				{ languageId: "typescript", state: "ready" },
+				{ languageId: "python", state: "failed", reason: "lsp-timeout", message: "did not answer within 10s", attempts: 2 },
+			],
+		});
+		const value = await execute({ operation: "status" });
+		const raw = String(value.raw);
+		expect(raw).toContain("typescript: ready");
+		expect(raw).toContain("python: failed — lsp-timeout: did not answer within 10s (attempt 2)");
+		// A status question must not have side effects: no boot, no document sync.
+		expect(calls.waitForSession).toBe(0);
+		expect(calls.openDocumentFor).toBe(0);
+		// And the declaration holds: the relaxed schema must accept a value
+		// that carries no `path`.
+		expect(schemaViolations(outputSchemaOf(buildLspTool(io)), value)).toEqual([]);
+		// The structured slots ride beside the prose: the status card's data.
+		expect(value.slots).toEqual([
+			{ languageId: "typescript", state: "ready" },
+			{ languageId: "python", state: "failed", reason: "lsp-timeout", message: "did not answer within 10s", attempts: 2 },
+		]);
+	});
+
+	it("status for one language says when it has never been started", async () => {
+		statusFake({ snapshot: [] });
+		const value = await execute({ operation: "status", language: "python" });
+		expect(String(value.raw)).toContain("python has no slot yet");
+	});
+
+	it("status refuses an unknown language id", async () => {
+		statusFake({});
+		await expect(execute({ operation: "status", language: "klingon" })).resolves.toMatchObject({
+			modelText: expect.stringMatching(/E_LSP_BAD_OPERATION/),
+		});
+	});
+
+	it("warm brings a server up and names it", async () => {
+		const calls = statusFake({ forceWarm: "ready" });
+		const value = await execute({ operation: "warm", language: "python" });
+		expect(calls.forceWarm).toBe(1);
+		const expected = LANGUAGES.find((entry) => entry.id === "python")?.displayName ?? "python";
+		expect(value.server).toBe(expected);
+		expect(String(value.raw)).toContain("ready");
+		expect(schemaViolations(outputSchemaOf(buildLspTool(io)), value)).toEqual([]);
+	});
+
+	it("warm refuses without a language", async () => {
+		statusFake({});
+		await expect(execute({ operation: "warm" })).resolves.toMatchObject({
+			modelText: expect.stringMatching(/E_LSP_BAD_OPERATION/),
+		});
+	});
+
+	it("warm reports the failure with the manager's reason", async () => {
+		statusFake({ forceWarm: "failed", unavailable: { reason: "lsp-unavailable", message: "exited (code 1): missing lib" } });
+		const answer = await execute({ operation: "warm", language: "python" });
+		expect(String(answer.modelText)).toMatch(/E_LSP_NO_SERVER/);
+		// The refusal carries WHY, not just "it failed": the stderr tail is
+		// the difference between chasing a broken binary and chasing a typo.
+		expect(String(answer.modelText)).toContain("missing lib");
+		// The structured error card's data, not just the model text: the client
+		// renders the refusal from `error`, so the CODE and the WHY must ride in it.
+		expect(answer.error).toMatchObject({ code: "E_LSP_NO_SERVER", message: expect.stringContaining("missing lib") });
+	});
+
+	it("an unexpected warm failure still resolves to a structured refusal", async () => {
+		// A non-E_* throw (a spawn crash, an internal error) must NOT escape as a
+		// rejection: the host turns a re-thrown error into an isError result whose
+		// Error object cannot survive lossless JSON, and every lsp call dies with
+		// `value is not lossless JSON` (#320). Wrapped into the E_* vocabulary, it
+		// rides the error card like every other refusal.
+		statusFake({ forceWarm: "throws" });
+		const answer = await execute({ operation: "warm", language: "python" });
+		expect(answer.error).toMatchObject({
+			code: "E_LSP_UNEXPECTED",
+			message: expect.stringContaining("spawn ENOENT"),
+		});
+	});
+
+	it("a converted refusal for a path-less operation stays lossless (#320)", async () => {
+		// warm/status pass no path. The witness fill (#317) literal-wrote
+		// `path: undefined` — not lossless JSON, the host rejects the WHOLE
+		// call before schema or card. The fill must OMIT the optional path.
+		statusFake({});
+		const answer = await execute({ operation: "warm", language: "cobol" });
+		expect(answer.error).toMatchObject({ code: "E_LSP_BAD_OPERATION" });
+		// Witness fields the host schema requires stay present...
+		expect(answer.operation).toBe("warm");
+		expect(Array.isArray(answer.symbols)).toBe(true);
+		expect(Array.isArray(answer.hashlines)).toBe(true);
+		expect(answer.totalLines).toBe(0);
+		// ...and no value anywhere in the refusal is undefined.
+		expect("path" in answer).toBe(false);
+		const lossless = (v: unknown): void => {
+			if (v === undefined) throw new Error("undefined value in refusal");
+			if (Array.isArray(v)) v.forEach(lossless);
+			else if (v !== null && typeof v === "object") Object.values(v).forEach(lossless);
+		};
+		expect(() => lossless(answer)).not.toThrow();
+	});
+
+	it("file operations still need a path", async () => {
+		statusFake({});
+		await expect(execute({ operation: "symbols" })).resolves.toMatchObject({
+			modelText: expect.stringMatching(/E_LSP_BAD_OPERATION/),
+		});
+	});
+
+	it("status and warm project an lsp-status card, not a read card", () => {
+		// The host persists this object as the call's meta: the client's status
+		// card reads `card: "lsp-status"` + `slots` from it. A read-shaped meta
+		// for a language-level answer would draw a lie about a path.
+		const slots = [{ languageId: "python", state: "ready" }];
+		expect(lspStatusMeta(slots)).toEqual({ card: "lsp-status", slots });
+		expect(lspStatusMeta(undefined)).toEqual({ card: "lsp-status", slots: [] });
+	});
+
+	it("a status/warm refusal projects the ERROR card, not an empty status card (#320)", () => {
+		// The converted refusal carries a witness `operation` (#317) — checking
+		// the operation BEFORE `error` made every refusal look like a successful
+		// status/warm answer: an EMPTY status card, then the client fell back to
+		// the bare LSP row. The error check must come first.
+		const refusal = {
+			operation: "warm",
+			server: "",
+			symbols: [],
+			hashlines: [],
+			totalLines: 0,
+			modelText: "[E_LSP_BAD_OPERATION] `zz-fake-lang` is not a registered language id.",
+			error: { code: "E_LSP_BAD_OPERATION", message: "`zz-fake-lang` is not a registered language id." },
+		};
+		expect(lspPresentationMeta(refusal)).toEqual({ error: refusal.error });
+		// A successful status/warm answer still projects the status card.
+		const slots = [{ languageId: "python", state: "ready" }];
+		expect(lspPresentationMeta({ operation: "status", slots })).toEqual({ card: "lsp-status", slots });
 	});
 });

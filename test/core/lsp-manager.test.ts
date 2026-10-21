@@ -65,7 +65,7 @@ function fakeServer(opts: { answerInitialize?: boolean } = {}) {
 
 function managerWith(
 	present: string[],
-	opts: { answerInitialize?: boolean; onSpawn?: () => void; idleTimeoutMs?: () => number } = {},
+	opts: { answerInitialize?: boolean; onSpawn?: () => void; idleTimeoutMs?: () => number; retryBaseDelayMs?: number } = {},
 ) {
 	const servers = new Map<string, ReturnType<typeof fakeServer>>();
 	const manager = new LspManager({
@@ -74,6 +74,7 @@ function managerWith(
 		initializeTimeoutMs: 200,
 		maxDocumentBytes: 1_000,
 		...(opts.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: opts.idleTimeoutMs }),
+		...(opts.retryBaseDelayMs === undefined ? {} : { retryBaseDelayMs: opts.retryBaseDelayMs }),
 		spawn: () => {
 			opts.onSpawn?.();
 			const server = fakeServer({ ...(opts.answerInitialize === undefined ? {} : { answerInitialize: opts.answerInitialize }) });
@@ -182,7 +183,7 @@ describe("warming", () => {
 		}
 	});
 
-	it("does not retry a language whose start already failed", async () => {
+	it("does not retry inside the backoff window", async () => {
 		let spawned = 0;
 		const { manager } = managerWith([join("/bin", "pyright-langserver")], {
 			answerInitialize: false,
@@ -447,5 +448,184 @@ describe("idle reclamation (#306)", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("retry after a failed start (#318)", () => {
+	/** A manager whose spawn #n fails for each n in `failRounds`, and answers otherwise. */
+	function flakyManager(
+		present: string[],
+		failRounds: number[],
+		opts: { retryBaseDelayMs?: number; idleTimeoutMs?: () => number; failMessage?: string } = {},
+	) {
+		const servers: ReturnType<typeof fakeServer>[] = [];
+		const manager = new LspManager({
+			pathDirs: ["/bin"],
+			isExecutable: async (p) => present.includes(p),
+			initializeTimeoutMs: 200,
+			...(opts.retryBaseDelayMs === undefined ? {} : { retryBaseDelayMs: opts.retryBaseDelayMs }),
+			...(opts.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: opts.idleTimeoutMs }),
+			spawn: () => {
+				const index = servers.length;
+				const answers = !failRounds.includes(index);
+				const server = fakeServer({ answerInitialize: answers });
+				if (!answers) queueMicrotask(() => server.crash(opts.failMessage ?? `spawn round ${index} blew up: missing lib`));
+				servers.push(server);
+				return { transport: subprocessTransport(server.handle) };
+			},
+		});
+		return { manager, servers };
+	}
+
+	it("retries a failed start once the backoff window has passed", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = flakyManager([join("/bin", "pyright-langserver")], [0], { retryBaseDelayMs: 100 });
+			manager.warm("python", "/repo");
+			await settle();
+			expect(manager.unavailability("python")?.reason).toBe("lsp-unavailable");
+			expect(servers.length).toBe(1);
+			vi.advanceTimersByTime(100);
+			manager.warm("python", "/repo"); // the window has passed: the failed slot gives way
+			await settle();
+			expect(servers.length).toBe(2);
+			expect(manager.unavailability("python")).toBeUndefined();
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("backs off further on each repeated failure", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = flakyManager([join("/bin", "pyright-langserver")], [0, 1], { retryBaseDelayMs: 100 });
+			manager.warm("python", "/repo");
+			await settle();
+			expect(servers.length).toBe(1);
+			vi.advanceTimersByTime(100); // one base window: due again
+			manager.warm("python", "/repo");
+			await settle();
+			expect(servers.length).toBe(2);
+			vi.advanceTimersByTime(100); // the second window needs 200 — not due yet
+			manager.warm("python", "/repo");
+			await settle();
+			expect(servers.length).toBe(2);
+			vi.advanceTimersByTime(100); // 200 past the second failure: due now
+			manager.warm("python", "/repo");
+			await settle();
+			expect(servers.length).toBe(3);
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("forceWarm restarts a failed server immediately, inside the window", async () => {
+		const { manager, servers } = flakyManager([join("/bin", "pyright-langserver")], [0]);
+		manager.warm("python", "/repo");
+		await settle();
+		expect(manager.unavailability("python")).toBeDefined();
+		const session = await manager.forceWarm("python", "/repo", 5_000);
+		expect(session).toBeDefined();
+		expect(servers.length).toBe(2);
+		expect(manager.readyLanguages).toEqual(["python"]);
+	});
+
+	it("forceWarm reports why a permanently broken server failed", async () => {
+		const { manager } = flakyManager([join("/bin", "pyright-langserver")], [0, 1]);
+		manager.warm("python", "/repo");
+		await settle();
+		const session = await manager.forceWarm("python", "/repo", 1_000);
+		expect(session).toBeUndefined();
+		expect(manager.unavailability("python")?.reason).toBe("lsp-unavailable");
+		// The refusal carries the server's own stderr, not just the exit code.
+		expect(manager.unavailability("python")?.message).toContain("missing lib");
+	});
+
+	it("the stderr tail is capped so a chatty server cannot flood the card", async () => {
+		const { manager } = flakyManager([join("/bin", "pyright-langserver")], [0], {
+			failMessage: `${"x".repeat(1500)} THE END`,
+		});
+		manager.warm("python", "/repo");
+		await settle();
+		const message = manager.unavailability("python")?.message ?? "";
+		expect(message).toContain("--- server stderr (tail) ---");
+		// The LAST content survives the cap: the tail is why the server died.
+		expect(message).toContain("THE END");
+		expect(message).not.toContain("x".repeat(1300));
+	});
+
+
+	it("a successful start resets the attempt count", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, servers } = flakyManager([join("/bin", "pyright-langserver")], [0, 2], {
+				retryBaseDelayMs: 100,
+				idleTimeoutMs: () => 1_000,
+			});
+			manager.warm("python", "/repo");
+			await settle(); // attempt 1 fails
+			vi.advanceTimersByTime(100);
+			manager.warm("python", "/repo"); // attempt 2 answers
+			await settle();
+			expect(manager.readyLanguages).toEqual(["python"]);
+			vi.advanceTimersByTime(1_000); // the idle window reclaims the slot
+			await settle();
+			manager.warm("python", "/repo"); // a fresh start — spawn index 2 fails
+			await settle();
+			expect(manager.snapshot().find((row) => row.languageId === "python")?.attempts).toBe(1);
+			vi.advanceTimersByTime(100); // the BASE delay only — the counter restarted
+			manager.warm("python", "/repo"); // spawn index 3 answers
+			await settle();
+			expect(servers.length).toBe(4);
+			expect(manager.readyLanguages).toEqual(["python"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rescan clears failed slots and the retry counters", async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager } = flakyManager([join("/bin", "pyright-langserver")], [0, 1, 2], { retryBaseDelayMs: 100 });
+			manager.warm("python", "/repo");
+			await settle();
+			vi.advanceTimersByTime(100);
+			manager.warm("python", "/repo");
+			await settle();
+			expect(manager.snapshot().find((row) => row.languageId === "python")?.attempts).toBe(2);
+			manager.rescan();
+			expect(manager.snapshot()).toEqual([]); // the failed slot is gone
+			manager.warm("python", "/repo"); // a fresh start — spawn index 2 fails again
+			await settle();
+			expect(manager.snapshot().find((row) => row.languageId === "python")?.attempts).toBe(1); // counted from one, not three
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a missing server stays a cheap refusal across repeated decisions", async () => {
+		let lookups = 0;
+		const manager = new LspManager({
+			pathDirs: ["/bin"],
+			isExecutable: async () => {
+				lookups += 1;
+				return false;
+			},
+			initializeTimeoutMs: 200,
+			spawn: () => {
+				throw new Error("no server was found — spawn must never run");
+			},
+		});
+		manager.warm("python", "/repo");
+		await settle();
+		expect(manager.unavailability("python")?.reason).toBe("server-missing");
+		const afterFirstWarm = lookups; // one discovery walk checks many candidates — that is fine
+		for (let i = 0; i < 5; i += 1) {
+			manager.decide("python", "/repo", 10);
+			await settle();
+		}
+		expect(lookups).toBe(afterFirstWarm); // but it never re-runs: refusals never re-scan
 	});
 });

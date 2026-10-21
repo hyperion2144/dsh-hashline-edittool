@@ -716,3 +716,19 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - **off 永不格式化**（自动路径），手动 `format` 不带 range 不受 off 约束（Q4，#277 维持）。
 - **范围不可用 ≠ 擅自放大**：自动路径静默跳过（G3 噪音裁决仍成立），显式调用明确报错——放大必须是用户的显式选择（`format.fallback_full_file`）。
 - **存量配置零破坏**：布尔 true/false 在 schema、normalize、client 读取三层都迁移，永不炸。
+
+## 2026-10-21 — ADR-0021 added: LSP failed-slot retry (bounded backoff + `status`/`warm`)
+
+**Type:** new decision record
+**Confidence:** High
+**Evidence:** `src/lsp/manager.ts` (warm/#start/#markFailed/forceWarm/snapshot), `src/tools/tool-lsp.ts` (status/warm operations), `test/core/lsp-manager.test.ts` (retry/backoff/forceWarm/snapshot suite), `test/core/tool-lsp.test.ts` (status/warm suite), issue #318 诊断记录
+
+### Why
+
+#318 诊断定案：failed 槽永久卡死是三重机制叠加（warm 对 failed 早退、rescan 仅设置卡可达、waitForSession 遇 failed 即弃），且报错只有一句 exit code 1（stderr 尾巴无人消费）、无从查询服务器状态。修复策略定为有界指数退避自动重试 + forceWarm 显式绕过 + snapshot 只读 + 工具 status/warm 操作 + 报错附 stderr 尾，完整理由、备选方案与后果记录在 `docs/adr/0021-lsp-failed-slot-retry.md`。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0021-lsp-failed-slot-retry.md` (created)
+- `AGENTS.md` l0 decisions 行 0001–0020 → 0001–0021，追加 LSP failed-slot retry 主题
+- `README.md` / `README.zh.md`：lsp 生命周期段与工具表行补重试/status/warm 说明
