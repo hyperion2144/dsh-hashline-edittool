@@ -134,6 +134,17 @@ function withDocument(params: unknown, uri: string): unknown {
 }
 
 /**
+ * The operation an errored call asked for — the schema-required `operation`
+ * field of the wrapper's error value, read out of the args the same way
+ * `pathFromArgs` reads the path.
+ */
+function operationFromArgs(args: unknown): string {
+	if (typeof args !== "object" || args === null) return "";
+	const a = args as { operation?: unknown };
+	return typeof a.operation === "string" ? a.operation : "";
+}
+
+/**
  * Build the tool.
  *
  * @param io - the session's file access, for resolve + read.
@@ -600,7 +611,29 @@ export function buildLspTool(io: FileIO) {
 			try {
 				value = (await tool.execute(args, exec)) as unknown as Record<string, unknown>;
 			} catch (error) {
-				return thrownErrorResult(error, { path: pathFromArgs(args) }) as never;
+				// THE HOST VALIDATES THE WRAPPED VALUE — errors included — so the
+				// converted error must carry EVERY required field. The fields below
+				// are witnesses, not data: the card reads `error` alone
+				// (`presentationMeta` short-circuits on it) and the model reads
+				// `modelText`. A bare `thrownErrorResult` here — `{ modelText, error }`
+				// only — had the host reject every converted failure at the session
+				// boundary with six "missing required property" lines (#317), a shape
+				// every direct-call test passed because only the host checks it.
+				// The same witness-fill the data-shaped tools ship (read, write,
+				// undo, grep, ast_*). format/edit instead demand only `modelText`
+				// — not on offer here, where the six fields are the card's
+				// SUCCESS data and stay required. The conversion spreads LAST
+				// so `modelText`/`error` win.
+				const relatedPath = pathFromArgs(args);
+				return {
+					path: relatedPath,
+					operation: operationFromArgs(args),
+					server: "",
+					symbols: [],
+					hashlines: [],
+					totalLines: 0,
+					...(thrownErrorResult(error, { path: relatedPath }) as unknown as Record<string, unknown>),
+				} as never;
 			}
 			const streamedLsp = await spillModelTextOverflow({ sessionKey: execSessionKey(exec), producer: "lsp", consumer: "read", modelText: lspModelText(value), budgetChars: responseBudgetChars() });
 			return { ...value, modelText: streamedLsp.modelText };

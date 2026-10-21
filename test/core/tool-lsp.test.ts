@@ -33,6 +33,8 @@ interface Fake {
 	/** Push these on open, as a real server does unprompted. */
 	readonly pushOnOpen?: readonly unknown[];
 	readonly ready?: boolean;
+	/** Thrown by `waitForSession`, reproducing the manager's mid-boot failure. */
+	readonly failBootWith?: Error;
 }
 
 /**
@@ -63,7 +65,10 @@ function install(fake: Fake) {
 		},
 	};
 	setLspManager({
-		waitForSession: async () => (fake.ready === false ? undefined : (session as never)),
+		waitForSession: async () => {
+			if (fake.failBootWith !== undefined) throw fake.failBootWith;
+			return fake.ready === false ? undefined : (session as never);
+		},
 		unavailability: () => ({ message: "no server is installed for typescript" }),
 		openDocumentFor: () => (text: string) => {
 			// The SENTINEL PROBE (verifiedReport): probe text carries a guaranteed
@@ -113,6 +118,35 @@ describe("lsp — refusing is a different answer from finding nothing", () => {
 	it("refuses with the MANAGER's reason when no server could be started", async () => {
 		install({ ready: false });
 		await expect(run({ operation: "symbols" })).resolves.toMatchObject({ modelText: expect.stringMatching(/no server is installed for typescript/) });
+	});
+
+	it("the manager's mid-boot throw converts into a value that SATISFIES the schema (#317)", async () => {
+		// THE #317 CHAIN: the server process dies during boot, `waitForSession`
+		// throws a bracketed LspSessionError, and the wrapper's catch converts it
+		// with `thrownErrorResult`. That conversion returned `{ modelText, error }`
+		// alone; the host validates the RETURNED value against the output schema
+		// and rejected the call — six "missing required property" lines — while
+		// every direct-call test in this file passed, because only the host checks
+		// the returned value's shape (see test/support/schema-check.ts).
+		install({ failBootWith: new Error("[E_LSP_CLOSED] The language server exited (code 1).") });
+		const tool = buildLspTool(io);
+		const value = (await tool.execute({ operation: "symbols", path: FILE }, exec)) as Record<string, unknown>;
+		expect(value.error).toMatchObject({ code: "E_LSP_CLOSED", message: "The language server exited (code 1)." });
+		expect(value.path).toBe(FILE);
+		expect(value.operation).toBe("symbols");
+		expect(schemaViolations(outputSchemaOf(tool), value), "the converted error value must satisfy the declared schema").toEqual([]);
+	});
+
+	it("the tool's own refusal satisfies the schema too — every failure shares one catch", async () => {
+		// The no-server refusal throws INSIDE the body and funnels through the
+		// SAME wrapper catch, so its value must conform for the same reason.
+		install({ ready: false });
+		const tool = buildLspTool(io);
+		const value = (await tool.execute({ operation: "symbols", path: FILE }, exec)) as Record<string, unknown>;
+		expect(value.error).toMatchObject({ code: "E_LSP_NO_SERVER" });
+		expect(value.path).toBe(FILE);
+		expect(value.operation).toBe("symbols");
+		expect(schemaViolations(outputSchemaOf(tool), value), "the refusal value must satisfy the declared schema").toEqual([]);
 	});
 });
 
