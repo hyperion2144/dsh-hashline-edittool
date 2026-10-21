@@ -71,16 +71,18 @@ export function renderUnifiedDiff(
 import type { HunkShift } from "./edit-engine.js";
 
 /**
- * The model-facing text of a format section (P1's shape): a bracketed
- * header that names the server, the mode and the counters, then one `+` row
- * per formatter-changed line the model may address. Rows the eligibility gate
- * refuses are not IN the section at all (the #275 follow-up ruling: an edit
- * response never surfaces content the model has no standing view of) — only
- * `unservedRows` counts them, and a formatted pass whose rows are all
- * unserved renders the bare header so the counts stay honest. The same
- * withholding covers rows the main diff already shows (#312): `inMainDiffRows`
- * counts them and neither content nor anchor is repeated here.
+/**
+ * The model-facing text of a format section: a bracketed header that names the
+ * server, the mode and the counters, then the section body. Rows the
+ * eligibility gate refuses are not IN the section at all (#275 follow-up),
+ * rows the main diff already shows are counted, not repeated (#312), and
+ * rows whose pre-edit anchor still holds are summarized per cluster
+ * (`restoredRows` + `clusters`, #315 review) — only drift rows (anchor
+ * genuinely changed vs pre-edit) render as `+` rows. Clusters render as
+ * `@@ ~start,count @@ scope` locators — same grammar as the main diff's hunk
+ * headers, `~` marking an informational run rather than a real hunk.
  */
+
 export function renderFormatSection(
 	section: FormatSection,
 	lineNumbers = lineNumbersEnabled(),
@@ -96,24 +98,54 @@ export function renderFormatSection(
 	// two spellings only ever disagreed in the changed-line fallback (#312
 	// review).
 	const countsHeader = (changed: number): string =>
-		`[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${changed} lines changed · ${section.inMainDiffRows ?? 0} in main diff · ${section.unservedRows ?? 0} unserved]`;
+		`[${label}: ${server} · ${section.mode ?? "full-file"} · requested ${section.requested ?? 1} → applied ${section.applied ?? 0} · ${changed} lines changed · ${section.inMainDiffRows ?? 0} in main diff · ${section.restoredRows ?? 0} restored · ${section.unservedRows ?? 0} unserved]`;
+	// The section body under the clusters: one locator per contiguous run,
+	// the restored summary, then the run's drift rows. Manual sections (no
+	// clusters) fall through to the flat row list below.
+	const clusterLines = (): string[] => {
+		const clusters = section.clusters ?? [];
+		if (clusters.length === 0) return [];
+		const rowOf = new Map((section.rows ?? []).map((row) => [row.lineNumber, row]));
+		const lines: string[] = [];
+		for (const cluster of clusters) {
+			lines.push(`@@ ~${cluster.startLine},${cluster.lines} @@${cluster.scope !== undefined ? ` ${cluster.scope}` : ""}`);
+			if (cluster.restored > 0) {
+				lines.push(`${cluster.restored} line(s) restored to their pre-edit content · anchors unchanged`);
+			}
+			for (let line = cluster.startLine; line < cluster.startLine + cluster.lines; line++) {
+				const row = rowOf.get(line);
+				if (row === undefined) continue;
+				const marker = row.hash !== "" ? formatRowMarker(row.hash, row.lineNumber, lineNumbers) : "    ";
+				lines.push(`+${marker} ${row.text}`);
+			}
+		}
+		return lines;
+	};
 	if (section.status !== "formatted" || section.rows === undefined || section.rows.length === 0) {
 		// A formatted outcome whose rows are all withheld is NOT "no changes":
 		// the header carries the honest counts (changedLines + inMainDiffRows +
 		// unservedRows) — #275's follow-up rows return neither content nor
 		// anchors, and #312's in-main rows are already fully visible in the diff.
 		// Only a genuinely change-free pass says "no changes".
-		if (section.status === "formatted" && (section.unservedRows ?? 0) + (section.inMainDiffRows ?? 0) > 0) {
+		if (
+			section.status === "formatted"
+			&& ((section.unservedRows ?? 0) + (section.inMainDiffRows ?? 0) + (section.restoredRows ?? 0) > 0 || (section.clusters?.length ?? 0) > 0)
+		) {
+			return [countsHeader(section.changedLines ?? 0), ...clusterLines()].join("\n");
 			return countsHeader(section.changedLines ?? 0);
 		}
 		return `[${label}: ${server} · no changes]`;
 	}
 	const header = countsHeader(section.changedLines ?? section.rows.length);
-	const rows = section.rows.map((row) => {
-		const marker = row.hash !== "" ? formatRowMarker(row.hash, row.lineNumber, lineNumbers) : "    ";
-		return `+${marker} ${row.text}`;
-	});
-	return [header, ...rows].join("\n");
+	const grouped = clusterLines();
+	if (grouped.length === 0) {
+		const rows = section.rows.map((row) => {
+			const marker = row.hash !== "" ? formatRowMarker(row.hash, row.lineNumber, lineNumbers) : "    ";
+			return `+${marker} ${row.text}`;
+		});
+		return [header, ...rows].join("\n");
+	}
+	return [header, ...grouped].join("\n");
 }
 import { replacedOriginalRanges } from "./edit-engine.js";
 import type { FormatSection } from "../format/types.js";

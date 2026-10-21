@@ -3,6 +3,10 @@
 > **Status**: Proposed (2026-10-18; decided on [map #275](https://github.com/hyperion2144/dsh-hashline-edittool/issues/275) — G1 [#277](https://github.com/hyperion2144/dsh-hashline-edittool/issues/277), G2 [#279](https://github.com/hyperion2144/dsh-hashline-edittool/issues/279), G3 [#280](https://github.com/hyperion2144/dsh-hashline-edittool/issues/280)). Extends [ADR-0004](0004-edit-multi-file-response.md) / [ADR-0006](0006-anchor-lifecycle-inheritance.md) / [ADR-0009](0009-sparse-lazy-anchors.md) / [ADR-0014](0014-read-window-cursor-and-summary.md).
 >
 > **Amendment** (2026-10-20, #312): the section no longer repeats a formatter-changed row the main diff renders — the `alsoInMainDiff` row flag is retired, `inMainDiffRows` counts the withheld rows, and the header reads `… · n lines changed · k in main diff · u unserved` (see "Output shares one shape with the automatic path" below).
+>
+> **Amendment** (2026-10-21, #315): `format.auto` becomes a tri-state mode — `off` (default) | `full` | `range` (legacy booleans migrate `true`→`full`, `false`→`off`) — and a new `format.fallback_full_file` switch (default **off**) replaces the silent whole-file fallback. In `range` mode a server without range formatting skips the automatic pass silently, and the `format` tool with an explicit range **refuses with `E_FORMAT_UNSUPPORTED`** instead of silently reformatting the whole file — superseding the G3 ruling (#280) that a range request may fall back silently. A `write` with no hunks is treated as a whole-file call in `range` mode.
+>
+> **Amendment** (2026-10-21, #315 PR review — section body): a formatter-changed line whose final text equals its pre-edit text is **located, not quoted** — each contiguous run becomes a `@@ ~start,count @@ scope` locator plus a one-line restored summary (`restoredRows` + `clusters`); only rows whose same-text occurrence position shifted past the pre-edit count (anchor genuinely changed) stay content rows. The header reads `… · k in main diff · r restored · u unserved`; the invariant becomes `changedLines = inMainDiffRows + unservedRows + restoredRows + rows.length`. Manual `format` output is unchanged (no pre-edit lines to compare).
 
 ## Problem Statement
 
@@ -80,11 +84,10 @@ unchanged when formatting is off.
 **Errors are one table.** No language/server → `[E_LSP_NO_SERVER]`; boot timeout →
 `[E_LSP_TIMEOUT]`; transport failure → `[E_LSP_UNAVAILABLE]`; a ready server without a
 formatter → new **`[E_FORMAT_UNSUPPORTED]`**; a capability field that lies (call answers
-`-32601`) counts as absent — a range request falls back to full-file, a full-file request
-is an error. The manual path may cold-start (`waitForSession` 15 s, request 10 s);
+`-32601`) counts as absent. Amended 2026-10-21 by [#315](https://github.com/hyperion2144/dsh-hashline-edittool/issues/315), superseding the G3 silent-fallback ruling: an explicit range request now refuses with `[E_FORMAT_UNSUPPORTED]` unless `format.fallback_full_file` is on — the whole-file fallback must be an explicit setting, never a guess. The manual path may cold-start (`waitForSession` 15 s, request 10 s);
 the automatic path may not.
 
-**Automatic formatting (`format.auto`, default off) is best-effort and silent by
+**Automatic formatting (`format.auto`, a three-way mode — `off` (default) | `full` | `range` per the 2026-10-21 [#315](https://github.com/hyperion2144/dsh-hashline-edittool/issues/315) amendment — is best-effort and silent by
 design.** After a real change via `write` / `edit` / `ast_edit` (and with
 `appliedCount > 0`), the auto path touches only READY servers — never `warm`, never
 `waitForSession` — with a 2000 ms per-file budget. No server / no formatter → silently

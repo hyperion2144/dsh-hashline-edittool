@@ -105,18 +105,20 @@ lsp?: {
 		idle_timeout_ms?: number;
 	};
 	/**
-	 * The formatting capability's namespace entry (map #275).
+	 * The formatting capability's namespace entry (map #275, modes per #315).
 	 *
-	 * `auto` (default false) makes write/edit/ast_edit offer the final content
-	 * to a RUNNING language server before writing: format-what-changed when
-	 * range formatting is available, the whole file when it is not, and
-	 * nothing at all when no server is up — a missing formatter is the normal
-	 * case, not an error. `editorconfig` (default false) prefers a project's
-	 * `.editorconfig` over the document-whitespace heuristic for
-	 * `FormattingOptions`.
+	 * `auto` (default "off") decides HOW write/edit/ast_edit offer the final
+	 * content to a RUNNING language server before writing: "off" never
+	 * formats, "full" always asks for the whole document, "range" formats
+	 * what changed — and a range the server cannot serve degrades only through
+	 * `fallback_full_file` (default false: the refusal stands). Legacy boolean
+	 * values stay schema-legal and migrate (true → "full", false → "off").
+	 * `editorconfig` (default false) prefers a project's `.editorconfig` over
+	 * the document-whitespace heuristic for `FormattingOptions`.
 	 */
 	format?: {
-		auto?: boolean;
+		auto?: boolean | "off" | "full" | "range";
+		fallback_full_file?: boolean;
 		editorconfig?: boolean;
 	};
 	/**
@@ -182,7 +184,11 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 	// path; descendants of a volatile node are already live).
 	format: z
 		.object({
-			auto: z.boolean(),
+			// #315: tri-state. Legacy persisted booleans stay schema-legal (they
+			// migrate through resolveSettings); anything else is refused at the
+			// write gate (#179 semantics).
+			auto: z.union([z.boolean(), "off", "full", "range"]),
+			fallback_full_file: z.boolean(),
 			editorconfig: z.boolean(),
 		})
 		.volatile(),
@@ -338,12 +344,14 @@ export {
 	lspConfiguredServers,
 	lspIdleTimeoutMs,
 	isAutoDiagnosticsEnabled,
-	isAutoFormatEnabled,
+	autoFormatMode,
+	formatFallbackFullFile,
 	isEditorconfigEnabled,
 	isJsonOutput,
 	lineNumbersEnabled,
 } from "./infra/settings.js";
-export type { EffectiveHashlineConfig, OutputFormat } from "./infra/settings.js";
+export type { AutoFormatMode, EffectiveHashlineConfig, OutputFormat } from "./infra/settings.js";
+import { normalizeAutoFormatMode } from "./infra/settings.js";
 import {
 	defaultEffectiveConfig,
 	getEffectiveConfig,
@@ -472,8 +480,11 @@ const sep =
 	// Formatting defaults OFF (G3): an edit must never re-shape text the
 	// model did not ask to re-shape. Absent = off, like `ast.enabled`. The
 	// single source of defaults is `infra/settings`; this only reads them.
-	const autoFormat =
-		typeof settings?.format?.auto === "boolean" ? settings.format.auto : defaults.autoFormat;
+	const autoFormatMode = normalizeAutoFormatMode(settings?.format?.auto, defaults.autoFormatMode);
+	const fallbackFullFile =
+		typeof settings?.format?.fallback_full_file === "boolean"
+			? settings.format.fallback_full_file
+			: defaults.formatFallbackFullFile;
 	const editorconfigCfg =
 		typeof settings?.format?.editorconfig === "boolean"
 			? settings.format.editorconfig
@@ -496,7 +507,8 @@ const sep =
 		lspServers: lspServers,
 		autoDiagnostics: autoDiag,
 		lspIdleTimeoutMs: lspIdleTimeout,
-		autoFormat,
+		autoFormatMode,
+		formatFallbackFullFile: fallbackFullFile,
 		editorconfig: editorconfigCfg,
 		grepRespectGitignore,
 	};

@@ -688,3 +688,31 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - **手动 `format` 永不全裁**：`alsoInMain` 恒空，段即主输出。
 - **全被裁 ≠ no changes**：`inMainDiffRows + unservedRows > 0` 时渲染计数 header。
 - **in-main = 主 diff 实际渲染的行**：edit 用 `diffRenderedLines`（逐变更 ±context 并集，非 served 窗口——间隙内被 formatter 还原的行回到 rows）；write 更新只在模型重写来源行时计入；不确定即展示，绝不静默丢弃。
+
+---
+## 2026-10-21 — format.auto 三态化 + 显式回退开关 (#315)
+
+**Type:** contract（ADR-0019 2026-10-21 修正案：`format.auto` 布尔 → 三态模式，G3 静默回退裁决被推翻）
+**Confidence:** High（根 + client typecheck/test 全绿：1787 + 208；行为由 format-settings / format-auto-integration / format-tool / hashline-volatile-config / client settings 卡片钉子锁定）
+**Evidence:** 票 [#315](https://github.com/hyperion2144/dsh-hashline-edittool/issues/315)（Q1–Q4 裁决：三态键名、fallback 开关、write 无 hunk 视同 full、手动不带 range 不受 off 约束）；ADR-0019 修正段。
+
+### Why
+
+- 布尔 `format.auto` 把「要不要格式化」和「格式化多大范围」捏在一个开关里：开 = 永远整文件（依赖服务器自己选 range），用户无法表达「只格式化改过的行」。
+- 服务器不支持 range formatting 时旧实现**静默回退整文件**——自动路径里用户只看见行被重排却不知道范围变了；显式带 range 的 `format` 调用同样被悄悄放大，违背「绝不替模型猜测」的工具契约。
+
+### Path / Affected typed relationships
+
+- `src/infra/settings.ts`：`AutoFormatMode`（off|full|range）+ `normalizeAutoFormatMode(value, fallback)`（legacy 布尔迁移 true→full / false→off，垃圾→fallback）+ `autoFormatMode()` / `formatFallbackFullFile()`（`isAutoFormatEnabled` 删除）。
+- `src/config.ts`：schema `format.auto` 接受布尔或三串（`z.union`），`resolveSettings` 归一化输出；新增 `format.fallback_full_file`。
+- `src/domain/format/auto-format.ts`：mode 门（full 忽略 ranges）；range 模式 wantsRange 才要 range 能力，缺失静默；`FormatUnsupportedError` 时 fallback 开→整文件，关→SILENT。
+- `src/domain/format/manual-format.ts`：显式 range 且无能力且 fallback 关 → `E_FORMAT_UNSUPPORTED`（文案指路 `format.fallback_full_file`）；服务器谎报能力（-32601）同规则；`write` 无 hunk 在 range 模式视同 full（Q3）。
+- `src/domain/edit/edit-engine.ts` / `src/tools/tool-write-shadow.ts`：自动门改 `autoFormatMode() !== "off"`。
+- client：`settings-model.ts` `readFormatFlags` 三态 + fallback；`settings-card.tsx` 三态按钮行 + 回退开关行（写回带全三个 `format` 键）。
+- 文档：ADR-0019 2026-10-21 修正案、README ×2、`CHANGELOG.md` `[Unreleased]`。
+
+### 本轮定案（复核时照此）
+
+- **off 永不格式化**（自动路径），手动 `format` 不带 range 不受 off 约束（Q4，#277 维持）。
+- **范围不可用 ≠ 擅自放大**：自动路径静默跳过（G3 噪音裁决仍成立），显式调用明确报错——放大必须是用户的显式选择（`format.fallback_full_file`）。
+- **存量配置零破坏**：布尔 true/false 在 schema、normalize、client 读取三层都迁移，永不炸。

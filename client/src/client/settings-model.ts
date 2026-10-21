@@ -190,17 +190,39 @@ export function validateStoreBudgetDraft(
 }
 
 /**
- * The two format switches (#275), read off the effective snapshot. Both are
- * OPT-IN: absent means OFF — the opposite of auto-diagnostics, because
- * formatting REWRITES the model's content and must not start unbidden.
+ * The format group (#275, tri-state per #315), read off the effective
+ * snapshot. `auto` is OPT-IN: absent means OFF — the opposite of
+ * auto-diagnostics, because formatting REWRITES the model's content and
+ * must not start unbidden. Legacy persisted booleans map (true → "full",
+ * false → "off") so the card shows what the host will actually do.
  *
  * Pure and exported so the card and the tests read ONE truth.
  */
-export function readFormatFlags(snapshot: ConfigFormSnapshot): { auto: boolean; editorconfig: boolean } {
+export type FormatAutoMode = "off" | "full" | "range";
+
+/** Legacy booleans migrate (true → full, false → off); garbage → off. */
+function normalizeFormatAuto(raw: unknown): FormatAutoMode {
+	if (raw === true || raw === "full") return "full";
+	if (raw === false || raw === "off") return "off";
+	if (raw === "range") return "range";
+	return "off";
+}
+
+export function readFormatFlags(snapshot: ConfigFormSnapshot): {
+	auto: FormatAutoMode;
+	editorconfig: boolean;
+	fallback: boolean;
+} {
 	const format = snapshot.value?.format;
-	if (typeof format !== "object" || format === null) return { auto: false, editorconfig: false };
-	const f = format as { auto?: unknown; editorconfig?: unknown };
-	return { auto: f.auto === true, editorconfig: f.editorconfig === true };
+	if (typeof format !== "object" || format === null) {
+		return { auto: "off", editorconfig: false, fallback: false };
+	}
+	const f = format as { auto?: unknown; editorconfig?: unknown; fallback_full_file?: unknown };
+	return {
+		auto: normalizeFormatAuto(f.auto),
+		editorconfig: f.editorconfig === true,
+		fallback: f.fallback_full_file === true,
+	};
 }
 
 /**

@@ -40,6 +40,18 @@ describe("the auto-format section in the diff card (#275)", () => {
 		expect(bundleSource).toContain(" in main diff ");
 	});
 
+	it("summarizes restored runs instead of re-quoting them (#315 review)", () => {
+		// The locator + restored-summary literals exist in source AND bundle;
+		// the summary deliberately carries NO line content — the main diff
+		// already owns every net change, so a restored run only says WHERE.
+		expect(blockSource).toContain("@@ ~${cluster.startLine},${cluster.lines} @@");
+		expect(bundleSource).toContain("line(s) restored to their pre-edit content");
+		expect(blockSource).toContain("line(s) restored to their pre-edit content");
+		// The header names the count like the other withholds do.
+		expect(blockSource).toContain(" restored ·");
+		expect(bundleSource).toContain(" restored ");
+	});
+
 	it("carries the bracketed header the host's text contract mirrors", () => {
 		expect(blockSource).toContain("[auto-format:");
 		expect(blockSource).toContain("lines changed");

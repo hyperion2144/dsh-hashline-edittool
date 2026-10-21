@@ -94,7 +94,7 @@ resident for the whole session.
 
 **Diagnostics on write.** After an edit/write lands, the plugin baselines the language server with the pre-write text, pulls diagnostics, and delivers them per written file — an inline, severity-tinted capsule under the card within a short window, with bounded async delivery at the model's next natural step, riding both the JSON envelope and the text channel. One switch (`lsp.auto_diagnostics`) turns it off.
 
-**Formatting through the language server.** The `format` tool asks the server's formatter to do the work — with indentation inferred from the file (or read from `.editorconfig` when `format.editorconfig` is on). With `format.auto` on (default **off**), every content-changing `write`/`edit`/`ast_edit` also formats what it touched: ready servers only (never started for this), a 2 s budget per file, a **silent** skip when no formatter is up, one warning + a skipped section when a request fails. The card shows the formatter's extra changes as their own section under the diff — header first (`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · u unserved]`) — and never repeats what the diff already shows: rows the main diff carries are counted in the header instead of drawn again (#312), and rows this session never served carry **no anchor**: the formatter's rewrite is shown exactly once, but only rows you had served can be re-edited by anchor.
+**Formatting through the language server.** The `format` tool asks the server's formatter to do the work — with indentation inferred from the file (or read from `.editorconfig` when `format.editorconfig` is on). `format.auto` is a three-way switch (#315): **off** (default) never formats behind the tools' backs, **full** formats the whole file after every content-changing `write`/`edit`/`ast_edit`, and **range** formats only the lines the call touched — falling back to whole-file only when the server lacks range formatting AND `format.fallback_full_file` is on (otherwise the pass is skipped silently, and the `format` tool with an explicit range refuses with `E_FORMAT_UNSUPPORTED` instead of guessing). Ready servers only (never started for this), a 2 s budget per file, one warning + a skipped section when a request fails. The card shows the formatter's extra changes as their own section under the diff — header first (`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · r restored · u unserved]`) — and never repeats what the diff already shows: rows the main diff carries are counted in the header instead of drawn again (#312), rows the formatter reverted back to their pre-edit text are located, not quoted — each contiguous run becomes a `@@ ~start,count @@ scope` locator plus a one-line restored summary (#315) — and rows this session never served carry **no anchor**: the formatter's rewrite is shown exactly once, but only rows you had served can be re-edited by anchor.
 
 **A settings panel rendered by the plugin itself.** The bundled `HashlineSettingsCard` is
 a full settings UI in the web: separator, output format, context lines, line numbers
@@ -318,7 +318,8 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
       auto_diagnostics: true # deliver server diagnostics inline after writes
       idle_timeout_ms: 300000 # reclaim an idle language server after 5 min (0 = never)
     format:
-      auto: false           # format edited files after write/edit/ast_edit (LSP)
+      auto: off              # format mode after write/edit/ast_edit: off | full | range (legacy true→full, false→off)
+      fallback_full_file: false # range mode: fall back to whole-file when the server lacks range formatting
       editorconfig: false   # honor .editorconfig indent settings when formatting
 ```
 
@@ -351,7 +352,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row was pasted into `lines`; stripped with a warning. |
 | `[E_CONTENT_MISMATCH]` | A declared `line` (require_line_content) does not match. |
 | `[E_ELISION_IN_PAYLOAD]` | Payload carries the outline marker `…`; warning, edit proceeds. |
-| `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | Formatting: the server's TextEdits were malformed (out-of-bounds/overlap) / the server has no document formatting provider. |
+| `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | Formatting: the server's TextEdits were malformed (out-of-bounds/overlap) / the server has no document formatting provider — or an explicit `range` request hit a server without range formatting while `format.fallback_full_file` is off (#315). |
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | Grammar catalog: built-in name collision / no descriptor for the language / unknown language. |
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | Grammar download failed / SHA-256 mismatch / entry missing from the tarball. |
 | `[E_HASH_SPACE]` | Anchor space exhausted (> 62⁸ lines). |
@@ -362,7 +363,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_LOSSY_BYTES]` | `edit` refuses a file whose read was lossy (bytes not valid UTF-8); a string write-back could not preserve the original bytes. |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` | LSP: no server for the language / unknown operation / server unusable. |
 | `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP request aborted / channel closed / server still starting / timed out. |
-| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | Formatting: the server has no document formatting provider / the formatter returned edits that cannot be applied (line out of range, overlapping). |
+| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | Formatting: the server has no document formatting provider (or, for an explicit `range` call, no range provider with the fallback switch off, #315) / the formatter returned edits that cannot be applied (line out of range, overlapping). |
 | `[E_NOOP_LOOP]` | The same edit keeps producing no change; resubmission rejected. |
 | `[E_NOT_FOUND]` / `[E_NOT_TEXT]` | Missing file / directory-binary-non-UTF-8. |
 | `[E_NOT_OBSERVED]` | File never observed this session (read-before-write policy). |

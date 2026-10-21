@@ -30,7 +30,7 @@ import type { DisplayRow, DisplayRowKind } from "./diff-rows.js";
 import { markerColumnCh } from "./read-meta.js";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { DiffBlockLabels } from "./labels.js";
-import type { DiffRowGroup, DiffRowMeta, ErrorCardModel, FileFailureMeta, FormatSectionMeta } from "./types.js";
+import type { DiffRowGroup, DiffRowMeta, ErrorCardModel, FileFailureMeta, FormatClusterMeta, FormatRowMeta, FormatSectionMeta } from "./types.js";
 interface FoldLabels {
 	collapseAria: string;
 	expandAria: (hidden: number) => string;
@@ -108,6 +108,10 @@ const CSS_TEXT = [
 	".dshl-fmt-head{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);white-space:pre}",
 	".dshl-fmt-noanchor{color:var(--dsw-alias-label-tertiary);font-size:11px}",
 	".dshl-fmt-skip{display:flex;gap:6px;align-items:baseline;font:var(--dsw-font-xs-13);color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-label-secondary))}",
+	// #315 PR review: restored runs — one locator, a summary, drift rows between.
+	".dshl-fmt-cluster{margin-top:2px}",
+	".dshl-fmt-loc{font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:pre}",
+	".dshl-fmt-restored{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);white-space:pre;font-style:italic}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -150,6 +154,9 @@ const css = {
 	fmtHead: "dshl-fmt-head",
 	fmtNoanchor: "dshl-fmt-noanchor",
 	fmtSkip: "dshl-fmt-skip",
+	fmtCluster: "dshl-fmt-cluster",
+	fmtLoc: "dshl-fmt-loc",
+	fmtRestored: "dshl-fmt-restored",
 } as const;
 
 /** Localized chrome (DiffBlockLabels shape). */
@@ -231,7 +238,7 @@ function formatHeader(section: FormatSectionMeta): string {
 	if (section.status === "noop") {
 		return `[auto-format: ${section.server ?? "server"} · no changes]`;
 	}
-	return `[auto-format: ${section.server ?? "server"} · ${section.mode ?? "full-file"} · ${section.requested ?? 0} → ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.inMainDiffRows ?? 0} in main diff · ${section.unservedRows ?? 0} unserved]`;
+	return `[auto-format: ${section.server ?? "server"} · ${section.mode ?? "full-file"} · ${section.requested ?? 0} → ${section.applied ?? 0} · ${section.changedLines ?? 0} lines changed · ${section.inMainDiffRows ?? 0} in main diff · ${section.restoredRows ?? 0} restored · ${section.unservedRows ?? 0} unserved]`;
 }
 
 /**
@@ -252,31 +259,58 @@ function FormatSectionView({ section }: { section: FormatSectionMeta }): ReactNo
 			],
 		});
 	}
-	return jsx_("div", {
-		children: [
-			jsx_("div", { key: "head", className: css.fmtHead, children: formatHeader(section) }),
-			...section.rows.map((row, index) =>
-				jsx_("div", {
-					key: index,
-					className: css.row,
+	const rowNode = (row: FormatRowMeta, index: number): ReactNode =>
+		jsx_("div", {
+			key: index,
+			className: css.row,
+			children: [
+				jsx_("span", {
+					className: `${css.gutterLine} ${css.add}`.trim(),
+					children: row.hash !== "" ? `+${row.lineNumber}:${row.hash}` : `+${row.lineNumber}`,
+				}),
+				jsx_("span", {
+					className: css.content,
 					children: [
-						jsx_("span", {
-							className: `${css.gutterLine} ${css.add}`.trim(),
-							children: row.hash !== "" ? `+${row.lineNumber}:${row.hash}` : `+${row.lineNumber}`,
-						}),
-						jsx_("span", {
-							className: css.content,
-							children: [
-								row.text,
-								row.hash === ""
-									? jsx_("span", { key: "noanchor", className: css.fmtNoanchor, children: " · no anchor (not served)" })
-									: null,
-							],
-						}),
+						row.text,
+						row.hash === ""
+							? jsx_("span", { key: "noanchor", className: css.fmtNoanchor, children: " · no anchor (not served)" })
+							: null,
 					],
-			}, index)),
-		],
+				}),
+			],
+		});
+	const head = jsx_("div", { key: "head", className: css.fmtHead, children: formatHeader(section) });
+	const clusters: readonly FormatClusterMeta[] = section.clusters ?? [];
+	if (clusters.length === 0) {
+		return jsx_("div", { children: [head, ...section.rows.map((row, index) => rowNode(row, index))] });
+	}
+	// #315 PR review: grouped rendering — one locator per contiguous run, the
+	// restored summary, then the run's drift rows (anchor genuinely changed).
+	const groups = clusters.map((cluster, ci) => {
+		const nodes: ReactNode[] = [
+			jsx_("div", {
+				key: "loc",
+				className: css.fmtLoc,
+				children: `@@ ~${cluster.startLine},${cluster.lines} @@${cluster.scope !== undefined ? ` ${cluster.scope}` : ""}`,
+			}),
+		];
+		if (cluster.restored > 0) {
+			nodes.push(
+				jsx_("div", {
+					key: "restored",
+					className: css.fmtRestored,
+					children: `${cluster.restored} line(s) restored to their pre-edit content · anchors unchanged`,
+				}),
+			);
+		}
+		const start = cluster.startLine;
+		const end = start + cluster.lines;
+		section.rows
+			.filter((row) => row.lineNumber >= start && row.lineNumber < end)
+			.forEach((row, ri) => nodes.push(rowNode(row, ri)));
+		return jsx_("div", { key: ci, className: css.fmtCluster, children: nodes });
 	});
+	return jsx_("div", { children: [head, ...groups] });
 }
 export interface DiffRowsBlockProps {
 	path: string;

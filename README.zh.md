@@ -68,7 +68,7 @@
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
-**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 开启（默认**关**）后，每次真正改了内容的 `write`/`edit`/`ast_edit` 都会顺带格式化被改到的行：只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、无格式化器时**静默**跳过、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312），本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
+**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 是三态开关（#315）：**off**（默认）绝不背着工具悄悄格式化；**full** 在每次真正改了内容的 `write`/`edit`/`ast_edit` 后格式化整个文件；**range** 只格式化本次调用改到的行——仅当服务器不支持局部格式化**且** `format.fallback_full_file` 开启时才回退整文件（否则该次自动格式化静默跳过，而显式带 range 调用 `format` 工具会以 `E_FORMAT_UNSUPPORTED` 明确拒绝、绝不擅自猜测）。只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · r restored · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312）；被格式化器改回编辑前原文的行**只定位、不引用**——每段连续行折叠成一条 `@@ ~start,count @@ scope` 定位行加一句 restored 摘要（#315）；本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
 
 **插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断、语言服务器空闲回收窗口。改完提交即生效——不用碰 YAML。
 
@@ -257,7 +257,8 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
       auto_diagnostics: true # 写入后内联投递服务器诊断
       idle_timeout_ms: 300000 # 空闲多久后回收语言服务器（0 = 永不）
     format:
-      auto: false           # write/edit/ast_edit 后自动格式化被改文件（LSP）
+      auto: off              # write/edit/ast_edit 后的格式化模式：off | full | range（存量 true→full、false→off）
+      fallback_full_file: false # range 模式：服务器不支持局部格式化时回退整文件
       editorconfig: false   # 格式化时读取 .editorconfig 缩进设置
 ```
 
@@ -282,7 +283,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_BATCH_CONFLICT]` | 两条目在同一快照上范围重叠。 |
 | `[E_CONTENT_MISMATCH]` | （require_line_content）声明的 `line` 不匹配。 |
 | `[E_ELISION_IN_PAYLOAD]` | 载荷携带大纲标记 `…`；警告，编辑继续。 |
-| `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | 格式化：服务器返回的 TextEdit 非法（越界/重叠）/ 该服务器没有文档格式化 provider。 |
+| `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | 格式化：服务器返回的 TextEdit 非法（越界/重叠）/ 该服务器没有文档格式化 provider——或显式带 range 调用遇到无 range provider 且 `format.fallback_full_file` 关闭（#315）。 |
 | `[E_HASH_SPACE]` | 锚点空间耗尽（> 62⁸ 行）。 |
 | `[E_INS_ANCHOR_DUP]` | `ins` 的 `lines[0]` 与锚点行重复；警告，继续。 |
 | `[E_INVALID_PATCH]` | diff 预览标记被粘进 `lines`；剥除并警告。 |
@@ -307,7 +308,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | 语法目录：内置名冲突 / 该语言无描述符 / 未知语言。 |
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | 语法下载失败 / SHA-256 不匹配 / tarball 中缺少条目。 |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` / `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP：该语言无服务器 / 操作无效 / 服务器不可用 / 请求中止 / 通道已关闭 / 仍在启动 / 超时。 |
-| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | 格式化：服务器无 document formatting provider / 格式化器返回了无法应用的 edit（行越界、重叠）。 |
+| `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | 格式化：服务器无 document formatting provider（显式 range 调用时，还包括无 range provider 且回退开关关闭的情形，#315）/ 格式化器返回了无法应用的 edit（行越界、重叠）。 |
 | `[E_BARE_HASH_PREFIX]` | `lines` 中粘入了带锚点前缀的行；剥除并警告。 |
 | `[E_ANCHOR_AMBIGUOUS]` | 锚点同时活在多行上（被释放的锚点在模型仍持旧绑定时被重新分配）——拒绝；请重新 read。该文件未写入任何内容。 |
 

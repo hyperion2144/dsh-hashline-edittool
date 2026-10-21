@@ -28,6 +28,27 @@ import {
 
 export type OutputFormat = "text" | "json";
 
+/**
+ * The tri-state automatic-formatting switch (#315): `off` never formats,
+ * `full` always asks for the whole document, `range` formats what changed
+ * (falling back per `formatFallbackFullFile`). Legacy boolean configs
+ * migrate through `normalizeAutoFormatMode`.
+ */
+export type AutoFormatMode = "off" | "full" | "range";
+
+/**
+ * Map one raw `format.auto` value onto the mode enum (#315): legacy
+ * `true` → `full`, `false` → `off`; the three strings pass through;
+ * anything else falls back (the same defensive default every other field
+ * applies when a bypassing caller writes garbage).
+ */
+export function normalizeAutoFormatMode(value: unknown, fallback: AutoFormatMode): AutoFormatMode {
+	if (value === true || value === "full") return "full";
+	if (value === false || value === "off") return "off";
+	if (value === "range") return "range";
+	return fallback;
+}
+
 export interface EffectiveHashlineConfig {
 	separator: string;
 	outputFormat: OutputFormat;
@@ -80,11 +101,20 @@ export interface EffectiveHashlineConfig {
 	 */
 	lspIdleTimeoutMs: number;
 	/**
-	 * Whether write/edit/ast_edit hand the final content to a running language
-	 * server for formatting BEFORE it is written (map #275, G3). Default OFF —
-	 * an edit must never surprise the model with re-indented text.
+	 * HOW write/edit/ast_edit offer the final content to a running language
+	 * server for formatting before it is written (#315, amending map #275's
+	 * G3 boolean). Default OFF — an edit must never surprise the model with
+	 * re-indented text. `range` degrades only through
+	 * `formatFallbackFullFile`.
 	 */
-	autoFormat: boolean;
+	autoFormatMode: AutoFormatMode;
+	/**
+	 * Whether a `range` formatting attempt that the server cannot serve may
+	 * degrade to the whole document (#315). Default OFF: the range refusal
+	 * stands — silence on the automatic path, an explicit error on the
+	 * manual `format` tool.
+	 */
+	formatFallbackFullFile: boolean;
 	/**
 	 * Whether `FormattingOptions` prefer a project `.editorconfig` over the
 	 * document-whitespace heuristic (map #275, G1). Default OFF.
@@ -103,7 +133,8 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	lspServers: new Map<string, string>(),
 	autoDiagnostics: true,
 	lspIdleTimeoutMs: DEFAULT_LSP_IDLE_TIMEOUT_MS,
-	autoFormat: false,
+	autoFormatMode: "off",
+	formatFallbackFullFile: false,
 	editorconfig: false,
 	grepRespectGitignore: true,
 	maxResponseChars: RESPONSE_BUDGET_DEFAULT,
@@ -192,12 +223,19 @@ export function lspIdleTimeoutMs(): number {
 }
 
 /**
- * Whether an edit's final content is offered to a running language server
- * for formatting before it is written (map #275). Default OFF — the switch
- * is the user's `format.auto`, and edits must not change shape uninvited.
+ * The tri-state automatic-formatting mode (#315; `format.auto`). Default
+ * OFF — edits must not change shape uninvited.
  */
-export function isAutoFormatEnabled(): boolean {
-	return effective.autoFormat;
+export function autoFormatMode(): AutoFormatMode {
+	return effective.autoFormatMode;
+}
+
+/**
+ * Whether an unservable range-formatting attempt may degrade to the whole
+ * document (#315; `format.fallback_full_file`, default OFF).
+ */
+export function formatFallbackFullFile(): boolean {
+	return effective.formatFallbackFullFile;
 }
 
 /**

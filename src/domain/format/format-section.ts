@@ -22,7 +22,8 @@
  *
  * @module dsh-hashline-edittool/domain/format/format-section
  */
-import type { FormatRow, FormatSection, FormatStatus } from "./types.js";
+import { currentScopeLabelAt } from "../../render/scope-registry.js";
+import type { FormatCluster, FormatRow, FormatSection, FormatStatus } from "./types.js";
 
 /**
  * Which final lines the formatter changed, and how they read.
@@ -82,6 +83,17 @@ export function buildFormatSection(params: {
 	changed: ReadonlySet<number>;
 	eligibility: ReadonlyMap<number, boolean>;
 	alsoInMain: ReadonlySet<number>;
+	/** The PRE-EDIT lines. Presence turns on restore summaries (#315 review): a
+	 * changed line outside the main diff whose exact text occurred at least as
+	 * many times before the edit carries the same content-derived anchor it had,
+	 * so its content is old news — it is counted in `restoredRows` and
+	 * summarized per cluster instead of returned as a row. Absent (manual
+	 * format) every eligible out-of-diff line stays a full row. */
+	preEditLines?: readonly string[];
+	/** The full post-format content, for cluster scope lookups; defaults to joining `finalLines`. */
+	finalText?: string;
+	/** The file's path, for the scope detector's language pick. */
+	path?: string;
 }): FormatSection {
 	if (params.status !== "formatted") {
 		const base: FormatSection = { status: params.status };
@@ -94,8 +106,29 @@ export function buildFormatSection(params: {
 		return base;
 	}
 	const rows: FormatRow[] = [];
+	const restoredLines: number[] = [];
 	let unserved = 0;
 	let inMain = 0;
+	// Occurrence bookkeeping for the stability rule: anchors are content-
+	// derived (hash + same-text occurrence), so "this exact text occurred at
+	// least k times pre-edit, and this line is the k-th occurrence now" means
+	// the model already holds its content and anchor (#315 review). One pass
+	// over ALL final lines — an occurrence index is a whole-file property, not
+	// a section-row property.
+	const preCount = new Map<string, number>();
+	const finalOcc = new Map<number, number>();
+	if (params.preEditLines !== undefined) {
+		for (const text of params.preEditLines) {
+			preCount.set(text, (preCount.get(text) ?? 0) + 1);
+		}
+		const seen = new Map<string, number>();
+		for (let line = 1; line <= params.finalLines.length; line++) {
+			const text = params.finalLines[line - 1] ?? "";
+			const k = (seen.get(text) ?? 0) + 1;
+			seen.set(text, k);
+			finalOcc.set(line, k);
+		}
+	}
 	for (let line = 1; line <= params.finalLines.length; line++) {
 		if (!params.changed.has(line)) continue;
 		// #312: the main diff already carries this line's anchor and content —
@@ -109,12 +142,60 @@ export function buildFormatSection(params: {
 			unserved += 1;
 			continue;
 		}
+		const k = finalOcc.get(line);
+		if (k !== undefined && k <= (preCount.get(params.finalLines[line - 1] ?? "") ?? 0)) {
+			// Anchor unchanged vs pre-edit: the row would repeat content the
+			// model read before editing. Count it; the cluster summary speaks.
+			restoredLines.push(line);
+			continue;
+		}
+		// Drift (rare): the anchor genuinely changed vs pre-edit — republish
+		// content + anchor so the next edit still addresses this line.
 		rows.push({
 			kind: "+",
 			lineNumber: line,
 			hash: params.finalHashes[line - 1] ?? "",
 			text: params.finalLines[line - 1] ?? "",
 		});
+	}
+	// Contiguous runs over the section's body lines (restored + drift) become
+	// the locator clusters — the model's "where are these lines" answer.
+	const list: FormatCluster[] = [];
+	if (params.preEditLines !== undefined && restoredLines.length + rows.length > 0) {
+		const scopeLabelAt = currentScopeLabelAt();
+		const text = params.finalText ?? params.finalLines.join("\n");
+		const driftAt = new Set(rows.map((row) => row.lineNumber));
+		const body = [...restoredLines, ...rows.map((row) => row.lineNumber)].sort((a, b) => a - b);
+		let start = 0;
+		let prev = 0;
+		let stable = 0;
+		const flush = (endLine: number): void => {
+			const scope = scopeLabelAt(text, start, params.path);
+			list.push({
+				startLine: start,
+				lines: endLine - start + 1,
+				restored: stable,
+				...(scope !== undefined && scope !== "" ? { scope } : {}),
+			});
+		};
+		for (const line of body) {
+			if (start === 0) {
+				start = line;
+				prev = line;
+				stable = driftAt.has(line) ? 0 : 1;
+				continue;
+			}
+			if (line === prev + 1) {
+				prev = line;
+				if (!driftAt.has(line)) stable += 1;
+				continue;
+			}
+			flush(prev);
+			start = line;
+			prev = line;
+			stable = driftAt.has(line) ? 0 : 1;
+		}
+		if (start !== 0) flush(prev);
 	}
 	return {
 		status: params.status,
@@ -125,6 +206,9 @@ export function buildFormatSection(params: {
 		changedLines: params.changed.size,
 		inMainDiffRows: inMain,
 		unservedRows: unserved,
+		...(params.preEditLines !== undefined
+			? { restoredRows: restoredLines.length, ...(list.length > 0 ? { clusters: list } : {}) }
+			: {}),
 		rows,
 	};
 }

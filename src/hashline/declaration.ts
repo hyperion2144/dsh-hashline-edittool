@@ -54,15 +54,29 @@ const MARKER_PREFIX = /^[ \t]*(?:\d+:)?[A-Za-z0-9]{2,4}\| ?/;
  *   prefix like `<from>-<to>:`.
  * @returns the line number, or undefined when the field carries none.
  */
-export function lineHintOf(reference: string): number | undefined {
+export function anchorRefOf(reference: string): { anchor: string; hint?: number } {
 	const trimmed = reference.trim();
 	// The CURRENT order first: `<anchor>:<line>`. Anchors are never all-digits,
 	// so the two orders cannot be confused — a LEADING number means the legacy
 	// spelling, anything else means the anchor comes first.
 	const modern = /:[ \t]*(\d+)(?:-\d+)?[ \t]*$/.exec(trimmed);
-	if (modern !== null) return Number.parseInt(modern[1]!, 10);
+	if (modern !== null) {
+		return {
+			anchor: trimmed.slice(0, modern.index).trim(),
+			hint: Number.parseInt(modern[1]!, 10),
+		};
+	}
 	const legacy = /^(\d+)(?:-\d+)?:/.exec(trimmed);
-	return legacy === null ? undefined : Number.parseInt(legacy[1]!, 10);
+	if (legacy !== null) {
+		// The legacy form keeps the anchor AFTER the colon — the number is the
+		// hint, not (part of) the key.
+		return { anchor: trimmed.slice(legacy[0].length).trim(), hint: Number.parseInt(legacy[1]!, 10) };
+	}
+	return { anchor: trimmed };
+}
+
+export function lineHintOf(reference: string): number | undefined {
+	return anchorRefOf(reference).hint;
 }
 
 function trimEnd(text: string): string {

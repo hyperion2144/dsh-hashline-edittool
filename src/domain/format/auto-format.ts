@@ -32,7 +32,11 @@ import {
 	FormatUnsupportedError,
 } from "../../lsp/format/index.js";
 import { composeProvenance, lineMapFromTextEdits } from "./provenance.js";
-import { isAutoFormatEnabled, isEditorconfigEnabled } from "../../infra/settings.js";
+import {
+	autoFormatMode,
+	formatFallbackFullFile,
+	isEditorconfigEnabled,
+} from "../../infra/settings.js";
 import type { FileIO } from "../../infra/fs-bridge.js";
 import type { LineEnding } from "../../render/edit-diff.js";
 import type { FormatMode } from "./types.js";
@@ -129,7 +133,8 @@ function reasonOf(error: unknown): string {
  * formatter's bad day must not fail the edit that paid for it.
  */
 export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatOutcome> {
-	if (!isAutoFormatEnabled()) return { ...SILENT, content: input.modelContent };
+	const mode = autoFormatMode();
+	if (mode === "off") return { ...SILENT, content: input.modelContent };
 	const language = languageForPath(input.absolutePath);
 	if (language === undefined) return { ...SILENT, content: input.modelContent };
 	const manager = getLspManager();
@@ -141,7 +146,17 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 		return { ...SILENT, content: input.modelContent };
 	}
 	const capability = detectFormattingCapability(session.serverCapabilities);
-	if (!capability.full) return { ...SILENT, content: input.modelContent };
+	// #315: the mode decides which capability the server must offer. `full`
+	// needs the whole-document provider; `range` over model hunks needs the
+	// range provider — a whole-document call (write has no hunks) is treated
+	// as full (Q3). A missing capability is the NORMAL silent skip, unless
+	// the fallback switch allows a range miss to degrade to the whole file.
+	const wantsRange = mode === "range" && input.ranges !== undefined && input.ranges.length > 0;
+	if (!wantsRange) { // mode "full", or no hunks (write) — whole-document provider territory
+		if (!capability.full) return { ...SILENT, content: input.modelContent };
+	} else if (!capability.range && !(formatFallbackFullFile() && capability.full)) {
+		return { ...SILENT, content: input.modelContent };
+	}
 
 	let server = language.id;
 	try {
@@ -172,8 +187,20 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 	// disk shape itself when it rewrites.
 	const LF_SHAPE = { bom: "", eol: "\n" } as const;
 	try {
-		if (capability.range && input.ranges !== undefined && input.ranges.length > 0) {
-			const merged = mergeFormatRanges(input.ranges, modelLines.length);
+		if (mode === "range" && capability.range && input.ranges !== undefined && input.ranges.length > 0) {
+			// #315: a deletion-only hunk (startLine > endLine) describes a line
+			// that no longer exists — the clamp inside mergeFormatRanges would
+			// resurrect it as a phantom request. Drop it first: if EVERY hunk
+			// collapsed there is no range left to ask for, and falling through
+			// would silently reformat the WHOLE file — exactly what the
+			// fallback switch exists to gate.
+			const merged = mergeFormatRanges(
+				input.ranges.filter((r) => r.startLine <= r.endLine),
+				modelLines.length,
+			);
+			if (merged.length === 0 && !formatFallbackFullFile()) {
+				return { ...SILENT, content: input.modelContent };
+			}
 			if (merged.length > 0) {
 				try {
 					let content = input.modelContent;
@@ -212,9 +239,13 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 					}
 					return finish(input, content, lineage ?? new Map(), "range", merged.length, applied, server);
 				} catch (error) {
-					// "no range formatting here" is a capability fact — fall back
-					// to the whole document (G3: no warning on the fallback).
+					// "no range formatting here" is a capability fact — the fallback
+					// switch below decides between the whole document and silence.
+
 					if (!(error instanceof FormatUnsupportedError)) throw error;
+					// -32601: the capability table LIED. #315: fall back ONLY when the
+					// switch says so — otherwise the silent skip stands (G3).
+					if (!formatFallbackFullFile()) return { ...SILENT, content: input.modelContent };
 				}
 			}
 		}

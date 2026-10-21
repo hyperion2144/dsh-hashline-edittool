@@ -40,7 +40,7 @@ import { anchorsFor } from "../domain/session/anchor-state.js";
 import { loadServed } from "../domain/session/served.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf, splitLines } from "../infra/utils.js";
-import { isAutoFormatEnabled, isJsonOutput } from "../config.js";
+import { autoFormatMode, isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
 import {
@@ -274,7 +274,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// never adds top-level warnings — G3).
 				let after = content;
 				let formatOutcome: AutoFormatOutcome | undefined;
-				if (isAutoFormatEnabled() && content.trim().length > 0) {
+				if (autoFormatMode() !== "off" && content.trim().length > 0) {
 					const shape = stripBOM(content);
 					const outcome = await runAutoFormat({
 						io,
