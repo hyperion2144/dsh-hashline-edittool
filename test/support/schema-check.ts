@@ -15,7 +15,11 @@
 /** One declared property spec, in the subset this repo's tools use. */
 interface ValueSpec {
 	readonly type?: string;
-	readonly required?: boolean;
+	// TOP LEVEL: the host compiles the author's per-property `required: true`
+	// flags into this array (and strips the flags), so a normalized output
+	// schema carries requiredness HERE. On one property spec it stays the
+	// author-facing boolean flag.
+	readonly required?: boolean | readonly string[];
 	readonly additionalProperties?: boolean;
 	readonly properties?: Record<string, ValueSpec>;
 	readonly items?: ValueSpec;
@@ -54,6 +58,17 @@ export function schemaViolations(
 			// object — this is the check that would have caught `modelText`.
 			if (schema.additionalProperties === false && declared[key] === undefined) {
 				out.push(`${at}.${key}: not declared in the output schema`);
+			}
+		}
+		// THE HOST'S REQUIRED CHECK, mirrored: the host names required keys in the
+		// top-level array and rejects a value where one is ABSENT or carries
+		// `undefined` — the exact rejection #317 shipped, invisible to the
+		// per-property loop below once the compiler moved the flags up top.
+		if (Array.isArray(schema.required)) {
+			for (const key of schema.required) {
+				if (!Object.hasOwn(value as Record<string, unknown>, key) || (value as Record<string, unknown>)[key] === undefined) {
+					out.push(`${at}.${key}: required but missing`);
+				}
 			}
 		}
 		for (const [key, spec] of Object.entries(declared)) {
