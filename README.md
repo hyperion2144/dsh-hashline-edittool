@@ -90,7 +90,7 @@ back to a heuristic backend when none can be had. Both serve their rows, so stru
 semantic results are directly editable. A server nobody is using is reclaimed after
 `lsp.idle_timeout_ms` (five minutes by default) and warmed again on the next use — a
 TypeScript server holding a large repository's index is not something to keep
-resident for the whole session.
+resident for the whole session. A server that fails to start retries on the next use once its backoff window passes (5 s doubling, capped at 1 min; the counter resets on success), `lsp { operation: "warm", language }` forces an immediate restart past the backoff, and `status` reports every started language's server state without starting anything (#318).
 
 **Diagnostics on write.** After an edit/write lands, the plugin baselines the language server with the pre-write text, pulls diagnostics, and delivers them per written file — an inline, severity-tinted capsule under the card within a short window, with bounded async delivery at the model's next natural step, riding both the JSON envelope and the text channel. One switch (`lsp.auto_diagnostics`) turns it off.
 
@@ -277,7 +277,7 @@ or an invocation fails — `grep` never fails because ripgrep did.
 | `undo_last_edit` | `{ path }` reverts the file's last hashline edit — only while the file still matches the stored post-edit content; survives restarts. |
 | `ast_grep` | Structural search by syntax shape (`pat` with `$NAME` / `$$$ARGS` / `$_` metavariables). Refuses instead of guessing when a pattern does not parse as one node. Long files come back as a folded, editable outline. |
 | `ast_edit` | Structural rewrite: finds places by shape and hands the change to the **same engine** `edit` uses — served-state check, undo entry, diff and syntax gate all apply. |
-| `lsp` | Symbol-aware work through a real language server when one can be had (started per language, shared with dsh's `lsp` service); falls back to a heuristic backend otherwise. Serves its rows, so LSP output is directly editable. |
+| `lsp` | Symbol-aware work through a real language server when one can be had (started per language, shared with dsh's `lsp` service); falls back to a heuristic backend otherwise. Serves its rows, so LSP output is directly editable. `status` lists every started language's server state without starting anything; `warm` starts (or restarts) one on demand, skipping the retry backoff. |
 | `format` | Formats a file with its language server's formatter — the whole file, or `range: {start, end}` where **both ends are this session's served anchors**. The file must already be observed (`[E_NOT_OBSERVED]` otherwise); `noop` when the formatter changes nothing; enters undo like `edit`. A cold start is allowed here (15 s) because you asked for it by name. |
 
 ### Output modes
@@ -362,6 +362,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_LINE_REF]` | A bare number was passed as an anchor; resolved via served state when safe. |
 | `[E_LOSSY_BYTES]` | `edit` refuses a file whose read was lossy (bytes not valid UTF-8); a string write-back could not preserve the original bytes. |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` | LSP: no server for the language / unknown operation / server unusable. |
+| `[E_LSP_UNEXPECTED]` | LSP: an unexpected failure outside the tool's own vocabulary, wrapped into it so the refusal still rides the error card instead of dying as non-lossless host output. |
 | `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP request aborted / channel closed / server still starting / timed out. |
 | `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | Formatting: the server has no document formatting provider (or, for an explicit `range` call, no range provider with the fallback switch off, #315) / the formatter returned edits that cannot be applied (line out of range, overlapping). |
 | `[E_NOOP_LOOP]` | The same edit keeps producing no change; resubmission rejected. |

@@ -30,6 +30,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - 锚点库的路径数改为随写入维护的值，预算判定不再随路径数变慢（#311）。
 - 自动格式化段不再逐行重复主 diff 已展示的行：这类行只在 header 计数（`k in main diff`），`write` 更新路径同样塌缩为计数，手动 `format` 全量输出不变（#312）。
 - `lsp` 错误响应不再被框架拒绝：语言服务器启动失败/超时等转出的错误值补齐了 output schema 必填字段（#317）。
+- LSP 启动失败的槽位不再永久卡死：按指数退避自动重试（5 秒起、上限 1 分钟），成功后计数清零；启动失败报错附服务器 stderr 尾巴（#318）。
+- `lsp` 工具新增 `status`（只读查询已启动语言的服务器状态）与 `warm`（跳过退避立即启动/重拉）操作（#318）。
+- `lsp` 的 `status`/`warm` 出专属状态卡（状态点 + 语言 + 失败原因），词汇表之外的意外错误包装为 `[E_LSP_UNEXPECTED]` 走错误卡片，不再因宿主无法无损序列化而整次调用失败（#320）。
+- `lsp` 的错误值不再携带字面 `path: undefined`：`status`/`warm` 无 `path`，宿主无损 JSON 校验会整次拒绝这类拒绝值，改为省略该字段（#320）。
 
 ## [0.10.3] - 2026-10-19
 

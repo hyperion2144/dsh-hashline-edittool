@@ -21,6 +21,10 @@
  * a missing server means install one, a timeout means retry, and a too-large
  * file means the heuristic is genuinely the only option.
  *
+ * A failed start is not a verdict either: the slot retries on its own once
+ * its backoff window has passed, and `forceWarm` restarts one on demand
+ * (#318).
+ *
  * @module dsh-hashline-edittool/lsp/manager
  */
 import { DEFAULT_LSP_IDLE_TIMEOUT_MS } from "../infra/constants.js";
@@ -102,6 +106,12 @@ export interface LspManagerOptions extends DiscoveryOptions {
 	 * and a change must take effect without a restart. 0 means "never reclaim".
 	 */
 	readonly idleTimeoutMs?: () => number;
+	/**
+	 * The base backoff before a failed start is retried (#318). Each further
+	 * failure doubles the wait, capped at 60s. Tests shrink it; production
+	 * uses the default.
+	 */
+	retryBaseDelayMs?: number;
 }
 
 /** The transport shape the manager needs (the session's, plus diagnostics). */
@@ -122,7 +132,13 @@ type Slot =
 			/** The armed idle shutdown, when there is one. */
 			idleTimer?: ReturnType<typeof setTimeout>;
 	  }
-	| { readonly state: "failed"; readonly reason: BackendReason; readonly message: string };
+	| {
+			readonly state: "failed";
+			readonly reason: BackendReason;
+			readonly message: string;
+			/** When this failure was recorded — the retry backoff's zero (#318). */
+			attemptedAt: number;
+	  };
 
 /** A server this manager launched, for teardown. */
 interface Launched {
@@ -132,6 +148,15 @@ interface Launched {
 
 /** Default document ceiling, matching the platform LSP provider's. */
 const DEFAULT_MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
+/**
+ * The backoff before a FAILED start is retried (#318): the first retry waits
+ * this long, and each further failure doubles the wait. Long enough that a
+ * cold start recovers on its own between two calls, short enough that a
+ * transient crash is noticed within a session.
+ */
+const RETRY_BASE_DELAY_MS = 5_000;
+/** The backoff ceiling: no failed start waits longer than this to retry. */
+const RETRY_MAX_DELAY_MS = 60_000;
 /**
  * How often an idle session re-checks the setting while reaping is off.
  *
@@ -151,6 +176,8 @@ export class LspManager {
 	#discovering: Promise<DiscoveredServer[]> | undefined;
 	/** In-flight idle reclamations, so `dispose` can wait for them. */
 	#reaping = new Set<Promise<void>>();
+	/** Failed starts per language — the retry backoff's attempt count (#318). */
+	#failures = new Map<string, number>();
 
 	constructor(options: LspManagerOptions) {
 		this.#options = options;
@@ -303,30 +330,57 @@ export class LspManager {
 	/**
 	 * Start warming a language's server, if it is not already starting or up.
 	 *
+	 * A FAILED slot is not a dead end: once its backoff window has passed,
+	 * the slot gives way and the start is tried again (#318). Until then
+	 * the refusal stands — a server that crashes the instant it starts must
+	 * not be respawned in a tight loop by every read that comes by.
+	 *
 	 * @param languageId - registry id.
 	 * @param workspaceRoot - the root to advertise.
 	 */
 	warm(languageId: string, workspaceRoot: string): void {
 		if (this.#disposed) return;
-		if (this.#slots.has(languageId)) return;
+		const existing = this.#slots.get(languageId);
+		if (existing?.state === "failed") {
+			// Retry only when the backoff window has passed (#318); until
+			// then the failed refusal stands.
+			if (!this.#retryDue(languageId, existing)) return;
+		} else if (existing !== undefined) {
+			return; // already starting or ready
+		}
 		this.#slots.set(languageId, { state: "starting" });
 		void this.#start(languageId, workspaceRoot);
 	}
 
+	/**
+	 * Whether a failed slot's retry backoff window has passed.
+	 *
+	 * The wait doubles with each failed attempt and is capped, so a start
+	 * that keeps crashing never spins — and a cold start that merely needed
+	 * longer than the handshake deadline recovers on its own.
+	 */
+	#retryDue(languageId: string, slot: Extract<Slot, { state: "failed" }>): boolean {
+		const attempts = this.#failures.get(languageId) ?? 1;
+		const base = this.#options.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
+		const delay = Math.min(base * 2 ** (attempts - 1), RETRY_MAX_DELAY_MS);
+		return Date.now() - slot.attemptedAt >= delay;
+	}
+
 	async #start(languageId: string, workspaceRoot: string): Promise<void> {
 		let session: LspSession | undefined;
+		let transport: ServerTransportLike | undefined;
 		try {
 			const servers = await this.#servers();
 			const server = serverForLanguage(servers, languageId);
 			if (server === undefined) {
-				this.#slots.set(languageId, {
-					state: "failed",
-					reason: "server-missing",
-					message: `No language server for ${languageId} was found on PATH or in the project's bin directory.`,
-				});
+				this.#markFailed(
+					languageId,
+					"server-missing",
+					`No language server for ${languageId} was found on PATH or in the project's bin directory.`,
+				);
 				return;
 			}
-			const { transport } = this.#options.spawn(server, workspaceRoot);
+			({ transport } = this.#options.spawn(server, workspaceRoot));
 			session = new LspSession(transport, {
 				requestTimeoutMs: this.#options.initializeTimeoutMs ?? 10_000,
 			});
@@ -343,15 +397,27 @@ export class LspManager {
 				transport,
 				lastUsedAt: Date.now(),
 			});
+			// A start that made it all the way up resets the retry backoff:
+			// the next failure counts as the FIRST failure again (#318).
+			this.#failures.delete(languageId);
 			// The idle clock starts now: a server nobody asks for must not hold
 			// its index for the rest of the session.
 			this.#touchIdle(languageId);
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const baseMessage = error instanceof Error ? error.message : String(error);
+			// "exit 1" alone has sent people chasing the wrong thing: when the
+			// server printed why it gave up, that stderr belongs in the refusal
+			// (last 1 200 characters, so a chatty server cannot flood a card).
+			const tail = transport?.stderrTail?.().trim();
+			const message =
+				tail === undefined || tail === ""
+					? baseMessage
+					: `${baseMessage}\n--- server stderr (tail) ---\n${tail.length > 1_200 ? tail.slice(-1_200) : tail}`;
 			// A handshake that failed leaves a process nobody will talk to
-			// again — the slot is `failed` and `warm` refuses to retry it.
-			// Leaving it running would hold its whole index for the rest of
-			// the session, which is the leak the idle reaper exists to stop.
+			// again — shut it down so it cannot hold its whole index for the
+			// rest of the session, which is the leak the idle reaper exists
+			// to stop. The slot records the failure; the retry backoff
+			// decides when it is tried again (#318).
 			if (session !== undefined) {
 				this.#forget(session);
 				try {
@@ -360,9 +426,22 @@ export class LspManager {
 					/* already gone */
 				}
 			}
-			this.#slots.set(languageId, { state: "failed", reason: reasonFor(error), message });
-			this.#options.onFailure?.(languageId, message);
+			this.#markFailed(languageId, reasonFor(error), message);
 		}
+	}
+
+	/**
+	 * Record a failed start: the slot, the attempt count, and the log line.
+	 *
+	 * One path for both "the server was never found" and "the server was
+	 * found but the handshake failed" — the slot shape, the counter, and
+	 * the onFailure notification must not drift between them.
+	 */
+	#markFailed(languageId: string, reason: BackendReason, message: string): void {
+		const attempts = (this.#failures.get(languageId) ?? 0) + 1;
+		this.#failures.set(languageId, attempts);
+		this.#slots.set(languageId, { state: "failed", reason, message, attemptedAt: Date.now() });
+		this.#options.onFailure?.(languageId, message);
 	}
 
 	/**
@@ -487,6 +566,29 @@ export class LspManager {
 		return undefined;
 	}
 
+	/**
+	 * The live session, RESTARTING a failed server on demand — no backoff.
+	 *
+	 * The backoff exists so a crashing server is not respawned in a tight
+	 * loop by the read path. An explicit warm-up is not the read path: the
+	 * caller asked for a start right now, so the failed slot gives way
+	 * immediately and the outcome — either way — is reported (#318).
+	 *
+	 * @param languageId - the registry id to (re)start and wait on.
+	 * @param workspaceRoot - passed to the warm-up.
+	 * @param timeoutMs - how long to hold before giving up (default 15s).
+	 * @returns the session, or `undefined` when it failed or timed out.
+	 */
+	async forceWarm(
+		languageId: string,
+		workspaceRoot: string,
+		timeoutMs: number = LspManager.START_TIMEOUT_MS,
+	): Promise<LspSession | undefined> {
+		if (this.#disposed) return undefined;
+		if (this.#slots.get(languageId)?.state === "failed") this.#slots.delete(languageId);
+		return this.waitForSession(languageId, workspaceRoot, timeoutMs);
+	}
+
 	/** The live session for a language, warming it if this is the first ask. */
 	async sessionFor(languageId: string, workspaceRoot: string): Promise<LspSession | undefined> {
 		const slot = this.#slots.get(languageId);
@@ -531,10 +633,10 @@ export class LspManager {
 	 * install: the client re-read the list, and the server answered from a cache
 	 * taken before the install existed.
 	 *
-	 * The FAILED SLOTS go with it, and that half is easy to miss. A language whose
-	 * server was missing is remembered as `failed`, and `warm` refuses to try a
-	 * language that already has a slot — so re-discovering alone would find the new
-	 * server and still never start it.
+	 * The FAILED SLOTS go with it, and that half is easy to miss. A language
+	 * whose server was missing is remembered as `failed` — retry backoff and
+	 * all — so re-discovering alone would find the new server and still leave
+	 * the stale refusal standing until its window passed.
 	 *
 	 * A live session is left alone: re-discovery is about what exists on disk, not
 	 * about tearing down something that is already talking.
@@ -544,6 +646,7 @@ export class LspManager {
 	rescan(): string[] {
 		this.#discovered = undefined;
 		this.#discovering = undefined;
+		this.#failures.clear(); // the retry backoffs go with the slots
 		const cleared: string[] = [];
 		for (const [languageId, slot] of [...this.#slots]) {
 			if (slot.state === "failed") {
@@ -619,6 +722,37 @@ export class LspManager {
 		return [...this.#slots.entries()].filter(([, slot]) => slot.state === "ready").map(([id]) => id);
 	}
 
+	/**
+	 * Every language's slot state, read-only — what `lsp { operation: "status" }`
+	 * reports.
+	 *
+	 * Never starts or restarts anything: a status question must not have
+	 * side effects on the manager. A failed row carries its reason, message,
+	 * and attempt count, so the reader can tell a crashing server from one
+	 * that was never installed (#318).
+	 */
+	snapshot(): Array<{
+		languageId: string;
+		state: "starting" | "ready" | "failed";
+		reason?: BackendReason;
+		message?: string;
+		/** Failed starts so far — absent when the slot has never failed. */
+		attempts?: number;
+	}> {
+		return [...this.#slots.entries()].map(([languageId, slot]) => {
+			if (slot.state === "failed") {
+				return {
+					languageId,
+					state: "failed",
+					reason: slot.reason,
+					message: slot.message,
+					attempts: this.#failures.get(languageId) ?? 1,
+				};
+			}
+			return { languageId, state: slot.state };
+		});
+	}
+
 	/** Shut every server down and release the processes. */
 	async dispose(): Promise<void> {
 		this.#disposed = true;
@@ -629,6 +763,7 @@ export class LspManager {
 		this.#launched = [];
 		const reaping = [...this.#reaping];
 		this.#slots.clear();
+		this.#failures.clear();
 		await Promise.all([
 			...launched.map(async ({ session, transport }) => {
 				try {

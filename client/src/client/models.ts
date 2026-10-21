@@ -34,6 +34,8 @@ import type {
 	GrepRowMeta,
 	GrepSegment,
 	LspCardModel,
+	LspSlotMeta,
+	LspStatusModel,
 	LspRowMeta,
 	ReadCardModel,
 	ReadMetaHashline,
@@ -984,6 +986,41 @@ export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
 	}
 	if (rows.length === 0) return null;
 	return { path: value.path, rows };
+}
+
+/**
+ * The `lsp` status card's model (#320): the host projects `card: "lsp-status"`
+ * + `slots` for `status` and `warm` answers — language-level facts, not file
+ * rows — and this reads them back, soft-validated like every other meta
+ * reader. ANY deviation yields `null`: the row falls through to the generic
+ * body rather than drawing a guess.
+ */
+export function lspStatusCardModel(block: ToolCallBlock): LspStatusModel | null {
+	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	const meta = block.meta;
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
+	const value = meta as Record<string, unknown>;
+	if (value.card !== "lsp-status" || !Array.isArray(value.slots)) return null;
+	const slots: LspSlotMeta[] = [];
+	for (const candidate of value.slots) {
+		if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
+		const slot = candidate as Record<string, unknown>;
+		if (typeof slot.languageId !== "string" || typeof slot.state !== "string") return null;
+		if (slot.reason !== undefined && typeof slot.reason !== "string") return null;
+		if (slot.message !== undefined && typeof slot.message !== "string") return null;
+		if (slot.attempts !== undefined && typeof slot.attempts !== "number") return null;
+		for (const key of Object.keys(slot)) {
+			if (key !== "languageId" && key !== "state" && key !== "reason" && key !== "message" && key !== "attempts") return null;
+		}
+		slots.push({
+			languageId: slot.languageId,
+			state: slot.state,
+			...(slot.reason !== undefined ? { reason: slot.reason } : {}),
+			...(slot.message !== undefined ? { message: slot.message } : {}),
+			...(slot.attempts !== undefined ? { attempts: slot.attempts } : {}),
+		});
+	}
+	return { slots };
 }
 
 /**

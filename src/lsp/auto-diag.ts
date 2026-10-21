@@ -161,7 +161,7 @@ export function prepareWriteDiagnostics(absolutePath: string, workspaceRoot: str
 		};
 	}
 	// Cold or starting: kick the warm and let the async path wait it out. A
-	// slot that already exists (starting or failed) makes `warm` a no-op.
+	// failed slot restarts here once its retry backoff has passed (#318).
 	manager.warm(language.id, workspaceRoot);
 	return { languageId: language.id, workspaceRoot, uri };
 }
