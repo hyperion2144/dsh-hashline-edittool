@@ -43,10 +43,13 @@ The package declares both faces:
   dsh client module system scans the package and serves the browser half;
 - a **client half** (`lib/client.js`, exposed as the `./client` exports
   subpath) built as a closure factory (`window.__ModuleLoader__.load`). It
-  registers keyed `tool.call.toolview` entries for `read` and `edit` at
-  `priority: -1` — the slot ledger shadows by ascending priority (lowest
-  renders; equal priority throws), so the takeover is deterministic and never
-  touches the shipped registration.
+  registers keyed `tool.call.toolview` entries for its nine takeover keys (`read` … `format`) at
+  `priority: -2` — the slot ledger shadows by ascending priority (lowest
+  renders; equal key + equal priority throws), so the takeover is
+  deterministic and never touches the shipped registration (default `0`). `-1`
+  is a band other skins take for the same keys (`dsh-claude-style` registers
+  read/edit/write there); `-2` clears that collision whichever side mounts
+  first.
 
 Externals (`react`, `react/jsx-runtime`,
 `@deepseek-ai/dsh-client-ui-primitives`) resolve through the loader module

@@ -1,12 +1,18 @@
 /**
  * dsh-hashline-edittool-client — browser half (served as `<pkg>/client.js`).
  *
- * Registers keyed `tool.call.toolview` entries for the `read`, `edit`, `grep`
- * and `write` wire tool names at `priority: -1`: the slot ledger shadows by ascending priority
- * (lowest renders; same key + same priority throws), so the explicit -1
- * deterministically takes over the shipped read/edit/grep/write rows without
- * anything. Plugin unload unwinds the registrations through the caller's fiber —
- * the shipped rows render again, i.e. disabling the plugin leaves no residue.
+ * Registers keyed `tool.call.toolview` entries for every wire tool name it
+ * renders (`read`/`edit`/`write`/`grep`/`undo_last_edit`/`ast_grep`/`ast_edit`/
+ * `lsp`/`format`) at `priority: -2`: the slot ledger shadows by ascending
+ * priority (lowest renders; same key + same priority throws). `-1` is a band
+ * other skins grab for the same shipped keys (`dsh-claude-style` registers
+ * read/edit/write there), so the explicit `-2` clears that collision while
+ * still deterministically taking over the shipped rows at the default 0 — and,
+ * being ordered by value, it keeps working whichever plugin mounts first.
+ * Plugin unload unwinds the registrations through the caller's fiber —
+ * the next-lowest registration render again — a neighbour skin's rows when one
+ * is mounted, the shipped rows otherwise — so disabling the plugin leaves no
+ * residue.
  *
  * The bundle is built as a closure factory (`window.__ModuleLoader__.load`)
  * whose externals (`react`, `react/jsx-runtime`,
@@ -32,6 +38,15 @@ import type { ClientCtx } from "./types.js";
 
 /** Locale namespace of the conversation seat the shipped tool views use. */
 const CONVERSATION_NS = "conversation";
+/**
+ * The takeover priority for every `tool.call.toolview` key this package owns.
+ *
+ * One value, not nine: the ledger throws when two registrations share key AND
+ * priority, so the nine rows must agree — and the value sits below both the
+ * shipped rows (default 0) and the skins that grab `-1` for the same keys
+ * (ADR-0022 records the decision and its residual risk).
+ */
+const TAKEOVER_PRIORITY = -2;
 
 /**
  * Required services of the BUNDLE ROOT: the slot registry only.
@@ -51,28 +66,28 @@ export const inject = ["slots"];
  * It is `BUNDLE_PACKAGE_NAME` below — one constant, used as the slot key,
  * the `configForms.get` argument, and the `whileServed` namespace.
  */
-/** Registers the hashline read conversation row (priority -1 takeover). */
+/** Registers the hashline read conversation row (priority -2 takeover). */
 const readToolview = {
 	name: "hashline-read-toolview",
 	inject: ["slots"],
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "read", locale: CONVERSATION_NS, priority: -1 },
+				{ name: "tool.call.toolview", key: "read", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
 				HashlineReadRow,
 			),
 		);
 	},
 };
 
-/** Registers the hashline edit conversation row (priority -1 takeover). */
+/** Registers the hashline edit conversation row (priority -2 takeover). */
 const editToolview = {
 	name: "hashline-edit-toolview",
 	inject: ["slots"],
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "edit", locale: CONVERSATION_NS, priority: -1 },
+				{ name: "tool.call.toolview", key: "edit", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
 				HashlineEditRow,
 			),
 		);
@@ -95,35 +110,35 @@ const undoToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "undo_last_edit", locale: CONVERSATION_NS, priority: -1 },
+				{ name: "tool.call.toolview", key: "undo_last_edit", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
 				HashlineUndoRow,
 			),
 		);
 	},
 };
 
-/** Registers the hashline grep conversation row (priority -1 takeover). */
+/** Registers the hashline grep conversation row (priority -2 takeover). */
 const grepToolview = {
 	name: "hashline-grep-toolview",
 	inject: ["slots"],
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "grep", locale: CONVERSATION_NS, priority: -1 },
+				{ name: "tool.call.toolview", key: "grep", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
 				HashlineGrepRow,
 			),
 		);
 	},
 };
 
-/** Registers the hashline write conversation row (priority -1 takeover). */
+/** Registers the hashline write conversation row (priority -2 takeover). */
 const writeToolview = {
 	name: "hashline-write-toolview",
 	inject: ["slots"],
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "write", locale: CONVERSATION_NS, priority: -1 },
+				{ name: "tool.call.toolview", key: "write", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
 				HashlineWriteRow,
 			),
 		);
@@ -139,10 +154,9 @@ const writeToolview = {
  * That is what "reuse the rendering" buys: one implementation of what a row
  * looks like, and one place to fix it when it is wrong.
  *
- * `lsp` is deliberately NOT listed. Its result is a symbol list, and dressing
- * that in a read card would mean inventing a mapping the data does not have;
- * the platform default renders it, and `render` already gives the model the
- * text it needs.
+ * `lsp` and `format` are listed too, each with its own row component
+ * (`HashlineLspRow`, `HashlineFormatRow`) — see the per-key notes below for
+ * what each renders.
  */
 const astToolviews = {
 	name: "hashline-ast-toolviews",
@@ -160,7 +174,7 @@ const astToolviews = {
 		] as const) {
 			ctx.slots.inject("tool.call.toolview", () =>
 				ctx.slots.register(
-					{ name: "tool.call.toolview", key, locale: CONVERSATION_NS, priority: -1 },
+					{ name: "tool.call.toolview", key, locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
 					Row,
 				),
 			);
