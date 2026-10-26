@@ -175,3 +175,26 @@ export const DELETE_GUIDANCE: ToolGuidance = {
 		"`delete`: afterwards only an absent observation is recorded — a later `write` recreates the file from scratch. Other sessions' old anchors are dead; they re-read.",
 	],
 };
+
+/** Rename tool description. */
+export const RENAME_DESCRIPTION =
+	"Rename or move regular files and carry their hashline state (anchors, served rows, undo history) to the new path. " +
+	"Pass `renames` (1-32 `{from, to}` pairs, exact duplicates collapse); relative paths resolve against the session cwd. " +
+	"Only regular files: directories, symlinks, and special files are refused. " +
+	"An existing destination is refused unless it is the same file under another spelling; nothing is overwritten. " +
+	"Pairs run in request order, so chains work; partial failures are reported per pair. " +
+	"Afterwards the old path's anchors are gone and the new path keeps them - do not use `bash mv`, which leaves a second batch. " +
+	"Under workspace-write both sides must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`.";
+
+export const RENAME_GUIDANCE: ToolGuidance = {
+	intro: "Rename or move regular files and keep their hashline anchors usable.",
+	lines: [
+		"`rename`: `renames` is an explicit list of 1-32 `{from, to}` pairs (exact duplicates collapse); relative paths resolve against the session cwd. There is no directory, glob, or recursive form.",
+		"`rename`: use it instead of `bash mv`. A shell move leaves the old path's `anchor_meta` / `anchor_lines` / `served` / `undo` behind and the new path grows a second batch; `rename` migrates them.",
+		"`rename`: regular files only - a symlink, directory, or special file fails with its own code; use bash for those.",
+		"`rename`: an existing destination is `[E_EXISTS]` unless it is the same file under another spelling (case-only rename). Nothing is overwritten; the destination parent must already exist.",
+		"`rename`: pairs run in request order, so chains (`a→b`, `b→c`) work; a pair's failure does not stop the others.",
+		"`rename`: afterwards the old path has only an absent observation and the new path a present one; the moved file's anchors, served rows (all sessions) and undo history are the SAME rows under the new path - no re-read needed.",
+		"`rename`: under workspace-write both source and destination must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`. Only use the escalation fields when the schema advertises them.",
+	],
+};

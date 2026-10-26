@@ -33,6 +33,7 @@ import {
 	HashlineWriteRow,
 } from "./tool-row.js";
 import { HashlineDeleteRow } from "./delete-card.js";
+import { HashlineRenameRow } from "./rename-card.js";
 import { HashlineSettingsCard } from "./settings-card.js";
 import { formFace } from "./settings-model.js";
 import type { ClientCtx } from "./types.js";
@@ -160,6 +161,20 @@ const deleteToolview = {
 	},
 };
 
+/** Registers the hashline rename conversation row (priority -2 takeover). */
+const renameToolview = {
+	name: "hashline-rename-toolview",
+	inject: ["slots"],
+	apply(ctx: ClientCtx) {
+		ctx.slots.inject("tool.call.toolview", () =>
+			ctx.slots.register(
+				{ name: "tool.call.toolview", key: "rename", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				HashlineRenameRow,
+			),
+		);
+	},
+};
+
 /**
  * The AST tools, rendered by the rows that already exist.
  *
@@ -258,6 +273,7 @@ export function apply(ctx: ClientCtx): void {
 	ctx.plugin(grepToolview);
 	ctx.plugin(writeToolview);
 	ctx.plugin(deleteToolview);
+	ctx.plugin(renameToolview);
 	ctx.plugin(astToolviews);
 	ctx.plugin(settingsCard);
 }

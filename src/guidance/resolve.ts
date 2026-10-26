@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
 	editGuidance,
 	DELETE_GUIDANCE,
+	RENAME_GUIDANCE,
 	GREP_GUIDANCE,
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
@@ -78,6 +79,12 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		file: "delete.md",
 		defaultOrder: 134,
 		renderDefault: () => guidanceText(DELETE_GUIDANCE),
+	},
+	{
+		name: "tool:rename",
+		file: "rename.md",
+		defaultOrder: 135,
+		renderDefault: () => guidanceText(RENAME_GUIDANCE),
 	},
 ];
 

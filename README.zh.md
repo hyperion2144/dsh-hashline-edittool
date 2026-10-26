@@ -36,7 +36,7 @@
 ## 它是什么
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai) 插件：用**哈希锚定**版本替换内置的
-`read` / `edit` / `grep` 工具，并在此基础上提供 `delete`、`undo_last_edit`、`ast_grep`、`ast_edit`
+`read` / `edit` / `grep` 工具，并在此基础上提供 `delete`、`rename`、`undo_last_edit`、`ast_grep`、`ast_edit`
 和 `lsp` 工具：
 
 - **每一行都携带内容锚点** —— 变长 Base62 标记（前 3,844 行只需 2 个字符，随文件规模
@@ -226,6 +226,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | `lsp` | 能起语言服务器就做符号级工作（按语言启动，与 dsh 的 `lsp` 服务共享）；否则降级启发式后端。其行会被 serve，因此 LSP 输出可直接编辑。`status` 只读查询已启动语言的服务器状态；`warm` 跳过退避立即启动/重拉。 |
 | `format` | 用该文件语言服务器的格式化器格式化——全文，或 `range: {start, end}`（**两端都是本会话 served 锚点**）。文件须已 observed（否则 `[E_NOT_OBSERVED]`）；格式化器无改动即 `noop`；与 `edit` 一样进 undo。手动调用允许冷启动（15s）——因为你点名要它。 |
 | `delete` | 删除普通文件并回收其 hashline 状态：`paths`（1–32 个，重复项合并）逐个删除，再把该路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里清掉。文件不存在也算 `already-absent` 成功并照样回收残留；符号链接、目录与特殊文件拒绝；非本地后端 fail-closed。`workspace-write` 下目标必须在 canonical 可写根内。报告逻辑字节；物理磁盘在存储关闭时 VACUUM 归还。多文件逐路径部分失败，没有 undelete。 |
+| `rename` | 重命名/移动普通文件并迁移其 hashline 状态：`renames`（1–32 个 `{from, to}` 对，完全重复项合并）按请求顺序逐对执行，链式改名成立；每个被移动路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里搬到新路径，改名之前服务过的锚点无需重读即可继续使用。符号链接、目录与特殊文件拒绝；目标已存在时除非是同一 inode 的另一种拼写否则 `[E_EXISTS]`；非本地后端 fail-closed。旧路径记 absent、新路径记 present；不发 write intent。多对逐对部分失败；store 迁移失败只 warning。 |
 
 ### 输出模式
 
@@ -288,6 +289,10 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_DELETE_STALE]` | 探查后路径发生变化（审批窗口或围栏期间）；重新检查再试。 |
 | `[E_SYMLINK]` | `delete` 拒绝符号链接；链接与目标都未动。 |
 | `[E_NOT_FILE]` | `delete` 目标是目录或特殊文件，不是普通文件。 |
+| `[E_RENAME_UNSUPPORTED]` | `rename` 无法通过宿主文件系统触达该路径（远程/非本地后端）；请用 bash。 |
+| `[E_RENAME_STALE]` | 源路径在探查后发生变化（审批窗口或围栏期间）；重新检查再试。 |
+| `[E_CROSS_DEVICE]` | `rename` 无法跨文件系统移动（`EXDEV`）；没有 copy+delete 回退。 |
+| `[E_EXISTS]` | `rename` 拒绝已存在的目标——除非它是同一 inode 的另一种拼写。 |
 | `[E_DELETE_FAILED]` | 全部路径失败且没有任何域错误码时的整次调用兜底码。 |
 | `[E_ELISION_IN_PAYLOAD]` | 载荷携带大纲标记 `…`；警告，编辑继续。 |
 | `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | 格式化：服务器返回的 TextEdit 非法（越界/重叠）/ 该服务器没有文档格式化 provider——或显式带 range 调用遇到无 range provider 且 `format.fallback_full_file` 关闭（#315）。 |
@@ -336,6 +341,8 @@ $DSH_HOME/plugins/dsh-hashline-edittool/<projectKey>/hash-store.sqlite
 在一个事务里清掉并报告释放的逻辑字节。逻辑字节真的下降时写入 `pending_vacuum` 标记；
 存储关闭时同步 VACUUM，成功才清标记。
 
+`rename` 工具把一条路径的四族行在一个事务里搬到新路径：先清目标路径的残留，再逐族 `INSERT … SELECT` 并删除旧行——绝不用 `UPDATE … SET path`，因为路径/行数维护值是 `INSERT`/`DELETE` 触发器。锚点、undo 正文、`served.reported` 与 `updated_at` 原样迁移，改名后同一批锚点继续可用。
+
 ## 架构
 
 一个插件，三个平面：
@@ -344,7 +351,7 @@ $DSH_HOME/plugins/dsh-hashline-edittool/<projectKey>/hash-store.sqlite
 src/
 ├── index.ts              # 入口：挂载工具、设置、LSP、语法路由
 ├── config.ts             # 设置 schema + 接线（热更新）
-├── tools/                # 9 个工具入口 —— 薄壳，不做 IO
+├── tools/                # 10 个工具入口 —— 薄壳，不做 IO
 ├── domain/
 │   ├── edit/             # 编辑引擎、变更事务、契约、prompts
 │   └── session/          # served 状态、hash store、文件视图

@@ -105,7 +105,12 @@ export function HashlineDeleteRow({ block, cwd, home }: ToolViewProps): ReactNod
 			collapsedContent:
 				summary === ""
 					? null
-					: jsx_("span", { className: css.summary, children: summary }),
+					: jsx_("span", {
+							children: [
+								jsx_("span", { className: css.sep, "aria-hidden": true }),
+								jsx_("span", { className: css.summary, children: summary }),
+							],
+						}),
 			children: jsx_("div", { className: css.bodyWrap, children: body }),
 		}),
 	});

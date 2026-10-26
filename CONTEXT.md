@@ -164,4 +164,17 @@ _Avoid_: not found, skipped
 **Logical reclaim / physical reclaim**:
 Logical reclaim is the immediate drop in `(page_count − freelist_count) × page_size` after the purge; physical reclaim is the file size returning at store shutdown when the `pending_vacuum` marker triggers a synchronous VACUUM. The tool reports the former and marks the latter; it never VACUUMs inline.
 _Avoid_: freed bytes (say which), compact
+## Rename and path migration
+
+**`rename`**:
+The tool that moves a regular file and its hashline state together. Not a directory/glob tool, not an overwrite: an existing destination is `E_EXISTS` unless it is the same inode under another spelling. Pairs run in request order so chains work.
+_Avoid_: mv (that is the shell transport), move (the tool covers both)
+
+**Path migration**:
+`HashStore.renamePath(from, to)` — one transaction that purges the destination's residue, then moves `anchor_meta` / `anchor_lines` / `served` / `undo` with `INSERT … SELECT` + `DELETE`. Never `UPDATE … SET path`: the maintained path/row counts are INSERT/DELETE triggers. Anchor values are content-derived, so they survive verbatim.
+_Avoid_: repath (implementation slang), path update
+
+**Anchor preservation across path**:
+A served anchor remains usable after a rename because the rows moved with the file, not because the model re-read it. The old path keeps no rows; the new path is the same batch.
+_Avoid_: anchor copy, re-anchor
 

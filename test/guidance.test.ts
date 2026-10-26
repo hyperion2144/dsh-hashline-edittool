@@ -56,13 +56,14 @@ const bullets = (lines: readonly string[]) =>
 	lines.map((line) => `- ${line}`).join("\n");
 
 describe("guidance sections", () => {
-	it("exposes the five sections with stable order, file names, and defaults", () => {
+	it("exposes the six sections with stable order, file names, and defaults", () => {
 		expect(GUIDANCE_SECTIONS.map((s) => s.name)).toEqual([
 			"tool:read",
 			"tool:edit",
 			"tool:undo_last_edit",
 			"tool:grep",
 			"tool:delete",
+			"tool:rename",
 		]);
 		expect(GUIDANCE_SECTIONS.map((s) => s.file)).toEqual([
 			"read.md",
@@ -70,9 +71,10 @@ describe("guidance sections", () => {
 			"undo_last_edit.md",
 			"grep.md",
 			"delete.md",
+			"rename.md",
 		]);
 		expect(GUIDANCE_SECTIONS.map((s) => s.defaultOrder)).toEqual([
-			130, 131, 132, 133, 134,
+			130, 131, 132, 133, 134, 135,
 		]);
 	});
 
@@ -408,7 +410,7 @@ describe("resolveSection", () => {
 });
 
 describe("composeSections", () => {
-	it("returns the five sections in default-order sequence", async () => {
+	it("returns the six sections in default-order sequence", async () => {
 		await withHome(async (home) => {
 			const sections = await composeSections(undefined, home);
 			expect(sections.map((s) => s.name)).toEqual([
@@ -417,8 +419,9 @@ describe("composeSections", () => {
 				"tool:undo_last_edit",
 				"tool:grep",
 				"tool:delete",
+				"tool:rename",
 			]);
-			expect(sections.map((s) => s.order)).toEqual([130, 131, 132, 133, 134]);
+			expect(sections.map((s) => s.order)).toEqual([130, 131, 132, 133, 134, 135]);
 			expect(sections.map((s) => s.text)).toEqual(
 				GUIDANCE_SECTIONS.map((s) => s.renderDefault()),
 			);
