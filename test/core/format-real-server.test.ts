@@ -25,6 +25,7 @@ import { serverArgv } from "../../src/lsp/discovery.js";
 import { detectFormattingCapability } from "../../src/lsp/format/capability.js";
 import { requestFormatting, requestRangeFormatting } from "../../src/lsp/format/requests.js";
 import { applyTextEdits } from "../../src/lsp/format/text-edits.js";
+import { inferIndentOptions } from "../../src/lsp/format/indent.js";
 import type { LspSession } from "../../src/lsp/session.js";
 import type { DiscoveredServer } from "../../src/lsp/discovery.js";
 
@@ -80,6 +81,8 @@ describe.skipIf(!TLS_ON_PATH)("the format pipeline against a REAL typescript-lan
 	afterAll(async () => {
 		await manager.dispose();
 		await rm(join(root, ".format-smoke.ts"), { force: true });
+		await rm(join(root, ".format-smoke-4.ts"), { force: true });
+		await rm(join(root, ".format-smoke-336.ts"), { force: true });
 	});
 
 	it("discovers a full-document formatting provider in the real capabilities", () => {
@@ -112,4 +115,70 @@ describe.skipIf(!TLS_ON_PATH)("the format pipeline against a REAL typescript-lan
 		const formatted = applyTextEdits(UGLY, edits, { bom: "", eol: "\n" });
 		expect(formatted).toContain("return a + b;");
 	}, 20_000);
+
+	it("leaves an already-4-space file untouched over the real wire (#336)", async () => {
+		const four = [
+			"export class Foo {",
+			"    bar(y: number): number {",
+			"        if (y > 0) {",
+			"            return y * 2;",
+			"        }",
+			"        return y;",
+			"    }",
+			"",
+			"    baz(): void {",
+			"        console.log(1);",
+			"    }",
+			"}",
+			"",
+		].join("\n");
+		// #336: the file is already 4-space, so the inferred options must
+		// describe it and the formatter must leave every line alone.
+		expect(inferIndentOptions(four)).toEqual({ insertSpaces: true, tabSize: 4 });
+		const fourUri = pathToFileURL(join(root, ".format-smoke-4.ts")).href;
+		await writeFile(join(root, ".format-smoke-4.ts"), four, "utf8");
+		session!.didOpen(fourUri, "typescript", four);
+		const options = inferIndentOptions(four);
+		const whole = await requestFormatting(session!, fourUri, options, 15_000);
+		expect(applyTextEdits(four, whole, { bom: "", eol: "\n" })).toBe(four);
+		const ranged = await requestRangeFormatting(
+			session!,
+			fourUri,
+			{ start: { line: 1, character: 0 }, end: { line: 7, character: 0 } },
+			options,
+			15_000,
+		);
+		expect(applyTextEdits(four, ranged, { bom: "", eol: "\n" })).toBe(four);
+	}, 30_000);
+
+	it("repairs a 2-space line in a 4-space file, not the whole file (#336 review)", async () => {
+		const damaged = [
+			"function compute(): number {",
+			"    let total = 0;",
+			"    for (let i = 0; i < 10; i++) {",
+			"  total += i;",
+			"    }",
+			"    return total;",
+			"}",
+			"",
+		].join("\n");
+		// The review matrix: one hand-edited 2-space line must not turn the
+		// file into 2-space.
+		const options = inferIndentOptions(damaged);
+		expect(options).toEqual({ insertSpaces: true, tabSize: 4 });
+		const damagedUri = pathToFileURL(join(root, ".format-smoke-336.ts")).href;
+		await writeFile(join(root, ".format-smoke-336.ts"), damaged, "utf8");
+		session!.didOpen(damagedUri, "typescript", damaged);
+		const repaired = damaged.replace("  total += i;", "        total += i;");
+		const ranged = await requestRangeFormatting(
+			session!,
+			damagedUri,
+			{ start: { line: 3, character: 0 }, end: { line: 4, character: 0 } },
+			options,
+			15_000,
+		);
+		expect(applyTextEdits(damaged, ranged, { bom: "", eol: "\n" })).toBe(repaired);
+		const whole = await requestFormatting(session!, damagedUri, options, 15_000);
+		expect(applyTextEdits(damaged, whole, { bom: "", eol: "\n" })).toBe(repaired);
+	}, 30_000);
 });

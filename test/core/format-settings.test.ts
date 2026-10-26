@@ -24,11 +24,11 @@ afterEach(() => {
 });
 
 describe("format settings (#315)", () => {
-	it("defaults: mode off, fallback off, editorconfig off", () => {
+	it("defaults: mode off, fallback off, editorconfig on (#336)", () => {
 		applyEffective(undefined);
 		expect(autoFormatMode()).toBe("off");
 		expect(formatFallbackFullFile()).toBe(false);
-		expect(isEditorconfigEnabled()).toBe(false);
+		expect(isEditorconfigEnabled()).toBe(true);
 	});
 
 	it("legacy booleans migrate: true → full, false → off", () => {

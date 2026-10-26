@@ -68,7 +68,7 @@
 
 **写入即诊断（自动诊断）。** 编辑/写入落盘后，插件以写入前的文本为基线通知语言服务器，拉取诊断并按写入文件逐一投递——短窗口内联胶囊挂在卡片下方（严重度着色），未竟部分在模型下一步自然边界异步补投；JSON 信封与 text 模式双通道可达。`lsp.auto_diagnostics` 一键关闭。
 
-**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进从文件推断（`format.editorconfig` 开启时优先读 `.editorconfig`）。`format.auto` 是三态开关（#315）：**off**（默认）绝不背着工具悄悄格式化；**full** 在每次真正改了内容的 `write`/`edit`/`ast_edit` 后格式化整个文件；**range** 只格式化本次调用改到的行——仅当服务器不支持局部格式化**且** `format.fallback_full_file` 开启时才回退整文件（否则该次自动格式化静默跳过，而显式带 range 调用 `format` 工具会以 `E_FORMAT_UNSUPPORTED` 明确拒绝、绝不擅自猜测）。只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · r restored · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312）；被格式化器改回编辑前原文的行**只定位、不引用**——每段连续行折叠成一条 `@@ ~start,count @@ scope` 定位行加一句 restored 摘要（#315）；本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
+**语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进优先取项目 `.editorconfig`（`format.editorconfig` 默认为开），否则按文件自身的缩进**步长**推断（4 空格的深层文件仍是 4 空格，见 #336）。`format.auto` 是三态开关（#315）：**off**（默认）绝不背着工具悄悄格式化；**full** 在每次真正改了内容的 `write`/`edit`/`ast_edit` 后格式化整个文件；**range** 只格式化本次调用改到的行——仅当服务器不支持局部格式化**且** `format.fallback_full_file` 开启时才回退整文件（否则该次自动格式化静默跳过，而显式带 range 调用 `format` 工具会以 `E_FORMAT_UNSUPPORTED` 明确拒绝、绝不擅自猜测）。只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · r restored · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312）；被格式化器改回编辑前原文的行**只定位、不引用**——每段连续行折叠成一条 `@@ ~start,count @@ scope` 定位行加一句 restored 摘要（#315）；本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
 
 **插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断、语言服务器空闲回收窗口。改完提交即生效——不用碰 YAML。
 
@@ -260,7 +260,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
     format:
       auto: off              # write/edit/ast_edit 后的格式化模式：off | full | range（存量 true→full、false→off）
       fallback_full_file: false # range 模式：服务器不支持局部格式化时回退整文件
-      editorconfig: false   # 格式化时读取 .editorconfig 缩进设置
+      editorconfig: true    # 格式化时读取 .editorconfig 缩进设置（默认开）
 ```
 
 从 0.1.6 迁移？旧 `~/.dsh/settings.yaml` 的导入由 **dsh 自己**在升级时完成；本插件不再读取、迁移或写入任何设置文件——本页的条目配置是唯一真相源。旧的 `hashline:` 键若没带过来，在上面的表单里补上即可。

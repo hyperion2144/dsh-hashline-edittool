@@ -195,6 +195,8 @@ export function validateStoreBudgetDraft(
  * auto-diagnostics, because formatting REWRITES the model's content and
  * must not start unbidden. Legacy persisted booleans map (true → "full",
  * false → "off") so the card shows what the host will actually do.
+ * `editorconfig` is the opposite (#336): ON unless the snapshot says
+ * false, because a checked-in project standard outranks the file heuristic.
  *
  * Pure and exported so the card and the tests read ONE truth.
  */
@@ -215,12 +217,12 @@ export function readFormatFlags(snapshot: ConfigFormSnapshot): {
 } {
 	const format = snapshot.value?.format;
 	if (typeof format !== "object" || format === null) {
-		return { auto: "off", editorconfig: false, fallback: false };
+		return { auto: "off", editorconfig: true, fallback: false };
 	}
 	const f = format as { auto?: unknown; editorconfig?: unknown; fallback_full_file?: unknown };
 	return {
 		auto: normalizeFormatAuto(f.auto),
-		editorconfig: f.editorconfig === true,
+		editorconfig: f.editorconfig === undefined ? true : f.editorconfig === true,
 		fallback: f.fallback_full_file === true,
 	};
 }

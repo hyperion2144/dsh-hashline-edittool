@@ -332,8 +332,8 @@ describe("readFormatFlags (#315) — tri-state auto, legacy booleans, fallback",
 		value: { ...READY.value, format },
 	});
 
-	it("defaults to off / no fallback when the subtree is absent (old logs)", () => {
-		expect(readFormatFlags(READY)).toEqual({ auto: "off", editorconfig: false, fallback: false });
+	it("defaults to auto off / editorconfig on / no fallback when the subtree is absent (old logs)", () => {
+		expect(readFormatFlags(READY)).toEqual({ auto: "off", editorconfig: true, fallback: false });
 	});
 
 	it("maps legacy booleans: true → full, false → off", () => {
@@ -357,7 +357,7 @@ describe("readFormatFlags (#315) — tri-state auto, legacy booleans, fallback",
 		});
 		expect(readFormatFlags(snapshotWith({ auto: "full" }))).toEqual({
 			auto: "full",
-			editorconfig: false,
+			editorconfig: true,
 			fallback: false,
 		});
 		expect(readFormatFlags(snapshotWith({ auto: "off" }))).toMatchObject({ auto: "off" });
@@ -369,7 +369,7 @@ describe("readFormatFlags (#315) — tri-state auto, legacy booleans, fallback",
 			editorconfig: false,
 			fallback: false,
 		});
-		expect(readFormatFlags(snapshotWith("on"))).toEqual({ auto: "off", editorconfig: false, fallback: false });
+		expect(readFormatFlags(snapshotWith("on"))).toEqual({ auto: "off", editorconfig: true, fallback: false });
 	});
 });
 

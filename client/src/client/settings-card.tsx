@@ -1253,7 +1253,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			</div>
 			<div className="dshl-mgr-master">
 				<span className="dshl-mgr-label">读取 .editorconfig</span>
-				<span className="dshl-mgr-hint">缩进风格与宽度优先取 .editorconfig，缺省用文件内启发式（默认关）</span>
+				<span className="dshl-mgr-hint">缩进风格与宽度优先取 .editorconfig，缺省用文件内启发式（默认开）</span>
 				<span className="dshl-mgr-grow" />
 				{renderSwitch(
 					formatFlags.editorconfig,

@@ -1,8 +1,9 @@
 /**
  * Assembling the `FormattingOptions` a formatting request carries.
  *
- * The cascade is (G1): `.editorconfig` — only when `format.editorconfig` is
- * ON — then the document-whitespace heuristic, then the JSON-ish default.
+ * The cascade is (G1; default flipped by #336): `.editorconfig` when
+ * `format.editorconfig` is on (the default) — then the document-whitespace
+ * heuristic, then the JSON-ish default.
  * The cascade composes PER KEY: a project that names only `indent_style` keeps
  * the file's own `tabSize` verdict. This module is the ONE place that knows
  * the order; the `format` tool and the automatic path both come here.
