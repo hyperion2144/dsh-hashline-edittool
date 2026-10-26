@@ -44,7 +44,9 @@ describe("hashline size limits — removed in v2.0", () => {
 	// nothing. This used to pass only because reads hit an in-process cache that
 	// outlived the rows; with the cache gone (contract §8: the rows are the
 	// record) the boundary is visible instead of hidden.
-	it("does not throw E_FILE_TOO_LARGE through the persistence path", { timeout: 30_000 }, async () => {
+	// Windows CI has run this at 31.6s; the 30s cap was runner variance, not a
+	// regression (#335). Keep a clear 2x margin rather than re-running flakes.
+	it("does not throw E_FILE_TOO_LARGE through the persistence path", { timeout: 60_000 }, async () => {
 		const line = "x";
 		const content = Array.from({ length: 300_000 }, () => line).join("\n");
 		const { anchors } = await anchorFor({
