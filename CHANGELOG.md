@@ -8,6 +8,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 - `lsp.idle_timeout_ms` 设置：语言服务器空闲超过该窗口（默认 5 分钟，0 = 永不）即被回收，下次用到再拉起（#306）。
 - `format.fallback_full_file` 设置（默认关）：range 模式下服务器不支持局部格式化时的回退必须是显式选择——自动路径静默跳过，`format` 工具显式带 range 则以 `E_FORMAT_UNSUPPORTED` 拒绝而不是悄悄格式化整文件（#315）。
+- 新增 `delete` 工具：删除普通文件并回收该路径的 `anchor_meta` / `anchor_lines` / 所有会话的 `served` / 所有深度的 `undo`，报告逻辑释放量；物理空间在存储关闭时 VACUUM 归还（#322）。
 
 ### Changed
 
@@ -24,6 +25,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 - format 工具的 range 边界修复：`<line>:<anchor>` 组合形式（数字在前的行号提示）的行号曾被当锚点查找而误报 `E_RANGE_UNVERIFIED`，现在两种行号顺序都正确解析（#316）
 - 关闭哈希存储时在写完关闭标记后再做一次 WAL 检查点：干净关机后不留未落盘的 WAL 帧，下一次打开是普通读而不是恢复（#303）。
+- 关闭哈希存储时真正等待 VACUUM 完成；此前的 `pending_vacuum` 没有生产者、VACUUM 又是异步的，标记在完成前就被清掉。现在删除/淘汰在逻辑字节下降时写标记，关机同步 VACUUM 成功才清（#322）。
 - 语言服务器子进程不再常驻到插件卸载：握手失败的进程立即关闭，空闲超时的会话被回收（#306）。
 - `grep` 命中区超过单次响应预算时不再返回空壳：改为按行切分，先返回预算内放得下的行（带锚点、可直接编辑，切点不会落在首个命中之前），其余行经 resume 提示续取（#307）。
 - 锚点库冷开与每次写的预算判定不再随 `anchor_lines` 行数线性变慢：行数改为随写入同事务维护的值（#305）。

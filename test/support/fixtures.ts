@@ -20,6 +20,7 @@ import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildUndoTool } from "../../src/tools/tool-undo.js";
 import { buildFormatTool } from "../../src/tools/tool-format.js";
 import { buildGrepTool } from "../../src/tools/tool-grep.js";
+import { buildDeleteTool } from "../../src/tools/tool-delete.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 export async function getWritableTempRoot(): Promise<string> {
@@ -316,6 +317,7 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 		undo_last_edit: wrapTool(buildUndoTool(io, sandbox), makeExecFor),
 		format: wrapTool(buildFormatTool(io, sandbox), makeExecFor),
 		grep: wrapTool(buildGrepTool(io), makeExecFor),
+		delete: wrapTool(buildDeleteTool(io, sandbox), makeExecFor),
 	};
 	return {
 		io,
@@ -326,6 +328,7 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 		readTool: tools.read,
 		editTool: tools.edit,
 		formatTool: tools.format,
+		deleteTool: tools.delete,
 	};
 }
 

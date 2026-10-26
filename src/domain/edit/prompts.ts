@@ -155,3 +155,23 @@ export const GREP_GUIDANCE: ToolGuidance = {
 		'`grep`: results over the per-response char budget (default 48,000) spill to a resume file. The footer `(Omitted N lines (~C chars). Use grep {resume: "TOKEN"} to continue.)` tells you the token — pass it via `resume` to get the next segment.'
 	],
 };
+
+/** Delete tool description. */
+export const DELETE_DESCRIPTION =
+	"Delete regular files and reclaim their hashline state (anchors, served rows, undo history). " +
+	"Pass `paths` (1-32 entries). Only regular files: directories, symlinks, and special files are refused. " +
+	"A missing path is success (already absent) and still reclaims residue. Partial failures are reported per path. " +
+	"Deletion is permanent — there is no undelete. The store's logical space is freed immediately; physical space returns at store shutdown (VACUUM). " +
+	"Under workspace-write the target must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`.";
+
+export const DELETE_GUIDANCE: ToolGuidance = {
+	intro: "Delete regular files and reclaim the hashline rows they leave behind.",
+	lines: [
+		"`delete`: `paths` is an explicit list (1-32, duplicates collapse); relative paths resolve against the session cwd. There is no directory, glob, or recursive form.",
+		"`delete`: regular files only — a symlink, directory, or special file fails with its own code; use bash for those. Deletion is permanent: there is no undelete.",
+		"`delete`: a missing path is success (`already-absent`) and still reclaims any residue; a partial failure is reported per path and does not stop the others.",
+		"`delete`: under workspace-write the file must be inside the writable roots (workspace, /tmp, the platform temp dir); a wider mode needs `sandbox_permissions` + `justification`. Only use the escalation fields when the schema advertises them.",
+		"`delete`: on success the path's `anchor_meta` / `anchor_lines` / `served` (all sessions) / `undo` (all depths) rows are purged; the reply reports rows and logical bytes. Physical disk returns at store shutdown (VACUUM pending).",
+		"`delete`: afterwards only an absent observation is recorded — a later `write` recreates the file from scratch. Other sessions' old anchors are dead; they re-read.",
+	],
+};

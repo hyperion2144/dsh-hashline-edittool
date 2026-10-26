@@ -585,6 +585,15 @@ export function takeAlignmentNotice(path: string): string | undefined {
   return notice;
 }
 
+/**
+ * Forget a pending degradation notice for a path (the file was deleted; the
+ * notice describes a state nothing can rewrite).
+ * @param path - the absolute path being removed.
+ */
+export function clearAlignmentNotice(path: string): void {
+  alignmentNotices.delete(path);
+}
+
 /** Test seam: forget every pending notice (suites must not leak into each other). */
 export function resetAlignmentNotices(): void {
   alignmentNotices.clear();

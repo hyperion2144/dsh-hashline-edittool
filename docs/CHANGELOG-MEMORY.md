@@ -753,3 +753,23 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - `client/README.md`：接管优先级段改为 `-2` 并说明共享 shadow band
 - `docs/research/toolview-slot-priority-collision.md` (created)：台账语义与邻居取证
 - `CHANGELOG.md` `[Unreleased]` Fixed 段一行（#321）
+
+## 2026-10-26 — ADR-0023 + delete tool spec
+
+**Type:** new decision record + spec
+**Confidence:** High
+**Evidence:** `src/tools/tool-delete.ts`, `src/infra/fs-bridge.ts`, `src/domain/session/hash-store.ts`, `src/lsp/{manager,sync}.ts`, `test/core/delete-tool.test.ts`, `test/core/fs-bridge.delete.test.ts`, `test/core/hash-store-purge-path.test.ts`, `client/src/client/delete-card.tsx`, `client/test/delete-card.test.ts`, `npm run typecheck` / `npm test` / `npm run typecheck -w client` / `npm test -w client` / `npm run build -w client`
+
+### Why
+
+Map #322 的 `delete` 工具需要把「删文件」与「回收锚点库」做成一个契约：`ctx.fs` 在 dsh 0.2.x 没有删除面（研究记录见 `docs/research/dsh-removal-seam.md`），所以传输层是宿主 `node:fs.unlink` + 用 `writableRoots`/`fs.contains` 重建围栏；回收层是公开的 `HashStore.purgePath` 四族级联；物理层修好了 `pending_vacuum` 从未有生产者、关闭 VACUUM 异步未被等待的缺口。完整取舍与残余风险记录在 `docs/adr/0023-delete-tool.md`，实施契约在 `docs/specs/delete-tool-spec.md`。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0023-delete-tool.md` (created)
+- `docs/specs/delete-tool-spec.md` (created)
+- `docs/adr/0010-bounded-anchor-storage.md` (amendment: producer + synchronous close VACUUM)
+- `AGENTS.md` l0 decisions 0001–0022 → 0001–0023，追加 delete 主题
+- `README.md` / `README.zh.md`：工具表、错误码、Store 回收段、架构工具数 8→9
+- `CHANGELOG.md` `[Unreleased]`：delete 工具 + VACUUM 修复各一条
+- `CONTEXT.md`：delete / path purge / already-absent / logical vs physical reclaim

@@ -32,6 +32,7 @@ import {
 	HashlineUndoRow,
 	HashlineWriteRow,
 } from "./tool-row.js";
+import { HashlineDeleteRow } from "./delete-card.js";
 import { HashlineSettingsCard } from "./settings-card.js";
 import { formFace } from "./settings-model.js";
 import type { ClientCtx } from "./types.js";
@@ -41,8 +42,8 @@ const CONVERSATION_NS = "conversation";
 /**
  * The takeover priority for every `tool.call.toolview` key this package owns.
  *
- * One value, not nine: the ledger throws when two registrations share key AND
- * priority, so the nine rows must agree — and the value sits below both the
+ * One value, not ten: the ledger throws when two registrations share key AND
+ * priority, so the ten rows must agree — and the value sits below both the
  * shipped rows (default 0) and the skins that grab `-1` for the same keys
  * (ADR-0022 records the decision and its residual risk).
  */
@@ -145,6 +146,20 @@ const writeToolview = {
 	},
 };
 
+/** Registers the hashline delete conversation row (priority -2 takeover). */
+const deleteToolview = {
+	name: "hashline-delete-toolview",
+	inject: ["slots"],
+	apply(ctx: ClientCtx) {
+		ctx.slots.inject("tool.call.toolview", () =>
+			ctx.slots.register(
+				{ name: "tool.call.toolview", key: "delete", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				HashlineDeleteRow,
+			),
+		);
+	},
+};
+
 /**
  * The AST tools, rendered by the rows that already exist.
  *
@@ -242,6 +257,7 @@ export function apply(ctx: ClientCtx): void {
 	ctx.plugin(undoToolview);
 	ctx.plugin(grepToolview);
 	ctx.plugin(writeToolview);
+	ctx.plugin(deleteToolview);
 	ctx.plugin(astToolviews);
 	ctx.plugin(settingsCard);
 }

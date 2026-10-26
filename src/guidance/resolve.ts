@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import {
 	editGuidance,
+	DELETE_GUIDANCE,
 	GREP_GUIDANCE,
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
@@ -44,7 +45,7 @@ export interface GuidanceSection {
 	renderDefault(): string;
 }
 
-/** The four sections, in default-order sequence. */
+/** The five sections, in default-order sequence. */
 export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 	{
 		name: "tool:read",
@@ -71,6 +72,12 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		file: "grep.md",
 		defaultOrder: 133,
 		renderDefault: () => guidanceText(GREP_GUIDANCE),
+	},
+	{
+		name: "tool:delete",
+		file: "delete.md",
+		defaultOrder: 134,
+		renderDefault: () => guidanceText(DELETE_GUIDANCE),
 	},
 ];
 

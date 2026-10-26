@@ -15,11 +15,11 @@
  * @module dsh-hashline-edittool/fs-bridge
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile, stat, unlink } from "node:fs/promises";
 import type { Context } from "@deepseek-ai/cordis";
-import type { FileSystem } from "@deepseek-ai/dsh-fs";
+import { FsError, type FileSystem } from "@deepseek-ai/dsh-fs";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
-import type { SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
+import { writableRoots, type SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
 import { writeAtomic } from "./fs-write.js";
 import { fileSnap } from "./file-snap.js";
 import { resolveTarget, toCwd } from "./paths.js";
@@ -39,6 +39,25 @@ export interface TolerantRead {
 	/** The decoded whole-file text (byte-exact unless `fidelity` is `lossy`). */
 	text: string;
 	fidelity: "native" | "lossless" | "lossy";
+}
+
+/**
+ * The delete path's view of a requested path, taken WITHOUT following the final
+ * symlink. `file` and `absent` carry the canonical process path — the same key
+ * the read/edit paths use — so the store purge can find the rows.
+ */
+export type FileProbe =
+	| { kind: "file"; path: string; version: string }
+	| { kind: "absent"; path: string }
+	| { kind: "symlink" }
+	| { kind: "directory" }
+	| { kind: "other" };
+
+/** What a successful delete (or a confirmed-absent path) yields. */
+export interface FileDeleteOutcome {
+	kind: "deleted" | "absent";
+	/** Canonical process path — the store purge key. */
+	path: string;
 }
 
 /** Text-IO operations the hashline tools need, keyed by canonical absolute path. */
@@ -120,6 +139,25 @@ export interface FileIO {
 		absolutePath: string,
 		signal?: AbortSignal,
 	): Promise<number | undefined>;
+	/**
+	 * Probe a path as the delete path sees it: the final component's type
+	 * WITHOUT following a symlink, then the resolved process path and version
+	 * for a regular file (or the canonical path for an absent one).
+	 */
+	probeFile(path: string, cwd: string, signal?: AbortSignal): Promise<FileProbe>;
+	/**
+	 * Delete a regular file, guarded by the sandbox policy and the probe taken
+	 * before approval. `expected` is that probe; any change refuses with
+	 * `E_DELETE_STALE` (or the matching type/access error). Returns the canonical
+	 * path for the store purge.
+	 */
+	deleteFile(
+		path: string,
+		cwd: string,
+		expected: FileProbe,
+		signal?: AbortSignal,
+		sandboxPolicy?: SandboxExecutionPolicy,
+	): Promise<FileDeleteOutcome>;
 }
 
 /**
@@ -270,8 +308,65 @@ async function readTextAllowingBinary(
 		fidelity: Buffer.from(text, "utf-8").equals(bytes) ? "lossless" : "lossy",
 	};
 }
+
+/** Windows paths compare case-insensitively; POSIX paths verbatim. */
+function samePath(a: string, b: string): boolean {
+	return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/** A domain failure the tool layer turns into an `[E_*]` error card. */
+function domainError(code: string, message: string): never {
+	throw new Error(`[${code}] ${message}`);
+}
+
+/** The shared sandbox-denial shape the tool layer maps to `[sandbox: …]`. */
+function sandboxDenied(): never {
+	throw new FsError("sandbox denied", "FS_SANDBOX_DENIED");
+}
 /** FileIO over the deployment's `ctx.fs` service. */
 export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
+	/** Probe used by both `probeFile` and `deleteFile`; one source of truth. */
+	const probe = async (
+		requestedPath: string,
+		cwd: string,
+		signal?: AbortSignal,
+	): Promise<FileProbe> => {
+		let info: Awaited<ReturnType<FileSystem["lstat"]>>;
+		try {
+			info = await fs.lstat(requestedPath, { cwd }, signal);
+		} catch (error) {
+			if (errCode(error) !== "FS_NOT_FOUND") throw error;
+			info = undefined;
+		}
+		if (info === undefined) {
+			const target = await fs.resolve(requestedPath, {
+				cwd,
+				...(signal !== undefined ? { signal } : {}),
+			});
+			return { kind: "absent", path: fs.processPath(target) };
+		}
+		if (info.type === "symlink") return { kind: "symlink" };
+		if (info.type === "directory") return { kind: "directory" };
+		if (info.type !== "file") return { kind: "other" };
+		const target = await fs.resolve(requestedPath, {
+			cwd,
+			...(signal !== undefined ? { signal } : {}),
+		});
+		let statInfo: Awaited<ReturnType<FileSystem["stat"]>>;
+		try {
+			statInfo = await fs.stat(target, signal);
+		} catch (error) {
+			if (errCode(error) !== "FS_NOT_FOUND") throw error;
+			statInfo = undefined;
+		}
+		if (statInfo === undefined) {
+			return { kind: "absent", path: fs.processPath(target) };
+		}
+		if (statInfo.type !== "file") {
+			return statInfo.type === "directory" ? { kind: "directory" } : { kind: "other" };
+		}
+		return { kind: "file", path: fs.processPath(target), version: String(statInfo.version) };
+	};
 	return {
 		async resolve(path, cwd, signal) {
 			const target = await fs.resolve(path, {
@@ -406,6 +501,83 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 				return undefined;
 			}
 		},
+
+		probeFile: probe,
+		async deleteFile(requestedPath, cwd, expected, signal, sandboxPolicy) {
+			const before = await probe(requestedPath, cwd, signal);
+			if (before.kind === "absent") {
+				return { kind: "absent", path: before.path };
+			}
+			if (before.kind === "symlink") {
+				domainError("E_SYMLINK", `Refusing to delete a symbolic link: ${requestedPath}. Delete the link itself with bash if that is what you mean.`);
+			}
+			if (before.kind === "directory" || before.kind === "other") {
+				domainError("E_NOT_FILE", `Path is not a regular file: ${requestedPath}. Directories and special files are not deletable here; use bash for directories.`);
+			}
+			if (expected.kind === "absent") {
+				domainError("E_DELETE_STALE", `The path was absent when it was probed and a file now exists: ${requestedPath}. Re-check before deleting.`);
+			}
+			if (expected.kind !== "file") {
+				domainError("E_DELETE_STALE", `The file changed after it was probed: ${requestedPath}. Re-check before deleting.`);
+			}
+			if (expected.version !== before.version) {
+				domainError("E_DELETE_STALE", `The file changed after it was probed: ${requestedPath}. Re-check before deleting.`);
+			}
+			const target = await fs.resolve(requestedPath, {
+				cwd,
+				...(signal !== undefined ? { signal } : {}),
+			});
+			const proc = before.path;
+			let mapped: string | undefined;
+			try {
+				mapped = fs.processPathFromHostPath(proc);
+			} catch {
+				mapped = undefined;
+			}
+			if (mapped === undefined || !samePath(mapped, proc)) {
+				domainError("E_DELETE_UNSUPPORTED", `This filesystem backend cannot delete through the host filesystem: ${requestedPath}. Use bash in that environment.`);
+			}
+			if (sandboxPolicy !== undefined) {
+				if (sandboxPolicy.mode === "read-only") sandboxDenied();
+				if (sandboxPolicy.mode === "workspace-write") {
+					let allowed = false;
+					for (const root of writableRoots(sandboxPolicy)) {
+						try {
+							const rootTarget = await fs.resolve(root, { signal });
+							if (fs.contains(rootTarget, target)) {
+								allowed = true;
+								break;
+							}
+						} catch {
+							// A root that cannot be resolved grants nothing; try the next.
+						}
+					}
+					if (!allowed) sandboxDenied();
+				}
+			}
+			const after = await probe(requestedPath, cwd, signal);
+			if (after.kind === "absent") return { kind: "absent", path: after.path };
+			if (after.kind !== "file") {
+				domainError(after.kind === "symlink" ? "E_SYMLINK" : "E_NOT_FILE", `The path changed type while deleting: ${requestedPath}.`);
+			}
+			if (after.version !== before.version) {
+				domainError("E_DELETE_STALE", `The file changed immediately before deletion: ${requestedPath}. Re-check before deleting.`);
+			}
+			try {
+				await unlink(proc);
+			} catch (error) {
+				const code = errCode(error);
+				if (code === "ENOENT") return { kind: "absent", path: proc };
+				if (code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EROFS") {
+					domainError("E_ACCESS", `Cannot delete ${requestedPath} (${code}). On Windows a read-only attribute or an open handle causes this; clear the attribute or close the program using the file.`);
+				}
+				if (code === "EISDIR") {
+					domainError("E_NOT_FILE", `Path became a directory while deleting: ${requestedPath}.`);
+				}
+				throw error;
+			}
+			return { kind: "deleted", path: proc };
+		},
 	};
 }
 
@@ -417,6 +589,27 @@ export function localIO(): FileIO {
 	const readLocal = async (absolutePath: string, signal?: AbortSignal): Promise<string> => {
 		signal?.throwIfAborted();
 		return readFile(absolutePath, "utf-8");
+	};
+
+	/** Local probe: same contract as the dsh backend, no policy. */
+	const localProbe = async (
+		requestedPath: string,
+		cwd: string,
+	): Promise<FileProbe> => {
+		const absolute = toCwd(requestedPath, cwd ?? process.cwd());
+		let info: Awaited<ReturnType<typeof lstat>>;
+		try {
+			info = await lstat(absolute);
+		} catch (error) {
+			if (errCode(error) !== "ENOENT") throw error;
+			info = undefined as never;
+		}
+		if (info === undefined) return { kind: "absent", path: await resolveTarget(absolute) };
+		if (info.isSymbolicLink()) return { kind: "symlink" };
+		if (info.isDirectory()) return { kind: "directory" };
+		if (!info.isFile()) return { kind: "other" };
+		const path = await resolveTarget(absolute);
+		return { kind: "file", path, version: (await fileSnap(path)).snapshotId };
 	};
 	return {
 		async resolve(path, cwd) {
@@ -462,6 +655,47 @@ export function localIO(): FileIO {
 			} catch {
 				return undefined;
 			}
+		},
+
+		probeFile: localProbe,
+		async deleteFile(requestedPath, cwd, expected) {
+			const before = await localProbe(requestedPath, cwd);
+			if (before.kind === "absent") return { kind: "absent", path: before.path };
+			if (before.kind === "symlink") {
+				domainError("E_SYMLINK", `Refusing to delete a symbolic link: ${requestedPath}.`);
+			}
+			if (before.kind === "directory" || before.kind === "other") {
+				domainError("E_NOT_FILE", `Path is not a regular file: ${requestedPath}.`);
+			}
+			if (expected.kind === "absent") {
+				domainError("E_DELETE_STALE", `The path was absent when it was probed and a file now exists: ${requestedPath}.`);
+			}
+			if (expected.kind !== "file") {
+				domainError("E_DELETE_STALE", `The file changed after it was probed: ${requestedPath}.`);
+			}
+			if (expected.version !== before.version) {
+				domainError("E_DELETE_STALE", `The file changed after it was probed: ${requestedPath}.`);
+			}
+			const after = await localProbe(requestedPath, cwd);
+			if (after.kind === "absent") return { kind: "absent", path: after.path };
+			if (after.kind !== "file") {
+				domainError(after.kind === "symlink" ? "E_SYMLINK" : "E_NOT_FILE", `The path changed type while deleting: ${requestedPath}.`);
+			}
+			if (after.version !== before.version) {
+				domainError("E_DELETE_STALE", `The file changed immediately before deletion: ${requestedPath}.`);
+			}
+			try {
+				await unlink(before.path);
+			} catch (error) {
+				const code = errCode(error);
+				if (code === "ENOENT") return { kind: "absent", path: before.path };
+				if (code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EROFS") {
+					domainError("E_ACCESS", `Cannot delete ${requestedPath} (${code}).`);
+				}
+				if (code === "EISDIR") domainError("E_NOT_FILE", `Path became a directory while deleting: ${requestedPath}.`);
+				throw error;
+			}
+			return { kind: "deleted", path: before.path };
 		},
 	};
 }

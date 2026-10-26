@@ -38,6 +38,7 @@ import { registerLspTool } from "./tools/tool-lsp.js";
 import { registerAstEditTool } from "./tools/tool-ast-edit.js";
 import { registerWriteShadow } from "./tools/tool-write-shadow.js";
 import { registerFormatTool } from "./tools/tool-format.js";
+import { registerDeleteTool } from "./tools/tool-delete.js";
 import { onEditSurfaceRebuild } from "./domain/edit/edit-rebuild.js";
 import { LspManager, setLspManager } from "./lsp/manager.js";
 import { subprocessTransport } from "./lsp/transport.js";
@@ -234,6 +235,10 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		// language server as the author. Registered once, never rebuilt — its
 		// surface does not vary with any setting.
 		disposers.push(registerFormatTool(rootCtx, agent.ctx, io, sandbox));
+		// The file deleter: the shell path removes bytes but leaves the anchor
+		// store, the observation, and the LSP document behind. This tool owns
+		// all three (map #322).
+		disposers.push(registerDeleteTool(rootCtx, agent.ctx, io, sandbox));
 		// Shadow the preset's built-in tool guidance with the hashline
 		// contract. Same section names on the agent's own layer win over the
 		// preset's; text and order come from the per-preset resolution.

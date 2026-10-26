@@ -35,6 +35,7 @@ Each file is one tool section:
 - \`edit.md\` -> \`tool:edit\`
 - \`undo_last_edit.md\` -> \`tool:undo_last_edit\`
 - \`grep.md\` -> \`tool:grep\`
+- \`delete.md\` -> \`tool:delete\`
 
 ## Customize
 
@@ -74,6 +75,7 @@ export const GUIDANCE_HOME_README_ZH = `# dsh-hashline-edittool 指引
 - \`edit.md\` -> \`tool:edit\`
 - \`undo_last_edit.md\` -> \`tool:undo_last_edit\`
 - \`grep.md\` -> \`tool:grep\`
+- \`delete.md\` -> \`tool:delete\`
 
 ## 自定义
 

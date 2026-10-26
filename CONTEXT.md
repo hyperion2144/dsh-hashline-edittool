@@ -147,3 +147,21 @@ _Avoid_: footer, pagination hint
 An `offset`/`limit` given as a live anchor instead of a number: it names the window's first / last line (a closed range), so a continuation survives renumbering. Mixable with numbers; an inverted range is `[E_BAD_SHAPE]`, a dead anchor `[E_STALE]`.
 _Avoid_: anchor marker (that is the row prefix handed back to `edit`), line hint
 
+## Deletion and reclamation
+
+**`delete`**:
+The tool that removes regular files and reclaims their hashline rows. Not a directory, glob, restore, or shell-wrapper tool; symlinks are refused before resolution, directories/special files are `E_NOT_FILE`, and a non-local backend fails closed (`E_DELETE_UNSUPPORTED`).
+_Avoid_: rm, unlink (the syscall is the transport, not the contract), purge (that is the store half)
+
+**Path purge**:
+`HashStore.purgePath(path)` — one transaction that removes the path's `anchor_meta`, `anchor_lines`, `served` (every session), and `undo` (every depth). Never a whole-table `DELETE FROM undo`: other paths' history survives. Returns per-family counts plus the logical byte delta.
+_Avoid_: cleanup, eviction (that is the sweep), forget
+
+**`already-absent`**:
+A delete result for a path that was already missing when its turn came. It is success, not `E_NOT_FOUND`, and still runs the path purge so externally deleted residue is reclaimed.
+_Avoid_: not found, skipped
+
+**Logical reclaim / physical reclaim**:
+Logical reclaim is the immediate drop in `(page_count − freelist_count) × page_size` after the purge; physical reclaim is the file size returning at store shutdown when the `pending_vacuum` marker triggers a synchronous VACUUM. The tool reports the former and marks the latter; it never VACUUMs inline.
+_Avoid_: freed bytes (say which), compact
+
