@@ -1,6 +1,7 @@
 # ADR-0005 — `grep` card presentation meta (structured rows + highlight spans)
 
 > **Status**: Accepted (issue #92 implementation of wayfinder map #88; contract locked by tickets #89 (data) and #90 (card visuals), 2026-09-10). Supersedes the `grep` half of `docs/web-ui-structured-views-spec.md`.
+> **Note (2026-10-25)**: the takeover priority this ADR's Implementation Decisions record (`-1`) is superseded by [ADR-0022](./0022-toolview-takeover-priority.md) — the nine registrations now use `-2`.
 
 ## Problem Statement
 
@@ -86,7 +87,7 @@ Both soft validators (host `grepPresentationFromMeta`, client `grepPresentationM
 - `grepFileContent` builds **one** row list carrying `isMatch` and `spans`; the model text and the card rows both derive from it, so identity, match flag and spans cannot drift apart.
 - The tool's declared `output.schema` mirrors the new shape.
 - The client test environment renders no React (no jsdom), so everything text-deciding is asserted on the pure functions; keyboard/focus behaviour is a real-machine smoke item.
-- The client plugin registers the takeover as keyed `tool.call.toolview` × `key: "grep"` at `priority: -1`, alongside read/edit/write; `client/scripts/verify-bundle.mjs` asserts the four registrations in the built artifact.
+- The client plugin registers the takeover as keyed `tool.call.toolview` × `key: "grep"` at `priority: -1` (now `-2`, see ADR-0022), alongside read/edit/write; `client/scripts/verify-bundle.mjs` asserts the four registrations in the built artifact.
 
 ## Testing Decisions
 

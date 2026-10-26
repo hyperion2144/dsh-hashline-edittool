@@ -128,19 +128,19 @@ const keys = ctx.slots.registeredEntries
 // wearing the read component reads as a read. `lsp` had no row at all and fell
 // through to raw input/output.
 const expected = [
-	"read:-1:conversation",
-	"edit:-1:conversation",
+	"read:-2:conversation",
+	"edit:-2:conversation",
 	// `undo_last_edit` answers with the diff of the revert and now wears that
 	// same row — without a registration the web drew raw input/output for it.
-	"undo_last_edit:-1:conversation",
-	"grep:-1:conversation",
-	"write:-1:conversation",
-	"ast_grep:-1:conversation",
-	"ast_edit:-1:conversation",
-	"lsp:-1:conversation",
+	"undo_last_edit:-2:conversation",
+	"grep:-2:conversation",
+	"write:-2:conversation",
+	"ast_grep:-2:conversation",
+	"ast_edit:-2:conversation",
+	"lsp:-2:conversation",
 	// `format` draws its formats section through the edit row (one empty tab
 	// per file; the section IS the diff) — without the key it drew raw I/O.
-	"format:-1:conversation",
+	"format:-2:conversation",
 ];
 if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 	throw new Error(`unexpected registrations: ${keys.join(", ")}`);

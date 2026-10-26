@@ -732,3 +732,24 @@ ADR-0017 让所有被拒文件的行都不 served，理由当时成立：`edit` 
 - `docs/adr/0021-lsp-failed-slot-retry.md` (created)
 - `AGENTS.md` l0 decisions 行 0001–0020 → 0001–0021，追加 LSP failed-slot retry 主题
 - `README.md` / `README.zh.md`：lsp 生命周期段与工具表行补重试/status/warm 说明
+
+## 2026-10-25 — ADR-0022 added: toolview takeover priority `-2`
+
+**Type:** new decision record + one-value change
+**Confidence:** High
+**Evidence:** shipped `app.asar`（DSH 0.2.1-rc.3）SlotCore 的 `register()` / `entriesOfSlot()`；`dsh-claude-style` 0.18.2 / 0.18.5（同为 `{tool.call.toolview, priority:-1}` 注册 read/edit/write）；`client/scripts/verify-bundle.mjs` 对九个 `<key>:<priority>:<locale>` 的断言；issue #321 诊断记录
+
+### Why
+
+#321 诊断定案：client 半区九个接管注册原用 `priority: -1`，而台账对 keyed slot 同 key 同 priority 直接 throw（后注册方那条不落账），`dsh-claude-style` 又把 read/edit/write 钉在 `-1`，两者同时启用必有一方掉三条注册。修法是把九个取值统一下调到 `-2`（仍低于内建的缺省 `0`），既让开已知邻居又保持接管；完整理由、备选方案与残余风险记录在 `docs/adr/0022-toolview-takeover-priority.md`。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0022-toolview-takeover-priority.md` (created)
+- `client/src/client/index.ts`：九个接管注册的优先级收进 `TAKEOVER_PRIORITY` 常量（`-2`）
+- `client/scripts/verify-bundle.mjs`：预期注册清单九条改 `-2`（任一条漂回 `-1` 构建失败）
+- `docs/adr/0005-grep-card-presentation-meta.md`：Status 下补一行指向 ADR-0022（`-1` 细节已被取代）
+- `AGENTS.md` l0 decisions 行 0001–0021 → 0001–0022，追加 toolview takeover priority 主题
+- `client/README.md`：接管优先级段改为 `-2` 并说明共享 shadow band
+- `docs/research/toolview-slot-priority-collision.md` (created)：台账语义与邻居取证
+- `CHANGELOG.md` `[Unreleased]` Fixed 段一行（#321）
