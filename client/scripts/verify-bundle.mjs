@@ -115,10 +115,10 @@ const ctx = {
 };
 exports_.apply(ctx);
 
-// Nine toolview keys: read, edit, undo_last_edit, grep, write, the AST rows
+// Ten toolview keys: read, edit, undo_last_edit, grep, write, delete, the AST
 // (which register TWO entries under one sub-plugin), `lsp`, `format`, and
 // the settings card.
-if (ctx.plugins.length !== 7) throw new Error(`expected 7 sub-plugins, got ${ctx.plugins.length}`);
+if (ctx.plugins.length !== 8) throw new Error(`expected 8 sub-plugins, got ${ctx.plugins.length}`);
 const keys = ctx.slots.registeredEntries
 	.filter((entry) => entry?.options?.name === "tool.call.toolview")
 	.map((entry) => `${entry.options.key}:${entry.options.priority}:${entry.options.locale}`);
@@ -135,6 +135,8 @@ const expected = [
 	"undo_last_edit:-2:conversation",
 	"grep:-2:conversation",
 	"write:-2:conversation",
+	// The delete card needs its own row: the platform default shows raw I/O.
+	"delete:-2:conversation",
 	"ast_grep:-2:conversation",
 	"ast_edit:-2:conversation",
 	"lsp:-2:conversation",
@@ -170,16 +172,16 @@ const settingsCardPlugin = ctx.plugins.find((p) => p.name === "hashline-settings
 if (JSON.stringify(settingsCardPlugin?.inject) !== JSON.stringify(["slots", "configForms"])) {
 	throw new Error(`settings card injects unavailable services: ${settingsCardPlugin?.inject?.join(", ")}`);
 }
-// NINE, not eight: the AST sub-plugin loops over its FOUR keys (ast_grep,
+// TEN, not nine: the AST sub-plugin loops over its FOUR keys (ast_grep,
 // ast_edit, lsp, format) and each iteration asks the slot for its entry, so
-// five single-key sub-plugins plus four. The count is asserted rather than
+// six single-key sub-plugins plus four. The count is asserted rather than
 // assumed so a sub-plugin added without a key cannot pass quietly.
-if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 9) {
+if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 10) {
 	throw new Error("expected every toolview to inject the tool.call.toolview declaration");
 }
 console.log("bundle evaluation OK:");
 console.log("  - factory registered under", registered[0].id);
-console.log("  - exports {inject, apply} mount 6 toolview plugins + 1 settings card");
+console.log("  - exports {inject, apply} mount 7 toolview plugins + 1 settings card");
 console.log("  - registrations:", keys.join(", "));
 console.log("  - components:", ctx.slots.registeredEntries.filter((e) => e && typeof e === "object").map((e) => e.component.name).join(", "));
 console.log("  - settings card:", settingsCards.join(", "));

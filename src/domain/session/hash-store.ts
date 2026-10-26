@@ -133,6 +133,20 @@ export interface HashStoreStats {
 	rows: number;
 }
 
+/** What one path's purge removed from the store (and freed logically). */
+export interface PurgeReport {
+	/** `anchor_lines` rows deleted. */
+	anchorLines: number;
+	/** `undo` layers deleted (all depths for the path). */
+	undoLayers: number;
+	/** `served` rows deleted, across every session. */
+	servedRows: number;
+	/** `anchor_meta` rows deleted (0 or 1). */
+	anchorMeta: number;
+	/** Logical store bytes freed: `stats().bytes` before minus after. */
+	bytesFreed: number;
+}
+
 /** Options a caller can pass to {@link HashStore.sweep} to drive it with
  *  smaller budgets than the production defaults — tests use this so the
  *  eviction path can be exercised without writing 64 MiB. */
@@ -175,7 +189,7 @@ interface Prepared {
 	undoPop: (...params: SqlParams) => void;
 	undoGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	undoDepth: (...params: SqlParams) => number;
-	undoDelete: (...params: SqlParams) => void;
+	undoDelete: (...params: SqlParams) => number;
 	undoDeleteBelowDepth: (...params: SqlParams) => number;
 	undoLayerSizes: (...params: SqlParams) => Record<string, unknown>[];
 	servedGet: (...params: SqlParams) => Record<string, unknown> | undefined;
@@ -183,16 +197,16 @@ interface Prepared {
 	servedReportedUpsert: (...params: SqlParams) => void;
 	servedReportedClear: (...params: SqlParams) => void;
 	servedDelete: (...params: SqlParams) => void;
-	servedDeletePath: (...params: SqlParams) => void;
+	servedDeletePath: (...params: SqlParams) => number;
 	servedWipe: (...params: SqlParams) => void;
 	servedPruneOlderThan: (...params: SqlParams) => number;
 	anchorMetaGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	anchorMetaUpsert: (...params: SqlParams) => void;
-	anchorMetaDelete: (...params: SqlParams) => void;
+	anchorMetaDelete: (...params: SqlParams) => number;
 	anchorLinesAll: (...params: SqlParams) => Record<string, unknown>[];
 	anchorLineGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	anchorLineUpsert: (...params: SqlParams) => void;
-	anchorLinesDeletePath: (...params: SqlParams) => void;
+	anchorLinesDeletePath: (...params: SqlParams) => number;
 	anchorLineDelete: (...params: SqlParams) => void;
 	anchorPruneOlderThan: (...params: SqlParams) => number;
 	// ---- budget / maintenance (#180) ----
@@ -277,6 +291,15 @@ export interface HashStore {
 	/** Run the two-phase eviction: TTL prune → per-path slim → LRU. The
 	 *  returned report describes the deltas. */
 	sweep(opts?: SweepOptions): SweepReport;
+	/**
+	 * Remove every row family for one path — `anchor_meta` / `anchor_lines` /
+	 * `served` (every session) / `undo` (every depth) — in one transaction.
+	 *
+	 * The path is the caller's resolved key, verbatim; the store never guesses
+	 * a spelling. The `delete` tool calls this after the file is gone; the
+	 * sweep and `pruneMissing` share the row cascade.
+	 */
+	purgePath(path: string): PurgeReport;
 
 	// ---- maintenance ---------------------------------------------------------
 	/** Delete every row family's entries for paths that no longer exist on disk. */
@@ -866,11 +889,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 			undoGetStmt.get(...params) as Record<string, unknown> | undefined,
 		undoDepth: (...params) =>
 			((undoDepthStmt.get(...params) as { n?: number } | undefined)?.n ?? 0),
-		undoDelete: (...params) => {
-			withBusyRetry(() => {
-				undoDelStmt.run(...params);
-			});
-		},
+		undoDelete: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(undoDelStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
 		undoDeleteBelowDepth: (...params) =>
 			// `.changes` is not guaranteed by every driver or test stub (the open-error
 			// tests replace statements wholesale): a missing count reads as 0, never
@@ -900,11 +925,13 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				servedDeleteStmt.run(...params);
 			});
 		},
-		servedDeletePath: (...params) => {
-			withBusyRetry(() => {
-				servedDeletePathStmt.run(...params);
-			});
-		},
+		servedDeletePath: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(servedDeletePathStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
 		servedWipe: (...params) => {
 			withBusyRetry(() => {
 				servedWipeStmt.run(...params);
@@ -933,16 +960,20 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				anchorLineDeleteStmt.run(...params);
 			});
 		},
-		anchorLinesDeletePath: (...params) => {
-			withBusyRetry(() => {
-				anchorLinesDeletePathStmt.run(...params);
-			});
-		},
-		anchorMetaDelete: (...params) => {
-			withBusyRetry(() => {
-				anchorMetaDeleteStmt.run(...params);
-			});
-		},
+		anchorLinesDeletePath: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(anchorLinesDeletePathStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
+		anchorMetaDelete: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(anchorMetaDeleteStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
 		anchorPruneOlderThan: (...params) => {
 			const cutoff = params[0] as number;
 			let total = 0;
@@ -1000,9 +1031,11 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 
 /** Wire the domain methods over the prepared statements. */
 function makeDomainStore(
+	db: DatabaseSync,
 	stmts: Prepared,
 	budget: SweepBudget,
 	options: { bytes: number; paths: number; rows: number },
+	storePath: string,
 ): HashStore {
 	// Cheap check used by every write method. Reads three PRAGMAs; ~µs each.
 	const overBudget = (): boolean => {
@@ -1032,6 +1065,27 @@ function makeDomainStore(
 		} finally {
 			sweepScheduled = false;
 		}
+	};
+
+	/**
+	 * The one per-path cascade: every row family for `path`, then the logical
+	 * byte delta. `DELETE` only moves pages to the freelist, so a genuine
+	 * byte drop marks `pending_vacuum`; the shutdown path runs the actual
+	 * VACUUM once, instead of every delete paying that cost.
+	 *
+	 * Callers that already hold a transaction (`sweep`, `pruneMissing`) use
+	 * this directly; the public `purgePath` wraps it.
+	 */
+	const purgePathRows = (path: string): PurgeReport => {
+		const beforeBytes = stmts.storeBytes();
+		const undoLayers = stmts.undoDelete(path);
+		const servedRows = stmts.servedDeletePath(path);
+		const anchorMeta = stmts.anchorMetaDelete(path);
+		const anchorLines = stmts.anchorLinesDeletePath(path);
+		const afterBytes = stmts.storeBytes();
+		const bytesFreed = Math.max(0, beforeBytes - afterBytes);
+		if (bytesFreed > 0) stmts.metaSet("pending_vacuum", "1");
+		return { anchorLines, undoLayers, servedRows, anchorMeta, bytesFreed };
 	};
 
 	// ---- the eviction sweep --------------------------------------------------
@@ -1064,13 +1118,10 @@ function makeDomainStore(
 		let ttlDropped = 0;
 		let trimmedUndo = 0;
 
+		// The shared cascade: one row family at a time, every family for the path.
 		const deletePathCascade = (path: string) => {
-			stmts.undoDelete(path);
-			stmts.servedDeletePath(path);
-			stmts.anchorMetaDelete(path);
-			stmts.anchorLinesDeletePath(path);
+			purgePathRows(path);
 		};
-
 		// 1. TTL: drop whole paths whose recency is below the cutoff.
 		const ttlCutoff = limits.now - limits.ttlMs;
 		for (const row of recency) {
@@ -1236,6 +1287,7 @@ function makeDomainStore(
 		popUndo(path) {
 			stmts.undoPop(path);
 		},
+
 		deleteUndo(path) {
 			stmts.undoDelete(path);
 		},
@@ -1324,17 +1376,26 @@ function makeDomainStore(
 			return runSweep(opts);
 		},
 
+		purgePath(path) {
+			let report: PurgeReport = {
+				anchorLines: 0,
+				undoLayers: 0,
+				servedRows: 0,
+				anchorMeta: 0,
+				bytesFreed: 0,
+			};
+			withTransaction(db, storePath, () => {
+				report = purgePathRows(path);
+			});
+			return report;
+		},
+
 		async pruneMissing() {
 			const rows = stmts.allPaths() as { path: string }[];
 			const missing = await statMissing(rows);
 			if (missing.length === 0) return;
-			withStore(() => {
-				for (const path of missing) {
-					stmts.undoDelete(path);
-					stmts.servedDeletePath(path);
-					stmts.anchorMetaDelete(path);
-					stmts.anchorLinesDeletePath(path);
-				}
+			withTransaction(db, storePath, () => {
+				for (const path of missing) purgePathRows(path);
 			});
 		},
 	};
@@ -1409,9 +1470,6 @@ async function quarantineStore(storePath: string): Promise<void> {
 	}
 }
 
-/** Maximum time a VACUUM may take at close before we give up. A VACUUM that
- *  hangs forever is worse than one we let run on the next open. */
-const VACUUM_TIMEOUT_MS = 60_000;
 
 /** Close a store, running VACUUM if a `pending_vacuum` marker was left by a
  *  prior sweep and writing `clean_shutdown=1` for the next open to read. */
@@ -1426,30 +1484,25 @@ function shutdownDb(
 	}
 	if (stmts) {
 		try {
-			const pending = stmts.metaGet("pending_vacuum");
-			const shouldVacuum = pending !== undefined;
+			const pending = stmts.metaGet("pending_vacuum") !== undefined;
 			stmts.metaSet("clean_shutdown", "1");
-			if (shouldVacuum) {
+			if (pending) {
 				const vacuumStart = Date.now();
-				const timer = setTimeout(() => {
-					// The VACUUM below will still run to completion (sync), but
-					// the timeout gives us a way to detect a runaway one — see
-					// the catch + abort dance in tryVacuumWithTimeout.
-				}, VACUUM_TIMEOUT_MS);
 				try {
-					if (storePath) tryVacuumWithTimeout(db, storePath, VACUUM_TIMEOUT_MS);
+					// SYNCHRONOUS on purpose: this is the shutdown path, and the
+					// previous worker implementation returned before VACUUM ran —
+					// clearing the marker and closing the db under it. Blocking here
+					// is what makes `pending_vacuum` mean "a VACUUM actually ran".
+					db.exec("VACUUM");
 					stmts.metaDelete("pending_vacuum");
 					console.warn(
-						`[hash-store] VACUUM completed in ${Date.now() - vacuumStart}ms; pending_vacuum cleared.`,
+						`[hash-store] VACUUM completed for ${storePath ?? "store"} in ${Date.now() - vacuumStart}ms; pending_vacuum cleared.`,
 					);
 				} catch (error) {
 					console.error(
-						"[hash-store] VACUUM failed or timed out, leaving pending_vacuum for next open:",
+						"[hash-store] VACUUM failed; leaving pending_vacuum for the next shutdown:",
 						error,
 					);
-					// Leave `pending_vacuum` in place; the next open will try again.
-				} finally {
-					clearTimeout(timer);
 				}
 			}
 		} catch (error) {
@@ -1457,12 +1510,6 @@ function shutdownDb(
 			console.error("[hash-store] shutdown bookkeeping failed:", error);
 		}
 	}
-	// A final checkpoint AFTER the bookkeeping: the clean_shutdown marker and
-	// any VACUUM result live in the WAL until they are copied into the
-	// database file. Truncating it here means a clean shutdown leaves no
-	// uncheckpointed frame behind — the contract the WAL-truncation test
-	// pins, and the one that makes the next open a plain read instead of a
-	// recovery.
 	checkpointFully(db);
 	db.close();
 }
@@ -1493,43 +1540,6 @@ function checkpointFully(db: DatabaseSync): boolean {
 }
 
 
-/** Run VACUUM on a worker so the main thread stays responsive, and abort
- *  after `timeoutMs`. On timeout the worker is detached (its VACUUM keeps
- *  running until done but its result is ignored). The main thread never
- *  blocks longer than `timeoutMs`. */
-function tryVacuumWithTimeout(_db: DatabaseSync, storePath: string, timeoutMs: number): void {
-	const { Worker } = require("node:worker_threads") as typeof import("node:worker_threads");
-	const worker = new Worker(
-		"const { parentPort, workerData } = require('node:worker_threads');" +
-			"const { DatabaseSync } = require('node:sqlite');" +
-			"const db = new DatabaseSync(workerData.path, { timeout: 5000 });" +
-			"try { db.exec('VACUUM'); parentPort.postMessage({ ok: true }); }" +
-			"catch (e) { parentPort.postMessage({ ok: false, error: String(e) }); }" +
-			"finally { try { db.close(); } catch {} }",
-		{ eval: true, workerData: { path: storePath } },
-	);
-	let settled = false;
-	const timer = setTimeout(() => {
-		if (settled) return;
-		settled = true;
-		worker.terminate().catch(() => undefined);
-		// Throw so the caller's catch leaves pending_vacuum in place.
-		throw new Error(`VACUUM exceeded ${timeoutMs}ms`);
-	}, timeoutMs);
-	worker.on("message", (msg: { ok: boolean; error?: string }) => {
-		if (settled) return;
-		settled = true;
-		clearTimeout(timer);
-		worker.terminate().catch(() => undefined);
-		if (!msg.ok) throw new Error(msg.error ?? "VACUUM worker failed");
-	});
-	worker.on("error", (err) => {
-		if (settled) return;
-		settled = true;
-		clearTimeout(timer);
-		throw err;
-	});
-}
 
 const STAT_BATCH = 64;
 
@@ -1643,7 +1653,7 @@ async function openStore(storePath: string): Promise<HashStore> {
 	const throttled = nowMs - lastRebuildAt < HASH_STORE_REBUILD_THROTTLE_MS;
 
 	const budget: SweepBudget = { writeCounter: 0 };
-	const store = makeDomainStore(stmts, budget, limits);
+	const store = makeDomainStore(db, stmts, budget, limits, storePath);
 
 	if (needsRebuild && !throttled) {
 		const before = initialStats;
@@ -1657,7 +1667,7 @@ async function openStore(storePath: string): Promise<HashStore> {
 				path: storePath,
 				db: reopened.db,
 				stmts: reopened.stmts,
-				store: makeDomainStore(reopened.stmts, budget, limits),
+				store: makeDomainStore(reopened.db, reopened.stmts, budget, limits, storePath),
 				budget,
 			});
 			reopened.stmts.metaSet("last_rebuild_at", String(Date.now()));

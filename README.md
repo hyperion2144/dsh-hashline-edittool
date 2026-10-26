@@ -36,8 +36,8 @@
 ## What it is
 
 A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the built-in
-`read` / `edit` / `grep` tools with **hash-anchored** versions and adds `undo_last_edit`,
-`ast_grep`, `ast_edit`, and an `lsp` tool on top:
+`read` / `edit` / `grep` tools with **hash-anchored** versions and adds `delete`,
+`undo_last_edit`, `ast_grep`, `ast_edit`, and an `lsp` tool on top:
 
 - **Every line carries a content anchor** — a variable-length Base62 marker (2 characters
   covers the first 3,844 lines; the encoding grows only as the file demands). The model
@@ -279,6 +279,7 @@ or an invocation fails — `grep` never fails because ripgrep did.
 | `ast_edit` | Structural rewrite: finds places by shape and hands the change to the **same engine** `edit` uses — served-state check, undo entry, diff and syntax gate all apply. |
 | `lsp` | Symbol-aware work through a real language server when one can be had (started per language, shared with dsh's `lsp` service); falls back to a heuristic backend otherwise. Serves its rows, so LSP output is directly editable. `status` lists every started language's server state without starting anything; `warm` starts (or restarts) one on demand, skipping the retry backoff. |
 | `format` | Formats a file with its language server's formatter — the whole file, or `range: {start, end}` where **both ends are this session's served anchors**. The file must already be observed (`[E_NOT_OBSERVED]` otherwise); `noop` when the formatter changes nothing; enters undo like `edit`. A cold start is allowed here (15 s) because you asked for it by name. |
+| `delete` | Deletes regular files and reclaims their hashline state: `paths` (1–32, duplicates collapse) are removed one by one, then the path's `anchor_meta` / `anchor_lines` / `served` (every session) / `undo` (every depth) rows are purged in one transaction. A missing path is `already-absent` success and still reclaims residue; symlinks, directories and special files are refused; non-local backends fail closed. Under `workspace-write` the target must be inside the canonical writable roots. Reports logical bytes; physical disk returns at store shutdown (VACUUM). Partial failures are per path; there is no undelete. |
 
 ### Output modes
 
@@ -330,7 +331,7 @@ key did not carry over, set it in the form above.
 
 ### Per-preset guidance
 
-The `tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` guidance sections are
+The `tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` guidance sections are
 plain-markdown override files in the plugin's shared home, keyed by preset id — see
 [`docs/adr/0001`](docs/adr/0001-guidance-override-files.md). Emptying a file resets to the
 compiled default; a broken front-matter fence is fast-failed with a warning.
@@ -351,6 +352,11 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_BATCH_CONFLICT]` | Two items' ranges overlap on the same snapshot. |
 | `[E_BARE_HASH_PREFIX]` | An anchor-prefixed row was pasted into `lines`; stripped with a warning. |
 | `[E_CONTENT_MISMATCH]` | A declared `line` (require_line_content) does not match. |
+| `[E_DELETE_UNSUPPORTED]` | `delete` cannot reach the path through the host filesystem (remote/non-local backend); use bash. |
+| `[E_DELETE_STALE]` | The path changed after it was probed (approval window or fence); re-check and retry. |
+| `[E_SYMLINK]` | `delete` refuses a symbolic link; the link and its target stay untouched. |
+| `[E_NOT_FILE]` | `delete` target is a directory or a special file, not a regular file. |
+| `[E_DELETE_FAILED]` | Whole-call fallback code when every path failed and no per-path domain code exists. |
 | `[E_ELISION_IN_PAYLOAD]` | Payload carries the outline marker `…`; warning, edit proceeds. |
 | `[E_FORMAT_EDITS]` / `[E_FORMAT_UNSUPPORTED]` | Formatting: the server's TextEdits were malformed (out-of-bounds/overlap) / the server has no document formatting provider — or an explicit `range` request hit a server without range formatting while `format.fallback_full_file` is off (#315). |
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | Grammar catalog: built-in name collision / no descriptor for the language / unknown language. |
@@ -396,6 +402,8 @@ never share anchors or undo history. Callers outside a workspace fall back to th
 shared-home store. A 7-day TTL prunes served rows; corrupt stores are quarantined and
 rebuilt automatically.
 
+The `delete` tool purges a path's four row families (`anchor_meta`, `anchor_lines`, `served` across every session, `undo` at every depth) in one transaction and reports the logical bytes freed. When those bytes actually drop it writes `pending_vacuum`; shutdown runs a synchronous VACUUM and clears the marker only on success.
+
 ## Architecture
 
 One plugin, three planes:
@@ -404,7 +412,7 @@ One plugin, three planes:
 src/
 ├── index.ts              # entry: mounts tools, settings, LSP, grammar routes
 ├── config.ts             # settings schema + wiring (hot-reload)
-├── tools/                # the 8 tool entry points — thin, no IO of their own
+├── tools/                # the 9 tool entry points — thin, no IO of their own
 ├── domain/
 │   ├── edit/             # edit engine, mutation transaction, contract, prompts
 │   └── session/          # served state, hash store, file views

@@ -513,6 +513,21 @@ export class LspManager {
 	}
 
 	/**
+	 * Tell a READY server that a document is gone. Never warms one: a delete
+	 * must not start a language server just to say goodbye.
+	 *
+	 * @param languageId - registry id.
+	 * @param uri - the document's `file://` URI.
+	 * @returns true when a document was actually closed on a live session.
+	 */
+	closeDocumentFor(languageId: string, uri: string): boolean {
+		const slot = this.#slots.get(languageId);
+		if (slot?.state !== "ready") return false;
+		this.#touchIdle(languageId);
+		return slot.session.didClose(uri);
+	}
+
+	/**
 	 * The ready session for a language, or `undefined` — WITHOUT warming.
 	 *
 	 * Synchronous on purpose: the status/card paths ask "is it up right now" and

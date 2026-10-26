@@ -89,6 +89,12 @@ stops scaling with the store's contents.
      **Invariant:** rows of `undo`, `served` and `anchor_meta` are written with
      `ON CONFLICT … DO UPDATE` — an `INSERT OR REPLACE` suppresses the delete trigger
      and would drift the count.
+   - **Amendment (2026-10-26, [#322](https://github.com/hyperion2144/dsh-hashline-edittool/issues/322))** —
+     the reclamation path above was documented but not wired: `pending_vacuum` had no
+     producer, and the shutdown worker was asynchronous (the marker was cleared and the
+     DB closed before the VACUUM was confirmed). `HashStore.purgePath` now marks the
+     store when a purge lowers logical bytes, and shutdown runs a synchronous `VACUUM`,
+     clearing the marker only on success. See [ADR-0023](0023-delete-tool.md).
 6. **Reclamation at close**: `VACUUM` + `wal_checkpoint(TRUNCATE)` on the
    shutdown path, with `pending_vacuum` repairing a hard kill on the next open —
    which checkpoints before measuring, so a sticky WAL is never counted as

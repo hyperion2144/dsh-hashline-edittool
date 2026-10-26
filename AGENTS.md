@@ -7,7 +7,7 @@
 # l0_domains lets an agent decide which domain is relevant WITHOUT opening it.
 # One line per domain. Domains without durable knowledge are omitted.
 l0_domains:
-  decisions: "ADRs 0001–0022: anchor lifecycle, error conversion, sparse + bounded anchors, alignment, the `lines` line array, streaming segmented responses, read windows (anchor cursors + the one-sentence tail), partial-failure visibility, argv-length budgets for subprocesses, the binary-tolerant search read (`grep` searches what `read`/`edit` refuse, and does not serve it), fidelity classification (a lossless refusal is served and editable; a lossy read is refused by `edit`), the format tool, and the unified diff presentation (file header, hunk header with scope name, `~` marks stale anchors; the row shape `<+|-><anchor>:<content>` is unchanged), LSP failed-slot retry (bounded backoff + `status`/`warm`), and the toolview takeover priority (`-2`; equal key + equal priority throws, so the lowest value in the shared shadow band renders)"
+  decisions: "ADRs 0001–0023: anchor lifecycle, error conversion, sparse + bounded anchors, alignment, the `lines` line array, streaming segmented responses, read windows (anchor cursors + the one-sentence tail), partial-failure visibility, argv-length budgets for subprocesses, the binary-tolerant search read (`grep` searches what `read`/`edit` refuse, and does not serve it), fidelity classification (a lossless refusal is served and editable; a lossy read is refused by `edit`), the format tool, the unified diff presentation (file header, hunk header with scope name, `~` marks stale anchors; the row shape `<+|-><anchor>:<content>` is unchanged), LSP failed-slot retry (bounded backoff + `status`/`warm`), the toolview takeover priority (`-2`; equal key + equal priority throws, so the lowest value in the shared shadow band renders), and the delete tool (host unlink with a rebuilt sandbox fence, four-family path purge, and a close-time VACUUM)"
   workflows: "Release & publish procedure — tag-first, npm publish gated on the tag"
   agents: "Issue tracker, triage labels, and domain-doc conventions for the engineering skills"
   reference: "The anchor contract, tool surface, settings, error codes, DSH support (README)"
@@ -18,7 +18,7 @@ l0_domains:
 
 A [DeepSeek Harness](https://github.com/deepseek-ai) (`dsh`) plugin that replaces
 the built-in `read` / `edit` / `write` / `grep` tools with **hash-anchored**
-versions and adds `undo_last_edit`, `ast_grep`, `ast_edit` and `lsp` on top. It
+versions and adds `delete`, `undo_last_edit`, `ast_grep`, `ast_edit` and `lsp` on top. It
 ships as one npm package: host plugin + web card plugin + prompt sections,
 mounted by a single bundle patch.
 

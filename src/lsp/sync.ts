@@ -59,6 +59,49 @@ export function notifyDocumentWritten(absolutePath: string, text: string): void 
 	}
 }
 
+/** How a deleted document reaches the LSP layer. */
+export type DocumentCloseHook = (absolutePath: string) => void;
+
+let closeHook: DocumentCloseHook | undefined;
+
+/** Replace the close hook (tests, or a deployment with its own wiring). */
+export function setDocumentClosedHook(next: DocumentCloseHook | undefined): void {
+	closeHook = next;
+}
+
+/**
+ * Tell the language server a file is gone.
+ *
+ * Same never-throws, never-warms contract as the write sync: only a server
+ * that is ALREADY running hears about it, and a misbehaving one cannot turn a
+ * successful delete into a failed one.
+ *
+ * @param absolutePath - the file that was just deleted.
+ */
+export function notifyDocumentClosed(absolutePath: string): void {
+	try {
+		if (closeHook !== undefined) {
+			closeHook(absolutePath);
+			return;
+		}
+		defaultClose(absolutePath);
+	} catch (error) {
+		console.error(
+			`dsh-hashline-edittool: document close failed for ${absolutePath}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+/** The default close wiring: use the process-wide manager, if one is installed. */
+function defaultClose(absolutePath: string): void {
+	const manager = getLspManager();
+	if (manager === undefined) return;
+	const language = languageForPath(absolutePath);
+	if (language === undefined) return;
+	if (!manager.readyLanguages.includes(language.id)) return;
+	manager.closeDocumentFor(language.id, pathToFileURL(absolutePath).href);
+}
+
 /** The default wiring: use the process-wide manager, if one is installed. */
 function defaultSync(absolutePath: string, text: string): void {
 	const manager = getLspManager();

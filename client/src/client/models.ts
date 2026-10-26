@@ -1217,3 +1217,114 @@ export function grepGutterLabel(row: GrepRowMeta): string {
 }
 
 //#endregion
+
+//#region delete card
+
+/** One row of the delete card: a path and its outcome. */
+export interface DeleteCardRow {
+	path: string;
+	status: "deleted" | "already-absent" | "failed";
+	detail: string;
+}
+
+/** The delete tool's card model, projected from `meta.delete`. */
+export interface DeleteCardModel {
+	title: string;
+	summary: string;
+	rows: DeleteCardRow[];
+	vacuum: string;
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function numberOf(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function cardBytes(n: number): string {
+	if (n < 1024) return `${n}B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KiB`;
+	return `${(n / 1024 / 1024).toFixed(1)}MiB`;
+}
+
+/**
+ * Project the host's `meta.delete` into the card's rows.
+ *
+ * One source for the title/summary/rows so the component and the tests agree,
+ * and a call without a usable projection returns null (the platform default
+ * renders it instead of an empty card).
+ *
+ * @param block - the settled tool block.
+ * @returns the card model, or null when the meta is absent/unusable.
+ */
+export function deleteCardModel(
+	block: ToolCallBlock,
+	cwd?: string,
+	home?: string,
+): DeleteCardModel | null {
+	if (!("kind" in block)) return null;
+	const meta = recordOf(block.meta);
+	const data = recordOf(meta?.delete);
+	if (data === undefined) return null;
+	const results = Array.isArray(data.results) ? data.results : [];
+	const failures = Array.isArray(data.failures) ? data.failures : [];
+	if (results.length === 0 && failures.length === 0) return null;
+	const displayPath = (path: string): string =>
+		abbreviateHomePath(relativizeToCwd(path, cwd), home);
+	const rows: DeleteCardRow[] = [];
+	for (const entry of results) {
+		const result = recordOf(entry);
+		if (result === undefined || typeof result.path !== "string") continue;
+		const status = result.status === "already-absent" ? "already-absent" : "deleted";
+		const reclaimed = recordOf(result.reclaimed);
+		const parts: string[] = [];
+		if (reclaimed !== undefined) {
+			const anchors = numberOf(reclaimed.anchorLines);
+			const undo = numberOf(reclaimed.undoLayers);
+			const served = numberOf(reclaimed.servedRows);
+			const bytes = numberOf(reclaimed.bytesFreed);
+			if (anchors + undo + served > 0) {
+				parts.push(`${anchors} anchor${anchors === 1 ? "" : "s"}`);
+				parts.push(`${undo} undo`);
+				parts.push(`${served} served`);
+			}
+			if (bytes > 0) parts.push(`${cardBytes(bytes)} freed`);
+		}
+		rows.push({ path: displayPath(result.path), status, detail: parts.join(" · ") });
+	}
+	for (const entry of failures) {
+		const failure = recordOf(entry);
+		if (failure === undefined || typeof failure.path !== "string") continue;
+		const code = typeof failure.code === "string" && failure.code !== "" ? `[${failure.code}] ` : "";
+		const message = typeof failure.message === "string" ? failure.message : "failed";
+		rows.push({ path: displayPath(failure.path), status: "failed", detail: `${code}${message}` });
+	}
+	const totals = recordOf(data.totals);
+	const deleted = numberOf(totals?.deleted);
+	const alreadyAbsent = numberOf(totals?.alreadyAbsent);
+	const failed = numberOf(totals?.failed);
+	const reclaimed = recordOf(data.reclaimed);
+	const bytes = numberOf(reclaimed?.bytesFreed);
+	const stats = [
+		`${deleted} deleted`,
+		`${alreadyAbsent} already absent`,
+		`${failed} failed`,
+		bytes > 0 ? `${cardBytes(bytes)} freed` : "",
+	].filter((part) => part !== "").join(" · ");
+	// Collapsed-row parity with edit: the path (single) or the count (multi)
+	// comes FIRST; the stats follow. The path is already relativized/homed.
+	const lead = rows.length === 1 ? (rows[0]?.path ?? "1 path") : `${rows.length} paths`;
+	const summary = [lead, stats].filter((part) => part !== "").join(" · ");
+	return {
+		title: "Delete",
+		summary,
+		rows,
+		vacuum: typeof data.vacuum === "string" ? data.vacuum : "none",
+	};
+}
+
+//#endregion
