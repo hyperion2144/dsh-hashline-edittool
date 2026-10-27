@@ -54,6 +54,7 @@
 - **一切皆卡片。** 随包的 client 插件从结构化 `presentationMeta` 在 dsh web UI 渲染
   读 / diff / grep / 撤销 / 写入 / 结构 / LSP 卡片 —— 模型文本与 UI 永远不需要靠字符串
   解析达成一致。
+  PTC preset 下同样成立：`run_code` 子调用携带同一份 `presentationMeta`，渲染同一张卡片（#353）。
 
 以单个 npm 包（`dsh-hashline-edittool`）交付：宿主插件 + web 卡片插件 + prompt sections，
 由一个 bundle patch 挂载。

@@ -16,6 +16,13 @@
  *   shipped edit card falls back to generic for hashline calls.
  * - edit anchor hints: the anchors the model addressed the edit with are read
  *   back from the call's own `edits[].anchor_start` arguments.
+ *
+ * A card also renders for a PTC SUB-CALL. `run_code` dispatches `read`,
+ * `edit`, `grep`, … as child calls whose `parentCallId` points at the
+ * program, and the dispatch bridge copies the child's presentationMeta
+ * onto the logged result — so the meta is the same shape and refusing
+ * `parentCallId` (the pre-#353 rule) left every PTC card on the generic
+ * fallback. The meta soft-validation below is the only gate.
  */
 
 import type {
@@ -411,7 +418,7 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 }
 
 /**
- * Derive the settled read card. Requires the official contract (root, settled,
+ * Derive the settled read card. Requires the official contract (settled,
  * non-error call, valid `read` arguments and valid presentationMeta) and
  * renders the hashline gutter (`<line>:<anchor>`) whenever the meta carries
  * valid hashlines; an empty hash falls back to the bare number for that row.
@@ -431,7 +438,7 @@ export function readCardModel(
 	cwd: string | undefined,
 	home: string | undefined,
 ): ReadCardModel | null {
-	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	if (!("kind" in block) || block.isError) return null;
 	if (!validReadCall(block)) return null;
 	const meta = readPresentationMeta(block.meta);
 	if (meta === null) return null;
@@ -534,7 +541,6 @@ function appliedDiffs(meta: unknown): FileDiff[] | null | "empty" {
  * @returns the diff-card props, or null for the generic path.
  */
 export function diffCardModel(block: ToolCallBlock): DiffCard | null {
-	if (block.parentCallId !== undefined) return null;
 	if (!("kind" in block)) {
 		const intended = intendedDiff(block);
 		return intended === null ? null : { path: intended.diff.path, diffs: [intended.diff] };
@@ -587,7 +593,6 @@ export function diffCardModel(block: ToolCallBlock): DiffCard | null {
  * @returns the diff-card props, or null for the generic path.
  */
 export function writeCardModel(block: ToolCallBlock): DiffCard | null {
-	if (block.parentCallId !== undefined) return null;
 	if (!("kind" in block)) {
 		const intended = intendedDiff(block);
 		return intended !== null && intended.tool === "write"
@@ -934,14 +939,14 @@ function grepRowMeta(candidate: unknown): GrepRowMeta | null {
 }
 
 /**
- * Derive the settled grep card. Requires the official contract (root, settled,
+ * Derive the settled grep card. Requires the official contract (settled,
  * non-error call of the `grep` tool, valid presentationMeta); a payload without
  * `rows` (a pre-0.4.4 session log) returns null so the generic body renders.
  * @param block - running or settled Tool block.
  * @returns the card model, or null for the generic path.
  */
 export function grepCardModel(block: ToolCallBlock): GrepCardModel | null {
-	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	if (!("kind" in block) || block.isError) return null;
 	// `ast_grep` wears the grep card: its presentationMeta is the same
 	// files/rows/spans shape, capped by the same helper. The name was locked to
 	// `grep`, which is why ast_grep rendered as raw IO while carrying drawable
@@ -965,7 +970,7 @@ export function grepCardModel(block: ToolCallBlock): GrepCardModel | null {
  * @returns the card model, or null when the call carries nothing drawable.
  */
 export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
-	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	if (!("kind" in block) || block.isError) return null;
 	const meta = block.meta;
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
 	const value = meta as Record<string, unknown>;
@@ -996,7 +1001,7 @@ export function lspCardModel(block: ToolCallBlock): LspCardModel | null {
  * body rather than drawing a guess.
  */
 export function lspStatusCardModel(block: ToolCallBlock): LspStatusModel | null {
-	if (block.parentCallId !== undefined || !("kind" in block) || block.isError) return null;
+	if (!("kind" in block) || block.isError) return null;
 	const meta = block.meta;
 	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return null;
 	const value = meta as Record<string, unknown>;

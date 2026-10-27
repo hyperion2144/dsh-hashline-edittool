@@ -38,6 +38,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - `lsp` 的错误值不再携带字面 `path: undefined`：`status`/`warm` 无 `path`，宿主无损 JSON 校验会整次拒绝这类拒绝值，改为省略该字段（#320）。
 - client 半区九个 toolview 接管注册收进一个 `TAKEOVER_PRIORITY` 常量并改为 `-2`：与 `dsh-claude-style` 写死的 `-1` 不再同值，两个插件同时启用时不再抛 `keyed slot "tool.call.toolview" ... already has an entry`（#321，ADR-0022）。
 - 同一 `edit` 调用里释放的锚点不再被该调用的后续行重新分配；多 item 批次的释放池与 served 清理不再被批次收尾的早退吞掉（#351）。
+- PTC preset 会话里的卡片不再回退成原始输入/输出：卡片模型不再一律拒绝 `parentCallId`，`run_code` 子调用带同一份 presentationMeta，和原生调用一样渲染（#353）。
 
 ## [0.10.3] - 2026-10-19
 
