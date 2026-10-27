@@ -49,6 +49,29 @@ export function normalizeAutoFormatMode(value: unknown, fallback: AutoFormatMode
 	return fallback;
 }
 
+/**
+ * How much of a successful `write` the model sees afterwards (`write.preview`,
+ * map #354): `full` re-reads the file and serves every written row, `diff`
+ * renders an update as a unified diff, `confirmation` returns the one-line
+ * confirmation and serves nothing.
+ */
+export type WritePreviewMode = "full" | "diff" | "confirmation";
+
+/**
+ * Map one raw `write.preview` value onto the mode enum. Anything but a known
+ * literal falls back — the same defensive default every other field applies
+ * when a caller bypasses the schema.
+ */
+export function normalizeWritePreviewMode(
+	value: unknown,
+	fallback: WritePreviewMode,
+): WritePreviewMode {
+	if (value === "full") return "full";
+	if (value === "diff") return "diff";
+	if (value === "confirmation") return "confirmation";
+	return fallback;
+}
+
 export interface EffectiveHashlineConfig {
 	separator: string;
 	outputFormat: OutputFormat;
@@ -68,6 +91,13 @@ export interface EffectiveHashlineConfig {
 	lineNumbers: boolean;
 	/** Per-response char budget (ADR-0013): see `RESPONSE_BUDGET_*`. */
 	maxResponseChars: number;
+	/**
+	 * How much of a successful `write` the model sees afterwards
+	 * (`write.preview`, map #354). Default `diff`: an update comes back as the
+	 * unified diff; `full` restores the whole-file echo, `confirmation` returns
+	 * one line and serves nothing.
+	 */
+	writePreview: WritePreviewMode;
 	/**
 	 * `grep` builds its candidate list with ripgrep, so `.gitignore` / `.ignore` rules
 	 * apply and build output never reaches the read budget (default true). Off searches
@@ -140,6 +170,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	editorconfig: true,
 	grepRespectGitignore: true,
 	maxResponseChars: RESPONSE_BUDGET_DEFAULT,
+	writePreview: "diff",
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -281,6 +312,15 @@ export function lineNumbersEnabled(): boolean {
 }
 export function isJsonOutput(): boolean {
 	return effective.outputFormat === "json";
+}
+
+/**
+ * How much of a successful `write` the model sees afterwards (`write.preview`,
+ * map #354). Read at CALL time: the mode is a user switch that hot-reloads,
+ * and the tool surface itself never changes with it.
+ */
+export function writePreviewMode(): WritePreviewMode {
+	return effective.writePreview;
 }
 
 /** A fresh copy of the built-in defaults, for validators that reset absent fields. */

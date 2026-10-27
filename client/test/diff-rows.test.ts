@@ -29,6 +29,14 @@ describe("buildDisplayRows (the drawn rows, #295)", () => {
 		expect(display.map((row) => row.gutter)).toEqual(["-21:C7", "+21:h2", "20:Cg"]);
 	});
 
+	it("renders a blank hash as a bare line number — the confirmation gutter (#354)", () => {
+		expect(gutterLabel(content("+", 21, "", "new"))).toBe("+21");
+		expect(gutterLabel(content("-", 21, "", "old"))).toBe("-21");
+		expect(gutterLabel(content(" ", 20, "", "keep"))).toBe("20");
+		const display = buildDisplayRows([content("+", 21, "", "new")]);
+		expect(display[0]!.gutter).toBe("+21");
+	});
+
 	it("suppresses the line-number gap at a segment boundary — the header IS the boundary", () => {
 		const display = buildDisplayRows([content(" ", 10, "a1", "first"), hunk("@@ -10,1 +10,1 @@ scope()"), content(" ", 20, "a2", "second")]);
 		expect(display.map((row) => row.kind)).toEqual(["ctx", "hunk", "ctx"]);

@@ -13,6 +13,7 @@ import {
 	DELETE_GUIDANCE,
 	GREP_GUIDANCE,
 	READ_GUIDANCE,
+	readGuidance,
 	UNDO_GUIDANCE,
 	type ToolGuidance,
 } from "../domain/edit/prompts.js";
@@ -51,7 +52,7 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		name: "tool:read",
 		file: "read.md",
 		defaultOrder: 130,
-		renderDefault: () => guidanceText(READ_GUIDANCE),
+		renderDefault: () => guidanceText(readGuidance(getEffectiveConfig())),
 	},
 	{
 		name: "tool:edit",

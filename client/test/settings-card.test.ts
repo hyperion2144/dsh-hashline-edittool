@@ -26,6 +26,7 @@ import {
 	requestedView,
 	readFormatFlags,
 	readLspIdleMs,
+	readWritePreview,
 	settingsSummaryText,
 	validateStoreBudgetDraft,
 	validateLspIdleDraft,
@@ -64,6 +65,22 @@ const READY: ConfigFormSnapshot = {
 	writable: true,
 	mode: "host",
 };
+
+describe("readWritePreview (map #354) — the three-way echo switch", () => {
+	const withWrite = (write: unknown): ConfigFormSnapshot => ({ ...READY, value: { ...READY.value, write } });
+
+	it("keeps every mode — `diff` must not fall back to `full` (#365)", () => {
+		expect(readWritePreview(withWrite({ preview: "diff" }))).toBe("diff");
+		expect(readWritePreview(withWrite({ preview: "confirmation" }))).toBe("confirmation");
+		expect(readWritePreview(withWrite({ preview: "full" }))).toBe("full");
+	});
+
+	it("falls back to the host default (diff) for absent or malformed values", () => {
+		expect(readWritePreview(READY)).toBe("diff");
+		expect(readWritePreview(withWrite(undefined))).toBe("diff");
+		expect(readWritePreview(withWrite({ preview: "sideways" }))).toBe("diff");
+	});
+});
 
 describe("requestedView — the manager page's view prop", () => {
 	it("hands the page form to an absent prop (defensive default)", () => {

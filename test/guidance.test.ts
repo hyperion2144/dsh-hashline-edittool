@@ -28,7 +28,7 @@ import {
 	READ_GUIDANCE,
 	UNDO_GUIDANCE,
 } from "../src/domain/edit/prompts.js";
-import { getEffectiveConfig } from "../src/config.js";
+import { applyEffective, getEffectiveConfig } from "../src/config.js";
 
 async function withHome(run: (home: string) => Promise<void>): Promise<void> {
 	const home = await mkdtemp(
@@ -86,6 +86,17 @@ describe("guidance sections", () => {
 		expect(renderSectionDefault("tool:undo_last_edit")).toBe(
 			[UNDO_GUIDANCE.intro, "", bullets(UNDO_GUIDANCE.lines)].join("\n"),
 		);
+	});
+
+	it("teaches the confirmation-mode write rule only while that mode is on (#354)", () => {
+		applyEffective(undefined);
+		expect(renderSectionDefault("tool:read")).not.toContain("confirmation");
+		applyEffective({ write: { preview: "confirmation" } });
+		try {
+			expect(renderSectionDefault("tool:read")).toContain("confirmation");
+		} finally {
+			applyEffective(undefined);
+		}
 	});
 });
 
