@@ -485,6 +485,43 @@ export async function releaseLines(input: {
 	return released;
 }
 
+/**
+ * Complete a release from the ANCHORS themselves (#351).
+ *
+ * {@link releaseLines} reasons from line numbers because it can still read the
+ * rows. The batch engine cannot: by the time an item has been applied, that
+ * item's transform has already dropped the row, so the anchor has to be
+ * carried over from the drop site (`releasedAnchors`).
+ *
+ * Part (1) is therefore already done. This completes (2) and (3): out of the
+ * RELEASING session's served set, and into this call's pool — in that order,
+ * because the pool is what the very next allocation consults.
+ *
+ * @param input - path, the anchors that went away, session key.
+ */
+export async function releaseAnchors(input: {
+	readonly path: string;
+	readonly anchors: readonly string[];
+	readonly sessionKey: string;
+}): Promise<void> {
+	const anchors = [...new Set(input.anchors)].filter((anchor) => anchor !== "");
+	if (anchors.length === 0) return;
+	const { path, sessionKey } = input;
+	// (3) in-memory and FIRST: the next mint in this call reads the pool.
+	markReleased(path, anchors);
+	// (2) committed: an anchor that is dead but still recorded as served is a
+	// refusal waiting to confuse someone (contract §4).
+	const store = await loadHashStore();
+	withStore(() => {
+		const served = store.getServed(sessionKey, path);
+		let changed = false;
+		for (const anchor of anchors) {
+			if (served.delete(anchor)) changed = true;
+		}
+		if (changed) store.upsertServed(sessionKey, path, [...served]);
+	});
+}
+
 
 // `lineKeyAt` and `servedFor` lived here. Both were exported and never called:
 // the first re-derived a line's content key (the primitives compute it inline

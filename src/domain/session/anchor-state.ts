@@ -408,6 +408,16 @@ export function updateAnchorsAfterEdit(args: {
 	 */
 	released?: number[];
 	/**
+	 * OUT: the ANCHORS this transform dropped, appended in place.
+	 *
+	 * The line-number array above cannot complete a release on its own: by the
+	 * time the caller sees it the row is already gone, so the anchor has to be
+	 * captured HERE, while the entry is still in hand. The edit engine uses it to
+	 * fill the release pool the moment an item is applied — before the NEXT item
+	 * of the same batch can allocate (#351).
+	 */
+	releasedAnchors?: string[];
+	/**
 	 * The anchors this allocation must avoid: the file's live rows **∪ the
 	 * session's release pool** (contract §2.1 item 3, §4.1).
 	 *
@@ -519,7 +529,10 @@ export function updateAnchorsAfterEdit(args: {
 			// COMPLETE the release — dropping the row here says nothing to the
 			// releasing session's served set and nothing to this call's release pool
 			// (#223, contract §4).
-			if (!survivors.has(line)) args.released?.push(line);
+			if (!survivors.has(line)) {
+				args.released?.push(line);
+				args.releasedAnchors?.push(entry.anchor);
+			}
 		} else {
 			shifted.set(newPos, entry);
 		}

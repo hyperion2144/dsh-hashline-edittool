@@ -54,7 +54,7 @@ import {
 // not in the resolve/apply engine — see the note at that seam.
 import { recordEchoServes, type ServeRecordPolicy } from "../session/session-view.js";
 import { findPathsByAnchors, takeRebuildWarning, withStoreAsync } from "../session/hash-store.js";
-import { allocationUsedSet, releaseLines } from "../session/anchor-entry.js";
+import { allocationUsedSet, markReleased, releaseAnchors, releaseLines } from "../session/anchor-entry.js";
 import { anchorForInWorkspace, withWorkspace, workspaceCwd } from "../session/session-view.js";
 import { probeLines } from "../session/anchor-entry.js";
 import type { ServedVerdict } from "../../hashline/anchor-pipeline.js";
@@ -423,6 +423,15 @@ export interface ApplyOneInput {
 	lineNumbers?: boolean;
 	/** Shared warnings array; resEdit warnings are pushed here. */
 	warnings: string[];
+	/**
+	 * OUT: the anchors this item dropped, appended in place (#351).
+	 *
+	 * The batch sequencer passes ONE array for the whole call and seals the new
+	 * entries into the release pool after every item — the rows are already gone
+	 * by then, so waiting for the end of the batch would leave the next item a
+	 * window in which a just-released anchor looks available.
+	 */
+	releasedAnchors?: string[];
 	/**
 	 * The hashes to count added/removed lines against. Defaults to `hashes`;
 	 * the batch sequencer passes the file's ORIGINAL hashes so later edits in
@@ -922,6 +931,7 @@ export async function applyOne(
 		// Without it the hunk's fresh lines could be handed an anchor this very
 		// call released (§9 invariant 5).
 		used: allocationUsedSet(input.absolutePath),
+		releasedAnchors: input.releasedAnchors,
 	});
 	// The realign inside `updateAnchorsAfterEdit` may have degraded (#182): past
 	// the bounded-DP threshold a low-similarity rewrite drops every anchor this
@@ -1307,6 +1317,13 @@ const ordered = [...resolvedEdits].sort(
 		| undefined;
 	const hunkShifts: HunkShift[] = [];
 
+	// #351: every anchor an item drops, in drop order. The pool is sealed as
+	// soon as an item returns, so the NEXT item cannot treat the freed string as
+	// available; the served row is written once, in the batch's own transaction
+	// below (an aborted batch must not prune it).
+	const releasedAnchors: string[] = [];
+	let releasedSealed = 0;
+
 	for (const { item, edit } of ordered) {
 		abortIf(opts.signal);
 		const applied = await applyOne(
@@ -1329,6 +1346,7 @@ const ordered = [...resolvedEdits].sort(
 				cwd: opts.cwd,
 				signal: opts.signal,
 				warnings,
+				releasedAnchors,
 				lineNumbers: opts.lineNumbers,
 				countHashes: originalHashes,
 				persist: false,
@@ -1381,6 +1399,17 @@ const ordered = [...resolvedEdits].sort(
 				);
 			},
 		);
+
+		// #351 — seal what THIS item released before the next one is applied. The
+		// row is already gone (the per-item transform persisted it), so the pool is
+		// the only remaining source that can keep the string out of the next
+		// allocation. In-memory on purpose: no store write on this path.
+		const sealedNow = releasedAnchors.slice(releasedSealed);
+		releasedSealed = releasedAnchors.length;
+		if (sealedNow.length > 0) {
+			markReleased(absolutePath, sealedNow);
+			for (const anchor of sealedNow) served.delete(anchor);
+		}
 
 		const range = applied.range;
 		if (range.startLine < unionStartLine) {
@@ -1496,6 +1525,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 					}),
 				),
 				released: releasedLines,
+				releasedAnchors,
 			});
 			// Complete the release (#223, contract §4). Dropping the rows above is only
 			// the first of three things: those anchors must ALSO leave THIS session's
@@ -1514,6 +1544,14 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 					sessionKey: opts.sessionKey,
 				});
 			}
+			// #351 — (2) of the release for every anchor the per-item passes sealed.
+			// The pool already holds them; this drops the stale served entries, inside
+			// the batch's transaction so an aborted batch writes nothing.
+			await releaseAnchors({
+				path: absolutePath,
+				anchors: releasedAnchors,
+				sessionKey: opts.sessionKey,
+			});
 		});
 		if (releasedLines.length > 0) {
 			// The edit response serves the changed region, so the lines just released

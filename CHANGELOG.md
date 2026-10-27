@@ -37,6 +37,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - `lsp` 的 `status`/`warm` 出专属状态卡（状态点 + 语言 + 失败原因），词汇表之外的意外错误包装为 `[E_LSP_UNEXPECTED]` 走错误卡片，不再因宿主无法无损序列化而整次调用失败（#320）。
 - `lsp` 的错误值不再携带字面 `path: undefined`：`status`/`warm` 无 `path`，宿主无损 JSON 校验会整次拒绝这类拒绝值，改为省略该字段（#320）。
 - client 半区九个 toolview 接管注册收进一个 `TAKEOVER_PRIORITY` 常量并改为 `-2`：与 `dsh-claude-style` 写死的 `-1` 不再同值，两个插件同时启用时不再抛 `keyed slot "tool.call.toolview" ... already has an entry`（#321，ADR-0022）。
+- 同一 `edit` 调用里释放的锚点不再被该调用的后续行重新分配；多 item 批次的释放池与 served 清理不再被批次收尾的早退吞掉（#351）。
 
 ## [0.10.3] - 2026-10-19
 
