@@ -60,6 +60,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the bu
 - **Everything is a card.** The bundled client plugin renders read / diff / grep / undo /
   write / structural / LSP cards in the dsh web UI from structured `presentationMeta` —
   the model text and the UI never have to agree by string parsing.
+  Under the PTC preset a `run_code` sub-call carries that same meta, so the same card renders (#353).
 
 Ships as one npm package (`dsh-hashline-edittool`): host plugin + web card plugin + prompt
 sections, mounted by a single bundle patch.

@@ -75,9 +75,8 @@ describe("grepCardModel", () => {
 		expect(grepCardModel(running)).toBeNull();
 	});
 
-	it("degrades for errors, sub-calls and other tools", () => {
+	it("degrades for errors and other tools", () => {
 		expect(grepCardModel(settled({ meta: meta(), isError: true }))).toBeNull();
-		expect(grepCardModel(settled({ meta: meta(), parentCallId: "p" }))).toBeNull();
 		expect(grepCardModel(settled({ meta: meta(), call: { name: "read", argsRaw: "{}" } }))).toBeNull();
 	});
 
