@@ -1,9 +1,10 @@
 /**
- * Reading indentation settings from a `.editorconfig` — opt-in, dependency-free.
+ * Reading indentation settings from a `.editorconfig` — dependency-free.
  *
- * `format.editorconfig: true` (G1) makes the plugin prefer a project's
- * `.editorconfig` over the document-whitespace heuristic when assembling
- * `FormattingOptions`. The spec is large; the slice a FORMATTER needs is two
+ * `format.editorconfig` (on by default since #336; G1 introduced it
+ * opt-in) makes the plugin prefer a project's `.editorconfig` over the
+ * document-whitespace heuristic when assembling `FormattingOptions`. The
+ * spec is large; the slice a FORMATTER needs is two
  * keys — `indent_style` and `indent_size` — so this module implements a
  * minimal, honest subset instead of a dependency:
  *

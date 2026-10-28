@@ -113,8 +113,8 @@ lsp?: {
 	 * what changed — and a range the server cannot serve degrades only through
 	 * `fallback_full_file` (default false: the refusal stands). Legacy boolean
 	 * values stay schema-legal and migrate (true → "full", false → "off").
-	 * `editorconfig` (default false) prefers a project's `.editorconfig` over
-	 * the document-whitespace heuristic for `FormattingOptions`.
+	 * `editorconfig` (default true since #336: a checked-in project standard
+	 * outranks the document-whitespace heuristic for `FormattingOptions`).
 	 */
 	format?: {
 		auto?: boolean | "off" | "full" | "range";

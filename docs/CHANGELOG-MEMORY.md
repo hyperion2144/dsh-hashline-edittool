@@ -773,3 +773,29 @@ Map #322 的 `delete` 工具需要把「删文件」与「回收锚点库」做�
 - `README.md` / `README.zh.md`：工具表、错误码、Store 回收段、架构工具数 8→9
 - `CHANGELOG.md` `[Unreleased]`：delete 工具 + VACUUM 修复各一条
 - `CONTEXT.md`：delete / path purge / already-absent / logical vs physical reclaim
+
+## 2026-10-26 — format 缩进单位推断 + `.editorconfig` 默认开启 (#336)
+
+**Type:** contract（ADR-0019 2026-10-26 修正案：缩进单位改按行间步长 + 重复宽度网格推断，`.editorconfig` 默认由 opt-in 翻为 on）
+**Confidence:** High（根 + client typecheck/test 全绿；行为由 format-indent / format-settings / format-editorconfig / client 卡片用例锁定；真实 TLS 冒烟在本机跑到）
+**Evidence:** 票 [#336](https://github.com/hyperion2144/dsh-hashline-edittool/issues/336)（诊断记录 + 真机全文/range 复现）；ADR-0019 修正段
+
+### Why
+
+`inferIndentOptions()` 把「绝对前导宽度众数」当缩进单位：4 空格但多数行在两层以上嵌套的文件，众数落在 8，真实 `typescript-language-server` 按 `tabSize: 8` 把类体重排成 8/16/24；range 模式下范围内外出现 4/8 混排。同一处 `.editorconfig` 默认关闭，项目声明被忽略，与「项目规范优先」相反。
+
+### Path / Affected typed relationships
+
+- `src/lsp/format/indent.ts`：`inferIndentOptions()` 改为「步长众数 + 重复宽度 GCD 两个读数，取有 ≥80% 网格支撑的较大者；都不成立退回旧主导宽度吸附」；新增 `inferUnit` / `stepUnit` / `gridUnit` / `onGrid` / `dominantWidth` / `snapToCandidate`。
+- `src/infra/settings.ts` / `src/config.ts`：`format.editorconfig` 默认 `false` → `true`（`DEFAULT_CONFIG`；显式值仍优先）。
+- `client/src/client/settings-model.ts`：`readFormatFlags` 的 editorconfig 缺省改为 true（显式 false 仍关），避免卡片把默认关写回。
+- `client/src/client/settings-card.tsx`：开关 hint 改「默认开」。
+- `src/domain/format/prompts.ts`、`src/lsp/format/options.ts`、`src/lsp/editorconfig.ts`：文案/注释同步。
+- 文档：ADR-0019 2026-10-26 修正案、README ×2、`CHANGELOG.md` `[Unreleased]` Changed/Fixed 各一行。
+- 测试：`test/core/format-indent.test.ts`（深 4 空格、3 空格单层、对齐噪声、单行错缩进的 4/6/8 矩阵）、`format-settings` 默认值、`client/test/settings-card.test.ts`、`test/core/format-real-server.test.ts`（深 4 空格与「4 空格文件里一行 2 空格」的全文/range 冒烟）。
+
+### 本轮定案（复核时照此）
+
+- **缩进单位来自结构**：绝对宽度是嵌套深度，不是单位；步长众数与重复宽度 GCD 两个读数取较大、且能覆盖 ≥80% 缩进行者，个别错缩进行不能定义单位。
+- **`.editorconfig` 默认生效**：项目标准优先于文件启发式；显式 `false` 才关。
+- **不读 rustfmt / gopls**：交给 server 自身（ADR-0019 原条款不变）。

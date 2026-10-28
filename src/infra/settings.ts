@@ -117,7 +117,9 @@ export interface EffectiveHashlineConfig {
 	formatFallbackFullFile: boolean;
 	/**
 	 * Whether `FormattingOptions` prefer a project `.editorconfig` over the
-	 * document-whitespace heuristic (map #275, G1). Default OFF.
+	 * document-whitespace heuristic (map #275, G1). Default ON since #336:
+	 * a checked-in project standard outranks the file heuristic; an explicit
+	 * false opts out.
 	 */
 	editorconfig: boolean;
 }
@@ -135,7 +137,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	lspIdleTimeoutMs: DEFAULT_LSP_IDLE_TIMEOUT_MS,
 	autoFormatMode: "off",
 	formatFallbackFullFile: false,
-	editorconfig: false,
+	editorconfig: true,
 	grepRespectGitignore: true,
 	maxResponseChars: RESPONSE_BUDGET_DEFAULT,
 };
@@ -239,8 +241,8 @@ export function formatFallbackFullFile(): boolean {
 }
 
 /**
- * Whether formatting options prefer a project `.editorconfig` (map #275,
- * `format.editorconfig`; default OFF, the file-heuristic fallback applies).
+ * `format.editorconfig`; default ON since #336, an explicit false opts
+ * out and the file-heuristic fallback applies).
  */
 export function isEditorconfigEnabled(): boolean {
 	return effective.editorconfig;

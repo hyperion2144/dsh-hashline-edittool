@@ -6,6 +6,8 @@
 >
 > **Amendment** (2026-10-21, #315): `format.auto` becomes a tri-state mode — `off` (default) | `full` | `range` (legacy booleans migrate `true`→`full`, `false`→`off`) — and a new `format.fallback_full_file` switch (default **off**) replaces the silent whole-file fallback. In `range` mode a server without range formatting skips the automatic pass silently, and the `format` tool with an explicit range **refuses with `E_FORMAT_UNSUPPORTED`** instead of silently reformatting the whole file — superseding the G3 ruling (#280) that a range request may fall back silently. A `write` with no hunks is treated as a whole-file call in `range` mode.
 >
+> **Amendment** (2026-10-26, #336): the indentation unit is inferred from the file's structure, not the dominant absolute width. Two readings are cross-checked — the most common positive **step** between consecutive lines, and the **GCD** of the widths that occur more than once — and the larger reading that divides at least four in five indented widths (2–8 band) wins, so one badly indented line cannot redefine the unit. A file that clears neither reading falls back to the old dominant-width snap among 2/4/8. `format.editorconfig` flips to **on by default**: a checked-in project standard outranks the file heuristic, and `false` opts out — superseding G1's opt-in default (#277).
+>
 > **Amendment** (2026-10-21, #315 PR review — section body): a formatter-changed line whose final text equals its pre-edit text is **located, not quoted** — each contiguous run becomes a `@@ ~start,count @@ scope` locator plus a one-line restored summary (`restoredRows` + `clusters`); only rows whose same-text occurrence position shifted past the pre-edit count (anchor genuinely changed) stay content rows. The header reads `… · k in main diff · r restored · u unserved`; the invariant becomes `changedLines = inMainDiffRows + unservedRows + restoredRows + rows.length`. Manual `format` output is unchanged (no pre-edit lines to compare).
 
 ## Problem Statement
@@ -48,13 +50,17 @@ anchors served in this session (verified like `edit`'s, `[E_STALE]` /
 `[E_RANGE_UNVERIFIED]` with echo); interior rows may be unserved. Closed line interval;
 `start ≤ end`, same line allowed. No `range` means the whole file.
 
-**FormattingOptions come from the file, not the caller.** Default: infer from the
-document's existing indentation (tabs dominate → `insertSpaces: false`; spaces dominate →
-`insertSpaces: true` with the dominant width of 2/4/8; unrecognizable → `{4, true}`). The
-user-level setting `format.editorconfig` (default false) reads `.editorconfig` upward from
-the file to the workspace root for `indent_style`/`indent_size`, falling back to the
-inference. No tool parameter exposes these; the server's own `.clang-format` etc. still
-win inside the server.
+**FormattingOptions come from the file, not the caller.** Default: infer the file's
+**indent unit**, not its dominant width (amended 2026-10-26 by #336: the dominant *absolute*
+width is the nesting depth, not the unit). Two readings are cross-checked — the most common
+positive step between consecutive non-blank lines, and the GCD of the widths that occur more
+than once — and the larger reading that divides at least four in five indented widths and sits
+in 2–8 wins, so one badly indented line cannot redefine the unit; a file that clears neither
+falls back to the dominant width of 2/4/8, and an unrecognizable file to `{4, true}`.
+`.editorconfig` is read **by default**
+(`format.editorconfig`, on since #336) upward from the file to the workspace root for
+`indent_style`/`indent_size`, winning per key over the inference; `false` opts out. No tool
+parameter exposes these; the server's own `.clang-format` etc. still win inside the server.
 
 **Output shares one shape with the automatic path** (G2): a `FormatSection` per file —
 `status / server / mode ("range" | "full-file") / requested / applied / changedLines /
@@ -103,6 +109,9 @@ operation succeeds regardless.
 
 - `format.auto` off (the default) changes nothing: no `formats` section, unchanged
   diff/served/undo behavior (`eligible` defaults to always-true).
+- `format.editorconfig` is on by default (#336): a project `.editorconfig` outranks a file's
+  own whitespace unless the user sets it to false; a deep 4-space file is no longer re-indented
+  at 8.
 - Anchor-less rows stay uneditable until a fresh `read` serves them; the main diff's
   `+`/context anchors always describe the final content.
 - `README.md` / `README.zh.md` gain the `format` tool, the `format` settings group, and

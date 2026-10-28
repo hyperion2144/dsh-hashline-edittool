@@ -109,7 +109,7 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			grepRespectGitignore: true,
 			autoFormatMode: "off",
 			formatFallbackFullFile: false,
-			editorconfig: false,
+			editorconfig: true,
 			maxResponseChars: 48000,
 		});
 	});

@@ -22,5 +22,6 @@ export const FORMAT_DESCRIPTION = [
 	"when a bound anchor is not served.",
 	"The reply lists the formatter-changed rows with fresh anchors (rows whose",
 	"pre-format lines were never served show a blank anchor). Indentation follows",
-	"the file itself, or `.editorconfig` when `format.editorconfig` is on.",
+	"the project's `.editorconfig` when present (`format.editorconfig`, on by default),",
+	"and otherwise the file's own indent steps.",
 ].join(" ");

@@ -12,6 +12,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Changed
 
+- `format.editorconfig` 默认改为开启：项目 `.editorconfig` 的缩进声明优先于文件自身的缩进推断，显式设 false 退回推断（#336）。
 - 编辑 diff 改为 unified diff 形态：文件头 `--- path` / `+++ path`，段头 `@@ -old,count +new,count @@ 函数名()` 给出改动前后的行区间与所在函数；删除行留原位，其失效的旧锚点以 `~` 标记（#293，ADR-0020）。
 - 段头的作用域名由纯语法作用域检测给出（`src/render/scope/`）：检测不到就留空，不猜（#294）。
 - 作用域检测按文件扩展名/文件名选语言与声明模式表（git 的做法），覆盖 TS/JS、Python、Go、Rust、Java 系、C 系、Ruby、Lua/Elixir/Julia 等语言；表驱动，加一种语言是一行（#301）。
@@ -23,6 +24,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Fixed
 
+- `format` 不再把 4 空格深层嵌套文件推断成 8 空格：缩进单位改按「行间步长 + 重复宽度网格」联合识别，个别错缩进行不再改变单位，全文与范围格式化不再产生 4/8 混排（#336）。
 - format 工具的 range 边界修复：`<line>:<anchor>` 组合形式（数字在前的行号提示）的行号曾被当锚点查找而误报 `E_RANGE_UNVERIFIED`，现在两种行号顺序都正确解析（#316）
 - 关闭哈希存储时在写完关闭标记后再做一次 WAL 检查点：干净关机后不留未落盘的 WAL 帧，下一次打开是普通读而不是恢复（#303）。
 - 关闭哈希存储时真正等待 VACUUM 完成；此前的 `pending_vacuum` 没有生产者、VACUUM 又是异步的，标记在完成前就被清掉。现在删除/淘汰在逻辑字节下降时写标记，关机同步 VACUUM 成功才清（#322）。
