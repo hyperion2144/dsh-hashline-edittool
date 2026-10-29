@@ -20,9 +20,12 @@ related:
 
 # Release & publish (tag-first)
 
-The **git tag creates the GitHub release**, and `npm publish` is blocked until
-that tag exists. Never the other way round.
+The **git tag creates the GitHub release and the npm publish**, and `npm publish`
+is blocked until that tag exists. Never the other way round.
 
+The publish itself runs in CI, over OIDC trusted publishing: npmjs.com
+trusts this repository's `release.yml` by name, so no npm token lives in the
+repo and no browser step is ever needed.
 ## 1. Release — headless-safe
 
 ```sh
@@ -43,18 +46,41 @@ CHANGELOG `[Unreleased]` section to `[X.Y.Z] - <date>` and re-adds an empty
 creates the annotated tag `vX.Y.Z`, and **pushes the branch and the tag**.
 
 The tag push triggers `.github/workflows/release.yml`, which creates the GitHub
-Release from that version's `## [X.Y.Z]` CHANGELOG section, falling back to
-generated notes when the section is missing.
+Release from that version's `## [X.Y.Z]` CHANGELOG section (falling back to
+generated notes when the section is missing) and then publishes the package to
+npm with the workflow's OIDC credential.
 
-## 2. Publish — needs an interactive shell
+## 2. Publish — automatic, via OIDC trusted publishing
 
-`npm login` and `npm publish` open a browser for the 2FA/OTP step. An agent
-without an interactive terminal cannot complete that step — hand it to a human.
+The `publish` job in `.github/workflows/release.yml` runs `npm publish` with the
+permission `id-token: write`. npm swaps the workflow's OIDC token for a
+short-lived publish credential, so there is no npm token anywhere and no
+2FA prompt. It refuses to publish a ref that is not the version's own tag.
+
+The trust relationship lives on npmjs.com, on the package page:
+**Trusted Publisher → GitHub Actions**, with the organization/user, the
+repository and the workflow filename (`release.yml` — the filename only), and
+**Allow npm publish** ticked. Those fields are fixed once the connection
+exists: to change one, delete the connection and create it again.
+
+A connection is only valid once it has been used: npm marks a fresh one
+*pending validation* and drops it if no publish goes through it within 30
+days. So the next release after the connection was created is the one that
+validates it.
+
+### Publishing by hand (rare)
+
+When the publish has to happen from a laptop rather than CI, it needs a
+browser 2FA step — hand it to a human:
 
 ```sh
 npm login   --registry https://registry.npmjs.org
 npm publish --registry https://registry.npmjs.org
 ```
+
+A granular access token with **Bypass two-factor authentication** avoids the
+browser step, but it expires — and when it does, the publish fails with a 401,
+it does not fall back to asking for an OTP. Rotate it before it lapses.
 
 - **Run `npm login` first when the stored token is stale.** This machine's
   `~/.npmrc` defaults to the `npmmirror.com` mirror and its npmjs token expires,
