@@ -36,7 +36,7 @@
 ## What it is
 
 A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the built-in
-`read` / `edit` / `grep` tools with **hash-anchored** versions and adds `delete`,
+`read` / `edit` / `grep` tools with **hash-anchored** versions and adds `delete`, `rename`,
 `undo_last_edit`, `ast_grep`, `ast_edit`, and an `lsp` tool on top:
 
 - **Every line carries a content anchor** — a variable-length Base62 marker (2 characters
@@ -283,6 +283,7 @@ or an invocation fails — `grep` never fails because ripgrep did.
 | `lsp` | Symbol-aware work through a real language server when one can be had (started per language, shared with dsh's `lsp` service); falls back to a heuristic backend otherwise. Serves its rows, so LSP output is directly editable. `status` lists every started language's server state without starting anything; `warm` starts (or restarts) one on demand, skipping the retry backoff. |
 | `format` | Formats a file with its language server's formatter — the whole file, or `range: {start, end}` where **both ends are this session's served anchors**. The file must already be observed (`[E_NOT_OBSERVED]` otherwise); `noop` when the formatter changes nothing; enters undo like `edit`. A cold start is allowed here (15 s) because you asked for it by name. |
 | `delete` | Deletes regular files and reclaims their hashline state: `paths` (1–32, duplicates collapse) are removed one by one, then the path's `anchor_meta` / `anchor_lines` / `served` (every session) / `undo` (every depth) rows are purged in one transaction. A missing path is `already-absent` success and still reclaims residue; symlinks, directories and special files are refused; non-local backends fail closed. Under `workspace-write` the target must be inside the canonical writable roots. Reports logical bytes; physical disk returns at store shutdown (VACUUM). Partial failures are per path; there is no undelete. |
+| `rename` | Renames or moves regular files and migrates their hashline state: `renames` (1–32 `{from, to}` pairs, exact duplicates collapse) run in request order, so chains work; each moved path's `anchor_meta` / `anchor_lines` / `served` (every session) / `undo` (every depth) rows move to the new path in one transaction, so anchors served before the rename stay usable without a re-read. Symlinks, directories and special files are refused; an existing destination is `[E_EXISTS]` unless it is the same inode under another spelling; non-local backends fail closed. The old path gets an absent observation, the new path a present one; no write intent. Partial failures are per pair; a store migration failure is a warning. |
 
 ### Output modes
 
@@ -379,6 +380,10 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_NOOP_LOOP]` | The same edit keeps producing no change; resubmission rejected. |
 | `[E_NOT_FOUND]` / `[E_NOT_TEXT]` | Missing file / directory-binary-non-UTF-8. |
 | `[E_NOT_OBSERVED]` | File never observed this session (read-before-write policy). |
+| `[E_RENAME_UNSUPPORTED]` | `rename` cannot reach the path through the host filesystem (remote/non-local backend); use bash. |
+| `[E_RENAME_STALE]` | The source changed after it was probed (approval window or fence); re-check and retry. |
+| `[E_CROSS_DEVICE]` | `rename` cannot move across filesystems (`EXDEV`); there is no copy+delete fallback. |
+| `[E_EXISTS]` | `rename` refuses an existing destination that is not the same file under another spelling. |
 | `[E_OP_INS]` | Informational: `ins` placed lines after the anchor. |
 | `[E_PASTE_DUP]` | Replacement line matches an adjacent file line; kept verbatim. |
 | `[E_SERVED_RECORD]` | Diagnostics: served state could not be persisted (storage failure); the response carries a re-read notice instead of silently losing the rows. |
@@ -409,6 +414,8 @@ rebuilt automatically.
 
 The `delete` tool purges a path's four row families (`anchor_meta`, `anchor_lines`, `served` across every session, `undo` at every depth) in one transaction and reports the logical bytes freed. When those bytes actually drop it writes `pending_vacuum`; shutdown runs a synchronous VACUUM and clears the marker only on success.
 
+The `rename` tool moves a path's four row families to the new path in one transaction: the destination's residue is purged first, then each family is copied with `INSERT … SELECT` and the old rows deleted — never `UPDATE … SET path`, because the maintained path / row counts are `INSERT` / `DELETE` triggers. Anchors, undo bodies, `served.reported` and `updated_at` move verbatim, so the same anchors stay usable after the rename.
+
 ## Architecture
 
 One plugin, three planes:
@@ -417,7 +424,7 @@ One plugin, three planes:
 src/
 ├── index.ts              # entry: mounts tools, settings, LSP, grammar routes
 ├── config.ts             # settings schema + wiring (hot-reload)
-├── tools/                # the 9 tool entry points — thin, no IO of their own
+├── tools/                # the 10 tool entry points — thin, no IO of their own
 ├── domain/
 │   ├── edit/             # edit engine, mutation transaction, contract, prompts
 │   └── session/          # served state, hash store, file views

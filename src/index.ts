@@ -39,6 +39,7 @@ import { registerAstEditTool } from "./tools/tool-ast-edit.js";
 import { registerWriteShadow } from "./tools/tool-write-shadow.js";
 import { registerFormatTool } from "./tools/tool-format.js";
 import { registerDeleteTool } from "./tools/tool-delete.js";
+import { registerRenameTool } from "./tools/tool-rename.js";
 import { onEditSurfaceRebuild } from "./domain/edit/edit-rebuild.js";
 import { LspManager, setLspManager } from "./lsp/manager.js";
 import { subprocessTransport } from "./lsp/transport.js";
@@ -239,6 +240,10 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 		// store, the observation, and the LSP document behind. This tool owns
 		// all three (map #322).
 		disposers.push(registerDeleteTool(rootCtx, agent.ctx, io, sandbox));
+		// The file renamer: the shell path moves bytes but leaves the anchor
+		// store, the observation, and the LSP document behind. This tool owns
+		// the state migration (map #337).
+		disposers.push(registerRenameTool(rootCtx, agent.ctx, io, sandbox));
 		// Shadow the preset's built-in tool guidance with the hashline
 		// contract. Same section names on the agent's own layer win over the
 		// preset's; text and order come from the per-preset resolution.

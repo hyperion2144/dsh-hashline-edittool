@@ -1320,9 +1320,14 @@ export function deleteCardModel(
 		`${failed} failed`,
 		bytes > 0 ? `${cardBytes(bytes)} freed` : "",
 	].filter((part) => part !== "").join(" · ");
-	// Collapsed-row parity with edit: the path (single) or the count (multi)
-	// comes FIRST; the stats follow. The path is already relativized/homed.
-	const lead = rows.length === 1 ? (rows[0]?.path ?? "1 path") : `${rows.length} paths`;
+	// Collapsed-row parity with edit: the path (single) or the file paths
+	// (multi) come FIRST; the stats follow. Paths are already relativized/homed.
+	const lead =
+		rows.length === 0
+			? ""
+			: rows.length === 1
+				? (rows[0]?.path ?? "1 path")
+				: rows.map((row) => row.path).join(", ");
 	const summary = [lead, stats].filter((part) => part !== "").join(" · ");
 	return {
 		title: "Delete",
@@ -1330,6 +1335,99 @@ export function deleteCardModel(
 		rows,
 		vacuum: typeof data.vacuum === "string" ? data.vacuum : "none",
 	};
+}
+
+//#endregion
+
+//#region rename card
+
+/** One row of the rename card: a moved pair or a failed source. */
+export interface RenameCardRow {
+	from: string;
+	to?: string;
+	status: "renamed" | "failed";
+	detail: string;
+}
+
+/** The rename tool's card model, projected from `meta.rename`. */
+export interface RenameCardModel {
+	title: string;
+	summary: string;
+	rows: RenameCardRow[];
+}
+
+/**
+ * Project the host's `meta.rename` into the card's rows.
+ *
+ * One source for the title/summary/rows so the component and the tests agree,
+ * and a call without a usable projection returns null (the platform default
+ * renders it instead of an empty card).
+ *
+ * @param block - the settled tool block.
+ * @returns the card model, or null when the meta is absent/unusable.
+ */
+export function renameCardModel(
+	block: ToolCallBlock,
+	cwd?: string,
+	home?: string,
+): RenameCardModel | null {
+	if (!("kind" in block)) return null;
+	const meta = recordOf(block.meta);
+	const data = recordOf(meta?.rename);
+	if (data === undefined) return null;
+	const results = Array.isArray(data.results) ? data.results : [];
+	const failures = Array.isArray(data.failures) ? data.failures : [];
+	if (results.length === 0 && failures.length === 0) return null;
+	const displayPath = (path: string): string =>
+		abbreviateHomePath(relativizeToCwd(path, cwd), home);
+	const rows: RenameCardRow[] = [];
+	for (const entry of results) {
+		const result = recordOf(entry);
+		if (result === undefined) continue;
+		const from = recordOf(result.from);
+		const to = recordOf(result.to);
+		if (from === undefined || to === undefined) continue;
+		if (typeof from.path !== "string" || typeof to.path !== "string") continue;
+		const migrated = recordOf(result.migrated);
+		const parts: string[] = [];
+		if (migrated !== undefined) {
+			const anchors = numberOf(migrated.anchorLines);
+			const undo = numberOf(migrated.undoLayers);
+			const served = numberOf(migrated.servedRows);
+			const purged = recordOf(migrated.purged);
+			const bytes = numberOf(purged?.bytesFreed);
+			if (anchors + undo + served > 0) {
+				parts.push(`${anchors} anchor${anchors === 1 ? "" : "s"}`);
+				parts.push(`${undo} undo`);
+				parts.push(`${served} served`);
+			}
+			if (bytes > 0) parts.push(`${cardBytes(bytes)} reclaimed`);
+		}
+		rows.push({
+			from: displayPath(from.path),
+			to: displayPath(to.path),
+			status: "renamed",
+			detail: parts.join(" · "),
+		});
+	}
+	for (const entry of failures) {
+		const failure = recordOf(entry);
+		if (failure === undefined || typeof failure.path !== "string") continue;
+		const code = typeof failure.code === "string" && failure.code !== "" ? `[${failure.code}] ` : "";
+		const message = typeof failure.message === "string" ? failure.message : "failed";
+		rows.push({ from: displayPath(failure.path), status: "failed", detail: `${code}${message}` });
+	}
+	const totals = recordOf(data.totals);
+	const renamed = numberOf(totals?.renamed);
+	const failed = numberOf(totals?.failed);
+	const stats = `${renamed} renamed · ${failed} failed`;
+	const lead =
+		rows.length === 0
+			? ""
+			: rows
+					.map((row) => (row.to === undefined ? row.from : `${row.from} -> ${row.to}`))
+					.join(", ");
+	return { title: "Rename", summary: [lead, stats].filter((part) => part !== "").join(" · "), rows };
 }
 
 //#endregion

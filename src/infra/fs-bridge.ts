@@ -15,7 +15,7 @@
  * @module dsh-hashline-edittool/fs-bridge
  */
 
-import { lstat, readFile, stat, unlink } from "node:fs/promises";
+import { lstat, readFile, rename, stat, unlink } from "node:fs/promises";
 import type { Context } from "@deepseek-ai/cordis";
 import { FsError, type FileSystem } from "@deepseek-ai/dsh-fs";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
@@ -58,6 +58,14 @@ export interface FileDeleteOutcome {
 	kind: "deleted" | "absent";
 	/** Canonical process path — the store purge key. */
 	path: string;
+}
+
+/** What a successful rename yields: both canonical process paths. */
+export interface FileRenameOutcome {
+	/** Canonical process path of the source (the store's old key). */
+	from: string;
+	/** Canonical process path of the destination (the store's new key). */
+	to: string;
 }
 
 /** Text-IO operations the hashline tools need, keyed by canonical absolute path. */
@@ -158,6 +166,21 @@ export interface FileIO {
 		signal?: AbortSignal,
 		sandboxPolicy?: SandboxExecutionPolicy,
 	): Promise<FileDeleteOutcome>;
+	/**
+	 * Rename a regular file, guarded by the sandbox policy and the probe taken
+	 * before approval. `expected` is the source probe; a changed version is
+	 * `E_RENAME_STALE`. An existing destination that is not the same file is
+	 * `E_EXISTS`; a same-inode destination is a spelling-only rename and is
+	 * allowed. Returns both canonical process paths.
+	 */
+	renameFile(
+		from: string,
+		to: string,
+		cwd: string,
+		expected: FileProbe,
+		signal?: AbortSignal,
+		sandboxPolicy?: SandboxExecutionPolicy,
+	): Promise<FileRenameOutcome>;
 }
 
 /**
@@ -503,6 +526,118 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 		},
 
 		probeFile: probe,
+
+		async renameFile(fromPath, toPath, cwd, expected, signal, sandboxPolicy) {
+			const before = await probe(fromPath, cwd, signal);
+			if (before.kind === "absent") {
+				domainError("E_NOT_FOUND", `File not found: ${fromPath}.`);
+			}
+			if (before.kind === "symlink") {
+				domainError("E_SYMLINK", `Refusing to rename a symbolic link: ${fromPath}. Rename the link with bash if that is what you mean.`);
+			}
+			if (before.kind !== "file") {
+				domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}. Directories and special files are not renamable here; use bash for directories.`);
+			}
+			if (expected.kind !== "file" || expected.version !== before.version) {
+				domainError("E_RENAME_STALE", `The file changed after it was probed: ${fromPath}. Re-check before renaming.`);
+			}
+			const dest = await probe(toPath, cwd, signal);
+			if (dest.kind === "symlink" || dest.kind === "directory" || dest.kind === "other") {
+				domainError("E_EXISTS", `Destination already exists: ${toPath}. Remove it first or pick another name.`);
+			}
+			if (dest.kind === "file" && dest.version !== before.version) {
+				domainError("E_EXISTS", `Destination already exists: ${toPath}. Remove it first or pick another name.`);
+			}
+			const fromTarget = await fs.resolve(fromPath, {
+				cwd,
+				...(signal !== undefined ? { signal } : {}),
+			});
+			const toTarget = await fs.resolve(toPath, {
+				cwd,
+				...(signal !== undefined ? { signal } : {}),
+			});
+			const fromProc = before.path;
+			const toProc = dest.path;
+			let fromLocal: string | undefined;
+			let toLocal: string | undefined;
+			try {
+				fromLocal = fs.processPathFromHostPath(fromProc);
+				toLocal = fs.processPathFromHostPath(toProc);
+			} catch {
+				fromLocal = undefined;
+				toLocal = undefined;
+			}
+			if (
+				fromLocal === undefined ||
+				toLocal === undefined ||
+				!samePath(fromLocal, fromProc) ||
+				!samePath(toLocal, toProc)
+			) {
+				domainError("E_RENAME_UNSUPPORTED", `This filesystem backend cannot rename through the host filesystem: ${fromPath}. Use bash in that environment.`);
+			}
+			if (sandboxPolicy !== undefined) {
+				if (sandboxPolicy.mode === "read-only") sandboxDenied();
+				if (sandboxPolicy.mode === "workspace-write") {
+					let allowed = true;
+					for (const target of [fromTarget, toTarget]) {
+						let inside = false;
+						for (const root of writableRoots(sandboxPolicy)) {
+							try {
+								const rootTarget = await fs.resolve(root, { signal });
+								if (fs.contains(rootTarget, target)) {
+									inside = true;
+									break;
+								}
+							} catch {
+								// A root that cannot be resolved grants nothing; try the next.
+							}
+						}
+						if (!inside) {
+							allowed = false;
+							break;
+						}
+					}
+					if (!allowed) sandboxDenied();
+				}
+			}
+			// Re-probe immediately before the syscall (the accepted TOCTOU window).
+			const sourceAgain = await probe(fromPath, cwd, signal);
+			if (sourceAgain.kind === "absent") {
+				domainError("E_NOT_FOUND", `File not found: ${fromPath}.`);
+			}
+			if (sourceAgain.kind !== "file" || sourceAgain.version !== before.version) {
+				domainError("E_RENAME_STALE", `The file changed immediately before renaming: ${fromPath}. Re-check before renaming.`);
+			}
+			const destAgain = await probe(toPath, cwd, signal);
+			if (
+				destAgain.kind !== "absent" &&
+				!(destAgain.kind === "file" && destAgain.version === before.version)
+			) {
+				domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
+			}
+			try {
+				await rename(fromProc, toProc);
+			} catch (error) {
+				const code = errCode(error);
+				if (code === "EXDEV") {
+					domainError("E_CROSS_DEVICE", `Cannot rename across filesystems: ${fromPath} to ${toPath}.`);
+				}
+				if (code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EROFS") {
+					domainError("E_ACCESS", `Cannot rename ${fromPath} to ${toPath} (${code}). On Windows a read-only attribute or an open handle causes this; clear the attribute or close the program using the file.`);
+				}
+				if (code === "ENOENT") {
+					domainError("E_NOT_FOUND", `Path not found: ${fromPath} or its destination directory.`);
+				}
+				if (code === "EISDIR" || code === "ENOTEMPTY") {
+					domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}.`);
+				}
+				if (code === "EEXIST") {
+					domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
+				}
+				throw error;
+			}
+			return { from: fromProc, to: toProc };
+		},
 		async deleteFile(requestedPath, cwd, expected, signal, sandboxPolicy) {
 			const before = await probe(requestedPath, cwd, signal);
 			if (before.kind === "absent") {
@@ -696,6 +831,61 @@ export function localIO(): FileIO {
 				throw error;
 			}
 			return { kind: "deleted", path: before.path };
+		},
+
+		async renameFile(fromPath, toPath, cwd, expected) {
+			const before = await localProbe(fromPath, cwd);
+			if (before.kind === "absent") domainError("E_NOT_FOUND", `File not found: ${fromPath}.`);
+			if (before.kind === "symlink") {
+				domainError("E_SYMLINK", `Refusing to rename a symbolic link: ${fromPath}.`);
+			}
+			if (before.kind !== "file") {
+				domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}.`);
+			}
+			if (expected.kind !== "file" || expected.version !== before.version) {
+				domainError("E_RENAME_STALE", `The file changed after it was probed: ${fromPath}.`);
+			}
+			const dest = await localProbe(toPath, cwd);
+			if (dest.kind === "symlink" || dest.kind === "directory" || dest.kind === "other") {
+				domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
+			}
+			if (dest.kind === "file") {
+				// Same inode under another spelling is a case-only rename; anything
+				// else is a real overwrite and is refused.
+				const [a, b] = await Promise.all([
+					stat(before.path, { bigint: true }),
+					stat(dest.path, { bigint: true }),
+				]);
+				if (a.dev !== b.dev || a.ino !== b.ino) {
+					domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
+				}
+			}
+			const after = await localProbe(fromPath, cwd);
+			if (after.kind !== "file" || after.version !== before.version) {
+				domainError("E_RENAME_STALE", `The file changed immediately before renaming: ${fromPath}.`);
+			}
+			try {
+				await rename(before.path, dest.path);
+			} catch (error) {
+				const code = errCode(error);
+				if (code === "EXDEV") {
+					domainError("E_CROSS_DEVICE", `Cannot rename across filesystems: ${fromPath} to ${toPath}.`);
+				}
+				if (code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EROFS") {
+					domainError("E_ACCESS", `Cannot rename ${fromPath} to ${toPath} (${code}).`);
+				}
+				if (code === "ENOENT") {
+					domainError("E_NOT_FOUND", `Path not found: ${fromPath} or its destination directory.`);
+				}
+				if (code === "EISDIR" || code === "ENOTEMPTY") {
+					domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}.`);
+				}
+				if (code === "EEXIST") {
+					domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
+				}
+				throw error;
+			}
+			return { from: before.path, to: dest.path };
 		},
 	};
 }

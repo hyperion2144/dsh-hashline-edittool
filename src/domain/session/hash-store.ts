@@ -147,6 +147,20 @@ export interface PurgeReport {
 	bytesFreed: number;
 }
 
+/** What one `renamePath` moved between two paths, plus the target residue it purged. */
+export interface MigrateReport {
+	/** `anchor_lines` rows moved to the destination path. */
+	anchorLines: number;
+	/** `undo` layers moved (all depths). */
+	undoLayers: number;
+	/** `served` rows moved, across every session. */
+	servedRows: number;
+	/** `anchor_meta` rows moved (0 or 1). */
+	anchorMeta: number;
+	/** The destination path's residue, purged before the move. */
+	purged: PurgeReport;
+}
+
 /** Options a caller can pass to {@link HashStore.sweep} to drive it with
  *  smaller budgets than the production defaults — tests use this so the
  *  eviction path can be exercised without writing 64 MiB. */
@@ -207,6 +221,10 @@ interface Prepared {
 	anchorLineGet: (...params: SqlParams) => Record<string, unknown> | undefined;
 	anchorLineUpsert: (...params: SqlParams) => void;
 	anchorLinesDeletePath: (...params: SqlParams) => number;
+	undoMove: (...params: SqlParams) => number;
+	servedMove: (...params: SqlParams) => number;
+	anchorMetaMove: (...params: SqlParams) => number;
+	anchorLinesMove: (...params: SqlParams) => number;
 	anchorLineDelete: (...params: SqlParams) => void;
 	anchorPruneOlderThan: (...params: SqlParams) => number;
 	// ---- budget / maintenance (#180) ----
@@ -300,6 +318,17 @@ export interface HashStore {
 	 * sweep and `pruneMissing` share the row cascade.
 	 */
 	purgePath(path: string): PurgeReport;
+	/**
+	 * Move every row family from `from` to `to` in one transaction (`rename`).
+	 *
+	 * The destination path's residue is purged first — it belongs to a file that
+	 * no longer exists on disk. The four families move with `INSERT … SELECT` +
+	 * `DELETE`, never `UPDATE path`: the maintained path / row counts are
+	 * triggers on INSERT and DELETE. `updated_at` and the payload columns are
+	 * copied verbatim. A missing source path is a no-op; `from === to` is a
+	 * successful no-op (and must not purge the source).
+	 */
+	renamePath(from: string, to: string): MigrateReport;
 
 	// ---- maintenance ---------------------------------------------------------
 	/** Delete every row family's entries for paths that no longer exist on disk. */
@@ -807,6 +836,25 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 	const anchorLinesDeletePathStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ?");
 	const anchorLineDeleteStmt = db.prepare("DELETE FROM anchor_lines WHERE path = ? AND line = ?");
 	const anchorMetaDeleteStmt = db.prepare("DELETE FROM anchor_meta WHERE path = ?");
+	// Path migration for `rename`: copy the family under the new path, then
+	// delete the source rows. INSERT/DELETE (not UPDATE) is what keeps the
+	// maintained path / row counts honest; see store-counts.ts.
+	const undoMoveStmt = db.prepare(
+		"INSERT INTO undo (path, depth, content, bom, ending, hashes, result_content, result_checksum, updated_at) " +
+			"SELECT ?, depth, content, bom, ending, hashes, result_content, result_checksum, updated_at FROM undo WHERE path = ?",
+	);
+	const servedMoveStmt = db.prepare(
+		"INSERT INTO served (session_id, path, hashes, reported, updated_at) " +
+			"SELECT session_id, ?, hashes, reported, updated_at FROM served WHERE path = ?",
+	);
+	const anchorMetaMoveStmt = db.prepare(
+		"INSERT INTO anchor_meta (path, checksum, line_count, updated_at) " +
+			"SELECT ?, checksum, line_count, updated_at FROM anchor_meta WHERE path = ?",
+	);
+	const anchorLinesMoveStmt = db.prepare(
+		"INSERT INTO anchor_lines (path, line, anchor, content_key, updated_at) " +
+			"SELECT ?, line, anchor, content_key, updated_at FROM anchor_lines WHERE path = ?",
+	);
 	const anchorPruneOlderThanStmt = db.prepare(
 		"DELETE FROM anchor_meta WHERE rowid IN (SELECT rowid FROM anchor_meta WHERE updated_at < ? LIMIT " + TTL_BATCH_LIMIT + ")",
 	);
@@ -972,6 +1020,34 @@ function buildStore(db: DatabaseSync): { db: DatabaseSync; stmts: Prepared } {
 				() =>
 					Number(
 						(anchorMetaDeleteStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
+		undoMove: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(undoMoveStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
+		servedMove: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(servedMoveStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
+		anchorMetaMove: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(anchorMetaMoveStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
+					),
+			),
+		anchorLinesMove: (...params) =>
+			withBusyRetry(
+				() =>
+					Number(
+						(anchorLinesMoveStmt.run(...params) as { changes?: number } | undefined)?.changes ?? 0,
 					),
 			),
 		anchorPruneOlderThan: (...params) => {
@@ -1386,6 +1462,35 @@ function makeDomainStore(
 			};
 			withTransaction(db, storePath, () => {
 				report = purgePathRows(path);
+			});
+			return report;
+		},
+
+		renamePath(from, to) {
+			const zero: MigrateReport = {
+				anchorLines: 0,
+				undoLayers: 0,
+				servedRows: 0,
+				anchorMeta: 0,
+				purged: { anchorLines: 0, undoLayers: 0, servedRows: 0, anchorMeta: 0, bytesFreed: 0 },
+			};
+			// A same-path rename is a successful no-op; purging the destination here
+			// would delete the very rows this call exists to preserve.
+			if (from === to) return zero;
+			let report: MigrateReport = zero;
+			withTransaction(db, storePath, () => {
+				const purged = purgePathRows(to);
+				// Copy first, delete second: INSERT/DELETE drive the count triggers, and
+				// the destination's rows are already gone (purged above).
+				const undoLayers = stmts.undoMove(to, from);
+				stmts.undoDelete(from);
+				const servedRows = stmts.servedMove(to, from);
+				stmts.servedDeletePath(from);
+				const anchorMeta = stmts.anchorMetaMove(to, from);
+				stmts.anchorMetaDelete(from);
+				const anchorLines = stmts.anchorLinesMove(to, from);
+				stmts.anchorLinesDeletePath(from);
+				report = { anchorMeta, anchorLines, servedRows, undoLayers, purged };
 			});
 			return report;
 		},

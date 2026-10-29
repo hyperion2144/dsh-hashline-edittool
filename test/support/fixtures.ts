@@ -21,6 +21,7 @@ import { buildUndoTool } from "../../src/tools/tool-undo.js";
 import { buildFormatTool } from "../../src/tools/tool-format.js";
 import { buildGrepTool } from "../../src/tools/tool-grep.js";
 import { buildDeleteTool } from "../../src/tools/tool-delete.js";
+import { buildRenameTool } from "../../src/tools/tool-rename.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 export async function getWritableTempRoot(): Promise<string> {
@@ -318,6 +319,7 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 		format: wrapTool(buildFormatTool(io, sandbox), makeExecFor),
 		grep: wrapTool(buildGrepTool(io), makeExecFor),
 		delete: wrapTool(buildDeleteTool(io, sandbox), makeExecFor),
+		rename: wrapTool(buildRenameTool(io, sandbox), makeExecFor),
 	};
 	return {
 		io,
@@ -329,6 +331,7 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 		editTool: tools.edit,
 		formatTool: tools.format,
 		deleteTool: tools.delete,
+		renameTool: tools.rename,
 	};
 }
 

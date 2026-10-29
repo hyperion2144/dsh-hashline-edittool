@@ -50,7 +50,7 @@ describe("deleteCardModel", () => {
 		);
 
 		expect(model?.title).toBe("Delete");
-		expect(model?.summary).toBe("3 paths · 1 deleted · 1 already absent · 1 failed · 2.0KiB freed");
+		expect(model?.summary).toBe("/a.ts, /gone.ts, /dir · 1 deleted · 1 already absent · 1 failed · 2.0KiB freed");
 		expect(model?.rows).toEqual([
 			{ path: "/a.ts", status: "deleted", detail: "2 anchors · 1 undo · 3 served · 2.0KiB freed" },
 			{ path: "/gone.ts", status: "already-absent", detail: "" },

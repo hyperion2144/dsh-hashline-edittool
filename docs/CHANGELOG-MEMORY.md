@@ -800,6 +800,26 @@ Map #322 的 `delete` 工具需要把「删文件」与「回收锚点库」做�
 - **`.editorconfig` 默认生效**：项目标准优先于文件启发式；显式 `false` 才关。
 - **不读 rustfmt / gopls**：交给 server 自身（ADR-0019 原条款不变）。
 
+## 2026-10-26 — ADR-0024 + rename tool spec
+
+**Type:** new decision record + spec
+**Confidence:** High
+**Evidence:** `docs/research/dsh-rename-seam.md`, `src/tools/tool-rename.ts`, `src/infra/fs-bridge.ts`, `src/domain/session/hash-store.ts`, `test/core/{rename-tool,fs-bridge.rename,hash-store-repath}.test.ts`, `client/src/client/{rename-card.tsx,models.ts}`, `client/test/rename-card.test.ts`
+
+### Why
+
+Map #337 的 `rename` 工具需要在移动普通文件的同时把 hash-store 的四族行（`anchor_meta` / `anchor_lines` / `served` / `undo`）搬到新路径，使改名之前已分配、已服务的锚点无需重读即可继续使用。dsh 0.2.x 的 `ctx.fs` 没有改名接缝，传输层是宿主 `node:fs.rename` + 源/目标双侧围栏；`fs/observed` 必须发「旧 absent + 新 present」且 present 的 version 在 rename 后重新 stat（`ctime` 已变）；store 迁移用 `INSERT … SELECT` + `DELETE`（计数触发器只挂 INSERT/DELETE），绝不用 `UPDATE path`。完整取舍与残余风险在 `docs/adr/0024-rename-tool.md`，实施契约在 `docs/specs/rename-tool-spec.md`。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0024-rename-tool.md` (created)
+- `docs/specs/rename-tool-spec.md` (created)
+- `docs/research/dsh-rename-seam.md` (created)
+- `AGENTS.md` l0 decisions 0001–0023 → 0001–0024，追加 rename 主题
+- `README.md` / `README.zh.md`：工具表、错误码、Store 迁移段、架构工具数 9→10
+- `CHANGELOG.md` `[Unreleased]`：rename 工具一行
+- `CONTEXT.md`：rename / path migration / anchor preservation across path
+=======
 ## 2026-10-27 — ADR-0025 + write 预览模式规格
 
 **Type:** new decision record + spec
