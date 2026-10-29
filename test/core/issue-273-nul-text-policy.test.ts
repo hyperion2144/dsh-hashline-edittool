@@ -651,7 +651,9 @@ describe("the read card's presentationMeta over a strict backend (#273)", () => 
 				{ number: 2, text: "\uFFFD" },
 				{ number: 3, text: "beta" },
 			]);
-			expect(String(meta.lossyNote)).toContain("not editable");
+			// issue 375: the note rides as a key + params, not as prose — the
+			// host cannot read the reader's language, so the client renders it.
+			expect(meta.lossyNote).toEqual({ key: "read.lossy" });
 		});
 	});
 

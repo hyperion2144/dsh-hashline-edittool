@@ -16,6 +16,7 @@ import { lineNumbersEnabled } from "../infra/settings.js";
 import { splitLines } from "../infra/utils.js";
 import { formatNoLinesSummary, type ReadWindow } from "../domain/session/read-window.js";
 
+import type { LocalizedText } from "./wire-text.js";
 /** Extension → syntax-highlighting language hint (mirrored from dsh-tool-fs; extended for the hashline corpus). */
 const LANG_BY_EXTENSION: Record<string, string> = {
 	ts: "ts",
@@ -95,8 +96,8 @@ export type ReadValue = {
 	truncatedByBytes?: boolean;
 	/** #273 — the view is lossy: shown rows are U+FFFD stand-ins; nothing is served. */
 	lossy?: boolean;
-	/** #273 — the host-composed note the card's footer renders for a lossy view. */
-	lossyNote?: string;
+	/** #273 — the card's note for a lossy view; issue 375: a key + params, not prose. */
+	lossyNote?: LocalizedText;
 	/** #273 — the shown-but-unserved rows (bare number + U+FFFD text); absent when none. */
 	unservedRows?: ReadFileLine[];
 } & { [key: string]: unknown };
@@ -109,6 +110,10 @@ export type ReadPresentation = {
 	totalLines: number;
 	hashlines?: ReadHashlineLine[];
 	lang?: string;
+	/** issue 374 — the served window, with its budget-cut flag when there was one. */
+	window?: ReadWindow;
+	/** issue 375 — the folded row's title, as a key + params the client resolves. */
+	rowTitle?: LocalizedText;
 } & { [key: string]: unknown };
 
 /** One line of the read window text, pre-rendered. */
@@ -252,6 +257,10 @@ export function readMetaFromMeta(meta: unknown): ReadPresentation | undefined {
 		if (v.hashlines.some((line) => !isFileHashlineLine(line))) return undefined;
 	}
 	if (v.lang !== undefined && typeof v.lang !== "string") return undefined;
+	// issue 374: the window carries the budget-cut flag, so it is validated with
+	// the rest of the meta — a window that cannot be read is a window dropped.
+	const window = v.window === undefined ? undefined : readWindowFromMeta(v.window);
+	if (v.window !== undefined && window === undefined) return undefined;
 	let previous = v.offset - 1;
 	for (const { number } of v.lines as ReadFileLine[]) {
 		if (number <= previous || number > v.totalLines) return undefined;
@@ -264,7 +273,32 @@ export function readMetaFromMeta(meta: unknown): ReadPresentation | undefined {
 		totalLines: v.totalLines,
 		hashlines: v.hashlines as ReadHashlineLine[] | undefined,
 		lang: v.lang as string | undefined,
+		...(window !== undefined ? { window } : {}),
 	} as ReadPresentation;
+}
+
+/**
+ * Soft-validate the persisted read window (issue 374).
+ *
+ * The window is `{start, end, totalLines}` plus the budget-cut flag the tool
+ * mints with the resume token: `truncated` is present ONLY when the response
+ * budget cut the window, so a flag that is not a boolean drops the window.
+ * @param value - the persisted `window` field.
+ * @returns the validated window, or `undefined`.
+ */
+function readWindowFromMeta(value: unknown): ReadWindow | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const { start, end, totalLines, truncated } = value as Record<string, unknown>;
+	if (![start, end, totalLines].every((n) => typeof n === "number" && Number.isInteger(n) && n >= 1)) {
+		return undefined;
+	}
+	if (truncated !== undefined && typeof truncated !== "boolean") return undefined;
+	return {
+		start: start as number,
+		end: end as number,
+		totalLines: totalLines as number,
+		...(truncated === true ? { truncated: true } : {}),
+	};
 }
 
 function isFileTextLine(v: unknown): boolean {

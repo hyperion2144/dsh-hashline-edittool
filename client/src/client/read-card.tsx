@@ -23,6 +23,9 @@ import type { ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
+import { DEFAULT_WRAP_STATE, nextWrapState, wrapStateProps } from "./wrap.js";
+import type { WrapState } from "./wrap.js";
+import { WrapToggleButton } from "./wrap-button.js";
 import { TOKEN_CLASS, grammarFor, grammarForPath, tokenizeLines } from "./highlight.js";
 import type { Token } from "./highlight.js";
 import { foldWindow, markerColumnCh, readCardMeta } from "./read-meta.js";
@@ -34,7 +37,7 @@ const CSS_TEXT = [
 	// The frame: the diff and diagnostics cards' own declarations, so the cards
 	// cannot drift apart.
 	".dshl-read{--dsl-read-radius:12px;--dsl-read-line-height:22px;position:relative;margin:16px 0;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsl-read-radius)}",
-	// PER-ROW (issue 131 field report): one flex row per drawn line — anchor cell +
+	// PER-ROW (#131 field report): one flex row per drawn line — anchor cell +
 	// code cell in DOM order, so a drag is an ordinary continuous text selection.
 	// The old two-block layout let a drag from the anchor column swallow the
 	// whole column.
@@ -48,7 +51,7 @@ const CSS_TEXT = [
 	// hit-testing hint, not a filter, so it silently took the anchors away from
 	// every copy that started in the code.)
 	".dshl-read-gutter{flex:0 0 auto;box-sizing:content-box;width:var(--dshl-read-gutter-w);padding:0 14px;text-align:right;font:var(--dsw-font-markdown-code-block);color:var(--dsw-alias-label-tertiary)}",
-	// Drag-origin semantics (issue 131): a drag that starts in the CODE excludes the
+	// Drag-origin semantics (#131): a drag that starts in the CODE excludes the
 	// anchor cells for that drag; a drag that starts IN the anchor column keeps
 	// them in (see anchor-select.ts).
 	".dshl-suppress-anchor-select .dshl-read-gutter{user-select:none}",
@@ -122,6 +125,8 @@ export function ReadCard({ model, labels, className }: ReadCardProps): ReactNode
 
 	const baseId = useId();
 	const [expanded, setExpanded] = useState(false);
+	// The wrap switch (#373): this card's own state, never persisted.
+	const [wrap, setWrap] = useState<WrapState>(DEFAULT_WRAP_STATE);
 	const [copied, setCopied] = useState(false);
 
 	const rows = model.rows;
@@ -139,6 +144,7 @@ export function ReadCard({ model, labels, className }: ReadCardProps): ReactNode
 	const tail = view.tail.map((index) => ({ row: rows[index], tokens: painted[index] ?? [] }));
 
 	const onToggle = useCallback(() => setExpanded((value) => !value), []);
+	const onToggleWrap = useCallback(() => setWrap((value) => nextWrapState(value)), []);
 	const onCopy = useCallback(() => {
 		if (copied) return;
 		void writeClipboard(lines.join("\n")).then((ok) => {
@@ -164,6 +170,11 @@ export function ReadCard({ model, labels, className }: ReadCardProps): ReactNode
 				labels: { tablist: labels.tablist, more: labels.more },
 				panelId,
 				idPrefix: baseId,
+				trailing: jsx_(WrapToggleButton, {
+					state: wrap,
+					onToggle: onToggleWrap,
+					label: labels.wrapToggle,
+				}),
 				copy: jsx_("button", {
 					type: "button",
 					className: TAB_STRIP_COPY_CLASS,
@@ -176,8 +187,9 @@ export function ReadCard({ model, labels, className }: ReadCardProps): ReactNode
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-0`,
 				className: "dshl-read-body",
+				...wrapStateProps(wrap),
 				style: { "--dshl-read-gutter-w": `${gutterCh}ch` } as never,
-				// PER-ROW (issue 131 field report): one flex row per drawn line — anchor cell
+				// PER-ROW (#131 field report): one flex row per drawn line — anchor cell
 				// + code cell in DOM order, so a drag is an ordinary continuous text
 				// selection: the rows you drag across, anchors and lines together.
 				children: [

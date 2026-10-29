@@ -40,6 +40,15 @@ export interface ReadWindow {
 	readonly end: number;
 	/** The file's length in lines, with the empty file counted as one line. */
 	readonly totalLines: number;
+	/**
+	 * issue 374 — the window was CUT by the response char budget, so the rest of
+	 * the file is reachable through a resume token.
+	 *
+	 * Absent (false) for a window that merely ended early: a small `limit` ends
+	 * before the file does, and `end < totalLines` says NOTHING about a cut. Only
+	 * the budget cut mints a token, so only the budget cut sets this.
+	 */
+	readonly truncated?: boolean;
 }
 
 const DIGITS_RE = /^\d+$/;

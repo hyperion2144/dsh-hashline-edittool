@@ -63,6 +63,8 @@
 
 **自渲染卡片。** 随包 client 插件自带 React 组件——`HashlineReadRow`、`HashlineEditRow`、`HashlineGrepRow`（文件 tab + 命中高亮）、`HashlineUndoRow`、`HashlineWriteRow`、`HashlineAstGrepRow`、`HashlineAstEditRow`、`HashlineLspRow`——直接注册进 dsh web UI 的插槽。每张卡片从工具的结构化 `presentationMeta` 渲染，锚点 gutter、diff 行、高亮 span 全部原生绘制：没有通用工具输出卡，没有字符串互解，不改上游 web。
 
+**卡片界面跟随读者。** 五类卡片（read / grep / diff / LSP / error）默认自动换行，卡片标题上的按钮可一键切回横向滚动（#373）。卡片文字跟随 DSH 的界面语言（zh/en，其它语言回落英文）：文案收在插件自有的 `hashline.card` 词表里，宿主过 wire 发的是稳定 key，不是拼好的句子（#372、#375）。
+
 **动态长度锚点。** 锚点不是定宽哈希。分配最短优先：2 个字符覆盖前 3,844 行，只有文件真需要时才长出新层（上限 62⁸ 行，实际不可达）。全数字编码被跳过，标记永远不会与行号混淆；冲突在分配时探测消解；会话内编辑后幸存的行保持原锚点——分配/释放走统一生命周期门，重写与外部变更按行对齐继承。
 
 **AST + LSP 双语义后端。** `ast_grep` / `ast_edit` 通过沙箱化的 tree-sitter worker 回答「语法在哪里匹配」，配精选语法目录（SHA-256 校验下载、安装/卸载路由）与长文件的可编辑折叠大纲。`lsp` 工具通过每语言一个的真实语言服务器回答「这个符号是什么」——按需启动，与 dsh 自带 `lsp` 服务共享——起不了服务器时降级启发式后端。两者都会 serve 自己的行，结构与语义结果可直接编辑。没人用的语言服务器会在 `lsp.idle_timeout_ms`（默认五分钟）后被回收，下次用到再重新拉起——一个抱着大仓库索引的 TypeScript 服务器，不该整场会话都常驻。启动失败的语言服务器会在退避窗口（首次 5 秒、指数翻倍、上限 1 分钟，成功后计数清零）过后在下一次使用时重试；`lsp` 工具的 `warm` 操作可跳过退避立即重拉，`status` 操作只读查询各已启动语言的服务器状态（#318）。

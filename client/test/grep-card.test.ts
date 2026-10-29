@@ -206,7 +206,7 @@ describe("grep row chrome", () => {
 	it("mirrors the shipped search row: grep variant, Grep title, pattern summary", () => {
 		const model = toolRowModel("grep", settled(), "/work", "/home/me");
 		expect(model.variant).toBe("grep");
-		expect(model.titleKey).toBe("tool.title.grep");
+		expect(model.titleKey).toBe("row.title.grep");
 		expect(model.summary).toBe("alpha");
 		// A search root is not an openable file: the row draws no file link.
 		expect(model.filePath).toBeUndefined();

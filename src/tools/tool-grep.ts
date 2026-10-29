@@ -55,6 +55,7 @@ import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
 import { rgFiles, rgFilesWithMatches } from "./grep-rg.js";
 import { toLF } from "../render/edit-diff.js";
+import { rowTitle } from "../render/wire-text.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
 	capGrepMeta,
@@ -314,11 +315,16 @@ export function buildGrepTool(io: FileIO) {
 				if (v.error !== undefined) return { error: v.error } as never;
 				// The card projection is byte-budgeted independently of the model text:
 				// dropping trailing file groups never changes what the model was told.
-				return capGrepMeta({
-					files: v.files,
-					truncated: v.truncated,
-					total: v.total,
-				}) as never;
+				return {
+					...capGrepMeta({
+						files: v.files,
+						truncated: v.truncated,
+						total: v.total,
+					}),
+					// issue 375: the folded row's title travels as a key + params — a
+					// search names no file of its own, so the title carries no path.
+					rowTitle: rowTitle("grep", {}),
+				} as never;
 			},
 		},
 		// grep has no presentCall — per the dsh-tools spec, a search has no

@@ -14,6 +14,12 @@
 > form's `[E_BAD_SHAPE]`, not `[E_BAD_REF]`. The marker-shape refusals of
 > decision 3 (`line#hash`, `line:anchor`) stand unchanged.
 
+> **Amendment** (2026-10-29, issue 374): the window carries a fourth,
+> optional field — `truncated` — present only when the response budget cut
+> the window (a resume token exists behind it). `end < totalLines` alone
+> says nothing: a small `limit` ends a window early without a cut. See
+> `docs/adr/0027-read-window-truncated.md`.
+
 ## Problem Statement
 
 The `line_numbers` switch (#244) can strip the `:lineNumber` suffix

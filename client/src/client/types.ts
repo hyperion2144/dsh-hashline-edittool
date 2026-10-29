@@ -7,6 +7,8 @@
  * structural mirrors of the wire shapes instead.
  */
 
+import type { CardLocaleKey, WIRE_TEXT_KEYS } from "./locale.js";
+
 /** Running tool call half of a ToolCallBlock. */
 export interface RunningToolCall {
 	callId: string;
@@ -51,11 +53,34 @@ export interface ToolCallOwnerProps {
 
 /** Locale seat props added by the registration's `locale` declaration. */
 export interface LocaleProps {
-	t: (key: string, params?: Record<string, unknown>) => string;
+	/**
+	 * The vocabulary seat, narrowed to this namespace's keys (#375).
+	 *
+	 * The host's own `t` takes any string, so it satisfies this narrower type;
+	 * the narrowing is what turns a typo'd key into a COMPILE error rather than a
+	 * key name painted on the screen.
+	 */
+	t: (key: CardLocaleKey, params?: Record<string, unknown>) => string;
 }
 
 /** Full props of a registered read/edit tool view. */
 export type ToolViewProps = ToolCallOwnerProps & LocaleProps;
+/**
+ * The keys the HOST may send over the wire (#375).
+ *
+ * The host cannot read the reader's language (#369), so it names the wording and
+ * hands over the facts; the client resolves the key through `t()`. The union is the
+ * host's vocabulary as this client knows it — a key outside it is a contract change,
+ * not a typo. It is DERIVED from the vocabulary's own wire list (`WIRE_TEXT_KEYS`),
+ * so the type and the list the meta validator checks are one thing.
+ */
+export type WireTextKey = Extract<CardLocaleKey, keyof typeof WIRE_TEXT_KEYS>;
+
+/** One text the host sent: a stable key plus the params that fill it. */
+export interface WireText {
+	readonly key: WireTextKey;
+	readonly params?: Record<string, string | number>;
+}
 
 /** One read-window line as persisted by the hashline read tool. */
 export interface ReadMetaLine {
@@ -73,6 +98,12 @@ export interface ReadWindowMeta {
 	start: number;
 	end: number;
 	totalLines: number;
+	/**
+	 * #374 — the response budget CUT this window, so the rest of the file is
+	 * reachable through a resume token. Absent for a window that merely ended
+	 * early: `end < totalLines` says nothing about a cut.
+	 */
+	truncated?: boolean | undefined;
 }
 /** The hashline read tool's persisted presentation projection (meta). */
 export interface ReadPresentation {
@@ -84,8 +115,12 @@ export interface ReadPresentation {
 	lang?: string | undefined;
 	/** #273 — the view is lossy (rows are U+FFFD stand-ins); nothing is served. */
 	lossy?: boolean | undefined;
-	/** #273 — the host-composed note the card renders in its footer. */
-	lossyNote?: string | undefined;
+	/**
+	 * #273 — the card's note for a lossy view; #375: a key + params, not prose.
+	 * A LEGACY meta (persisted before #375) carries the English sentence as a
+	 * string — both shapes are accepted and both render.
+	 */
+	lossyNote?: string | WireText | undefined;
 	/** #273 — the shown-but-unserved rows, present only on a lossy view. */
 	unservedRows?: ReadMetaLine[] | undefined;
 	window?: ReadWindowMeta | undefined;
@@ -133,8 +168,8 @@ export interface ReadCardModel {
 	readonly window?: ReadWindowMeta | undefined;
 	/** #273 — the view is lossy; the footer names the substitution and the refusal. */
 	readonly lossy?: boolean | undefined;
-	/** #273 — the host-composed footer note for a lossy view. */
-	readonly lossyNote?: string | undefined;
+	/** #273 — the card's note for a lossy view (#375: a key + params). */
+	readonly lossyNote?: string | WireText | undefined;
 }
 
 /** Props accepted by the primitives' DiffBlock. */
@@ -366,7 +401,8 @@ export interface FileFailureMeta {
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
 	variant: "read" | "edit" | "write" | "grep";
-	titleKey: string;
+	/** The vocabulary key the row's OWN label is drawn with (#375). */
+	titleKey: CardLocaleKey;
 	summary: string;
 	filePath: string | undefined;
 	bodyRaw: string | null;
@@ -381,6 +417,18 @@ export interface ClientCtx {
 	slots: {
 		inject(key: string, create: () => (() => void) | void): () => void;
 		register(options: Record<string, unknown>, component: unknown): () => void;
+	};
+	/**
+	 * The locale service: the plugin's OWN vocabulary namespace, registered
+	 * once with every language's dictionary.
+	 *
+	 * `register` hands back the disposer that removes the namespace again, so
+	 * the CALLER owns it — an effect owns it here, and unloading the plugin takes
+	 * the words with it. The host's form is the typed object one: a namespace
+	 * mapped to its per-language dictionaries.
+	 */
+	locale: {
+		register(ns: string, dictionaries: Record<string, Record<string, string>>): () => void;
 	};
 	/** Cordis effect: runs the callback, owns its disposer on unload. */
 	effect(callback: () => void | (() => void)): () => void;

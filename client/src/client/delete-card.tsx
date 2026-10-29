@@ -7,13 +7,15 @@
  *
  * @module dsh-hashline-edittool-client/delete-card
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { DisclosureRow, IconEditOutlineMedium } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css } from "./css.js";
 import { deleteCardModel, errorCardModel } from "./models.js";
+import type { CardText, DeleteCardRow } from "./models.js";
 import { ErrorCard } from "./error-card.js";
+import { deleteCardLabels, errorCardLabels } from "./labels.js";
 import type { ToolViewProps } from "./types.js";
 
 const rowStyle: CSSProperties = {
@@ -51,16 +53,31 @@ const detailStyle: CSSProperties = {
  * @param props - the standard tool-view owner props.
  * @returns the disclosure row, or a plain "Delete" row while it is running.
  */
-export function HashlineDeleteRow({ block, cwd, home }: ToolViewProps): ReactNode {
+export function HashlineDeleteRow({ block, cwd, home, t }: ToolViewProps): ReactNode {
 	const [open, setOpen] = useState(false);
 	const error = errorCardModel(block);
 	const model = deleteCardModel(block, cwd, home);
+	// The card's own words come from the vocabulary namespace; the MODEL layer
+	// owns the paths and the reclaim details, never the words in front of them.
+	const labels = useMemo(() => deleteCardLabels(t), [t]);
+	const errorLabels = useMemo(() => errorCardLabels(t), [t]);
 	const expandable = error !== null || model !== null;
-	const title = error !== null ? "Delete failed" : model?.title ?? "Delete";
-	const summary = error !== null ? error.message : model?.summary ?? "";
+	const title = error !== null ? labels.failedTitle : labels.title;
+	// #375: the summary and the reclaim details are words + counts, so the
+	// model layer names the wording and the client renders it in the reader's
+	// language. A failure's own message stays verbatim (the model's channel).
+	const renderText = (part: CardText): string =>
+		part.kind === "literal" ? part.text : t(part.key, part.params);
+	const detailText = (row: DeleteCardRow): string => {
+		const parts = row.detail.map(renderText);
+		if (row.error !== undefined) parts.unshift(row.error);
+		return parts.join(" · ");
+	};
+	const summary =
+		error !== null ? error.message : (model?.summary ?? []).map(renderText).join(" · ");
 	const body =
 		error !== null
-			? jsx_(ErrorCard, { model: error })
+			? jsx_(ErrorCard, { model: error, labels: errorLabels })
 			: model === null
 				? null
 				: jsx_("div", {
@@ -75,14 +92,14 @@ export function HashlineDeleteRow({ block, cwd, home }: ToolViewProps): ReactNod
 										style: row.status === "failed" ? failedStyle : statusStyle,
 										children:
 											row.status === "failed"
-												? "failed"
+												? labels.statusFailed
 												: row.status === "deleted"
-													? "deleted"
-													: "already absent",
+													? labels.statusDeleted
+													: labels.statusAbsent,
 									}),
-									row.detail === ""
+									detailText(row) === ""
 										? null
-										: jsx_("span", { style: detailStyle, children: row.detail }),
+										: jsx_("span", { style: detailStyle, children: detailText(row) }),
 								],
 							}),
 						),

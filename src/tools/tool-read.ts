@@ -27,6 +27,7 @@ import {
 } from "../contract/contract.js";
 
 import { readAndServe, LOSSY_BYTES_NOTE } from "../read-and-serve.js";
+import { LOSSY_NOTE_TEXT, rowTitle } from "../render/wire-text.js";
 import { readDescription } from "../domain/edit/prompts.js";
 import { splitLines } from "../infra/utils.js";
 import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
@@ -140,7 +141,16 @@ export function buildReadTool(io: FileIO) {
 					// #273 review round 2: the lossy view rides these — the host rejects
 					// undeclared fields outright (additionalProperties: false).
 					lossy: { type: "boolean" },
-					lossyNote: { type: "string" },
+					// issue 375: the note rides as a stable key + params, NOT prose — the
+					// host cannot read the reader's language (#369), so the client resolves it.
+					lossyNote: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							key: { type: "string", required: true },
+							params: { type: "object", additionalProperties: true },
+						},
+					},
 					unservedRows: {
 						type: "array",
 						items: {
@@ -160,6 +170,9 @@ export function buildReadTool(io: FileIO) {
 							start: { type: "integer", required: true },
 							end: { type: "integer", required: true },
 							totalLines: { type: "integer", required: true },
+						// issue 374: the response budget CUT this window (a resume token
+						// exists). Absent for a window that merely ended early.
+						truncated: { type: "boolean" },
 						},
 					},
 					modelText: { type: "string", required: true },
@@ -188,29 +201,8 @@ export function buildReadTool(io: FileIO) {
 			render: (_args, value) => [
 				{ type: "text", text: (value as ReadValue & { modelText: string }).modelText },
 			],
-			presentationMeta: (_args, value) => {
-				const v = value as ReadValue & { error?: ErrorMeta; window?: ReadWindow };
-				if (v.error !== undefined) return { error: v.error } as never;
-				const lang = langFromPath(v.path);
-				return {
-					path: v.path,
-					offset: v.offset,
-					lines: v.lines,
-					totalLines: v.totalLines,
-					hashlines: v.hashlines,
-					// #273 — a lossy read serves nothing: carry the flag, the shown-but-
-					// unserved rows and the note so the web card renders the view the
-					// model saw instead of an empty file.
-					...(v.lossy === true
-						? { lossy: true, ...(v.lossyNote !== undefined ? { lossyNote: v.lossyNote } : {}) }
-						: {}),
-					...(v.unservedRows !== undefined && v.unservedRows.length > 0
-						? { unservedRows: v.unservedRows }
-						: {}),
-					...(v.window === undefined ? {} : { window: v.window }),
-					...(lang === undefined ? {} : { lang }),
-				} as never;
-			},
+			presentationMeta: (_args, value) =>
+				readPresentationMeta(value as ReadValue & { error?: ErrorMeta; window?: ReadWindow }) as never,
 		},
 		presentCall: (args) => {
 			// #256: a bare digit string is a line number serialized as text —
@@ -466,6 +458,58 @@ export function buildReadTool(io: FileIO) {
 }
 
 /**
+ * The read card's meta projection — the WHOLE projection in one place, so a unit
+ * test can reach it (the DSL consumes `presentationMeta`, leaving no surface on
+ * the tool object). issue 374 needed the same seam: the window's budget-cut flag
+ * is part of the meta the card renders from.
+ *
+ * @param value - the canonical read value.
+ * @returns the meta the web card renders from.
+ */
+export function readPresentationMeta(
+	value: ReadValue & { error?: ErrorMeta; window?: ReadWindow },
+): ReadPresentation | { error: ErrorMeta } {
+	if (value.error !== undefined) return { error: value.error };
+	const lang = langFromPath(value.path);
+	return {
+		path: value.path,
+		offset: value.offset,
+		lines: value.lines,
+		totalLines: value.totalLines,
+		hashlines: value.hashlines,
+		// #273 — a lossy read serves nothing: carry the flag, the shown-but-
+		// unserved rows and the note so the web card renders the view the
+		// model saw instead of an empty file.
+		...(value.lossy === true
+			? { lossy: true, ...(value.lossyNote !== undefined ? { lossyNote: value.lossyNote } : {}) }
+			: {}),
+		...(value.unservedRows !== undefined && value.unservedRows.length > 0
+			? { unservedRows: value.unservedRows }
+			: {}),
+		// issue 374: the window carries the budget-cut flag, so the card can say
+		// "resume to continue" instead of guessing from the row count.
+		...(value.window === undefined ? {} : { window: value.window }),
+		// issue 375: the folded row's title travels as a key + params — the host
+		// cannot read the reader's language, so it names the wording and hands over
+		// the facts. issue 374: the read's window rides the row's TRAILING SUFFIX
+		// (the client renders it there), in one of three wordings — the window the
+		// call served, the one the budget cut, or the whole file's length.
+		rowTitle: rowTitle("read", {
+			path: value.path,
+			...(value.window === undefined
+				? { total: value.totalLines }
+				: {
+						start: value.window.start,
+						end: value.window.end,
+						total: value.window.totalLines,
+						...(value.window.truncated === true ? { truncated: true } : {}),
+					}),
+		}),
+		...(lang === undefined ? {} : { lang }),
+	};
+}
+
+/**
  * Register the hashline tool on the calling agent's scope (own layer).
  */
 export function registerReadTool(
@@ -561,7 +605,7 @@ async function assembleServedRead(input: {
 	const allLines = splitLines(input.normalized);
 	const totalLines = allLines.length;
 	const shownEnd = input.shownEnd ?? (input.nextOffset !== undefined ? input.nextOffset - 1 : totalLines);
-	const window =
+	const servedWindow =
 		readWindowOf(input.served, totalLines) ??
 		// #273: an unserved view (lossy read) shows rows it does not serve, so
 		// `served` is empty and readWindowOf has nothing — the window comes from
@@ -584,6 +628,14 @@ async function assembleServedRead(input: {
 		});
 		continuation = { resume: token, remaining: Math.max(0, totalLines - shownEnd) };
 	}
+	// issue 374: the window carries the ONE fact no caller can guess — whether the
+	// response budget CUT it. `end < totalLines` says nothing (a small `limit` ends
+	// early without a cut), and only the budget cut mints a token — so only the
+	// budget cut sets the flag.
+	const window =
+		servedWindow === undefined
+			? undefined
+			: { ...servedWindow, ...(continuation !== undefined ? { truncated: true } : {}) };
 	const lines: Array<{ number: number; text: string }> = [];
 	const hashlines: Array<{ number: number; hash: string; text: string }> = [];
 	const lineDict: Record<string, string> = {};
@@ -655,7 +707,7 @@ async function assembleServedRead(input: {
 		...(input.lossy === true
 			? {
 					lossy: true,
-					lossyNote: LOSSY_BYTES_NOTE,
+					lossyNote: LOSSY_NOTE_TEXT,
 					...(unservedRows.length > 0 ? { unservedRows } : {}),
 				}
 			: {}),

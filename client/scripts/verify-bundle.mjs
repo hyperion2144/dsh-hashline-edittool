@@ -66,6 +66,11 @@ if (typeof exports_.apply !== "function" || exports_.inject?.[0] !== "slots") {
 	throw new Error(`bad export face: ${Object.keys(exports_)}`);
 }
 
+// The bundle root asks the locale service for the cards' OWN namespace: the
+// vocabulary is registered there, once, with both baseline languages.
+if (!exports_.inject.includes("locale")) {
+	throw new Error(`the bundle root does not require the locale service: ${exports_.inject}`);
+}
 const ctx = {
 	plugins: [],
 	plugin(pluginObject) {
@@ -99,6 +104,15 @@ const ctx = {
 			return register(new Set(served)) ?? (() => {});
 		},
 	},
+	// The locale service: the plugin registers its OWN vocabulary namespace
+	// with it, once, and every registration is recorded here.
+	locale: {
+		registered: [],
+		register(ns, dictionaries) {
+			this.registered.push({ ns, dictionaries });
+			return () => {};
+		},
+	},
 	slots: {
 		injectCalls: [],
 		registeredEntries: [],
@@ -128,27 +142,44 @@ const keys = ctx.slots.registeredEntries
 // wearing the read component reads as a read. `lsp` had no row at all and fell
 // through to raw input/output.
 const expected = [
-	"read:-2:conversation",
-	"edit:-2:conversation",
+	"read:-2:hashline.card",
+	"edit:-2:hashline.card",
 	// `undo_last_edit` answers with the diff of the revert and now wears that
 	// same row — without a registration the web drew raw input/output for it.
-	"undo_last_edit:-2:conversation",
-	"grep:-2:conversation",
-	"write:-2:conversation",
+	"undo_last_edit:-2:hashline.card",
+	"grep:-2:hashline.card",
+	"write:-2:hashline.card",
 	// The delete card needs its own row: the platform default shows raw I/O.
-	"delete:-2:conversation",
+	"delete:-2:hashline.card",
 	// The rename card needs its own row too: a moved pair reads nothing like
 	// raw input/output.
-	"rename:-2:conversation",
-	"ast_grep:-2:conversation",
-	"ast_edit:-2:conversation",
-	"lsp:-2:conversation",
+	"rename:-2:hashline.card",
+	"ast_grep:-2:hashline.card",
+	"ast_edit:-2:hashline.card",
+	"lsp:-2:hashline.card",
 	// `format` draws its formats section through the edit row (one empty tab
 	// per file; the section IS the diff) — without the key it drew raw I/O.
-	"format:-2:conversation",
+	"format:-2:hashline.card",
 ];
 if (JSON.stringify(keys) !== JSON.stringify(expected)) {
 	throw new Error(`unexpected registrations: ${keys.join(", ")}`);
+}
+// The cards' vocabulary: ONE namespace, registered once, carrying BOTH
+// baseline languages with the SAME key set. The shipped `conversation` seat
+// never carried four of these keys, so a card drew their names verbatim.
+const localeRegistrations = ctx.locale.registered;
+if (localeRegistrations.length !== 1) {
+	throw new Error(`expected one locale registration, got ${localeRegistrations.length}`);
+}
+const vocabulary = localeRegistrations[0];
+if (vocabulary.ns !== "hashline.card") {
+	throw new Error(`unexpected locale namespace: ${vocabulary.ns}`);
+}
+const enKeys = Object.keys(vocabulary.dictionaries.en ?? {}).sort();
+const zhKeys = Object.keys(vocabulary.dictionaries.zh ?? {}).sort();
+if (enKeys.length === 0) throw new Error("the card vocabulary is empty");
+if (JSON.stringify(enKeys) !== JSON.stringify(zhKeys)) {
+	throw new Error("the en/zh card vocabularies carry different key sets");
 }
 for (const entry of ctx.slots.registeredEntries) {
 	if (entry && typeof entry === "object" && typeof entry.component !== "function") throw new Error("component is not a function");
@@ -162,6 +193,14 @@ const settingsCards = ctx.slots.registeredEntries
 	.map((entry) => `${entry.options.key}`);
 if (JSON.stringify(settingsCards) !== JSON.stringify(["dsh-hashline-edittool"])) {
 	throw new Error(`unexpected settings card registration: ${settingsCards.join(", ")}`);
+}
+// The settings card reads the SAME namespace as the tool rows: one
+// vocabulary for the whole plugin.
+const settingsCardLocales = ctx.slots.registeredEntries
+	.filter((entry) => entry?.options?.name === "plugins.bundle.config")
+	.map((entry) => `${entry.options.locale}`);
+if (JSON.stringify(settingsCardLocales) !== JSON.stringify(["hashline.card"])) {
+	throw new Error(`the settings card reads another locale: ${settingsCardLocales.join(", ")}`);
 }
 if (ctx.slots.injectCalls.filter((key) => key === "plugins.bundle.config").length !== 1) {
 	throw new Error("expected the settings card to inject the plugins.bundle.config declaration");

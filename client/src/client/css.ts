@@ -62,6 +62,9 @@ const CSS_TEXT = [
 	".dshl-errorPath{font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);word-break:break-all}",
 	".dshl-errorCardMessage{white-space:pre-wrap;word-break:break-word;min-width:0;color:var(--dsw-alias-label-primary);font-size:var(--dsh-content-font-size-secondary,13px);line-height:calc(18px + var(--dsh-content-font-delta,0px))}",
 	".dshl-errorContext{margin:0;white-space:pre;overflow-x:auto;background:var(--dsw-alias-bg-base);border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;font:var(--dsw-font-markdown-code-block-small);color:var(--dsw-alias-label-secondary)}",
+	// Issue 373: the wrap switch's button rides the error card's head row — at its
+	// right end, because the error card has no tab strip to push it there.
+	".dshl-errorWrap{margin-left:auto}",
 	".dshl-errorHint{color:var(--dsw-alias-label-secondary);font-size:var(--dsh-content-font-size-secondary,13px);line-height:calc(18px + var(--dsh-content-font-delta,0px))}",
 	".dshl-errorHintLabel{color:var(--dsw-alias-state-warning-primary);font-weight:500;margin-right:6px}",
 	".dshl-errorBody{margin:4px 0 4px 4px}",
@@ -114,6 +117,7 @@ export const css = {
 	errorPath: "dshl-errorPath",
 	errorCardMessage: "dshl-errorCardMessage",
 	errorContext: "dshl-errorContext",
+	errorWrap: "dshl-errorWrap",
 	errorHint: "dshl-errorHint",
 	errorHintLabel: "dshl-errorHintLabel",
 	errorBody: "dshl-errorBody",

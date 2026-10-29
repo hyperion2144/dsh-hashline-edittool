@@ -13,8 +13,19 @@
 
 import type { ConfigForm, ConfigFormSnapshot } from "./types.js";
 import type { SettingsPathOpView } from "./types.js";
-/** What the card says this governs — the one-liner a summary view shows. */
-export const CARD_DESCRIPTION = "read / edit / grep 的行为与语言支持。";
+import type { CardLocaleKey } from "./locale.js";
+/**
+ * The one-liner the bundle page shows under the card's title.
+ *
+ * The WORDING lives in the vocabulary (#375) — the card asks the host for it
+ * like every other word it draws.
+ *
+ * @param t - the vocabulary seat.
+ * @returns the one-liner.
+ */
+export function settingsSummaryText(t: (key: CardLocaleKey) => string): string {
+	return t("settings.summary");
+}
 
 /** The views the plugin manager asks of a configuration entry. */
 export type SettingsCardView = "summary" | "page";
@@ -85,11 +96,6 @@ export function requestedView(view: SettingsCardView | undefined): SettingsCardV
 	return view === "summary" ? "summary" : "page";
 }
 
-/** The one-liner the bundle page shows for this card's summary view. */
-export function settingsSummaryText(): string {
-	return CARD_DESCRIPTION;
-}
-
 /**
  * Build the path-op for one field edit: a VALUE sets the field, no value
  * CLEARS it (the field re-inherits the composition base) — the same
@@ -120,7 +126,7 @@ export type StoreBudgetField = "max_bytes_mb" | "max_paths" | "max_lines";
 
 /**
  * The bounded-store budgets with the same ranges the schema enforces on the
- * wire (#179 / #180). The `unit` is what the card shows next to the number
+ * wire (#179 / #180). The `unitKey` is what the card shows next to the number
  * AND what the inline error names — both belong to this spec.
  */
 export interface StoreBudgetSpec {
@@ -131,15 +137,34 @@ export interface StoreBudgetSpec {
 	readonly min: number;
 	/** Inclusive upper bound, matching the schema's `z.number().max(...)`. */
 	readonly max: number;
-	/** The unit the card and the inline error render (Chinese for the latter). */
-	readonly unit: string;
+	/**
+	 * The unit's VOCABULARY KEY (#375) — the card renders the word, so the
+	 * unit follows the reader's language like every other word it draws.
+	 */
+	readonly unitKey: CardLocaleKey;
 }
 
 export const STORE_BUDGET_SPECS: readonly StoreBudgetSpec[] = [
-	{ field: "max_bytes_mb", path: ["store", "max_bytes_mb"], min: 8, max: 2048, unit: "MiB" },
-	{ field: "max_paths", path: ["store", "max_paths"], min: 100, max: 100000, unit: "个" },
-	{ field: "max_lines", path: ["store", "max_lines"], min: 10000, max: 10000000, unit: "行" },
+	{ field: "max_bytes_mb", path: ["store", "max_bytes_mb"], min: 8, max: 2048, unitKey: "settings.unit.mib" },
+	{ field: "max_paths", path: ["store", "max_paths"], min: 100, max: 100000, unitKey: "settings.unit.paths" },
+	{ field: "max_lines", path: ["store", "max_lines"], min: 10000, max: 10000000, unitKey: "settings.unit.lines" },
 ];
+
+/**
+ * One validation failure, as STRUCTURE rather than a sentence (#375).
+ *
+ * The model layer owns the numbers and NAMES the wording; the card renders it
+ * in the reader's language. `unitKey` is a vocabulary key of its own because the
+ * unit's word differs by language ("paths" in English, "个" in Chinese).
+ */
+export interface SettingsDraftError {
+	/** The vocabulary key naming the sentence. */
+	readonly key: CardLocaleKey;
+	/** The numbers that fill the sentence — the range's two ends. */
+	readonly params: Record<string, string | number>;
+	/** The unit's vocabulary key — absent when the sentence names no unit. */
+	readonly unitKey?: CardLocaleKey;
+}
 
 /**
  * The outcome of validating one store-budget DRAFT (the raw text in the
@@ -147,13 +172,14 @@ export const STORE_BUDGET_SPECS: readonly StoreBudgetSpec[] = [
  *
  * `unset` is the legitimate "empty input" signal — the user wants to revert
  * to the host-side constant, which is the unset op the 恢复默认 button also
- * sends. `valid` carries the integer to write. `error` carries a Chinese
- * sentence the card renders verbatim below the input.
+ * sends. `valid` carries the integer to write. `error` carries the failure's
+ * STRUCTURE (#375) — the wording's key and the numbers that fill it — so
+ * the card renders the sentence below the input in the reader's language.
  */
 export type StoreBudgetDraftResult =
 	| { readonly kind: "unset" }
 	| { readonly kind: "valid"; readonly value: number }
-	| { readonly kind: "error"; readonly message: string };
+	| { readonly kind: "error"; readonly error: SettingsDraftError };
 
 /**
  * Classify one store-budget draft against its spec.
@@ -161,7 +187,7 @@ export type StoreBudgetDraftResult =
  * Pure on purpose — the component imports this and tests pin each branch
  * without a live form.
  *
- * @param spec - the field's range + unit.
+ * @param spec - the field's range + unit key.
  * @param raw - the input's current text (NOT the trimmed value: the
  *   distinction matters for what we surface to the user).
  */
@@ -177,13 +203,21 @@ export function validateStoreBudgetDraft(
 	if (!Number.isInteger(parsed) || parsed.toString() !== text) {
 		return {
 			kind: "error",
-			message: `请输入 ${spec.min}–${spec.max} ${spec.unit} 之间的整数`,
+			error: {
+				key: "settings.error.budgetInteger",
+				params: { min: spec.min, max: spec.max },
+				unitKey: spec.unitKey,
+			},
 		};
 	}
 	if (parsed < spec.min || parsed > spec.max) {
 		return {
 			kind: "error",
-			message: `超出允许范围 ${spec.min}–${spec.max} ${spec.unit}`,
+			error: {
+				key: "settings.error.budgetRange",
+				params: { min: spec.min, max: spec.max },
+				unitKey: spec.unitKey,
+			},
 		};
 	}
 	return { kind: "valid", value: parsed };
@@ -262,7 +296,7 @@ export const LSP_IDLE_SPEC: LspIdleSpec = {
 export type LspIdleDraftResult =
 	| { readonly kind: "unset" }
 	| { readonly kind: "valid"; readonly value: number }
-	| { readonly kind: "error"; readonly message: string };
+	| { readonly kind: "error"; readonly error: SettingsDraftError };
 
 /**
  * Classify one idle-window draft against the spec.
@@ -274,10 +308,22 @@ export function validateLspIdleDraft(raw: string): LspIdleDraftResult {
 	if (text === "") return { kind: "unset" };
 	const parsed = Number.parseInt(text, 10);
 	if (!Number.isInteger(parsed) || parsed.toString() !== text) {
-		return { kind: "error", message: `请输入 ${LSP_IDLE_SPEC.min}–${LSP_IDLE_SPEC.max} 之间的整数` };
+		return {
+			kind: "error",
+			error: {
+				key: "settings.error.idleInteger",
+				params: { min: LSP_IDLE_SPEC.min, max: LSP_IDLE_SPEC.max },
+			},
+		};
 	}
 	if (parsed < LSP_IDLE_SPEC.min || parsed > LSP_IDLE_SPEC.max) {
-		return { kind: "error", message: `超出允许范围 ${LSP_IDLE_SPEC.min}–${LSP_IDLE_SPEC.max}` };
+		return {
+			kind: "error",
+			error: {
+				key: "settings.error.idleRange",
+				params: { min: LSP_IDLE_SPEC.min, max: LSP_IDLE_SPEC.max },
+			},
+		};
 	}
 	return { kind: "valid", value: parsed };
 }

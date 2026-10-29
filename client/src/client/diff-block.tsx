@@ -29,7 +29,10 @@ import { buildDisplayRows, copyText, foldWindow } from "./diff-rows.js";
 import type { DisplayRow, DisplayRowKind } from "./diff-rows.js";
 import { markerColumnCh } from "./read-meta.js";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
-import type { DiffBlockLabels } from "./labels.js";
+import { DEFAULT_WRAP_STATE, nextWrapState, wrapStateProps } from "./wrap.js";
+import type { WrapState } from "./wrap.js";
+import { WrapToggleButton } from "./wrap-button.js";
+import type { DiffBlockLabels, ErrorCardLabels, WrapLabels } from "./labels.js";
 import type { DiffRowGroup, DiffRowMeta, ErrorCardModel, FileFailureMeta, FormatClusterMeta, FormatRowMeta, FormatSectionMeta } from "./types.js";
 interface FoldLabels {
 	collapseAria: string;
@@ -159,18 +162,14 @@ const css = {
 	fmtRestored: "dshl-fmt-restored",
 } as const;
 
-/** Localized chrome (DiffBlockLabels shape). */
-export interface DiffRowsLabels {
-	copy: string;
-	copied: string;
-	collapseAria: string;
-	expandAria: (hidden: number) => string;
-	collapse: string;
-	expand: (hidden: number) => string;
-	files: (count: number) => string;
-	/** Accessible name of the overflow trigger (`common.more`). */
-	more: string;
-}
+/**
+ * Localized chrome: the shipped diff card's own words PLUS the wrap switch's
+ * (#373).
+ *
+ * One shape for both: the card and the shipped `DiffBlock` never disagree
+ * about a word, and the switch's word travels with them.
+ */
+export interface DiffRowsLabels extends DiffBlockLabels, WrapLabels {}
 
 /**
  * The diff class of one drawn row — the anchor cell and the code cell wear it
@@ -337,6 +336,8 @@ export interface DiffRowsBlockProps {
 	/** Accessible name of the tab list (the owning tool's title). */
 	tablistLabel: string;
 	labels: DiffRowsLabels;
+	/** The error card drawn in a failed file's tab (the hint label). */
+	errorLabels: ErrorCardLabels;
 	maxLines?: number | undefined;
 	className?: string | undefined;
 }
@@ -355,6 +356,7 @@ export function DiffRowsBlock({
 	formats,
 	tablistLabel,
 	labels,
+	errorLabels,
 	maxLines = 16,
 	className,
 }: DiffRowsBlockProps): ReactNode {
@@ -400,6 +402,8 @@ export function DiffRowsBlock({
 	// content.
 	const gutterWidth = markerColumnCh(display.map((row) => row.gutter));
 	const [expanded, setExpanded] = useState(false);
+	// The wrap switch (#373): this card's own state, never persisted.
+	const [wrap, setWrap] = useState<WrapState>(DEFAULT_WRAP_STATE);
 	const [copied, setCopied] = useState(false);
 
 	const onCopy = useCallback(() => {
@@ -412,6 +416,7 @@ export function DiffRowsBlock({
 	}, [copied, display]);
 
 	const onToggle = useCallback(() => setExpanded((value) => !value), []);
+	const onToggleWrap = useCallback(() => setWrap((value) => nextWrapState(value)), []);
 
 	const onSelect = useCallback((index: number) => {
 		setActiveTab(index);
@@ -483,6 +488,18 @@ export function DiffRowsBlock({
 				labels: { tablist: tablistLabel, more: labels.more },
 				panelId,
 				idPrefix: baseId,
+				// The wrap switch (#373). A FAILED file's tab draws the error
+				// card, and the error card draws its OWN switch — so the strip's
+				// button steps aside there: one visible control at a time, and it
+				// always controls the text the reader can see.
+				trailing:
+					activeFailure === null
+						? jsx_(WrapToggleButton, {
+								state: wrap,
+								onToggle: onToggleWrap,
+								label: labels.wrapToggle,
+							})
+						: null,
 				copy: jsx_("button", {
 					type: "button",
 					className: TAB_STRIP_COPY_CLASS,
@@ -498,6 +515,7 @@ export function DiffRowsBlock({
 						"aria-labelledby": `${baseId}-tab-${activeIndex}`,
 						children: jsx_(ErrorCard, {
 							model: errorCardOf(activeFailure),
+							labels: errorLabels,
 							// The banner above already announced the failure; switching to
 							// its tab must not re-announce the same card.
 							announce: false,
@@ -505,6 +523,7 @@ export function DiffRowsBlock({
 					})
 				: jsx_("div", {
 						className: css.body,
+						...wrapStateProps(wrap),
 						id: panelId,
 						role: "tabpanel",
 						"aria-labelledby": `${baseId}-tab-${activeIndex}`,

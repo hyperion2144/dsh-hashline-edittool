@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { deleteCardModel } from "../src/client/models.js";
+import { EN_CARD_DICTIONARY, ZH_CARD_DICTIONARY } from "../src/client/locale.js";
 
 function block(meta: unknown) {
 	return {
@@ -49,14 +50,35 @@ describe("deleteCardModel", () => {
 			}),
 		);
 
-		expect(model?.title).toBe("Delete");
-		expect(model?.summary).toBe("/a.ts, /gone.ts, /dir · 1 deleted · 1 already absent · 1 failed · 2.0KiB freed");
-		expect(model?.rows).toEqual([
-			{ path: "/a.ts", status: "deleted", detail: "2 anchors · 1 undo · 3 served · 2.0KiB freed" },
-			{ path: "/gone.ts", status: "already-absent", detail: "" },
-			{ path: "/dir", status: "failed", detail: "[E_NOT_FILE] Path is not a regular file." },
+		// #375: the summary and the reclaim details are words + counts — the
+		// model layer names the wording, the client renders it.
+		expect(model?.summary).toEqual([
+			{ kind: "word", key: "delete.count", params: { count: 3 } },
+			{ kind: "word", key: "delete.stat.deleted", params: { count: 1 } },
+			{ kind: "word", key: "delete.stat.absent", params: { count: 1 } },
+			{ kind: "word", key: "delete.stat.failed", params: { count: 1 } },
+			{ kind: "word", key: "delete.stat.freed", params: { bytes: "2.0KiB" } },
 		]);
-		expect(model?.vacuum).toBe("pending");
+		expect(model?.rows).toEqual([
+			{
+				path: "/a.ts",
+				status: "deleted",
+				detail: [
+					{ kind: "word", key: "delete.detail.anchors", params: { count: 2 } },
+					{ kind: "word", key: "delete.detail.undo", params: { count: 1 } },
+					{ kind: "word", key: "delete.detail.served", params: { count: 3 } },
+					{ kind: "word", key: "delete.stat.freed", params: { bytes: "2.0KiB" } },
+				],
+			},
+			{ path: "/gone.ts", status: "already-absent", detail: [] },
+			{
+				path: "/dir",
+				status: "failed",
+				detail: [],
+				// The model's own message, verbatim (the error channel is the model's).
+				error: "[E_NOT_FILE] Path is not a regular file.",
+			},
+		]);
 	});
 
 	it("puts the single path first in the collapsed summary (relativized + home)", () => {
@@ -73,13 +95,46 @@ describe("deleteCardModel", () => {
 			"/home/me",
 			"/home/me",
 		);
-		expect(model?.title).toBe("Delete");
-		expect(model?.summary).toBe(".scratch/delete-test-file.txt · 1 deleted · 0 already absent · 0 failed");
+		expect(model?.summary).toEqual([
+			{ kind: "literal", text: ".scratch/delete-test-file.txt" },
+			{ kind: "word", key: "delete.stat.deleted", params: { count: 1 } },
+			{ kind: "word", key: "delete.stat.absent", params: { count: 0 } },
+			{ kind: "word", key: "delete.stat.failed", params: { count: 0 } },
+		]);
 		expect(model?.rows[0]?.path).toBe(".scratch/delete-test-file.txt");
 	});
 
 	it("returns null without a delete projection", () => {
 		expect(deleteCardModel(block(undefined))).toBeNull();
 		expect(deleteCardModel(block({ other: true }))).toBeNull();
+	});
+
+	it("renders its summary in the reader's language (#375)", () => {
+		// The model layer owns the COUNTS and names the wording; the client
+		// resolves the key. The rendered strings are the contract.
+		const model = deleteCardModel(
+			block({
+				delete: {
+					results: [{ path: "/a.ts", status: "deleted" }],
+					failures: [],
+					totals: { deleted: 1, alreadyAbsent: 1, failed: 1 },
+					reclaimed: { bytesFreed: 2048 },
+					vacuum: "none",
+				},
+			}),
+		);
+		const render = (dictionary: Record<string, string>): string =>
+			(model?.summary ?? [])
+				.map((part) =>
+					part.kind === "literal"
+						? part.text
+						: (dictionary[part.key] ?? part.key).replace(
+								/\{(\w+)\}/g,
+								(_match, name: string) => String(part.params?.[name] ?? ""),
+							),
+				)
+				.join(" · ");
+		expect(render(EN_CARD_DICTIONARY)).toBe("/a.ts · 1 deleted · 1 already absent · 1 failed · 2.0KiB freed");
+		expect(render(ZH_CARD_DICTIONARY)).toBe("/a.ts · 1 已删除 · 1 已不存在 · 1 失败 · 2.0KiB 已释放");
 	});
 });

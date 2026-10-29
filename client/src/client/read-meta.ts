@@ -37,7 +37,9 @@ export function readCardMeta(model: ReadCardModel, labels: ReadCardLabels): read
 		windowed ? labels.window(model.rows.length, windowMeta?.totalLines ?? model.totalLines) : null,
 		// #273: a lossy view's footer names the substitution and the edit refusal
 		// (host-composed wording — the card renders it verbatim).
-		model.lossy === true && model.lossyNote !== undefined ? model.lossyNote : null,
+		// #375: the note is a key + params (a legacy meta carries the English
+		// sentence as a string) — the labels resolve it in the reader's language.
+		model.lossy === true && model.lossyNote !== undefined ? labels.lossyNote(model.lossyNote) : null,
 	];
 	return parts.filter((part): part is string => part !== null);
 }

@@ -819,7 +819,6 @@ Map #337 的 `rename` 工具需要在移动普通文件的同时把 hash-store �
 - `README.md` / `README.zh.md`：工具表、错误码、Store 迁移段、架构工具数 9→10
 - `CHANGELOG.md` `[Unreleased]`：rename 工具一行
 - `CONTEXT.md`：rename / path migration / anchor preservation across path
-=======
 ## 2026-10-27 — ADR-0025 + write 预览模式规格
 
 **Type:** new decision record + spec
@@ -838,3 +837,31 @@ Map #354：`write` 的写后回显是输出行为，应归用户；默认从整�
 - `CHANGELOG.md` `[Unreleased]`：`write.preview` 一条
 - `CONTEXT.md`：Preview mode 词条
 - `src/infra/settings.ts` / `src/config.ts`：快照默认 `diff`
+## 2026-10-29 — 客户端卡片三项改造：换行开关 / read 窗口标题 / 卡片双语与 host 文案 key 化 (#366)
+
+**Type:** contract（ADR-0026 host 文案 key 化 wire 契约；ADR-0027 read window `truncated`）+ 客户端词表基座
+**Confidence:** High（根 1854 例 + client 291 例全绿；双 typecheck；build + verify-bundle 断言 11 处注册 locale 全为 `hashline.card`）
+**Evidence:** 地图 [#366](https://github.com/hyperion2144/dsh-hashline-edittool/issues/366)（四张决策票 #369/#368/#370/#367 全收口）；规格 [#371](https://github.com/hyperion2144/dsh-hashline-edittool/issues/371)；实施票 #372–#376；`docs/research/ctx-locale-seat.md`（locale seat 一手源取证）
+
+### Why
+
+三项用户需求（卡片自动换行开关、read 卡标题窗口信息、卡片双语）落在一个机制事实上：dsh 的 `locale` 是 **client 侧** cordis 服务（host 读不到生效语言），所以 host 拼装文案必须 key 化过 wire；且插件此前借用 `conversation` 命名空间却有四个 key 失配、页面显示 key 字面量——自有词表是补洞而非锦上添花。
+
+### Path / Affected typed relationships
+
+- `client/src/client/locale.ts` (created)：NS `hashline.card`、en/zh 字典（现用 key 全量复制 + wrap/read.title/row.title/settings.*/delete.*/error.hintLabel/lsp.* 等新增，`satisfies` 结构类型自持，`TBench` 收窄为词表 key 联合）
+- `docs/adr/0026-host-text-key-wire-contract.md` (created)
+- `docs/adr/0027-read-window-truncated.md` (created)
+- `docs/adr/0014-read-window-cursor-and-summary.md` (amendment：window 第四个可选字段 `truncated`)
+- `src/render/wire-text.ts` (created)：`LocalizedText` + `rowTitle`（折叠行标题 key+params 产出处）
+- `AGENTS.md` l0 decisions 0001–0025 → 0001–0027，追加 host 文案 key 化与窗口截断两个主题
+- `README.md` / `README.zh.md`：Highlights 补卡片换行开关与卡片双语段（镜像）
+- `CHANGELOG.md` `[Unreleased]`：#372/#373/#374/#375 各一条
+- `docs/research/ctx-locale-seat.md` (created)
+
+### 本轮定案（复核时照此）
+
+- 自建词表 NS 后解析链无 `→ conversation` 跳：借用的 key 必须全量复制；`t` 的 key 类型收窄到词表联合，写错 key 即编译错误。
+- host 拼装文案一律稳定 key + params 过 wire；未知 key 拒收回落行自带标签，屏幕永不出现 key 字面量；模型可见文本通道保持英文（`window.truncated` 布尔属协议可加项，不在此边界内）。
+- `window.truncated` 只由 continuation 判定（`assembleServedRead`）；≠ `end < totalLines`（后者是 limit 给小，不是截断）。
+- 换行开关是每卡实时渲染状态，非配置、不持久化；gutter 两态钉死 `pre`。

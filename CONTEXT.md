@@ -136,7 +136,7 @@ _Avoid_: mtime check, file hash, staleness token
 ## Read windows
 
 **Window**:
-The line range one `read` actually served — `window: {start, end, totalLines}` in the JSON value and in the card's `presentationMeta`, with `start`/`end` always **file** line numbers (the anchor ledger), never offsets local to the response. Absent when nothing was served (an offset past the end); an empty file's window is `{1, 1, 1}`.
+The line range one `read` actually served — `window: {start, end, totalLines}` in the JSON value and in the card's `presentationMeta`, with `start`/`end` always **file** line numbers (the anchor ledger), never offsets local to the response. Absent when nothing was served (an offset past the end); an empty file's window is `{1, 1, 1}`. A fourth, optional field — `truncated` — says the response budget cut this window, so a continuation stands behind it; a window that merely ended early carries no such field, and `end < totalLines` alone never means truncated.
 _Avoid_: page, viewport, slice
 
 **Window sentence**:

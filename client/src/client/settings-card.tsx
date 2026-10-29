@@ -35,7 +35,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useState, useSyncExternalStore, type ReactElement } from "react";
 import { Button, Pill, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
 import * as primitives from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ConfigFormSnapshot } from "./types.js";
+import type { ConfigFormSnapshot, WireText } from "./types.js";
+import type { CardLocaleKey } from "./locale.js";
 import {
 	STORE_BUDGET_SPECS,
 	readFormatFlags,
@@ -52,7 +53,18 @@ import {
 	type SettingsCardView,
 	type SettingsControllerFace,
 	type StoreBudgetSpec,
+	type SettingsDraftError,
 } from "./settings-model.js";
+import { resolveHostText } from "./wire-text.js";
+
+/**
+ * The vocabulary seat, narrowed to this namespace's keys (#375).
+ *
+ * The host's own `t` takes any string, so it satisfies this narrower type;
+ * the narrowing is what turns a typo'd settings key into a COMPILE error rather
+ * than a key name painted on the screen.
+ */
+type SettingsTranslate = (key: CardLocaleKey, params?: Record<string, unknown>) => string;
 /** Props the slot hands the card: OUR controller plus the view it asks for. */
 export interface SettingsCardProps {
 	/**
@@ -65,6 +77,15 @@ export interface SettingsCardProps {
 	readonly controller?: SettingsControllerFace;
 	/** Absent means the page view — the full form is the safe default. */
 	readonly view?: SettingsCardView;
+	/**
+	 * The vocabulary seat the slot binds to this card (#375): the settings
+	 * page's words live in the plugin's own namespace, so the page follows the
+	 * interface language like every other card.
+	 *
+	 * Narrowed to this namespace's key union: a typo'd settings key is a
+	 * COMPILE error rather than a key name painted on the screen.
+	 */
+	readonly t: SettingsTranslate;
 }
 
 /** Where the manager's facts live. */
@@ -120,22 +141,42 @@ interface LspRow {
 		readonly origin: string;
 	};
 	readonly ready: boolean;
-	readonly reason?: string;
-	readonly message?: string;
+	readonly reason?: string | WireText;
+	readonly message?: string | WireText;
 	/** Whether the plugin can install this one itself (npm-form servers only). */
 	readonly canInstall?: boolean;
 }
 
-/** How each discovery origin reads to a person. */
-const ORIGIN_TEXT: Record<string, string> = {
-	project: "项目内",
-	path: "PATH 中",
-	configured: "显式配置",
-	// Chosen by someone rather than found lying around, and the distinction
-	// matters to the reader: `configured` is their own settings entry, while
-	// `installed` is the plugin's own prefix — the one this card installs into.
-	installed: "卡片安装",
-};
+/**
+ * How each discovery origin reads to a person, in the reader's language.
+ *
+ * `configured` is chosen by someone rather than found lying around, and the
+ * distinction matters to the reader: it is their own settings entry, while
+ * `installed` is the plugin's own prefix — the one this card installs into.
+ *
+ * @param t - the vocabulary seat.
+ * @param origin - the origin the status route reported.
+ * @returns the origin's name, in the reader's language.
+ */
+function originText(t: SettingsTranslate, origin: string): string {
+	switch (origin) {
+		case "project":
+			return t("settings.origin.project");
+		case "path":
+			return t("settings.origin.path");
+		case "configured":
+			return t("settings.origin.configured");
+		case "installed":
+			return t("settings.origin.installed");
+		default:
+			// An origin this card does not know: the raw name is the honest thing.
+			return origin;
+	}
+}
+
+// The host texts this card draws (the status route's sentence, a row's hint, an
+// install's refusal) are resolved by `resolveHostText` — the ONE place that
+// knows the three shapes (ADR-0024, #377).
 
 
 /** One catalog row, as the route reports it. */
@@ -250,11 +291,12 @@ const Switch = (primitives as unknown as { Switch?: SwitchLike }).Switch;
  * decision the card renders as a segmented row of buttons.
  */
 const FORMAT_MODES = ["off", "full", "range"] as const;
-const FORMAT_MODE_LABEL: Record<(typeof FORMAT_MODES)[number], string> = {
-	off: "关",
-	full: "全文",
-	range: "范围",
-};
+/** The vocabulary key each mode's button asks for (#375). */
+const FORMAT_MODE_KEYS = {
+	off: "settings.formatMode.off",
+	full: "settings.formatMode.full",
+	range: "settings.formatMode.range",
+} as const satisfies Record<(typeof FORMAT_MODES)[number], CardLocaleKey>;
 
 /**
  * `write.preview` (map #354), in display order: how much of a successful
@@ -262,10 +304,10 @@ const FORMAT_MODE_LABEL: Record<(typeof FORMAT_MODES)[number], string> = {
  * all, so the segmented row sits beside the other OUTPUT switches.
  */
 const WRITE_PREVIEW_MODES = ["full", "diff", "confirmation"] as const;
-const WRITE_PREVIEW_LABEL: Record<(typeof WRITE_PREVIEW_MODES)[number], string> = {
-	full: "全文",
-	diff: "diff",
-	confirmation: "仅确认",
+const WRITE_PREVIEW_KEYS: Record<(typeof WRITE_PREVIEW_MODES)[number], CardLocaleKey> = {
+	full: "settings.writePreview.full",
+	diff: "settings.writePreview.diff",
+	confirmation: "settings.writePreview.confirmation",
 };
 
 /** Human-readable byte size; the figure a user judges a download by. */
@@ -404,10 +446,23 @@ function hasAnyStoreField(snapshot: ConfigFormSnapshot): boolean {
 }
 
 
+/**
+ * Why a fetch produced nothing: a FACT the card turns into words (#375).
+ *
+ * The wording is resolved at RENDER time, not at fetch time: a failure caught
+ * under one language must not stay in that language after the reader switches.
+ */
+type HttpFailure = { readonly kind: "http"; readonly status: number };
+type NetworkFailure = { readonly kind: "network"; readonly message: string };
+/** The catalog's third shape: a 200 that carried no `languages` field. */
+type CatalogFailure = HttpFailure | NetworkFailure | { readonly kind: "shape" };
+/** The language-server status has no third shape: its body always lists languages. */
+type LspFailure = HttpFailure | NetworkFailure;
+
 /** What the catalog fetch produced — including WHY, when it produced nothing. */
 interface CatalogState {
 	readonly rows: readonly LanguageRow[];
-	readonly failure?: string;
+	readonly failure?: CatalogFailure;
 }
 
 /**
@@ -427,16 +482,16 @@ function useCatalog(): { state: CatalogState; reload: () => void } {
 			try {
 				const response = await fetch(MANAGER_ROUTE, { headers: { accept: "application/json" } });
 				if (!response.ok) {
-					if (live) setState({ rows: [], failure: `${MANAGER_ROUTE} 返回 HTTP ${response.status}` });
+					if (live) setState({ rows: [], failure: { kind: "http", status: response.status } });
 					return;
 				}
 				const body = (await response.json()) as { languages?: readonly LanguageRow[] };
 				if (!live) return;
 				if (Array.isArray(body.languages)) setState({ rows: body.languages });
-				else setState({ rows: [], failure: `${MANAGER_ROUTE} 的响应里没有 languages 字段` });
+				else setState({ rows: [], failure: { kind: "shape" } });
 			} catch (cause) {
 				if (live) {
-					setState({ rows: [], failure: `${MANAGER_ROUTE} 请求失败：${cause instanceof Error ? cause.message : String(cause)}` });
+					setState({ rows: [], failure: { kind: "network", message: cause instanceof Error ? cause.message : String(cause) } });
 				}
 			}
 		})();
@@ -455,9 +510,21 @@ function useCatalog(): { state: CatalogState; reload: () => void } {
  * that as an error would be wrong twice — wrong about the cause, and wrong about
  * whether anything can be done about it here.
  */
-function useLspStatus(): { rows: readonly LspRow[]; available: boolean; message?: string; failure?: string; reload: () => void } {
+function useLspStatus(): {
+	rows: readonly LspRow[];
+	available: boolean;
+	/** The host's own sentence about the client, as a wire text or a legacy one. */
+	message?: string | WireText;
+	failure?: LspFailure;
+	reload: () => void;
+} {
 	const [nonce, setNonce] = useState(0);
-	const [state, setState] = useState<{ rows: readonly LspRow[]; available: boolean; message?: string; failure?: string }>({
+	const [state, setState] = useState<{
+		rows: readonly LspRow[];
+		available: boolean;
+		message?: string | WireText;
+		failure?: LspFailure;
+	}>({
 		rows: [],
 		available: false,
 	});
@@ -467,18 +534,22 @@ function useLspStatus(): { rows: readonly LspRow[]; available: boolean; message?
 			try {
 				const response = await fetch(LSP_ROUTE, { headers: { accept: "application/json" } });
 				if (!response.ok) {
-					if (live) setState({ rows: [], available: false, failure: `${LSP_ROUTE} 返回 HTTP ${response.status}` });
+					if (live) setState({ rows: [], available: false, failure: { kind: "http", status: response.status } });
 					return;
 				}
-				const body = (await response.json()) as { available?: boolean; message?: string; languages?: readonly LspRow[] };
+				const body = (await response.json()) as {
+					available?: boolean;
+					message?: string | WireText;
+					languages?: readonly LspRow[];
+				};
 				if (!live) return;
 				setState({
 					rows: Array.isArray(body.languages) ? body.languages : [],
 					available: body.available === true,
-					...(typeof body.message === "string" ? { message: body.message } : {}),
+					...(body.message === undefined ? {} : { message: body.message }),
 				});
 			} catch (cause) {
-				if (live) setState({ rows: [], available: false, failure: cause instanceof Error ? cause.message : String(cause) });
+				if (live) setState({ rows: [], available: false, failure: { kind: "network", message: cause instanceof Error ? cause.message : String(cause) } });
 			}
 		})();
 		return () => {
@@ -490,6 +561,60 @@ function useLspStatus(): { rows: readonly LspRow[]; available: boolean; message?
 		// reporting a stale fact as a current one.
 	}, [nonce]);
 	return { ...state, reload: () => setNonce((n) => n + 1) };
+}
+
+/**
+ * The catalog fetch's failure, in the reader's language.
+ *
+ * @param t - the vocabulary seat.
+ * @param failure - what the fetch reported.
+ * @returns the sentence the card shows.
+ */
+function catalogFailureText(t: SettingsTranslate, failure: CatalogFailure): string {
+	switch (failure.kind) {
+		case "http":
+			return t("settings.error.catalogHttp", { route: MANAGER_ROUTE, status: failure.status });
+		case "shape":
+			return t("settings.error.catalogShape", { route: MANAGER_ROUTE });
+		case "network":
+			return t("settings.error.catalogFailed", { route: MANAGER_ROUTE, message: failure.message });
+	}
+}
+
+/**
+ * The language-server status fetch's failure, in the reader's language.
+ *
+ * The network case shows the host's own message verbatim: it is a technical
+ * fact ("fetch failed"), not a sentence of ours to translate.
+ *
+ * @param t - the vocabulary seat.
+ * @param failure - what the fetch reported.
+ * @returns the sentence the card shows.
+ */
+function lspFailureText(t: SettingsTranslate, failure: LspFailure): string {
+	switch (failure.kind) {
+		case "http":
+			return t("settings.error.lspHttp", { route: LSP_ROUTE, status: failure.status });
+		case "network":
+			return failure.message;
+	}
+}
+
+/**
+ * One validation failure, in the reader's language (#375).
+ *
+ * The model layer names the wording and hands over the numbers; the unit is a
+ * vocabulary KEY of its own, because its word differs by language ("paths" in
+ * English, "个" in Chinese).
+ *
+ * @param t - the vocabulary seat.
+ * @param error - the failure the model produced.
+ * @returns the sentence the card shows below the input.
+ */
+function draftErrorText(t: SettingsTranslate, error: SettingsDraftError): string {
+	const params =
+		error.unitKey === undefined ? error.params : { ...error.params, unit: t(error.unitKey) };
+	return t(error.key, params);
 }
 
 /** Render the runtime switch, or the native fallback. */
@@ -510,6 +635,8 @@ function renderSwitch(
 /** One row: install FACT in the middle, enable INTENT on the right. */
 function LanguageRowItem(props: {
 	readonly row: LanguageRow;
+	/** The vocabulary seat: the row's own words (#375). */
+	readonly t: SettingsTranslate;
 	readonly astEnabled: boolean;
 	/** Only consulted when this row renders a switch — i.e. when it is usable. */
 	readonly disabled?: boolean | undefined;
@@ -530,21 +657,21 @@ function LanguageRowItem(props: {
 	readonly onInstall?: (() => void) | undefined;
 	readonly onRemove?: (() => void) | undefined;
 }): ReactElement {
-	const { row } = props;
+	const { row, t } = props;
 	const present = row.builtin || row.installed;
 	const fact = row.builtin
-		? `内置 · ${row.version}`
+		? t("settings.fact.builtin", { version: row.version })
 		: row.installed
-			? `已装 · ${row.installedVersion ?? row.version}`
-			: `${row.version} · ${bytesText(row.size)}`;
+			? t("settings.fact.installed", { version: row.installedVersion ?? row.version })
+			: t("settings.fact.available", { version: row.version, size: bytesText(row.size) });
 	const dotState = present ? "done" : row.installable ? "warning" : "error";
 	return (
 		<li className="dshl-mgr-row">
 			<StateDot state={dotState} size={8} />
 			<span className="dshl-mgr-display-name">{row.displayName}</span>
 			{props.overridden === true ? (
-				<span className="dshl-mgr-hint" title="这门语言在配置里写了显式值（其余语言继承总开关）">
-					已覆盖
+				<span className="dshl-mgr-hint" title={t("settings.title.overridden")}>
+					{t("settings.status.overridden")}
 				</span>
 			) : null}
 			<span className="dshl-mgr-ext">{row.extensions.join(" ")}</span>
@@ -554,15 +681,15 @@ function LanguageRowItem(props: {
 			{/* FACT: whether the grammar is on disk, and the one control that changes it. */}
 			{row.builtin ? null : row.installed ? (
 				<Button size="sm" disabled={!props.writable} onClick={props.onRemove}>
-					移除
+					{t("settings.action.remove")}
 				</Button>
 			) : row.installable ? (
 				<Button size="sm" variant="primary" disabled={!props.writable} onClick={props.onInstall}>
-					添加
+					{t("settings.action.add")}
 				</Button>
 			) : (
-				<span className="dshl-mgr-hint" title="该语言的语义描述符尚未编写，装上也无法枚举符号">
-					暂不可装
+				<span className="dshl-mgr-hint" title={t("settings.title.notInstallable")}>
+					{t("settings.action.unavailable")}
 				</span>
 			)}
 			{/*
@@ -591,9 +718,9 @@ function LanguageRowItem(props: {
  */
 export function HashlineSettingsCard(props: SettingsCardProps): ReactElement {
 	if (requestedView(props.view) === "summary") {
-		return <>{settingsSummaryText()}</>;
+		return <>{settingsSummaryText(props.t)}</>;
 	}
-	return <HashlineSettingsPageView controller={props.controller} />;
+	return <HashlineSettingsPageView controller={props.controller} t={props.t} />;
 }
 
 /**
@@ -622,7 +749,7 @@ function useControllerSnapshot(controller: SettingsControllerFace | undefined): 
  *
  * @param props - the injected controller.
  */
-function HashlineSettingsPageView({ controller }: { readonly controller?: SettingsControllerFace }): ReactElement {
+function HashlineSettingsPageView({ controller, t }: { readonly controller?: SettingsControllerFace; readonly t: SettingsTranslate }): ReactElement {
 	ensureManagerStyles();
 	// Our own controller (#171): subscribed above, written through below.
 	// A deployment that injected none degrades through the not-ready gate.
@@ -653,17 +780,17 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	const [contextDraft, setContextDraft] = useState(String(core.contextLines));
 	/** Same draft-on-blur treatment for the LSP idle window (#306). */
 	const [lspIdleDraft, setLspIdleDraft] = useState(lspIdleMs === undefined ? "" : String(lspIdleMs));
-	/** The idle window's out-of-range message, or undefined when it is fine. */
-	const [lspIdleError, setLspIdleError] = useState<string | undefined>(undefined);
+	/** The idle window's failure, or undefined when it is fine. */
+	const [lspIdleError, setLspIdleError] = useState<SettingsDraftError | undefined>(undefined);
 	/** Which of the card's two sections is showing. */
 	const [tab, setTab] = useState<"core" | "ast" | "lsp" | "store">("core");
 	/** Same draft-on-blur treatment for the store-budget fields (#179). */
 // Per-input error state (#179 / #180 — first line of defence). The card
-	// shows one Chinese sentence below each input when the draft is out of
+	// shows one sentence below each input when the draft is out of
 	// range or non-numeric; `undefined` means "no error, write as normal".
-	const [bytesError, setBytesError] = useState<string | undefined>(undefined);
-	const [pathsError, setPathsError] = useState<string | undefined>(undefined);
-	const [linesError, setLinesError] = useState<string | undefined>(undefined);
+	const [bytesError, setBytesError] = useState<SettingsDraftError | undefined>(undefined);
+	const [pathsError, setPathsError] = useState<SettingsDraftError | undefined>(undefined);
+	const [linesError, setLinesError] = useState<SettingsDraftError | undefined>(undefined);
 	const [bytesDraft, setBytesDraft] = useState(store.maxBytesMb === undefined ? "" : String(store.maxBytesMb));
 	const [pathsDraft, setPathsDraft] = useState(store.maxPaths === undefined ? "" : String(store.maxPaths));
 	const [linesDraft, setLinesDraft] = useState(store.maxLines === undefined ? "" : String(store.maxLines));
@@ -689,7 +816,9 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	 * nineteen-row list — which is the same as not showing it. The row the user
 	 * clicked is the only place it gets read.
 	 */
-	const [failedInstall, setFailedInstall] = useState<{ languageId: string; message: string } | undefined>(undefined);
+	const [failedInstall, setFailedInstall] = useState<{ languageId: string; message: string | WireText } | undefined>(
+		undefined,
+	);
 
 	/**
 	 * Install one language's server, then re-read the list.
@@ -706,7 +835,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			// `go install` builds a toolchain and `npm install` resolves a tree; the
 			// message does not name either one, because the catalog decides which runs
 			// and naming the wrong one is a small lie the user then reasons from.
-			setNotice(`正在安装 ${languageId} 的服务器，可能要一会儿。`);
+			setNotice(t("settings.notice.installing", { languageId }));
 			setError(undefined);
 			try {
 				const response = await fetch(`${LSP_ROUTE}/install`, {
@@ -714,9 +843,16 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					headers: { "content-type": "application/json", accept: "application/json" },
 					body: JSON.stringify({ languageId }),
 				});
-				const body = (await response.json()) as { ok?: boolean; message?: string };
-				if (body.ok !== true) throw new Error(body.message ?? "install did not complete");
-				setNotice(`✓ ${languageId} 的服务器已安装。`);
+				const body = (await response.json()) as { ok?: boolean; message?: string | WireText };
+				if (body.ok !== true) {
+					// The host's OWN refusal (ADR-0024): a wire text, or a plain
+					// sentence from an older host. It keeps its shape until the row
+					// draws it, so the card can resolve the key in the reader's language.
+					setNotice(undefined);
+					setFailedInstall({ languageId, message: body.message ?? t("settings.error.installIncomplete") });
+					return;
+				}
+				setNotice(t("settings.notice.installed", { languageId }));
 				lsp.reload();
 			} catch (cause) {
 				setNotice(undefined);
@@ -728,7 +864,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 				setInstalling(undefined);
 			}
 		},
-		[lsp],
+		[lsp, t],
 	);
 
 	const write = useCallback(async (key: string, action: () => Promise<void>) => {
@@ -758,7 +894,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 		// WHY nothing wrote instead of silently looking dead.
 		const accepted = await controller.mutate([buildFieldOp(field, value[0])]);
 		if (accepted !== true) {
-			throw new Error("写入被拒绝：配置已在他处修改（revision 冲突）或校验未通过，请重试。");
+			throw new Error(t("settings.error.writeRejected"));
 		}
 	};
 
@@ -775,7 +911,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					const reader = response.body.getReader();
 					const decoder = new TextDecoder();
 					let buffer = "";
-					let outcome: { ok?: boolean; message?: string } | undefined;
+					let outcome: { ok?: boolean; message?: string | WireText } | undefined;
 					for (;;) {
 						const { done, value } = await reader.read();
 						if (done) break;
@@ -784,19 +920,23 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						buffer = lines.pop() ?? "";
 						for (const line of lines) {
 							if (line === "") continue;
-							const event = JSON.parse(line) as { type?: string; ok?: boolean; message?: string };
+							const event = JSON.parse(line) as { type?: string; ok?: boolean; message?: string | WireText };
 							if (event.type === "done") outcome = event;
 						}
 					}
-					if (outcome?.ok !== true) throw new Error(outcome?.message ?? "install did not complete");
+					if (outcome?.ok !== true) {
+						throw new Error(resolveHostText(t, outcome?.message) ?? t("settings.error.installIncomplete"));
+					}
 				} else {
-					const body = (await response.json()) as { ok?: boolean; message?: string };
-					if (body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`);
+					const body = (await response.json()) as { ok?: boolean; message?: string | WireText };
+					if (body.ok !== true) {
+						throw new Error(resolveHostText(t, body.message) ?? `HTTP ${response.status}`);
+					}
 				}
 				reload();
 			});
 		},
-		[write, reload],
+		[write, reload, t],
 	);
 
 	const writable = snapshot.writable && busy === undefined;
@@ -821,7 +961,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 	// Not ready means the Host has not served this namespace yet; offering
 	// controls that cannot write would be worse than saying nothing.
 	if (snapshot.status !== "ready") {
-		return <p className="dshl-mgr-hint">设置尚未就绪。</p>;
+		return <p className="dshl-mgr-hint">{t("settings.notReady")}</p>;
 	}
 
 	return (
@@ -841,7 +981,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					className={`dshl-mgr-tab${tab === "core" ? " dshl-mgr-tab--active" : ""}`}
 					onClick={() => setTab("core")}
 				>
-					行为
+					{t("settings.tab.core")}
 				</button>
 				<button
 					type="button"
@@ -850,7 +990,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					className={`dshl-mgr-tab${tab === "ast" ? " dshl-mgr-tab--active" : ""}`}
 					onClick={() => setTab("ast")}
 				>
-					AST 管理
+					{t("settings.tab.ast")}
 				</button>
 				<button
 					type="button"
@@ -859,7 +999,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					className={`dshl-mgr-tab${tab === "lsp" ? " dshl-mgr-tab--active" : ""}`}
 					onClick={() => setTab("lsp")}
 				>
-					语言服务器
+					{t("settings.tab.lsp")}
 				</button>
 <button
 					type="button"
@@ -868,7 +1008,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					className={`dshl-mgr-tab${tab === "store" ? " dshl-mgr-tab--active" : ""}`}
 					onClick={() => setTab("store")}
 				>
-					存储
+					{t("settings.tab.store")}
 				</button>
 			</div>
 			{/*
@@ -899,9 +1039,9 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					 * depends on — the character between anchor and content, whether an edit
 					 * must re-state the line it touches — was invisible.
 					 */}
-					<h4 className="dshl-mgr-section">行格式</h4>
+					<h4 className="dshl-mgr-section">{t("settings.section.rows")}</h4>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">分隔符</span>
+						<span className="dshl-mgr-label">{t("settings.label.separator")}</span>
 						<input
 							className="dshl-mgr-search"
 							style={{ maxWidth: "8ch" }}
@@ -918,13 +1058,13 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						/>
 						<span className="dshl-mgr-grow" />
 						<span className="dshl-mgr-hint">
-							锚点与内容之间。行号与锚点之间永远是 `:`，不可配置。
+							{t("settings.hint.separator")}
 						</span>
 					</div>
 
-					<h4 className="dshl-mgr-section">输出</h4>
+					<h4 className="dshl-mgr-section">{t("settings.section.output")}</h4>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">JSON 输出</span>
+						<span className="dshl-mgr-label">{t("settings.label.outputFormat")}</span>
 						<span className="dshl-mgr-grow" />
 						{/*
 						 * A switch rather than a free-text field: `output_format` is a two-value
@@ -938,7 +1078,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						)}
 					</div>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">显示行号</span>
+						<span className="dshl-mgr-label">{t("settings.label.lineNumbers")}</span>
 						<span className="dshl-mgr-grow" />
 						{/*
 						 * The USER'S switch (#244): model-facing rows are `<anchor>:<line>`
@@ -954,11 +1094,11 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						)}
 					</div>
 					<p className="dshl-mgr-hint">
-						{"开启后每行标记为 `<锚点>:<行号>`（锚点在前）；关闭时只给锚点，行号不发给模型。web 卡片不受影响。"}
+						{t("settings.hint.lineNumbers")}
 					</p>
 
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">上下文行数</span>
+						<span className="dshl-mgr-label">{t("settings.label.contextLines")}</span>
 						<input
 							className="dshl-mgr-search"
 							style={{ maxWidth: "8ch" }}
@@ -978,11 +1118,11 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 							}}
 						/>
 						<span className="dshl-mgr-grow" />
-						<span className="dshl-mgr-hint">diff 与错误回显里上下各留几行（0–20）。域外或非数字则恢复默认。</span>
+						<span className="dshl-mgr-hint">{t("settings.hint.contextLines")}</span>
 					</div>
 
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">write 后回显</span>
+						<span className="dshl-mgr-label">{t("settings.label.writePreview")}</span>
 						{WRITE_PREVIEW_MODES.map((mode) => (
 							<Button
 								key={mode}
@@ -995,17 +1135,17 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 									)
 								}
 							>
-								{WRITE_PREVIEW_LABEL[mode]}
+								{t(WRITE_PREVIEW_KEYS[mode])}
 							</Button>
 						))}
 					</div>
 					<p className="dshl-mgr-hint">
-						{"仅确认：只回一行「Wrote …」，不回显内容、不分配锚点——要接着改先 read。全文：回读整份文件与锚点（今天的行为）。"}
+						{t("settings.hint.writePreview")}
 					</p>
 
-					<h4 className="dshl-mgr-section">编辑</h4>
+					<h4 className="dshl-mgr-section">{t("settings.section.edit")}</h4>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">重述被改的行</span>
+						<span className="dshl-mgr-label">{t("settings.label.requireLineContent")}</span>
 						<span className="dshl-mgr-grow" />
 						{renderSwitch(core.requireLineContent, !writable, "require", (checked) =>
 							void write("require", () =>
@@ -1014,21 +1154,21 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						)}
 					</div>
 					<p className="dshl-mgr-hint">
-						开启后每个锚点必须连同行内容一起声明（`{'{'}`anchor, line{'}'}`），声明与磁盘不符就拒绝——防的是“拿着旧读的数去改新文件”。
+						{t("settings.hint.requireLineContent", { tuple: "{anchor, line}" })}
 					</p>
 				</>
 			) : tab === "ast" ? (
 				<>
 			<div className="dshl-mgr-master">
-				<span className="dshl-mgr-label">总开关</span>
-				<span className="dshl-mgr-hint">关闭时 ast_grep / ast_edit 拒绝运行（read / edit 不受影响）</span>
+				<span className="dshl-mgr-label">{t("settings.label.astMaster")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.astMaster")}</span>
 				<span className="dshl-mgr-grow" />
 				{overridden ? (
 					<Button size="sm" disabled={!writable} onClick={() => void write("reset", () => writeField("ast"))}>
-						恢复默认
+						{t("settings.label.restoreDefaults")}
 					</Button>
 				) : (
-					<span className="dshl-mgr-hint">继承预设</span>
+					<span className="dshl-mgr-hint">{t("settings.hint.astInherit")}</span>
 				)}
 				{/* 
 				 * `checked` is the CURRENT state, not its negation. It was inverted here,
@@ -1043,31 +1183,32 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 
 			<input
 				className="dshl-mgr-search"
-				placeholder={`搜索语言或扩展名（${catalog.rows.length} 个条目）`}
+				placeholder={t("settings.placeholder.catalogSearch", { count: catalog.rows.length })}
 				value={query}
 				onChange={(event) => setQuery(event.target.value)}
 			/>
 
 			{inFlight === undefined ? null : (
 				<button type="button" className="dshl-mgr-cancel" onClick={() => inFlight.abort()}>
-					取消安装
+					{t("settings.action.cancelInstall")}
 				</button>
 			)}
 
 			{catalog.failure === undefined ? null : (
 				<p className="dshl-mgr-error" role="status">
-					无法读取语言目录：{catalog.failure}
+					{t("settings.error.catalog", { message: catalogFailureText(t, catalog.failure) })}
 				</p>
 			)}
 
 			<div className="dshl-mgr-columns">
 				<section>
-					<h4 className="dshl-mgr-section">已可用 · {usable.length}</h4>
+					<h4 className="dshl-mgr-section">{t("settings.section.usable", { count: usable.length })}</h4>
 					<ul className="dshl-mgr-list">
 						{usable.map((row) => (
 							<LanguageRowItem
 								key={row.id}
 								row={row}
+								t={t}
 								astEnabled={ast.enabled}
 								disabled={ast.languages[row.id]?.enabled === false}
 								// Presence, not value: only an explicit entry is an override.
@@ -1088,12 +1229,13 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					</ul>
 				</section>
 				<section>
-					<h4 className="dshl-mgr-section">可添加 · {available.length}</h4>
+					<h4 className="dshl-mgr-section">{t("settings.section.addable", { count: available.length })}</h4>
 					<ul className="dshl-mgr-list">
 						{available.map((row) => (
 							<LanguageRowItem
 								key={row.id}
 								row={row}
+								t={t}
 								astEnabled={ast.enabled}
 								// No switch here: this row's grammar is not on disk, so it cannot be
 								// used yet whatever the enable list says. 添加 is the only action that
@@ -1111,7 +1253,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 								}}
 							/>
 						))}
-						{available.length === 0 ? <li className="dshl-mgr-hint">没有匹配的条目</li> : null}
+						{available.length === 0 ? <li className="dshl-mgr-hint">{t("settings.hint.noMatches")}</li> : null}
 					</ul>
 				</section>
 			</div>
@@ -1122,8 +1264,10 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 					// to say WHERE it comes from, because "update" with no object reads as
 					// a button that is missing rather than a decision already made.
 					<p className="dshl-mgr-hint">
-						{updates.length} 门文法有新版本（
-						{updates.map((row) => `${row.id} ${row.installed}→${row.latest}`).join("、")}）——跟随插件更新获取。
+						{t("settings.hint.grammarUpdates", {
+							count: updates.length,
+							list: updates.map((row) => `${row.id} ${row.installed}→${row.latest}`).join(t("settings.list.separator")),
+						})}
 					</p>
 				)}
 				</>
@@ -1139,14 +1283,14 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			 * precision. References fall back to heuristic scanning without one, and
 			 * the reason is the part that was previously unreachable from the screen.
 			 */}
-			<h4 className="dshl-mgr-section">语言服务器</h4>
+			<h4 className="dshl-mgr-section">{t("settings.tab.lsp")}</h4>
 			{lsp.failure !== undefined ? (
 				<p className="dshl-mgr-error" role="status">
-					无法读取语言服务器状态：{lsp.failure}
+					{t("settings.error.lsp", { message: lspFailureText(t, lsp.failure) })}
 				</p>
 			) : !lsp.available ? (
 				// A state, not a failure: the LSP packages are not installed by default.
-				<p className="dshl-mgr-hint">{lsp.message ?? "语言服务器客户端未启用，所以语义操作没有可用的服务器。"}</p>
+				<p className="dshl-mgr-hint">{resolveHostText(t, lsp.message) ?? t("settings.hint.lspUnavailable")}</p>
 			) : (
 				<ul className="dshl-mgr-list">
 					{lsp.rows.map((entry) => (
@@ -1155,8 +1299,8 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 							<span className="dshl-mgr-display-name">{entry.languageId}</span>
 							<span className="dshl-mgr-ext">
 								{entry.server === undefined
-									? "未找到"
-									: `${entry.server.displayName} · ${ORIGIN_TEXT[entry.server.origin] ?? entry.server.origin}`}
+									? t("settings.status.notFound")
+									: `${entry.server.displayName} · ${originText(t, entry.server.origin)}`}
 							</span>
 							{/*
 							 * TWO SLOTS, not one. The status is where a message goes; the
@@ -1176,9 +1320,11 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 							 * rendered AFTER the button — takes a line of its own below.
 							 */}
 							{installing === entry.languageId ? (
-								<span className="dshl-mgr-hint">安装中，请稍候</span>
+								<span className="dshl-mgr-hint">{t("settings.status.installing")}</span>
 							) : failedInstall?.languageId === entry.languageId ? null : entry.ready ? null : (
-								<span className="dshl-mgr-hint">{entry.message ?? entry.reason}</span>
+								<span className="dshl-mgr-hint">
+									{resolveHostText(t, entry.message) ?? resolveHostText(t, entry.reason)}
+								</span>
 							)}
 							<span className="dshl-mgr-grow" />
 							{!entry.ready && entry.server === undefined && entry.canInstall === true ? (
@@ -1186,13 +1332,17 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 								// failed once — the action is available either way, and saying so
 								// is the difference between "it broke" and "it is broken".
 								<Button size="sm" disabled={installing !== undefined} onClick={() => void installServer(entry.languageId)}>
-									{failedInstall?.languageId === entry.languageId ? "重试" : "安装"}
+									{failedInstall?.languageId === entry.languageId ? t("settings.action.retry") : t("settings.action.install")}
 								</Button>
 							) : null}
 							{/* LAST in DOM order, so its `flex:1 0 100%` wraps BELOW the button
 							 * instead of shoving the button onto a second line. */}
 							{failedInstall?.languageId === entry.languageId ? (
-								<span className="dshl-mgr-error">失败：{failedInstall.message}</span>
+								<span className="dshl-mgr-error">
+									{t("settings.error.installFailed", {
+										message: resolveHostText(t, failedInstall.message) ?? t("settings.error.installIncomplete"),
+									})}
+								</span>
 							) : null}
 						</li>
 					))}
@@ -1203,8 +1353,8 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			 * switching it back on writes that value explicitly so the file says
 			 * what the card shows. */}
 			<div className="dshl-mgr-master">
-				<span className="dshl-mgr-label">自动诊断回送</span>
-				<span className="dshl-mgr-hint">edit / write / undo 落盘后自动把语言服务器诊断回送模型（默认开）</span>
+				<span className="dshl-mgr-label">{t("settings.label.lspAutoDiag")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.lspAutoDiag")}</span>
 				<span className="dshl-mgr-grow" />
 				{renderSwitch(
 					autoDiag,
@@ -1221,7 +1371,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 				 * after this many idle milliseconds and warms it again on the next
 				 * use. 0 means "never reclaim". */}
 				<div className="dshl-mgr-master">
-					<span className="dshl-mgr-label">空闲回收</span>
+					<span className="dshl-mgr-label">{t("settings.label.lspIdle")}</span>
 					<input
 						className="dshl-mgr-search"
 						style={{ maxWidth: "10ch" }}
@@ -1229,14 +1379,14 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						min={0}
 						max={3600000}
 						step={1}
-						placeholder="300000（默认）"
+						placeholder={t("settings.placeholder.default", { value: "300000" })}
 						value={lspIdleDraft}
 						disabled={!writable}
 						onChange={(event) => setLspIdleDraft(event.target.value)}
 						onBlur={() => {
 							const result = validateLspIdleDraft(lspIdleDraft);
 							if (result.kind === "error") {
-								setLspIdleError(result.message);
+								setLspIdleError(result.error);
 								return;
 							}
 							setLspIdleError(undefined);
@@ -1246,17 +1396,19 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 									: writeField(LSP_IDLE_SPEC.path),
 							);
 						}}
-					/>{lspIdleError === undefined ? null : <span className="dshl-mgr-error">{lspIdleError}</span>}
+					/>{lspIdleError === undefined ? null : (
+						<span className="dshl-mgr-error">{draftErrorText(t, lspIdleError)}</span>
+					)}
 					<span className="dshl-mgr-hint">
-						毫秒，0–3600000；默认 300000。空闲超过这个时间语言服务器会被回收，下次用到再拉起；填 0 表示永不回收。
+						{t("settings.hint.lspIdle")}
 					</span>
 				</div>
 			{/* #275: the format group, beside the servers that power it. Both are
 				OPT-IN: absent means OFF — the opposite of auto-diagnostics above. */}
-			<h4 className="dshl-mgr-section">格式化</h4>
+			<h4 className="dshl-mgr-section">{t("settings.section.format")}</h4>
 			<div className="dshl-mgr-master">
-				<span className="dshl-mgr-label">自动格式化（write / edit / ast_edit 后）</span>
-				<span className="dshl-mgr-hint">关 = 不格式化；全文 = 整文件；范围 = 只格式化被改的行（默认关）</span>
+				<span className="dshl-mgr-label">{t("settings.label.formatAuto")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.formatAuto")}</span>
 				<span className="dshl-mgr-grow" />
 				{/* #315: three states, not a switch — the mode IS the user's decision. */}
 				{FORMAT_MODES.map((mode) => (
@@ -1271,13 +1423,13 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 							)
 						}
 					>
-						{FORMAT_MODE_LABEL[mode]}
+						{t(FORMAT_MODE_KEYS[mode])}
 					</Button>
 				))}
 			</div>
 			<div className="dshl-mgr-master">
-				<span className="dshl-mgr-label">范围不可用时回退全文</span>
-				<span className="dshl-mgr-hint">开 = 局部格式化不可用时用整文件代替；关 = 自动路径静默跳过、format 工具显式报错（默认关）</span>
+				<span className="dshl-mgr-label">{t("settings.label.formatFallback")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.formatFallback")}</span>
 				<span className="dshl-mgr-grow" />
 				{renderSwitch(
 					formatFlags.fallback,
@@ -1290,8 +1442,8 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 				)}
 			</div>
 			<div className="dshl-mgr-master">
-				<span className="dshl-mgr-label">读取 .editorconfig</span>
-				<span className="dshl-mgr-hint">缩进风格与宽度优先取 .editorconfig，缺省用文件内启发式（默认开）</span>
+				<span className="dshl-mgr-label">{t("settings.label.formatEditorconfig")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.formatEditorconfig")}</span>
 				<span className="dshl-mgr-grow" />
 				{renderSwitch(
 					formatFlags.editorconfig,
@@ -1310,12 +1462,12 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			 * — instead of being silently refused at the point of entry.
 			 */}
 			<div className="dshl-mgr-master">
-				<span className="dshl-mgr-label">指定服务器</span>
-				<span className="dshl-mgr-hint">按语言指定命令；留空则用探测到的</span>
+				<span className="dshl-mgr-label">{t("settings.label.lspServers")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.lspServers")}</span>
 				<span className="dshl-mgr-grow" />
 			</div>
 			{Object.keys(namedServers).length === 0 ? (
-				<p className="dshl-mgr-hint">没有指定任何服务器，全部使用探测结果。</p>
+				<p className="dshl-mgr-hint">{t("settings.hint.lspServersNone")}</p>
 			) : (
 				<ul className="dshl-mgr-list">
 					{Object.entries(namedServers).map(([id, command]) => (
@@ -1332,7 +1484,7 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 									void write(`lsp:${id}`, () => writeField(["lsp", "servers"], servers));
 								}}
 							>
-								移除
+								{t("settings.action.remove")}
 							</Button>
 						</li>
 					))}
@@ -1341,13 +1493,13 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 			<div className="dshl-mgr-master">
 				<input
 					className="dshl-mgr-search"
-					placeholder="语言，如 typescript"
+					placeholder={t("settings.placeholder.serverLang")}
 					value={serverLang}
 					onChange={(event) => setServerLang(event.target.value)}
 				/>
 				<input
 					className="dshl-mgr-search"
-					placeholder="命令，如 /usr/local/bin/tsserver"
+					placeholder={t("settings.placeholder.serverCommand")}
 					value={serverCommand}
 					onChange={(event) => setServerCommand(event.target.value)}
 				/>
@@ -1362,20 +1514,20 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						void write(`lsp:${serverLang.trim()}`, () => writeField(["lsp", "servers"], servers));
 					}}
 				>
-					指定
+					{t("settings.action.assign")}
 				</Button>
 			</div>
 				</>
 			) : null}
 {tab === "store" ? (
 				<>
-					<h4 className="dshl-mgr-section">锚点存储预算</h4>
+					<h4 className="dshl-mgr-section">{t("settings.section.store")}</h4>
 					<p className="dshl-mgr-hint">
-						三个上限分别挡不同的失控形状：字节挡大文件，路径数挡整树扫描，行数挡"几个大文件被多次读取"。
-						未设置时使用代码内的常量默认；改小会在下一次扫描时真的淘汰（模型手里的锚点可能失效）。
+						{t("settings.hint.storeIntro")}
+						{t("settings.hint.storeDefaults")}
 					</p>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">整库字节预算</span>
+						<span className="dshl-mgr-label">{t("settings.label.storeBytes")}</span>
 						<input
 							className="dshl-mgr-search"
 							style={{ maxWidth: "10ch" }}
@@ -1383,14 +1535,14 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 							min={8}
 							max={2048}
 							step={1}
-							placeholder="64（默认）"
+							placeholder={t("settings.placeholder.default", { value: "64" })}
 							value={bytesDraft}
 							disabled={!writable}
 							onChange={(event) => setBytesDraft(event.target.value)}
 onBlur={() => {
 								const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[0], bytesDraft);
 								if (result.kind === "error") {
-									setBytesError(result.message);
+									setBytesError(result.error);
 									return;
 								}
 								setBytesError(undefined);
@@ -1400,11 +1552,13 @@ onBlur={() => {
 										: writeField(STORE_BUDGET_SPECS[0].path),
 								);
 							}}
-						/>{bytesError === undefined ? null : <span className="dshl-mgr-error">{bytesError}</span>}
-						<span className="dshl-mgr-hint">MiB，8–2048；默认 64。</span>
+						/>{bytesError === undefined ? null : (
+							<span className="dshl-mgr-error">{draftErrorText(t, bytesError)}</span>
+						)}
+						<span className="dshl-mgr-hint">{t("settings.hint.storeBytes")}</span>
 					</div>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">路径数上限</span>
+						<span className="dshl-mgr-label">{t("settings.label.storePaths")}</span>
 						<input
 							className="dshl-mgr-search"
 							style={{ maxWidth: "10ch" }}
@@ -1412,14 +1566,14 @@ onBlur={() => {
 							min={100}
 							max={100000}
 							step={1}
-							placeholder="5000（默认）"
+							placeholder={t("settings.placeholder.default", { value: "5000" })}
 							value={pathsDraft}
 							disabled={!writable}
 							onChange={(event) => setPathsDraft(event.target.value)}
 onBlur={() => {
 								const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[1], pathsDraft);
 								if (result.kind === "error") {
-									setPathsError(result.message);
+									setPathsError(result.error);
 									return;
 								}
 								setPathsError(undefined);
@@ -1429,11 +1583,13 @@ onBlur={() => {
 										: writeField(STORE_BUDGET_SPECS[1].path),
 								);
 							}}
-						/>{pathsError === undefined ? null : <span className="dshl-mgr-error">{pathsError}</span>}
-						<span className="dshl-mgr-hint">个，100–100000；默认 5000。</span>
+						/>{pathsError === undefined ? null : (
+							<span className="dshl-mgr-error">{draftErrorText(t, pathsError)}</span>
+						)}
+						<span className="dshl-mgr-hint">{t("settings.hint.storePaths")}</span>
 					</div>
 					<div className="dshl-mgr-master">
-						<span className="dshl-mgr-label">anchor_lines 行数上限</span>
+						<span className="dshl-mgr-label">{t("settings.label.storeLines")}</span>
 						<input
 							className="dshl-mgr-search"
 							style={{ maxWidth: "12ch" }}
@@ -1441,14 +1597,14 @@ onBlur={() => {
 							min={10000}
 							max={10000000}
 							step={1}
-							placeholder="300000（默认）"
+							placeholder={t("settings.placeholder.default", { value: "300000" })}
 							value={linesDraft}
 							disabled={!writable}
 							onChange={(event) => setLinesDraft(event.target.value)}
 onBlur={() => {
 								const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[2], linesDraft);
 								if (result.kind === "error") {
-									setLinesError(result.message);
+									setLinesError(result.error);
 									return;
 								}
 								setLinesError(undefined);
@@ -1458,12 +1614,14 @@ onBlur={() => {
 										: writeField(STORE_BUDGET_SPECS[2].path),
 								);
 							}}
-						/>{linesError === undefined ? null : <span className="dshl-mgr-error">{linesError}</span>}
-						<span className="dshl-mgr-hint">行，10000–10000000；默认 300000。</span>
+						/>{linesError === undefined ? null : (
+							<span className="dshl-mgr-error">{draftErrorText(t, linesError)}</span>
+						)}
+						<span className="dshl-mgr-hint">{t("settings.hint.storeLines")}</span>
 					</div>
 					{storeOverridden ? (
 						<div className="dshl-mgr-master">
-							<span className="dshl-mgr-label">恢复默认</span>
+							<span className="dshl-mgr-label">{t("settings.label.restoreDefaults")}</span>
 							<span className="dshl-mgr-grow" />
 							<Button
 								size="sm"
@@ -1477,12 +1635,12 @@ onBlur={() => {
 											buildFieldOp(["store", "max_lines"]),
 										]);
 										if (accepted !== true) {
-											throw new Error("写入被拒绝：配置已在他处修改（revision 冲突）或校验未通过，请重试。");
+											throw new Error(t("settings.error.writeRejected"));
 										}
 									})
 								}
 							>
-								恢复默认
+								{t("settings.label.restoreDefaults")}
 							</Button>
 						</div>
 					) : null}

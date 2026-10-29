@@ -27,12 +27,12 @@ import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readCardLabels } from "./labels.js";
 import { GrepCard } from "./grep-card.js";
-import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, lspStatusCardModel, metaFormatSections, readCardModel, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, lspStatusCardModel, metaFormatSections, readCardModel, rowTitleFromMeta, toolRowModel, writeCardModel } from "./models.js";
 import { ReadCard } from "./read-card.js";
 import { LspDiagBlock, LspStatusBlock } from "./lsp-block.js";
 import { ErrorCard } from "./error-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
-import { grepCardLabels, lspBlockLabels } from "./labels.js";
+import { errorCardLabels, grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 import { diagCapsulesFromMeta } from "./models.js";
 import type { DiagCapsuleMeta } from "./types.js";
@@ -63,6 +63,11 @@ interface ToolRowProps {
 	toolName: string;
 	icon: ReactNode;
 	title: string;
+	/**
+	 * The folded row's TRAILING SUFFIX — the facts the row's own title cannot
+	 * carry (#374: the window a read served, the file's length).
+	 */
+	titleSuffix: string | null;
 	summary: string;
 	bodyRaw: string | null;
 	output: string | null;
@@ -95,6 +100,44 @@ function formatToolBody(argsRaw: string): string | null {
 }
 
 
+/**
+ * The row's title (#375): the HOST's, when the meta carries one.
+ *
+ * The host cannot read the reader's language (#369), so it sends a stable key
+ * plus the params that fill it, and the client resolves the key through `t()`.
+ * A call whose meta carries none — a running call, an old log — keeps the row's
+ * own label.
+ *
+ * @param t - the vocabulary seat.
+ * @param block - the running or settled call.
+ * @param fallback - the row's own label, used when the host sent no title.
+ * @returns the title the row announces itself with.
+ */
+function rowTitleText(
+	t: ToolViewProps["t"],
+	block: ToolCallBlock,
+	fallback: string,
+): string {
+	const wire = rowTitleFromMeta("kind" in block ? block.meta : undefined);
+	return wire === undefined ? fallback : t(wire.key, wire.params);
+}
+/**
+ * The read row's TRAILING SUFFIX (#374): what the read served — the window it
+ * cut, the file's length, or the resume hint a budget-cut window carries.
+ *
+ * The folded row's TITLE keeps its own word (读取/Read): the title names the row,
+ * and the window is a fact about the call. The fact rides at the row's end, in the
+ * weak-colour slot the diff stat uses — the SAME slot, so the two rows read alike.
+ *
+ * @param t - the vocabulary seat.
+ * @param block - the running or settled call.
+ * @returns the suffix text, or `null` when the call carries no window facts.
+ */
+function readWindowSuffix(t: ToolViewProps["t"], block: ToolCallBlock): string | null {
+	const wire = rowTitleFromMeta("kind" in block ? block.meta : undefined);
+	if (wire === undefined) return null;
+	return t(wire.key, wire.params);
+}
 /**
  * One inline diagnostics capsule (#131): a small severity-tinted pill under
  * the card body — red when any error was reported, yellow when warnings
@@ -160,6 +203,7 @@ function ToolRow({
 	icon,
 	title,
 	summary,
+	titleSuffix,
 	bodyRaw,
 	output,
 	errorSummary,
@@ -186,6 +230,7 @@ function ToolRow({
 	const errorBody = error ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
+	const errorLabels = useMemo(() => errorCardLabels(t), [t]);
 	const diffBody = diff ?? null;
 	// #247: a PARTIALLY failed multi-file call still renders the diff card and
 	// the row still counts as a success — these three facts are what the row
@@ -287,9 +332,11 @@ function ToolRow({
 	// with no producer is a switch the next change can flip back on (issue #127).
 	// #247 adds the failure count when a file of the call failed: the row keeps
 	// its success state but says `+1 -1 · 1 of 3 files failed`.
+	// #374 puts the READ's window in the SAME slot: the facts the row's title cannot
+	// carry ride at the row's end, in the weak colour.
 	const suffix =
 		failureLine === null
-			? [diffStat, partialStat, lspStat ?? diagStat].filter((part) => part !== null).join(" · ") || null
+			? [titleSuffix, diffStat, partialStat, lspStat ?? diagStat].filter((part) => part !== null).join(" · ") || null
 			: null;
 	const fileLink = filePath !== undefined && onOpenFile !== undefined && failureLine === null;
 	const toggleExpand = () => {
@@ -353,6 +400,7 @@ function ToolRow({
 							? jsx_(ErrorCard, {
 									model: errorBody,
 									className: css.errorBody,
+									labels: errorLabels,
 								})
 							: diffBody !== null
 							? diffBody.rowGroups !== undefined
@@ -365,6 +413,7 @@ function ToolRow({
 										formats: diffBody.formats,
 										tablistLabel: title,
 										labels: diffLabels,
+										errorLabels: errorLabels,
 										maxLines: 8,
 										className: css.diffBody,
 								  })
@@ -378,6 +427,7 @@ function ToolRow({
 										tablistLabel: title,
 										formats: diffBody.formats,
 										labels: diffLabels,
+										errorLabels: errorLabels,
 										maxLines: 8,
 										className: css.diffBody,
 								  })
@@ -473,10 +523,11 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		variant: model.variant,
 		toolName,
 		icon: icon ?? jsx_(IconBrowseOutlineMedium, { size: 14 }),
-		// `titleOverride` is how a tool that WEARS this row says its own name. Without
-		// it the title falls back to the variant's label, which is right for `read`
-		// and wrong for everything borrowing it.
+		// `titleOverride` is how a tool that WEARS this row says its own name.
+		// The read row's TITLE is its own word — the window is a fact about the
+		// call, and the fact rides at the row's end (#374).
 		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
+		titleSuffix: titleOverride === undefined ? readWindowSuffix(t, block) : null,
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
@@ -513,7 +564,8 @@ export function HashlineEditRow({ toolName, block, cwd, home, openFile, inspect,
 		variant: model.variant,
 		toolName,
 		icon: jsx_(IconEditOutlineMedium, { size: 14 }),
-		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
+		title: titleOverride === undefined ? rowTitleText(t, block, t(model.titleKey)) : titleOverride,
+		titleSuffix: null,
 		summary: model.summary,
 		// ALWAYS the diff stat, never the anchor hints.
 		//
@@ -557,7 +609,8 @@ export function HashlineWriteRow({ toolName, block, cwd, home, openFile, inspect
 		variant: model.variant,
 		toolName,
 		icon: jsx_(IconEditOutlineMedium, { size: 14 }),
-		title: t(model.titleKey),
+		title: rowTitleText(t, block, t(model.titleKey)),
+		titleSuffix: null,
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
@@ -596,7 +649,8 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		// `titleOverride` lets `ast_grep` wear this row under its own name: the card
 		// data is grep-shaped (files/rows/spans), so the drawing is identical and
 		// only the label differs.
-		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
+		title: titleOverride === undefined ? rowTitleText(t, block, t(model.titleKey)) : titleOverride,
+		titleSuffix: null,
 		summary: model.summary,
 		// The shipped search row draws no raw-input body: a search has a card or
 		// nothing, and an error body already arrives through `output`.
@@ -638,17 +692,17 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
  * The label is uppercase and the icon is the search icon, matching `grep`.
  */
 export function HashlineAstGrepRow(props: ToolViewProps): ReactNode {
-	return HashlineGrepRow({ ...props, titleOverride: "AST_GREP" });
+	return HashlineGrepRow({ ...props, titleOverride: props.t("row.title.ast_grep") });
 }
 
 /** `ast_edit` — structural rewrite. Draws the edit diff card, announces itself. */
 export function HashlineAstEditRow(props: ToolViewProps): ReactNode {
-	return HashlineEditRow({ ...props, titleOverride: "AST_EDIT" });
+	return HashlineEditRow({ ...props, titleOverride: props.t("row.title.ast_edit") });
 }
 
 /** `undo_last_edit` — a revert IS a diff, so it wears the edit card. */
 export function HashlineUndoRow(props: ToolViewProps): ReactNode {
-	return HashlineEditRow({ ...props, titleOverride: "UNDO" });
+	return HashlineEditRow({ ...props, titleOverride: props.t("row.title.undo") });
 }
 
 /**
@@ -673,6 +727,7 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 		toolName,
 		icon: jsx_(IconBrowseOutlineMedium, { size: 14 }),
 		title: "LSP",
+		titleSuffix: null,
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
@@ -715,7 +770,7 @@ export function HashlineFormatRow({ toolName, block, ...rest }: ToolViewProps): 
 	return HashlineEditRow({
 		toolName,
 		...rest,
-		titleOverride: "FORMAT",
+		titleOverride: rest.t("row.title.format"),
 		block: {
 			...block,
 			meta: {

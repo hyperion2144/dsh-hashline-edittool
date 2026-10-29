@@ -39,6 +39,7 @@ import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffDictFrom, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
 import { detectEnding, genDiff, restoreEndings, stripBOM, type DiffBlock } from "../render/edit-diff.js";
 import { anchorsFor } from "../domain/session/anchor-state.js";
+import { rowTitle } from "../render/wire-text.js";
 import { loadServed } from "../domain/session/served.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf, splitLines } from "../infra/utils.js";
@@ -151,7 +152,9 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 						? { diffRows: v.diffRows }
 						: {}),
 					...(v.diagnostics !== undefined ? { diagnostics: v.diagnostics } : {}),
-				...(v.formats !== undefined ? { formats: v.formats } : {}),
+					...(v.formats !== undefined ? { formats: v.formats } : {}),
+					// issue 375: the folded row's title travels as a key + params.
+					rowTitle: rowTitle("write", { path: filePath }),
 				} as never;
 			},
 		},
