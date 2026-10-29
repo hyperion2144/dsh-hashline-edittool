@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-10-29
+
 ### Changed
 
 - 发布流程改走 npm 的 OIDC trusted publishing：推 tag 即由 CI 自动发包，不再需要本机浏览器 2FA，仓库里不存 npm token（#378）。
