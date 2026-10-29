@@ -24,6 +24,10 @@ import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
 import type { TabStripLabels } from "./tab-strip.js";
+import { DEFAULT_WRAP_STATE, nextWrapState, wrapStateProps } from "./wrap.js";
+import type { WrapState } from "./wrap.js";
+import { WrapToggleButton } from "./wrap-button.js";
+import type { WrapLabels } from "./labels.js";
 import { markerColumnCh } from "./read-meta.js";
 import type { LspCardModel, LspRowMeta, LspStatusModel } from "./types.js";
 
@@ -98,7 +102,7 @@ const css = {
 } as const;
 
 /** Localized chrome for the diagnostics card. */
-export interface LspBlockLabels extends TabStripLabels {
+export interface LspBlockLabels extends TabStripLabels, WrapLabels {
 	/** Accessible name of the copy button. */
 	copy: string;
 	/** Announced while the copy flash is showing. */
@@ -127,6 +131,8 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 	ensureStyles();
 	const panelId = useId();
 	const [expanded, setExpanded] = useState(false);
+	// The wrap switch (#373): this card's own state, never persisted.
+	const [wrap, setWrap] = useState<WrapState>(DEFAULT_WRAP_STATE);
 	const [copied, setCopied] = useState(false);
 
 	const rows = model.rows;
@@ -153,6 +159,7 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 			window.setTimeout(() => setCopied(false), 1000);
 		});
 	}, [copied, rows]);
+	const onToggleWrap = useCallback(() => setWrap((value) => nextWrapState(value)), []);
 
 	return jsx_("div", {
 		className: css.block,
@@ -167,6 +174,11 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 				onSelect: () => undefined,
 				labels: labels,
 				panelId,
+				trailing: jsx_(WrapToggleButton, {
+					state: wrap,
+					onToggle: onToggleWrap,
+					label: labels.wrapToggle,
+				}),
 				copy: jsx_("button", {
 					type: "button",
 					className: TAB_STRIP_COPY_CLASS,
@@ -178,6 +190,7 @@ export function LspDiagBlock({ model, labels, maxLines }: LspDiagBlockProps): Re
 			jsx_("div", {
 				id: panelId,
 				className: css.body,
+				...wrapStateProps(wrap),
 				style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
 				children: [
 					// PER-ROW (#131 field feedback): one flex row per drawn line — anchor

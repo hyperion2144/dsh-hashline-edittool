@@ -22,6 +22,9 @@ import type { ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { writeClipboard } from "@deepseek-ai/dsh-client-ui-primitives";
 import { TAB_STRIP_COPY_CLASS, TabStrip } from "./tab-strip.js";
+import { DEFAULT_WRAP_STATE, nextWrapState, wrapStateProps } from "./wrap.js";
+import type { WrapState } from "./wrap.js";
+import { WrapToggleButton } from "./wrap-button.js";
 import type { GrepCardModel, GrepRowMeta } from "./types.js";
 import { grepGutterLabel, highlightSegments } from "./models.js";
 import { markerColumnCh } from "./read-meta.js";
@@ -111,6 +114,8 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 
 	const [active, setActive] = useState(0);
 	const [expanded, setExpanded] = useState(false);
+	// The wrap switch (#373): this card's own state, never persisted.
+	const [wrap, setWrap] = useState<WrapState>(DEFAULT_WRAP_STATE);
 	const [copied, setCopied] = useState(false);
 	const baseId = useId();
 
@@ -153,6 +158,7 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 	}, [copied, rows]);
 
 	const onToggle = useCallback(() => setExpanded((value) => !value), []);
+	const onToggleWrap = useCallback(() => setWrap((value) => nextWrapState(value)), []);
 
 	if (files.length === 0) {
 		return jsx_("div", {
@@ -193,6 +199,11 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 				labels: { tablist: labels.tablist, more: labels.more },
 				panelId,
 				idPrefix: baseId,
+				trailing: jsx_(WrapToggleButton, {
+					state: wrap,
+					onToggle: onToggleWrap,
+					label: labels.wrapToggle,
+				}),
 				copy: jsx_("button", {
 					type: "button",
 					className: TAB_STRIP_COPY_CLASS,
@@ -202,6 +213,7 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 			}),
 			jsx_("div", {
 				className: css.body,
+				...wrapStateProps(wrap),
 				id: panelId,
 				role: "tabpanel",
 				"aria-labelledby": `${baseId}-tab-${activeIndex}`,
@@ -242,8 +254,7 @@ export function GrepCard({ model, labels, maxLines = 16, className }: GrepCardPr
 				children: `└ ${
 					model.outline === true
 						? // An outline is not matches; counting them would read "0 of N".
-							// Hardcoded like the row's stat above — no locale key is added.
-							`outline · ${model.total} lines`
+							labels.outline(model.total)
 						: labels.summary(counts.shown, counts.total, counts.files, model.truncated)
 				}`,
 			}),

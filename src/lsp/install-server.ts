@@ -27,6 +27,15 @@ import { KNOWN_SERVERS, type KnownServer } from "./discovery.js";
 import { lspServersDir } from "../infra/paths.js";
 import type { SubprocessLike } from "./transport.js";
 import { platformSpawnArgv } from "./spawn-argv.js";
+import {
+	lspInstallDoneBuiltinDir,
+	lspInstallDoneOwnToolchain,
+	lspInstallExitCode,
+	lspInstallNoCommand,
+	lspInstallNoCommandForPlatform,
+	lspInstallNpmOkButMissing,
+	type LocalizedText,
+} from "../render/wire-text.js";
 
 /** How a spawn is performed; structurally the platform's `subprocess.spawn`. */
 export type SpawnLike = (spec: {
@@ -40,7 +49,14 @@ export type SpawnLike = (spec: {
 export interface LspInstallOutcome {
 	readonly ok: boolean;
 	readonly command: string;
-	readonly message: string;
+	/**
+	 * What the install did, in the reader's own words.
+	 *
+	 * A KEY + params when the host COMPOSED the sentence (ADR-0024); a plain
+	 * string when it reports a TECHNICAL FACT (an error's own message), which
+	 * reads the same in every language.
+	 */
+	readonly message: string | LocalizedText;
 	/** Absolute path of the executable, when the install produced one. */
 	readonly executable?: string;
 }
@@ -110,7 +126,7 @@ export async function installLspServer(
 		return {
 			ok: false,
 			command: entry.command,
-			message: `${entry.displayName} 没有可直接运行的安装命令（它来自系统包管理器或发布包）。装上后这个列表会自动找到它；也可以在下方的「指定服务器」里直接写命令。`,
+			message: lspInstallNoCommand(entry.displayName),
 		};
 	}
 	const prefix = lspServersDir();
@@ -125,7 +141,7 @@ export async function installLspServer(
 		return {
 			ok: false,
 			command: entry.command,
-			message: `${entry.displayName} 在这个系统（${process.platform}）上没有内置安装命令。装上后这个列表会自动找到它；也可以在下方的「指定服务器」里直接写命令。`
+			message: lspInstallNoCommandForPlatform(entry.displayName, process.platform),
 		};
 	}
 	// THREE SHAPES, one pipeline. `npm` resolves a dependency tree into the plugin's
@@ -179,7 +195,7 @@ export async function installLspServer(
 		return {
 			ok: false,
 			command: entry.command,
-			message: `安装命令以 ${exitCode === null ? "未知状态" : exitCode} 退出：${tail.join("").trim().slice(-400)}`,
+			message: lspInstallExitCode(exitCode ?? "unknown", tail.join("").trim().slice(-400)),
 		};
 	}
 	// THE EXIT CODE IS NOT THE PROOF — and the proof is not the same check for both
@@ -223,7 +239,7 @@ export async function installLspServer(
 			return {
 				ok: false,
 				command: entry.command,
-				message: `npm 报成功，但 ${entry.command} 不在插件目录里。可能这个包的可执行文件叫别的名字。`
+				message: lspInstallNpmOkButMissing(entry.command),
 			};
 		}
 	}
@@ -232,7 +248,7 @@ export async function installLspServer(
 		command: entry.command,
 		message:
 			plan.via === "npm"
-				? `${entry.displayName} 已装进插件自己的目录，从现在起优先于 PATH 被找到。`
-				: `${entry.displayName} 的安装命令已成功完成。它装进了它自己工具链的目录——下面列表重读后就能看到它。`
+				? lspInstallDoneBuiltinDir(entry.displayName)
+				: lspInstallDoneOwnToolchain(entry.displayName),
 	};
 }

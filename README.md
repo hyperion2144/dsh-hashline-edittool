@@ -75,6 +75,13 @@ from the tool's structured `presentationMeta`, with anchor gutters, diff rows, a
 highlight spans drawn natively. No generic tool-output cards, no string parsing, no
 upstream web changes.
 
+**Card chrome follows the reader.** The five card kinds (read / grep / diff / LSP /
+error) wrap by default, and a button in the card title switches a card back to
+horizontal scrolling (#373). The card text follows the DSH interface language (zh/en;
+any other language falls back to English): the wording lives in the plugin's own
+`hashline.card` vocabulary, and the host sends stable keys over the wire instead
+of prose (#372, #375).
+
 **Dynamic-length anchors.** Anchors are not fixed-width hashes. Allocation is
 shortest-first: 2 characters cover the first 3,844 lines, and a new layer grows only when
 the file demands it (up to 62⁸ lines — practically unbounded). All-digit encodings are

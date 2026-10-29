@@ -12,8 +12,13 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - 新增 `rename` 工具：重命名/移动普通文件时把旧路径的四族锚点行迁到新路径，已分配与服务过的锚点无需重读继续可用；目标已存在即拒绝，批量按请求顺序逐对执行（#337）。
 - 新增 `write.preview` 设置（默认 `diff`）：`write` 写后回显可选统一 diff / 整文件回读 / 仅一行确认；`confirmation` 不回显内容也不分配锚点，卡片 gutter 只有行号（#354 / #359）。
 
+- 五类卡片新增换行开关：read / grep / diff（edit、write、undo、ast_edit、format）/ LSP / error 卡片默认自动换行，一键切回横向滚动；error 卡无回显内容时不出现按钮（#373）。
+- read 折叠行标题行尾显示读取窗口（`L240–319 · 共 374 行`），预算截断附 resume 提示（#374，ADR-0027）。
+
 ### Changed
 
+- web 卡片改用插件自有词表命名空间 `hashline.card`（zh/en，跟随 DSH 语言设置，其它语言回落英文）：卡片界面文字随语言切换，diff / LSP 卡不再显示 key 字面量，delete 卡与 error 卡的硬编码英文一并收编（#372）。
+- host 拼装的文案（read 退化注记、折叠行标题、LSP 状态与安装提示）改为稳定 key 过 wire，客户端按界面语言渲染；插件设置页界面文字全部双语化，delete / rename 卡的标题、摘要与明细随之跟随语言（#375，ADR-0026）。
 - `format.editorconfig` 默认改为开启：项目 `.editorconfig` 的缩进声明优先于文件自身的缩进推断，显式设 false 退回推断（#336）。
 - 编辑 diff 改为 unified diff 形态：文件头 `--- path` / `+++ path`，段头 `@@ -old,count +new,count @@ 函数名()` 给出改动前后的行区间与所在函数；删除行留原位，其失效的旧锚点以 `~` 标记（#293，ADR-0020）。
 - 段头的作用域名由纯语法作用域检测给出（`src/render/scope/`）：检测不到就留空，不猜（#294）。

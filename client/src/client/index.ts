@@ -14,6 +14,11 @@
  * is mounted, the shipped rows otherwise — so disabling the plugin leaves no
  * residue.
  *
+ * Every card's words come from the plugin's OWN locale namespace
+ * (`hashline.card`, see {@link ./locale.js}), registered with the host's locale
+ * service once, here: the shipped `conversation` seat never carried four of the
+ * keys these cards ask for, so they rendered as their own key names.
+ *
  * The bundle is built as a closure factory (`window.__ModuleLoader__.load`)
  * whose externals (`react`, `react/jsx-runtime`,
  * `@deepseek-ai/dsh-client-ui-primitives`) resolve through the loader module
@@ -36,10 +41,9 @@ import { HashlineDeleteRow } from "./delete-card.js";
 import { HashlineRenameRow } from "./rename-card.js";
 import { HashlineSettingsCard } from "./settings-card.js";
 import { formFace } from "./settings-model.js";
+import { CARD_DICTIONARIES, CARD_NS } from "./locale.js";
 import type { ClientCtx } from "./types.js";
 
-/** Locale namespace of the conversation seat the shipped tool views use. */
-const CONVERSATION_NS = "conversation";
 /**
  * The takeover priority for every `tool.call.toolview` key this package owns.
  *
@@ -51,13 +55,20 @@ const CONVERSATION_NS = "conversation";
 const TAKEOVER_PRIORITY = -2;
 
 /**
- * Required services of the BUNDLE ROOT: the slot registry only.
+ * Required services of the BUNDLE ROOT: the slot registry and the locale
+ * service.
  *
  * The settings domain is reached by the settings-card SUB-plugin, which
  * declares `configForms` itself — a deployment without the settings provider
  * must not park the whole bundle (every tool row with it).
+ *
+ * The locale service is what carries the cards' own vocabulary: every
+ * registration below declares `locale: CARD_NS`, and the host binds that
+ * namespace's `t` seat to the component. A deployment without a locale face
+ * already could not render a card (the shipped seat was one too), so the
+ * requirement does not narrow the deployment surface.
  */
-export const inject = ["slots"];
+export const inject = ["slots", "locale"];
 
 /**
  * The settings entry id, spelled identically in both halves — the join key.
@@ -75,7 +86,7 @@ const readToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "read", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "read", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineReadRow,
 			),
 		);
@@ -89,7 +100,7 @@ const editToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "edit", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "edit", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineEditRow,
 			),
 		);
@@ -112,7 +123,7 @@ const undoToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "undo_last_edit", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "undo_last_edit", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineUndoRow,
 			),
 		);
@@ -126,7 +137,7 @@ const grepToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "grep", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "grep", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineGrepRow,
 			),
 		);
@@ -140,7 +151,7 @@ const writeToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "write", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "write", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineWriteRow,
 			),
 		);
@@ -154,7 +165,7 @@ const deleteToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "delete", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "delete", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineDeleteRow,
 			),
 		);
@@ -168,7 +179,7 @@ const renameToolview = {
 	apply(ctx: ClientCtx) {
 		ctx.slots.inject("tool.call.toolview", () =>
 			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "rename", locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+				{ name: "tool.call.toolview", key: "rename", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 				HashlineRenameRow,
 			),
 		);
@@ -204,7 +215,7 @@ const astToolviews = {
 		] as const) {
 			ctx.slots.inject("tool.call.toolview", () =>
 				ctx.slots.register(
-					{ name: "tool.call.toolview", key, locale: CONVERSATION_NS, priority: TAKEOVER_PRIORITY },
+					{ name: "tool.call.toolview", key, locale: CARD_NS, priority: TAKEOVER_PRIORITY },
 					Row,
 				),
 			);
@@ -249,7 +260,7 @@ const settingsCard = {
 							// Keyed by the package name: the page renders this form on the
 							// bundle's own page, between its description and its rows.
 							key: BUNDLE_PACKAGE_NAME,
-							locale: CONVERSATION_NS,
+							locale: CARD_NS,
 							// Our own controller, handed in as slot-injected props: the card
 							// subscribes to it and writes through it.
 							inject: () => ({ controller: formFace(forms.get(BUNDLE_PACKAGE_NAME)) }),
@@ -267,6 +278,11 @@ const settingsCard = {
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientCtx): void {
+	// The cards' vocabulary, registered ONCE for the whole bundle: every slot
+	// below declares `locale: CARD_NS`, so the host binds its `t` seat to these
+	// dictionaries. The effect owns the disposer, so unloading the plugin takes
+	// the words with it.
+	ctx.effect(() => ctx.locale.register(CARD_NS, CARD_DICTIONARIES));
 	ctx.plugin(readToolview);
 	ctx.plugin(editToolview);
 	ctx.plugin(undoToolview);

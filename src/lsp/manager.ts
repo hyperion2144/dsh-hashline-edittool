@@ -38,6 +38,14 @@ import {
 	type DiscoveryOptions,
 	type ServerOrigin,
 } from "./discovery.js";
+import {
+	LSP_CAN_INSTALL,
+	LSP_SERVER_NOT_STARTED,
+	LSP_SERVER_STARTING,
+	LSP_NO_BUILTIN_COMMAND,
+	lspSelfInstall,
+	type LocalizedText,
+} from "../render/wire-text.js";
 
 /** Why the heuristic backend answered instead of LSP. */
 export type BackendReason =
@@ -77,7 +85,15 @@ export interface LspLanguageStatus {
 	readonly ready: boolean;
 	/** Why not, when it is not ready. */
 	readonly reason?: BackendReason;
-	readonly message?: string;
+	/**
+	 * Why not, in the reader's own words.
+	 *
+	 * A KEY + params when the host COMPOSED the sentence (ADR-0024): the host
+	 * cannot read the reader's language, so it names the wording and hands over
+	 * the facts. A plain string when the host is reporting a TECHNICAL FACT — the
+	 * stderr tail, the timeout sentence — which reads the same in every language.
+	 */
+	readonly message?: string | LocalizedText;
 	/**
 	 * Whether the plugin can install this one itself.
 	 *
@@ -617,11 +633,11 @@ export class LspManager {
 
 
 	/** Why a language has no session, for diagnostics and the settings card. */
-	unavailability(languageId: string): { reason: BackendReason; message: string } | undefined {
+	unavailability(languageId: string): { reason: BackendReason; message: string | LocalizedText } | undefined {
 		const slot = this.#slots.get(languageId);
-		if (slot === undefined) return { reason: "lsp-unavailable", message: "No server has been started for this language yet." };
+		if (slot === undefined) return { reason: "lsp-unavailable", message: LSP_SERVER_NOT_STARTED };
 		if (slot.state === "failed") return { reason: slot.reason, message: slot.message };
-		if (slot.state === "starting") return { reason: "lsp-unavailable", message: "The server is still starting." };
+		if (slot.state === "starting") return { reason: "lsp-unavailable", message: LSP_SERVER_STARTING };
 		return undefined;
 	}
 
@@ -712,13 +728,13 @@ export class LspManager {
 					reason: "server-missing" as BackendReason,
 					canInstall: installable,
 					message: installable
-						? "可一键安装"
+						? LSP_CAN_INSTALL
 						: entryFor === undefined
 							? // NO CATALOG ENTRY AT ALL. "Install it into PATH" would imply this
 								// plugin knows WHAT to install, and for `julia` it does not — its
 								// server is launched with a project path in its argv.
-								"插件没有它的内置命令，可用下方「指定服务器」直接填"
-							: `需自行安装 ${entryFor.command}（本机无内置安装命令）`,
+								LSP_NO_BUILTIN_COMMAND
+							: lspSelfInstall(entryFor.command),
 				};
 			}
 			const unavailable = this.unavailability(languageId);

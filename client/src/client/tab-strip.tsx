@@ -105,15 +105,27 @@ export interface TabStripProps {
 	 */
 	idPrefix?: string | undefined;
 	/**
+	 * A GENERAL trailing slot, rendered at the end of the head row — BEFORE
+	 * `copy`.
+	 *
+	 * The strip knows nothing about what it carries: the card decides. That is
+	 * why this is a slot and not a second copy-shaped prop — the wrap switch
+	 * (#373) rides it, and the next head-row control will too.
+	 */
+	trailing?: ReactNode;
+	/**
 	 * Copy button, rendered raw at the trailing end of the head row — pass a
 	 * `<button className={TAB_STRIP_COPY_CLASS}>` so it picks up the row styling.
+	 *
+	 * It sits AFTER the general `trailing` slot: the copy button is the head
+	 * row's last word, and the slots before it keep that promise.
 	 */
 	copy?: ReactNode;
 }
 
 /**
- * Render the head row: the file tabs (folded to the available width) plus an
- * optional trailing copy button.
+ * Render the head row: the file tabs (folded to the available width), the
+ * general trailing slot, then the copy button.
  * @param props - see {@link TabStripProps}.
  * @returns the head row element.
  */
@@ -126,6 +138,7 @@ export function TabStrip({
 	panelId,
 	idPrefix,
 	copy,
+	trailing,
 }: TabStripProps): ReactNode {
 	ensureTabStripStyles();
 
@@ -272,6 +285,7 @@ export function TabStrip({
 						}),
 					]
 				: []),
+			trailing ?? null,
 			copy ?? null,
 		].filter((node) => node !== null),
 	});

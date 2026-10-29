@@ -21,6 +21,7 @@ import { LANGUAGES } from "../ast/language.js";
 import { getLspManager, type LspLanguageStatus } from "./manager.js";
 import { canInstallServer, installLspServer, serverEntryFor, type SpawnLike } from "./install-server.js";
 import { readJsonBody } from "../ast/install-route.js";
+import { LSP_NO_CLIENT, LSP_NO_SUBPROCESS_SEAM } from "../render/wire-text.js";
 
 /** The `ctx.webServer` surface, structurally (the service is optional). */
 interface WebServerLike {
@@ -58,7 +59,9 @@ export async function handleLspInstall(
 	spawn: SpawnLike | undefined,
 ): Promise<void> {
 	if (spawn === undefined) {
-		sendJson(res, 200, { ok: false, message: "这个部署没有 subprocess seam，所以无法运行 npm。" });
+		// A KEY, not a sentence (ADR-0024): the host cannot read the reader's
+		// language, and this sentence is read in the settings card.
+		sendJson(res, 200, { ok: false, message: LSP_NO_SUBPROCESS_SEAM });
 		return;
 	}
 	let body: Record<string, unknown>;
@@ -110,7 +113,9 @@ export async function handleLspStatus(_req: IncomingMessage, res: ServerResponse
 		// card should be able to state plainly rather than render as a failure.
 		sendJson(res, 200, {
 			available: false,
-			message: "语言服务器客户端未启用，所以 `symbols` / `code_actions` / `diagnostics` 没有可用的服务器。已装的服务器仍然会被探测到。",
+			// A KEY, not a sentence (ADR-0024) — the client resolves it in the
+			// reader's language.
+			message: LSP_NO_CLIENT,
 			languages: [] satisfies readonly LspLanguageStatus[],
 		});
 		return;

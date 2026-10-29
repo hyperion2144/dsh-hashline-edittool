@@ -75,6 +75,17 @@ describe("readCardMeta", () => {
 	});
 });
 
+describe("the card draws NO window line — the window rides on the FOLDED row (#374)", () => {
+	it("keeps the window out of the card body", () => {
+		// The ruling: the window belongs to the folded row's trailing suffix. A line
+		// inside the card would say it a second time, next to the row that already
+		// says it — and the card is the one place the reader expects the CODE.
+		expect(cardSource).not.toContain("dshl-read-title");
+		expect(cardSource).not.toContain("titleWindow");
+		expect(cardSource).not.toContain("titleResume");
+	});
+});
+
 describe("foldWindow drives both columns", () => {
 	it("caps the middle: half the window at the head, the REST at the tail", () => {
 		expect(foldWindow(10, 8, false)).toEqual({ head: [0, 1, 2, 3], tail: [6, 7, 8, 9], hidden: 2 });
@@ -125,9 +136,15 @@ describe("the card mounts nothing shipped", () => {
 
 	it("colours from theme tokens, never from a literal colour", () => {
 		// The sheet may carry no hex/rgb colour: the token sheet IS the palette, and
-		// a literal would be wrong in one of the two themes.
-		expect(/#[0-9a-fA-F]{3,8}\b/.test(cardSource)).toBe(false);
-		expect(/rgb\(/.test(cardSource)).toBe(false);
+		// a literal would be wrong in one of the two themes. The scan reads the
+		// card's CODE, not its notes: an issue reference ("#131") is a comment, not
+		// a colour.
+		const code = cardSource
+			.split("\n")
+			.filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+			.join("\n");
+		expect(/#[0-9a-fA-F]{3,8}\b/.test(code)).toBe(false);
+		expect(/rgb\(/.test(code)).toBe(false);
 		expect(cardSource).toContain("var(--dsw-alias-state-business-primary)");
 	});
 

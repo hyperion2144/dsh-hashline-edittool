@@ -13,6 +13,7 @@
  * @module dsh-hashline-edittool/client/test/settings-card
  */
 import { describe, expect, it, vi } from "vitest";
+import { EN_CARD_DICTIONARY, ZH_CARD_DICTIONARY } from "../src/client/locale.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +31,7 @@ import {
 	settingsSummaryText,
 	validateStoreBudgetDraft,
 	validateLspIdleDraft,
+	type SettingsDraftError,
 } from "../src/client/settings-model.js";
 import type { ConfigForm, ConfigFormSnapshot } from "../src/client/types.js";
 
@@ -82,6 +84,26 @@ describe("readWritePreview (map #354) — the three-way echo switch", () => {
 	});
 });
 
+/**
+ * The card's own rendering of one validation failure (#375).
+ *
+ * The model layer hands over the wording's KEY and the numbers that fill it;
+ * the card asks the host for the sentence. This mirrors that here, so a test
+ * pins what the READER sees rather than the shape the model happens to use.
+ */
+function errorText(error: SettingsDraftError): string {
+	const dictionary = EN_CARD_DICTIONARY as Record<string, string>;
+	const render = (key: string, params?: Record<string, unknown>): string =>
+		(dictionary[key] ?? key).replace(/\{(\w+)\}/g, (_match, name: string) =>
+			String(params?.[name] ?? ""),
+		);
+	const params =
+		error.unitKey === undefined
+			? error.params
+			: { ...error.params, unit: render(error.unitKey) };
+	return render(error.key, params);
+}
+
 describe("requestedView — the manager page's view prop", () => {
 	it("hands the page form to an absent prop (defensive default)", () => {
 		expect(requestedView(undefined)).toBe("page");
@@ -96,7 +118,7 @@ describe("requestedView — the manager page's view prop", () => {
 
 describe("settingsSummaryText — the bundle page's one-liner", () => {
 	it("says what the card governs in a single line", () => {
-		const text = settingsSummaryText();
+		const text = settingsSummaryText((key) => (EN_CARD_DICTIONARY as Record<string, string>)[key] ?? key);
 		expect(text.length).toBeGreaterThan(0);
 		expect(text).not.toMatch(/\n/);
 		expect(text).toContain("read");
@@ -232,9 +254,21 @@ describe("STORE_BUDGET_SPECS — the card's mirror of the host schema (#179 / #1
 		// regression on either side would let a value through that the
 		// other rejects. The host tests assert the schema throws for these
 		// boundaries; this test is the corresponding client assertion.
-		expect(STORE_BUDGET_SPECS[0]).toMatchObject({ min: 8, max: 2048, unit: "MiB" });
-		expect(STORE_BUDGET_SPECS[1]).toMatchObject({ min: 100, max: 100000, unit: "个" });
-		expect(STORE_BUDGET_SPECS[2]).toMatchObject({ min: 10000, max: 10000000, unit: "行" });
+		expect(STORE_BUDGET_SPECS[0]).toMatchObject({ min: 8, max: 2048, unitKey: "settings.unit.mib" });
+		expect(STORE_BUDGET_SPECS[1]).toMatchObject({ min: 100, max: 100000, unitKey: "settings.unit.paths" });
+		expect(STORE_BUDGET_SPECS[2]).toMatchObject({ min: 10000, max: 10000000, unitKey: "settings.unit.lines" });
+	});
+
+	it("names each unit in the vocabulary — the unit's word is a language's word", () => {
+		// The unit used to be a hardcoded Chinese string in the spec ("个", "行").
+		// It is a KEY now, so the English card says "paths" and the Chinese one
+		// still says "个" — both come from the same slot, neither is hardcoded.
+		expect(EN_CARD_DICTIONARY["settings.unit.mib"]).toBe("MiB");
+		expect(EN_CARD_DICTIONARY["settings.unit.paths"]).toBe("paths");
+		expect(EN_CARD_DICTIONARY["settings.unit.lines"]).toBe("lines");
+		expect(ZH_CARD_DICTIONARY["settings.unit.mib"]).toBe("MiB");
+		expect(ZH_CARD_DICTIONARY["settings.unit.paths"]).toBe("个");
+		expect(ZH_CARD_DICTIONARY["settings.unit.lines"]).toBe("行");
 	});
 
 	it("uses the two-segment path shape the mutate op expects", () => {
@@ -297,22 +331,28 @@ describe("validateStoreBudgetDraft — the card's first line of defence", () => 
 		});
 	});
 
-	it("rejects values just below the floor with a Chinese error", () => {
+	it("rejects values just below the floor, naming the range", () => {
 		const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[0], "7");
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
-			expect(result.message).toContain("8");
-			expect(result.message).toContain("2048");
-			expect(result.message).toContain("MiB");
-			expect(result.message).toContain("超出允许范围");
+			// The model hands over the wording's KEY and the numbers (#375);
+			// the sentence the reader sees is the card's business.
+			expect(result.error.key).toBe("settings.error.budgetRange");
+			expect(result.error.params).toEqual({ min: 8, max: 2048 });
+			expect(result.error.unitKey).toBe("settings.unit.mib");
+			const text = errorText(result.error);
+			expect(text).toContain("8");
+			expect(text).toContain("2048");
+			expect(text).toContain("MiB");
 		}
 	});
 
-	it("rejects values just above the ceiling with a Chinese error", () => {
+	it("rejects values just above the ceiling, naming the range", () => {
 		const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[0], "2049");
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
-			expect(result.message).toContain("超出允许范围");
+			expect(result.error.key).toBe("settings.error.budgetRange");
+			expect(errorText(result.error)).toContain("2048");
 		}
 	});
 
@@ -324,7 +364,8 @@ describe("validateStoreBudgetDraft — the card's first line of defence", () => 
 		const result = validateStoreBudgetDraft(STORE_BUDGET_SPECS[0], "abc");
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
-			expect(result.message).toContain("整数");
+			expect(result.error.key).toBe("settings.error.budgetInteger");
+			expect(errorText(result.error)).toContain("whole number");
 		}
 	});
 
@@ -397,9 +438,11 @@ describe("the card's 格式化 group (#315) — wiring pinned against the source
 	);
 
 	it("renders the tri-state mode control, the fallback switch, and writes the format subtree wholesale", () => {
-		expect(cardSource).toContain("自动格式化（write / edit / ast_edit 后）");
-		expect(cardSource).toContain("范围不可用时回退全文");
-		expect(cardSource).toContain("读取 .editorconfig");
+		// #375: the labels live in the vocabulary now, so the card asks the
+		// host for them — the wiring is pinned by the KEY, not by a Chinese word.
+		expect(cardSource).toContain('t("settings.label.formatAuto")');
+		expect(cardSource).toContain('t("settings.label.formatFallback")');
+		expect(cardSource).toContain('t("settings.label.formatEditorconfig")');
 		// Every write carries ALL THREE keys: a partial write would clear a sibling.
 		expect(cardSource).toContain(
 			'writeField("format", { auto: mode, editorconfig: formatFlags.editorconfig, fallback_full_file: formatFlags.fallback })',
@@ -428,7 +471,7 @@ describe("the card's 语言服务器 group (#306) — wiring pinned against the 
 		expect(cardSource).not.toContain('writeField("lsp", {');
 	});
 	it("renders the idle window input and writes it as a leaf op", () => {
-		expect(cardSource).toContain("空闲回收");
+		expect(cardSource).toContain('t("settings.label.lspIdle")');
 		expect(cardSource).toContain("LSP_IDLE_SPEC.path");
 	});
 });
@@ -459,11 +502,14 @@ describe("validateLspIdleDraft — the card's first line of defence (#306)", () 
 		expect(validateLspIdleDraft("300000")).toEqual({ kind: "valid", value: 300000 });
 		expect(validateLspIdleDraft("3600000")).toEqual({ kind: "valid", value: 3600000 });
 	});
-	it("rejects values just outside the range with a Chinese error", () => {
+	it("rejects values just outside the range, naming the range", () => {
 		const over = validateLspIdleDraft("3600001");
 		expect(over.kind).toBe("error");
 		if (over.kind === "error") {
-			expect(over.message).toContain("超出允许范围");
+			expect(over.error.key).toBe("settings.error.idleRange");
+			// The idle window is milliseconds — its sentence names no unit.
+			expect(over.error.unitKey).toBeUndefined();
+			expect(errorText(over.error)).toContain("3600000");
 		}
 		const under = validateLspIdleDraft("-1");
 		expect(under.kind).toBe("error");
@@ -472,7 +518,8 @@ describe("validateLspIdleDraft — the card's first line of defence (#306)", () 
 		const result = validateLspIdleDraft("abc");
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
-			expect(result.message).toContain("整数");
+			expect(result.error.key).toBe("settings.error.idleInteger");
+			expect(errorText(result.error)).toContain("whole number");
 		}
 	});
 });
@@ -494,5 +541,72 @@ describe("readLspIdleMs — the card's view of the window (#306)", () => {
 	it("ignores garbage values instead of coercing them", () => {
 		expect(readLspIdleMs(snapshotWith({ idle_timeout_ms: "300000" }))).toBeUndefined();
 		expect(readLspIdleMs(snapshotWith("on"))).toBeUndefined();
+	});
+});
+
+/**
+ * The card's own words (#375) — the vocabulary asks for them all.
+ *
+ * The card used to draw forty hardcoded Chinese strings; each one now comes from
+ * the plugin's own namespace through the host's `t`. These assertions pin WHICH
+ * key stands WHERE, so a key cannot be swapped for a near neighbour by accident.
+ */
+describe("the card's own words (#375) — the vocabulary asks for them all", () => {
+	const cardSource = readFileSync(
+		join(dirname(fileURLToPath(import.meta.url)), "..", "src", "client", "settings-card.tsx"),
+		"utf8",
+	);
+
+	it("draws the catalog row's facts and states from the vocabulary", () => {
+		for (const key of [
+			"settings.fact.builtin",
+			"settings.fact.installed",
+			"settings.fact.available",
+			"settings.status.overridden",
+			"settings.title.overridden",
+			"settings.title.notInstallable",
+			"settings.action.remove",
+			"settings.action.add",
+			"settings.action.unavailable",
+		]) {
+			expect(cardSource).toContain(`"${key}"`);
+		}
+	});
+
+	it("draws the language-server list's words from the vocabulary", () => {
+		for (const key of [
+			"settings.status.notFound",
+			"settings.status.installing",
+			"settings.action.retry",
+			"settings.action.install",
+			"settings.error.installFailed",
+			"settings.origin.project",
+			"settings.origin.path",
+			"settings.origin.configured",
+			"settings.origin.installed",
+		]) {
+			expect(cardSource).toContain(`"${key}"`);
+		}
+	});
+
+	it("draws the fetch failures at RENDER time, so a language switch re-reads them", () => {
+		expect(cardSource).toContain("catalogFailureText(t, catalog.failure)");
+		expect(cardSource).toContain("lspFailureText(t, lsp.failure)");
+		expect(cardSource).toContain('"settings.error.catalog"');
+		expect(cardSource).toContain('"settings.error.lsp"');
+	});
+
+	it("draws the notices, the refusal and the mode labels from the vocabulary", () => {
+		for (const key of [
+			"settings.notice.installing",
+			"settings.notice.installed",
+			"settings.error.writeRejected",
+			"settings.error.installIncomplete",
+			"settings.formatMode.off",
+			"settings.formatMode.full",
+			"settings.formatMode.range",
+		]) {
+			expect(cardSource).toContain(`"${key}"`);
+		}
 	});
 });

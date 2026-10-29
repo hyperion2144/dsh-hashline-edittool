@@ -373,7 +373,7 @@ describe("toolRowModel", () => {
 		expect(model.summary).toBe("src/a.ts");
 		expect(model.filePath).toBe("/w/src/a.ts"); // real path — it feeds onOpenFile
 		expect(model.state).toBe("running");
-		expect(model.titleKey).toBe("tool.title.edit");
+		expect(model.titleKey).toBe("row.title.edit");
 	});
 
 	it("marks interrupted results stopped and failures errored", () => {

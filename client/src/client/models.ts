@@ -51,8 +51,11 @@ import type {
 	ReadPresentation,
 	ToolCallBlock,
 	ToolRowModel,
+	WireText,
 } from "./types.js";
 //#region shared call helpers (mirror of dsh-client-ui-tool models)
+import { wireTextFromValue } from "./wire-text.js";
+import type { CardLocaleKey } from "./locale.js";
 
 /** Parsed `{name, args}` of the paired call head, or null when unavailable. */
 export interface ParsedToolCall {
@@ -145,11 +148,15 @@ function pickString(args: Record<string, unknown>, keys: string[]): string | und
 	return undefined;
 }
 
-const VARIANT_TITLE_KEYS: Record<string, string> = {
-	read: "tool.title.read",
-	grep: "tool.title.grep",
-	edit: "tool.title.edit",
-	write: "tool.title.write",
+/**
+ * The row's own label per variant — the FALLBACK title, for a call whose meta
+ * carries no host row title (#375: a running call, an old log).
+ */
+const VARIANT_TITLE_KEYS: Record<string, CardLocaleKey> = {
+	read: "row.title.read",
+	grep: "row.title.grep",
+	edit: "row.title.edit",
+	write: "row.title.write",
 };
 
 const SUMMARY_KEYS: Record<string, string[]> = {
@@ -252,7 +259,7 @@ export function toolRowModel(
 	const errorSummary = state === "error" && output !== null ? firstLine(output) : null;
 	return {
 		variant,
-		titleKey: VARIANT_TITLE_KEYS[variant] ?? "tool.title.generic",
+		titleKey: VARIANT_TITLE_KEYS[variant] ?? "row.title.generic",
 		summary: base,
 		filePath: deriveFilePath(variant, argsRaw),
 		bodyRaw: argsRaw === "" ? null : argsRaw,
@@ -355,14 +362,44 @@ function isMetaHashline(line: unknown): line is ReadMetaHashline {
 	if (!isMetaLine(line)) return false;
 	return typeof (line as unknown as Record<string, unknown>).hash === "string";
 }
-/** #245 — `window: {start, end, totalLines}` when the read carried one. */
+/**
+ * #245 — `window: {start, end, totalLines}` when the read carried one; #374
+ * adds the budget-cut flag that says the response was cut short.
+ */
 function readWindowMeta(value: unknown): ReadWindowMeta | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const { start, end, totalLines } = value as Record<string, unknown>;
+	const { start, end, totalLines, truncated } = value as Record<string, unknown>;
 	if (![start, end, totalLines].every((n) => typeof n === "number" && Number.isInteger(n) && n >= 1)) return undefined;
-	return { start: start as number, end: end as number, totalLines: totalLines as number };
+	// #374: the budget-cut flag rides with the window. A flag that is not a
+	// boolean drops the window rather than guessing what it meant.
+	if (truncated !== undefined && typeof truncated !== "boolean") return undefined;
+	return {
+		start: start as number,
+		end: end as number,
+		totalLines: totalLines as number,
+		...(truncated === true ? { truncated: true } : {}),
+	};
 }
 
+
+// The wire-text GATE and its resolution live in `./wire-text.js` (ADR-0024): one
+// place decides what a host text is, so a persisted meta field and a route's
+// JSON payload cannot drift apart.
+
+/**
+ * The folded row's title, as the HOST sent it (#375).
+ *
+ * The host cannot read the reader's language (#369), so it names the wording and
+ * hands over the facts; the client resolves the key through `t()`. A meta without
+ * one — an old log, a running call — leaves the row on its own label.
+ *
+ * @param meta - the persisted presentation meta.
+ * @returns the wire text, or `undefined` when the meta carries none.
+ */
+export function rowTitleFromMeta(meta: unknown): WireText | undefined {
+	if (typeof meta !== "object" || meta === null || Array.isArray(meta)) return undefined;
+	return wireTextFromValue((meta as Record<string, unknown>).rowTitle);
+}
 
 /**
  * Soft-validate the persisted read meta, mirroring the shipped readMeta plus
@@ -381,7 +418,15 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 	}
 	// #273: a lossy view flags itself and carries its shown-but-unserved rows.
 	if (value.lossy !== undefined && value.lossy !== true) return null;
-	if (value.lossyNote !== undefined && typeof value.lossyNote !== "string") return null;
+	// #375: the note is a key + params — or the LEGACY English sentence a
+	// pre-#375 meta carries. Both render; anything else is a bad meta.
+	const lossyNote =
+		value.lossyNote === undefined
+			? undefined
+			: typeof value.lossyNote === "string"
+				? value.lossyNote
+				: wireTextFromValue(value.lossyNote);
+	if (value.lossyNote !== undefined && lossyNote === undefined) return null;
 	let unservedRows: ReadMetaLine[] | undefined;
 	if (value.unservedRows !== undefined) {
 		if (!Array.isArray(value.unservedRows) || !value.unservedRows.every(isMetaLine)) return null;
@@ -410,7 +455,7 @@ export function readPresentationMeta(meta: unknown): ReadPresentation | null {
 		totalLines,
 		...(value.hashlines !== undefined ? { hashlines: value.hashlines as ReadMetaHashline[] } : {}),
 		...(value.lossy === true ? { lossy: true } : {}),
-		...(value.lossyNote !== undefined ? { lossyNote: value.lossyNote as string } : {}),
+		...(lossyNote !== undefined ? { lossyNote } : {}),
 		...(unservedRows !== undefined ? { unservedRows } : {}),
 		...(lang !== undefined ? { lang: lang as string } : {}),
 		...(windowMeta !== undefined ? { window: windowMeta } : {}),
@@ -1223,22 +1268,22 @@ export function grepGutterLabel(row: GrepRowMeta): string {
 
 //#endregion
 
-//#region delete card
+//#region card text (shared by the delete and rename cards)
 
-/** One row of the delete card: a path and its outcome. */
-export interface DeleteCardRow {
-	path: string;
-	status: "deleted" | "already-absent" | "failed";
-	detail: string;
-}
-
-/** The delete tool's card model, projected from `meta.delete`. */
-export interface DeleteCardModel {
-	title: string;
-	summary: string;
-	rows: DeleteCardRow[];
-	vacuum: string;
-}
+/**
+ * One piece of a card's own text (issue 375).
+ *
+ * A WORD is a vocabulary key plus the counts that fill it — the model layer owns
+ * the numbers and names the wording, the client renders it. A LITERAL is the one
+ * thing no vocabulary should own: a path.
+ */
+export type CardText =
+	| {
+			readonly kind: "word";
+			readonly key: CardLocaleKey;
+			readonly params?: Record<string, string | number>;
+	  }
+	| { readonly kind: "literal"; readonly text: string };
 
 function recordOf(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1254,6 +1299,36 @@ function cardBytes(n: number): string {
 	if (n < 1024) return `${n}B`;
 	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KiB`;
 	return `${(n / 1024 / 1024).toFixed(1)}MiB`;
+}
+
+//#endregion
+
+//#region delete card
+
+/** One row of the delete card: a path and its outcome. */
+export interface DeleteCardRow {
+	path: string;
+	status: "deleted" | "already-absent" | "failed";
+	/** The reclaim details: words + counts (#375). */
+	detail: readonly CardText[];
+	/**
+	 * The failure's own words (#375): the MODEL's message, verbatim — the
+	 * error channel speaks English by contract. Absent → the card shows its own
+	 * word for a failure.
+	 */
+	error?: string;
+}
+
+/**
+ * The delete tool's card model, projected from `meta.delete`.
+ *
+ * The card's TITLE is not here: it is chrome, and chrome lives in the
+ * vocabulary namespace (the card asks the host for it), not in the model.
+ */
+export interface DeleteCardModel {
+	/** The collapsed row's summary: the lead (path or count) plus the stats. */
+	summary: readonly CardText[];
+	rows: DeleteCardRow[];
 }
 
 /**
@@ -1286,27 +1361,38 @@ export function deleteCardModel(
 		if (result === undefined || typeof result.path !== "string") continue;
 		const status = result.status === "already-absent" ? "already-absent" : "deleted";
 		const reclaimed = recordOf(result.reclaimed);
-		const parts: string[] = [];
+		// #375: the reclaim details are words + counts, so the model layer
+		// hands over the COUNTS and names the wording — the client renders it.
+		const parts: CardText[] = [];
 		if (reclaimed !== undefined) {
 			const anchors = numberOf(reclaimed.anchorLines);
 			const undo = numberOf(reclaimed.undoLayers);
 			const served = numberOf(reclaimed.servedRows);
 			const bytes = numberOf(reclaimed.bytesFreed);
 			if (anchors + undo + served > 0) {
-				parts.push(`${anchors} anchor${anchors === 1 ? "" : "s"}`);
-				parts.push(`${undo} undo`);
-				parts.push(`${served} served`);
+				parts.push({ kind: "word", key: "delete.detail.anchors", params: { count: anchors } });
+				parts.push({ kind: "word", key: "delete.detail.undo", params: { count: undo } });
+				parts.push({ kind: "word", key: "delete.detail.served", params: { count: served } });
 			}
-			if (bytes > 0) parts.push(`${cardBytes(bytes)} freed`);
+			if (bytes > 0) {
+				parts.push({ kind: "word", key: "delete.stat.freed", params: { bytes: cardBytes(bytes) } });
+			}
 		}
-		rows.push({ path: displayPath(result.path), status, detail: parts.join(" · ") });
+		rows.push({ path: displayPath(result.path), status, detail: parts });
 	}
 	for (const entry of failures) {
 		const failure = recordOf(entry);
 		if (failure === undefined || typeof failure.path !== "string") continue;
 		const code = typeof failure.code === "string" && failure.code !== "" ? `[${failure.code}] ` : "";
-		const message = typeof failure.message === "string" ? failure.message : "failed";
-		rows.push({ path: displayPath(failure.path), status: "failed", detail: `${code}${message}` });
+		const message = typeof failure.message === "string" && failure.message !== "" ? failure.message : undefined;
+		rows.push({
+			path: displayPath(failure.path),
+			status: "failed",
+			detail: [],
+			// The model's own words (#375): the error channel is the model's,
+			// so its message stays verbatim — only the code prefix is protocol text.
+			...(message === undefined ? {} : { error: `${code}${message}` }),
+		});
 	}
 	const totals = recordOf(data.totals);
 	const deleted = numberOf(totals?.deleted);
@@ -1314,26 +1400,25 @@ export function deleteCardModel(
 	const failed = numberOf(totals?.failed);
 	const reclaimed = recordOf(data.reclaimed);
 	const bytes = numberOf(reclaimed?.bytesFreed);
-	const stats = [
-		`${deleted} deleted`,
-		`${alreadyAbsent} already absent`,
-		`${failed} failed`,
-		bytes > 0 ? `${cardBytes(bytes)} freed` : "",
-	].filter((part) => part !== "").join(" · ");
-	// Collapsed-row parity with edit: the path (single) or the file paths
-	// (multi) come FIRST; the stats follow. Paths are already relativized/homed.
-	const lead =
-		rows.length === 0
-			? ""
-			: rows.length === 1
-				? (rows[0]?.path ?? "1 path")
-				: rows.map((row) => row.path).join(", ");
-	const summary = [lead, stats].filter((part) => part !== "").join(" · ");
+	const stats: CardText[] = [
+		{ kind: "word", key: "delete.stat.deleted", params: { count: deleted } },
+		{ kind: "word", key: "delete.stat.absent", params: { count: alreadyAbsent } },
+		{ kind: "word", key: "delete.stat.failed", params: { count: failed } },
+		...(bytes > 0
+			? [{ kind: "word" as const, key: "delete.stat.freed" as const, params: { bytes: cardBytes(bytes) } }]
+			: []),
+	];
+	// Collapsed-row parity with edit: the path (single) or the count (multi)
+	// comes FIRST; the stats follow. The path is already relativized/homed.
+	const single = rows.length === 1 ? rows[0]?.path : undefined;
+	const lead: CardText =
+		single !== undefined && single !== ""
+			? { kind: "literal", text: single }
+			: { kind: "word", key: "delete.count", params: { count: rows.length } };
+	const summary: CardText[] = [lead, ...stats];
 	return {
-		title: "Delete",
 		summary,
 		rows,
-		vacuum: typeof data.vacuum === "string" ? data.vacuum : "none",
 	};
 }
 
@@ -1346,20 +1431,32 @@ export interface RenameCardRow {
 	from: string;
 	to?: string;
 	status: "renamed" | "failed";
-	detail: string;
+	/** The migrated details: words + counts (issue 375). */
+	detail: readonly CardText[];
+	/**
+	 * The failure's own words (issue 375): the MODEL's message, verbatim — the
+	 * error channel speaks English by contract. Absent → the card shows its own
+	 * word for a failure.
+	 */
+	error?: string;
 }
 
-/** The rename tool's card model, projected from `meta.rename`. */
+/**
+ * The rename tool's card model, projected from `meta.rename`.
+ *
+ * The card's TITLE is not here: it is chrome, and chrome lives in the
+ * vocabulary namespace (the card asks the host for it), not in the model.
+ */
 export interface RenameCardModel {
-	title: string;
-	summary: string;
+	/** The collapsed row's summary: the lead (pair or count) plus the stats. */
+	summary: readonly CardText[];
 	rows: RenameCardRow[];
 }
 
 /**
  * Project the host's `meta.rename` into the card's rows.
  *
- * One source for the title/summary/rows so the component and the tests agree,
+ * One source for the summary/rows so the component and the tests agree,
  * and a call without a usable projection returns null (the platform default
  * renders it instead of an empty card).
  *
@@ -1389,7 +1486,9 @@ export function renameCardModel(
 		if (from === undefined || to === undefined) continue;
 		if (typeof from.path !== "string" || typeof to.path !== "string") continue;
 		const migrated = recordOf(result.migrated);
-		const parts: string[] = [];
+		// issue 375: the migrated details are words + counts, so the model layer
+		// hands over the COUNTS and names the wording — the client renders it.
+		const parts: CardText[] = [];
 		if (migrated !== undefined) {
 			const anchors = numberOf(migrated.anchorLines);
 			const undo = numberOf(migrated.undoLayers);
@@ -1397,37 +1496,63 @@ export function renameCardModel(
 			const purged = recordOf(migrated.purged);
 			const bytes = numberOf(purged?.bytesFreed);
 			if (anchors + undo + served > 0) {
-				parts.push(`${anchors} anchor${anchors === 1 ? "" : "s"}`);
-				parts.push(`${undo} undo`);
-				parts.push(`${served} served`);
+				parts.push({ kind: "word", key: "rename.detail.anchors", params: { count: anchors } });
+				parts.push({ kind: "word", key: "rename.detail.undo", params: { count: undo } });
+				parts.push({ kind: "word", key: "rename.detail.served", params: { count: served } });
 			}
-			if (bytes > 0) parts.push(`${cardBytes(bytes)} reclaimed`);
+			if (bytes > 0) {
+				parts.push({ kind: "word", key: "rename.stat.reclaimed", params: { bytes: cardBytes(bytes) } });
+			}
 		}
 		rows.push({
 			from: displayPath(from.path),
 			to: displayPath(to.path),
 			status: "renamed",
-			detail: parts.join(" · "),
+			detail: parts,
 		});
 	}
 	for (const entry of failures) {
 		const failure = recordOf(entry);
 		if (failure === undefined || typeof failure.path !== "string") continue;
 		const code = typeof failure.code === "string" && failure.code !== "" ? `[${failure.code}] ` : "";
-		const message = typeof failure.message === "string" ? failure.message : "failed";
-		rows.push({ from: displayPath(failure.path), status: "failed", detail: `${code}${message}` });
+		const message =
+			typeof failure.message === "string" && failure.message !== "" ? failure.message : undefined;
+		rows.push({
+			from: displayPath(failure.path),
+			status: "failed",
+			detail: [],
+			// The model's own words (issue 375): the error channel is the model's,
+			// so its message stays verbatim — only the code prefix is protocol text.
+			...(message === undefined ? {} : { error: `${code}${message}` }),
+		});
 	}
 	const totals = recordOf(data.totals);
 	const renamed = numberOf(totals?.renamed);
 	const failed = numberOf(totals?.failed);
-	const stats = `${renamed} renamed · ${failed} failed`;
-	const lead =
-		rows.length === 0
-			? ""
-			: rows
-					.map((row) => (row.to === undefined ? row.from : `${row.from} -> ${row.to}`))
-					.join(", ");
-	return { title: "Rename", summary: [lead, stats].filter((part) => part !== "").join(" · "), rows };
+	const migration = recordOf(data.migrated);
+	const bytes = numberOf(migration?.purgedBytes);
+	const stats: CardText[] = [
+		{ kind: "word", key: "rename.stat.renamed", params: { count: renamed } },
+		{ kind: "word", key: "rename.stat.failed", params: { count: failed } },
+	];
+	if (bytes > 0) {
+		stats.push({ kind: "word", key: "rename.stat.reclaimed", params: { bytes: cardBytes(bytes) } });
+	}
+	// Collapsed-row parity with edit: the pair (single) or the count (multi)
+	// comes FIRST; the stats follow. The paths are already relativized/homed.
+	const single = rows.length === 1 ? rows[0] : undefined;
+	const singlePair =
+		single === undefined
+			? undefined
+			: single.to === undefined
+				? single.from
+				: `${single.from} -> ${single.to}`;
+	const lead: CardText =
+		singlePair !== undefined && singlePair !== ""
+			? { kind: "literal", text: singlePair }
+			: { kind: "word", key: "rename.count", params: { count: rows.length } };
+	const summary: CardText[] = [lead, ...stats];
+	return { summary, rows };
 }
 
 //#endregion

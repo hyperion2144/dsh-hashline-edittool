@@ -80,6 +80,7 @@ import { withWorkspace } from "../domain/session/session-view.js";
 import { genDiff } from "../render/edit-diff.js";
 import { editDiffLegend, renderFileDiffGroup, renderFormatSection } from "../domain/edit/edit-response.js";
 import { diffDictFrom, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
+import { rowTitle } from "../render/wire-text.js";
 
 import {
 	deliverDiagnosticsAfterWrite,
@@ -93,6 +94,17 @@ import {
 
 /** The edit value with an optional inline diagnostics attachment (#131). */
 type EditValue = EditCanonicalValue & { diagnostics?: DiagMetaEntry[] };
+/**
+ * The path the edit row is titled with (issue 375): the first file the call
+ * touched — the multi-file form has no single path of its own.
+ */
+function editTitlePath(v: EditCanonicalValue): string | undefined {
+	const multi = v.multiDiffs;
+	if (Array.isArray(multi) && multi.length > 0 && typeof multi[0]?.path === "string") {
+		return multi[0].path;
+	}
+	return typeof v.path === "string" && v.path !== "" ? v.path : undefined;
+}
 /** The hashline edit tool's canonical value (returned from `execute`). */
 type EditCanonicalValue = {
 	path: string;
@@ -446,6 +458,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 							...(Array.isArray(v.formats) ? { formats: v.formats } : {}),
 							...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 							...failureKey,
+							// issue 375: the folded row's title travels as a key + params.
+							rowTitle: rowTitle("edit", { path: editTitlePath(v) }),
 						} as never;
 					}
 					// The no-op case keeps its (zero-row) group too: the file succeeded, so
@@ -456,9 +470,17 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 						...(Array.isArray(v.formats) ? { formats: v.formats } : {}),
 						...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 						...failureKey,
+						// issue 375: the folded row's title travels as a key + params.
+						rowTitle: rowTitle("edit", { path: editTitlePath(v) }),
 					} as never;
 				}
-				if (v.noop) return { diffs: [] } as never;
+				if (v.noop) {
+					return {
+						diffs: [],
+						// issue 375: the folded row's title travels as a key + params.
+						rowTitle: rowTitle("edit", { path: editTitlePath(v) }),
+					} as never;
+				}
 				const diffs = computeHunkDiffs(v.path, v.before, v.after);
 				// 渲染通道（issue #71）: genDiff 的结构化行（新旧行号 + 锚点），
 				// web diff 卡的 gutter 直接渲染它，绝不解析 modelText。
@@ -470,6 +492,8 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					...(diffRows !== undefined ? { diffRows } : {}),
 					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 					...(Array.isArray(v.formats) && v.formats.length > 0 ? { formats: v.formats } : {}),
+					// issue 375: the folded row's title travels as a key + params.
+					rowTitle: rowTitle("edit", { path: editTitlePath(v) }),
 				} as never;
 		},
 		},

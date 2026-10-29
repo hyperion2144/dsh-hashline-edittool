@@ -7,13 +7,15 @@
  *
  * @module dsh-hashline-edittool-client/rename-card
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { jsx as jsx_ } from "react/jsx-runtime";
 import { DisclosureRow, IconEditOutlineMedium } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css } from "./css.js";
 import { renameCardModel, errorCardModel } from "./models.js";
+import type { CardText, RenameCardRow } from "./models.js";
 import { ErrorCard } from "./error-card.js";
+import { renameCardLabels, errorCardLabels } from "./labels.js";
 import type { ToolViewProps } from "./types.js";
 
 const rowStyle: CSSProperties = {
@@ -54,16 +56,31 @@ const detailStyle: CSSProperties = {
  * @param props - the standard tool-view owner props.
  * @returns the disclosure row, or a plain "Rename" row while it is running.
  */
-export function HashlineRenameRow({ block, cwd, home }: ToolViewProps): ReactNode {
+export function HashlineRenameRow({ block, cwd, home, t }: ToolViewProps): ReactNode {
 	const [open, setOpen] = useState(false);
 	const error = errorCardModel(block);
 	const model = renameCardModel(block, cwd, home);
+	// The card's own words come from the vocabulary namespace; the MODEL layer
+	// owns the paths and the migrated details, never the words in front of them.
+	const labels = useMemo(() => renameCardLabels(t), [t]);
+	const errorLabels = useMemo(() => errorCardLabels(t), [t]);
 	const expandable = error !== null || model !== null;
-	const title = error !== null ? "Rename failed" : model?.title ?? "Rename";
-	const summary = error !== null ? error.message : model?.summary ?? "";
+	const title = error !== null ? labels.failedTitle : labels.title;
+	// issue 375: the summary and the migrated details are words + counts, so the
+	// model layer names the wording and the client renders it in the reader's
+	// language. A failure's own message stays verbatim (the model's channel).
+	const renderText = (part: CardText): string =>
+		part.kind === "literal" ? part.text : t(part.key, part.params);
+	const detailText = (row: RenameCardRow): string => {
+		const parts = row.detail.map(renderText);
+		if (row.error !== undefined) parts.unshift(row.error);
+		return parts.join(" · ");
+	};
+	const summary =
+		error !== null ? error.message : (model?.summary ?? []).map(renderText).join(" · ");
 	const body =
 		error !== null
-			? jsx_(ErrorCard, { model: error })
+			? jsx_(ErrorCard, { model: error, labels: errorLabels })
 			: model === null
 				? null
 				: jsx_("div", {
@@ -85,11 +102,11 @@ export function HashlineRenameRow({ block, cwd, home }: ToolViewProps): ReactNod
 									}),
 									jsx_("span", {
 										style: row.status === "failed" ? failedStyle : statusStyle,
-										children: row.status === "failed" ? "failed" : "renamed",
+										children: row.status === "failed" ? labels.statusFailed : labels.statusRenamed,
 									}),
-									row.detail === ""
+									detailText(row) === ""
 										? null
-										: jsx_("span", { style: detailStyle, children: row.detail }),
+										: jsx_("span", { style: detailStyle, children: detailText(row) }),
 								],
 							}),
 						),
