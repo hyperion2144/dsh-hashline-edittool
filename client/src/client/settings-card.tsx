@@ -46,6 +46,8 @@ import {
 	validateStoreBudgetDraft,
 	LSP_IDLE_SPEC,
 	readLspIdleMs,
+	readWritePreview,
+	type WritePreviewMode,
 	validateLspIdleDraft,
 	type SettingsCardView,
 	type SettingsControllerFace,
@@ -254,6 +256,18 @@ const FORMAT_MODE_LABEL: Record<(typeof FORMAT_MODES)[number], string> = {
 	range: "范围",
 };
 
+/**
+ * `write.preview` (map #354), in display order: how much of a successful
+ * write the model gets to see afterwards. `confirmation` serves nothing at
+ * all, so the segmented row sits beside the other OUTPUT switches.
+ */
+const WRITE_PREVIEW_MODES = ["full", "diff", "confirmation"] as const;
+const WRITE_PREVIEW_LABEL: Record<(typeof WRITE_PREVIEW_MODES)[number], string> = {
+	full: "全文",
+	diff: "diff",
+	confirmation: "仅确认",
+};
+
 /** Human-readable byte size; the figure a user judges a download by. */
 function bytesText(size: number | undefined): string {
 	if (size === undefined) return "";
@@ -294,6 +308,7 @@ function readCore(snapshot: ConfigFormSnapshot): {
 	contextLines: number;
 	requireLineContent: boolean;
 	lineNumbers: boolean;
+	writePreview: WritePreviewMode;
 } {
 	const value = snapshot.value ?? {};
 	return {
@@ -302,6 +317,7 @@ function readCore(snapshot: ConfigFormSnapshot): {
 		contextLines: typeof value.context_lines === "number" ? value.context_lines : 3,
 		requireLineContent: value.require_line_content === true,
 		lineNumbers: value.line_numbers === true,
+		writePreview: readWritePreview(snapshot),
 	};
 }
 
@@ -964,6 +980,28 @@ function HashlineSettingsPageView({ controller }: { readonly controller?: Settin
 						<span className="dshl-mgr-grow" />
 						<span className="dshl-mgr-hint">diff 与错误回显里上下各留几行（0–20）。域外或非数字则恢复默认。</span>
 					</div>
+
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">write 后回显</span>
+						{WRITE_PREVIEW_MODES.map((mode) => (
+							<Button
+								key={mode}
+								size="sm"
+								variant={core.writePreview === mode ? "primary" : undefined}
+								disabled={!writable}
+								onClick={() =>
+									void write(`writePreview:${mode}`, () =>
+										writeField("write", { preview: mode }),
+									)
+								}
+							>
+								{WRITE_PREVIEW_LABEL[mode]}
+							</Button>
+						))}
+					</div>
+					<p className="dshl-mgr-hint">
+						{"仅确认：只回一行「Wrote …」，不回显内容、不分配锚点——要接着改先 read。全文：回读整份文件与锚点（今天的行为）。"}
+					</p>
 
 					<h4 className="dshl-mgr-section">编辑</h4>
 					<div className="dshl-mgr-master">

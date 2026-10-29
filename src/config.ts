@@ -122,6 +122,16 @@ lsp?: {
 		editorconfig?: boolean;
 	};
 	/**
+	 * The `write` capability's namespace entry (map #354).
+	 *
+	 * `preview` (default `full`) decides how much of a successful write comes
+	 * back to the model: `full` re-reads the file and serves its rows,
+	 * `confirmation` returns one line and serves nothing.
+	 */
+	write?: {
+		preview?: "full" | "diff" | "confirmation";
+	};
+	/**
 	 * Bounded-anchor-store budgets exposed by issue #179 / #180.
 	 *
 	 * Unset on a per-field basis falls back to the host-side constants
@@ -190,6 +200,14 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 			auto: z.union([z.boolean(), "off", "full", "range"]),
 			fallback_full_file: z.boolean(),
 			editorconfig: z.boolean(),
+		})
+		.volatile(),
+	// `write.preview` (map #354). A namespace rather than a top-level scalar:
+	// `write` is a capability surface, and future write settings have a home.
+	// Volatile on the OUTERMOST node only, like `format` / `lsp` / `store`.
+	write: z
+		.object({
+			preview: z.union(["full", "diff", "confirmation"]),
 		})
 		.volatile(),
 		// Bounded-store budgets (#179 / #180). `.volatile()` sits on the outermost
@@ -345,13 +363,14 @@ export {
 	lspIdleTimeoutMs,
 	isAutoDiagnosticsEnabled,
 	autoFormatMode,
+	writePreviewMode,
 	formatFallbackFullFile,
 	isEditorconfigEnabled,
 	isJsonOutput,
 	lineNumbersEnabled,
 } from "./infra/settings.js";
-export type { AutoFormatMode, EffectiveHashlineConfig, OutputFormat } from "./infra/settings.js";
-import { normalizeAutoFormatMode } from "./infra/settings.js";
+export type { AutoFormatMode, EffectiveHashlineConfig, OutputFormat, WritePreviewMode } from "./infra/settings.js";
+import { normalizeAutoFormatMode, normalizeWritePreviewMode } from "./infra/settings.js";
 import {
 	defaultEffectiveConfig,
 	getEffectiveConfig,
@@ -489,6 +508,12 @@ const sep =
 		typeof settings?.format?.editorconfig === "boolean"
 			? settings.format.editorconfig
 			: defaults.editorconfig;
+	// `write.preview` (#354): how much the echo returns. Unrecognized or absent
+	// falls back to the snapshot default, like every other field here.
+	const writePreview = normalizeWritePreviewMode(
+		settings?.write?.preview,
+		defaults.writePreview,
+	);
 	const prev = getEffectiveConfig();
 	const flagChanged = prev.requireLineContent !== requireLine;
 	const astChanged = prev.astEnabled !== astOn;
@@ -510,6 +535,7 @@ const sep =
 		autoFormatMode,
 		formatFallbackFullFile: fallbackFullFile,
 		editorconfig: editorconfigCfg,
+		writePreview,
 		grepRespectGitignore,
 	};
 	setEffectiveSnapshot(next);

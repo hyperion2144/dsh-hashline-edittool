@@ -774,7 +774,6 @@ Map #322 的 `delete` 工具需要把「删文件」与「回收锚点库」做�
 - `CHANGELOG.md` `[Unreleased]`：delete 工具 + VACUUM 修复各一条
 - `CONTEXT.md`：delete / path purge / already-absent / logical vs physical reclaim
 
-<<<<<<< HEAD
 ## 2026-10-26 — format 缩进单位推断 + `.editorconfig` 默认开启 (#336)
 
 **Type:** contract（ADR-0019 2026-10-26 修正案：缩进单位改按行间步长 + 重复宽度网格推断，`.editorconfig` 默认由 opt-in 翻为 on）
@@ -820,3 +819,22 @@ Map #337 的 `rename` 工具需要在移动普通文件的同时把 hash-store �
 - `README.md` / `README.zh.md`：工具表、错误码、Store 迁移段、架构工具数 9→10
 - `CHANGELOG.md` `[Unreleased]`：rename 工具一行
 - `CONTEXT.md`：rename / path migration / anchor preservation across path
+=======
+## 2026-10-27 — ADR-0025 + write 预览模式规格
+
+**Type:** new decision record + spec
+**Confidence:** High
+**Evidence:** `src/tools/tool-write-shadow.ts`, `src/domain/write/model-text.ts`, `src/domain/format/write-section.ts`, `src/config.ts`, `src/infra/settings.ts`, `client/src/client/settings-card.tsx`, `test/core/write-preview-{confirmation,diff,settings}.test.ts`, `client/test/diff-rows.test.ts`, `npm run typecheck` / `npm test` / `npm run typecheck -w client` / `npm test -w client` / `npm run build -w client`
+
+### Why
+
+Map #354：`write` 的写后回显是输出行为，应归用户；默认从整文件回读改成统一 diff（只在 update 上生效），并给出「仅一行确认」的静默形态。决策票 #355/#356/#357，规格 #359。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0025-write-preview-modes.md` (created)
+- `docs/specs/write-preview-spec.md` (created)
+- `README.md` / `README.zh.md`：工具表 write 行、Write preview 段、配置样例、设置卡片清单
+- `CHANGELOG.md` `[Unreleased]`：`write.preview` 一条
+- `CONTEXT.md`：Preview mode 词条
+- `src/infra/settings.ts` / `src/config.ts`：快照默认 `diff`

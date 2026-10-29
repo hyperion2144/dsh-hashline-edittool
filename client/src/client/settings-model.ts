@@ -295,3 +295,20 @@ export function readLspIdleMs(snapshot: ConfigFormSnapshot): number | undefined 
 	const raw = (lsp as { idle_timeout_ms?: unknown }).idle_timeout_ms;
 	return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
+
+/** `write.preview` (map #354): how much of a successful write the model sees. */
+export type WritePreviewMode = "full" | "diff" | "confirmation";
+
+/**
+ * Read `write.preview` out of the raw `write` subtree, without trusting its
+ * shape. ALL THREE modes must survive the round trip — a `diff` saved in the
+ * config must render as `diff`, not fall back to `full` (#365) — and an absent
+ * or unrecognized value is the host's `diff` default.
+ */
+export function readWritePreview(snapshot: ConfigFormSnapshot): WritePreviewMode {
+	const write = snapshot.value?.write;
+	if (typeof write !== "object" || write === null) return "diff";
+	const preview = (write as { preview?: unknown }).preview;
+	if (preview === "full" || preview === "diff" || preview === "confirmation") return preview;
+	return "diff";
+}

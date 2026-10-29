@@ -124,6 +124,23 @@ export const READ_GUIDANCE: ToolGuidance = {
 	],
 };
 
+/**
+ * Read guidance, flag-aware: when the user chose `write.preview: confirmation`
+ * (map #354) a write serves no rows at all, so the model has to `read` before
+ * editing what it just wrote. The section is rebuilt live on a flag flip, the
+ * same way the edit guidance already is.
+ */
+export function readGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
+	if (cfg.writePreview !== "confirmation") return READ_GUIDANCE;
+	return {
+		...READ_GUIDANCE,
+		lines: [
+			...READ_GUIDANCE.lines,
+			"`read`: a `write` under the user's `confirmation` preview returns only a one-line confirmation — no file content and no anchors were served, so read the file before editing what that write produced.",
+		],
+	};
+}
+
 export const UNDO_DESCRIPTION =
 	"Undo the last edit on a file, reverting it to its previous state. Use when an edit produced " +
 	"incorrect results (e.g., wrong content, duplicated lines, broken syntax).";

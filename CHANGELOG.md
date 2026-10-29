@@ -10,6 +10,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - `format.fallback_full_file` 设置（默认关）：range 模式下服务器不支持局部格式化时的回退必须是显式选择——自动路径静默跳过，`format` 工具显式带 range 则以 `E_FORMAT_UNSUPPORTED` 拒绝而不是悄悄格式化整文件（#315）。
 - 新增 `delete` 工具：删除普通文件并回收该路径的 `anchor_meta` / `anchor_lines` / 所有会话的 `served` / 所有深度的 `undo`，报告逻辑释放量；物理空间在存储关闭时 VACUUM 归还（#322）。
 - 新增 `rename` 工具：重命名/移动普通文件时把旧路径的四族锚点行迁到新路径，已分配与服务过的锚点无需重读继续可用；目标已存在即拒绝，批量按请求顺序逐对执行（#337）。
+- 新增 `write.preview` 设置（默认 `diff`）：`write` 写后回显可选统一 diff / 整文件回读 / 仅一行确认；`confirmation` 不回显内容也不分配锚点，卡片 gutter 只有行号（#354 / #359）。
 
 ### Changed
 

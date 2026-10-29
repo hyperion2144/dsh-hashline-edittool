@@ -178,3 +178,7 @@ _Avoid_: repath (implementation slang), path update
 A served anchor remains usable after a rename because the rows moved with the file, not because the model re-read it. The old path keeps no rows; the new path is the same batch.
 _Avoid_: anchor copy, re-anchor
 
+**Preview mode**:
+`write.preview` — `full` re-reads the written file and serves every row; `diff` renders an update as the one unified diff every edit tool uses (creates stay read-style); `confirmation` returns a single line and serves nothing, so its anchors do not exist yet. The user's switch, not a tool parameter (#354).
+_Avoid_: echo level, auto-read (that names only the `full` mode)
+

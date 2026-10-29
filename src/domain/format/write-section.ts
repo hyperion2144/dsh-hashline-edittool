@@ -12,6 +12,12 @@
  * preview's fresh anchors (`served.hashes`), so the section is still built
  * only after `readAndServe`.
  *
+ * A mode that returns no preview at all (`write.preview: confirmation`, map
+ * #354) passes `rowless`: the section keeps the header and the counters and
+ * returns NO rows — a row would have to quote an anchor the model cannot
+ * address, and content-hash stand-ins are exactly the rows the model cannot
+ * write with.
+ *
  * @module dsh-hashline-edittool/domain/format/write-section
  */
 import { lineHashesPure } from "../../hashline/hash-assign.js";
@@ -31,6 +37,13 @@ export interface WriteSectionInput {
 	preCallServed: ReadonlySet<string>;
 	/** Create vs update — a create's rows cannot be "also in the main diff". */
 	created: boolean;
+	/**
+	 * The mode served no preview at all (`write.preview: confirmation`, map #354):
+	 * the section keeps its header and counters and returns NO rows. Eligibility
+	 * is empty by construction — never content-hash-derived, because that would
+	 * render rows whose anchors the model cannot use.
+	 */
+	rowless?: boolean;
 	/** The auto-read preview's per-line anchors (`""` where none was allocated). */
 	servedHashes?: string[];
 	/**
@@ -59,6 +72,21 @@ export function buildWriteFormatSection(input: WriteSectionInput): FormatSection
 		served: input.preCallServed,
 	});
 	const changed = formatterChangedLines(modelLines, finalLines, provenance);
+	if (input.rowless === true) {
+		// No echo ⟹ no anchors to quote: header + counters only (#354).
+		return buildFormatSection({
+			status: "formatted",
+			...(input.outcome.server !== undefined ? { server: input.outcome.server } : {}),
+			...(input.outcome.mode !== undefined ? { mode: input.outcome.mode } : {}),
+			...(input.outcome.requested !== undefined ? { requested: input.outcome.requested } : {}),
+			...(input.outcome.applied !== undefined ? { applied: input.outcome.applied } : {}),
+			finalLines,
+			finalHashes: [],
+			changed,
+			eligibility: new Map<number, boolean>(),
+			alsoInMain: new Set<number>(),
+		});
+	}
 	// #312 (spec review): an update withholds a changed row ONLY when the
 	// preview provably shows it — the model rewrote the (single) pre-disk
 	// line the row came from, so the before→model hunks render that line. A
