@@ -246,7 +246,7 @@ just gave you, or re-read.
   card draws a `N of M files failed` banner plus one tab per failed file (marked in the tab strip).
   The aggregate `[E_BATCH_ABORT]` message, and its "nothing was written", belongs to calls where
   **every** file failed.
-- Up to 32 edits per call.
+- No cap on the number of edits per call — each edit addresses its own line, so a batch is only as long as the change.
 
 ### `op` semantics
 

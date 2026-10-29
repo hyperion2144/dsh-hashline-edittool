@@ -56,7 +56,7 @@ export const RENAME_ERROR_CODES = [
 	"[E_ACCESS]",
 ] as const;
 
-/** Aligns with `edit`/`delete`'s 32-item cap; a rename batch is not a tree walk. */
+/** A rename batch names PAIRS, not ops — this ceiling is its own (#380). */
 const RENAME_MAX_PAIRS = 32;
 
 /** One requested pair, after shape validation. */

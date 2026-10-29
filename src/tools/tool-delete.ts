@@ -51,7 +51,7 @@ export const DELETE_ERROR_CODES = [
 	"[E_ACCESS]",
 ] as const;
 
-/** Aligns with `edit`'s 32-item cap; a delete batch is not a tree walk. */
+/** A delete batch names PATHS, not ops — this ceiling is its own (#380). */
 const DELETE_MAX_PATHS = 32;
 
 /** One path that was removed (or was already gone). */
