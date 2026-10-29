@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-10-29
+
 ### Added
 
 - `lsp.idle_timeout_ms` 设置：语言服务器空闲超过该窗口（默认 5 分钟，0 = 永不）即被回收，下次用到再拉起（#306）。
