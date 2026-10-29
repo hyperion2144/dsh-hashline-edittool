@@ -24,7 +24,6 @@
  */
 
 import type { ParameterPropertySpec, ParameterSchemaSpec } from "@deepseek-ai/dsh-tools";
-import { EDITS_MAX_ITEMS } from "../infra/constants.js";
 import type { AnchorRef } from "../hashline/declaration.js";
 import { isRec, normalizeFilePath, rejectUnknownFields } from "../infra/utils.js";
 
@@ -441,11 +440,11 @@ export function assertEditRequest(
 			'[E_BAD_SHAPE] Edit request requires a non-empty "edits" array.',
 		);
 	}
-	if (request.edits.length > EDITS_MAX_ITEMS) {
-		throw new Error(
-			`[E_BAD_SHAPE] Edit accepts at most ${EDITS_MAX_ITEMS} edits; got ${request.edits.length}. Split the batch.`,
-		);
-	}
+	// No cap on the batch length (#380). The pre-0.4 `batch_edit` capped a
+	// batch at 32 because a batch rewrote the file wholesale; an `edit`
+	// addresses each line on its own, so the count carries no resource or
+	// consistency risk — only the cost of splitting one change across several
+	// calls, each of which has to re-read the file first.
 	request.edits.forEach((item, index) => {
 		assertEditItem(item, index, hasTopLevelPath, requireLineContent);
 	});

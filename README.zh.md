@@ -189,7 +189,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
   各自带错误码与补救提示，网页卡片给出 `N of M files failed` 横幅，并为每个失败文件开一个
   tab（tab 条上标出）。聚合的 `[E_BATCH_ABORT]` 文案、连同它的「什么都没写」，只属于
   **每个文件都失败**的调用。
-- 每次调用最多 32 条编辑。
+- 每次调用的编辑条数不限 —— 每条编辑各自寻址自己的行，一批有多长只取决于改动本身。
 
 ### `op` 语义
 

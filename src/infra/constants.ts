@@ -51,14 +51,6 @@ export const HASH_STORE_VERSION = 7;
  * stack is a deeper text payload per path for a capability nobody asked for.
  */
 export const UNDO_STACK_DEPTH = 3;
-/**
- * Per-call cap on the `edits` array length. Same default (32) as the
- * pre-0.4 `batch_edit` cap. Above this, the call is hard-rejected with
- * `[E_BAD_SHAPE]` — the model must split the batch.
- */
-export const EDITS_MAX_ITEMS = 32;
-/** @deprecated — kept for backward compat with pre-0.4 callers. */
-export const BATCH_EDIT_MAX_ITEMS = EDITS_MAX_ITEMS;
 export const SERVED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * Anchor-state row family TTL (issue #136). Anchor state is per cwd + path,
