@@ -71,6 +71,8 @@
 
 **语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进优先取项目 `.editorconfig`（`format.editorconfig` 默认为开），否则按文件自身的缩进**步长**推断（4 空格的深层文件仍是 4 空格，见 #336）。`format.auto` 是三态开关（#315）：**off**（默认）绝不背着工具悄悄格式化；**full** 在每次真正改了内容的 `write`/`edit`/`ast_edit` 后格式化整个文件；**range** 只格式化本次调用改到的行——仅当服务器不支持局部格式化**且** `format.fallback_full_file` 开启时才回退整文件（否则该次自动格式化静默跳过，而显式带 range 调用 `format` 工具会以 `E_FORMAT_UNSUPPORTED` 明确拒绝、绝不擅自猜测）。只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · r restored · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312）；被格式化器改回编辑前原文的行**只定位、不引用**——每段连续行折叠成一条 `@@ ~start,count @@ scope` 定位行加一句 restored 摘要（#315）；本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
 
+**写后回显。** `write` 写后回显多少是用户的决定（`write.preview`，#354）。**diff**（默认）把覆盖渲染成与所有编辑工具同一套统一 diff——`--- path` / `+++ path`、`@@ … @@ scope()` 段头、`context_lines` 上下文行，`+` 行与上下文行的锚点立即可用；新建没有 before 侧，仍走回读式全文。**full** 保留整文件自动回读预览。**confirmation** 只回一行（`Wrote <path> (update).`）且不 serve 任何东西：没有文件窗口、没有 resume 令牌、没有锚点——卡片仍画 diff，但 gutter 只有行号。JSON 输出同构：`diff` 回与 `edit` 相同的 marker-keyed diff 字典，`confirmation` 回 `{path, operation}`。
+
 **插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断、语言服务器空闲回收窗口。改完提交即生效——不用碰 YAML。
 
 **处处热切换。** 提交的设置改动**下一次工具调用**即生效——输出格式、分隔符、上下文行数、AST/LSP 开关（已实测：会话中途切换 `output_format`，模型收到的内容立即改变）。影响面最大的开关也有处理：切换 `require_line_content` 会销毁并重挂 `edit` 工具的 schema，模型下一步就看到新的 `{ anchor, line }` 参数集——全程无需重启。
@@ -218,7 +220,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | --- | --- |
 | `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset` 收 1 起的行号**或锚点**（含该行；纯数字字符串即该行号的文本形态，按行号解析，limit 的行数同理）；`limit` 收行数**或锚点**（含该行）—— 关掉行号后，锚点是你唯一能看到的游标。text 模式的每个窗口都以一句话收尾：正文被截断时是 `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]`，否则 `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`（纯行号游标则是 `offset=N`），读到底则 `[Lines X-Y of N. End of file.]`。超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。字节不是合法 UTF-8 的文件照样可读：有损解码（`U+FFFD`），渲染为不 served 的 `[line N] content` 行，不可编辑 —— 但展示即观测：有损读同样告知宿主已读过该文件，`write` 仍可整体覆盖（`edit` 拒绝）。 |
 | `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。有损文件（非合法 UTF-8）被拒绝（`[E_LOSSY_BYTES]`）；无损文件（含 NUL 的合法 UTF-8）照常编辑、写回字节一致。 |
-| `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加带新鲜锚点的自动 read 预览**，下一次编辑不再需要单独 read。 |
+| `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加写后回显**，形态由用户的 `write.preview` 决定（#354）。**diff**（默认）把覆盖渲染成与 `edit` 同一套统一 diff——下一次编辑无需单独 read——而新建没有 before 侧，仍走回读式全文；**full** 保留带新鲜锚点的整文件自动回读；**confirmation** 只回一行（`Wrote <path> (create\|update).`）且不 serve 任何东西，要改先 read。 |
 | `grep` | JavaScript 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。清单由 ripgrep 出，因此 `.gitignore` 的路径默认跳过（见 `grep_respect_gitignore`）。`-C N` 回显上下文行；命中即 served → 可直接编辑。被后端判为非 UTF-8 文本的文件（一个 NUL 字节就够）照样搜索，口径同 `rg -a`：原始字节按 UTF-8 解码。字节合法（含 NUL）时行会 served，文件照常可编辑；存在无法解码的字节（`U+FFFD`）时行**不 served** —— 渲染为 `[line N] content`，与任何拿不到锚点的行同形，且 `edit` 拒绝该文件（`[E_LOSSY_BYTES]`）。UTF-16 文件按它的字节搜，里面的 ASCII 文本仍然匹配不上，与 `rg -a` 完全一致。超出单次响应预算的命中区按行切分：放得下的行带锚点 served，其余行经 `resume` 令牌续取；切点不会落在该节首个命中之前。 |
 | `undo_last_edit` | `{ path }` 撤销该文件最后一次 hashline 编辑 —— 仅当文件仍与存储的编辑后内容一致时；可跨重启。 |
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
@@ -262,6 +264,8 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
       auto: off              # write/edit/ast_edit 后的格式化模式：off | full | range（存量 true→full、false→off）
       fallback_full_file: false # range 模式：服务器不支持局部格式化时回退整文件
       editorconfig: true    # 格式化时读取 .editorconfig 缩进设置（默认开）
+    write:
+      preview: diff          # 写后回显：full | diff | confirmation（默认 diff）
 ```
 
 从 0.1.6 迁移？旧 `~/.dsh/settings.yaml` 的导入由 **dsh 自己**在升级时完成；本插件不再读取、迁移或写入任何设置文件——本页的条目配置是唯一真相源。旧的 `hashline:` 键若没带过来，在上面的表单里补上即可。

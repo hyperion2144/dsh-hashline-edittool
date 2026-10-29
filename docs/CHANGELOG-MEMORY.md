@@ -799,3 +799,22 @@ Map #322 的 `delete` 工具需要把「删文件」与「回收锚点库」做�
 - **缩进单位来自结构**：绝对宽度是嵌套深度，不是单位；步长众数与重复宽度 GCD 两个读数取较大、且能覆盖 ≥80% 缩进行者，个别错缩进行不能定义单位。
 - **`.editorconfig` 默认生效**：项目标准优先于文件启发式；显式 `false` 才关。
 - **不读 rustfmt / gopls**：交给 server 自身（ADR-0019 原条款不变）。
+
+## 2026-10-27 — ADR-0025 + write 预览模式规格
+
+**Type:** new decision record + spec
+**Confidence:** High
+**Evidence:** `src/tools/tool-write-shadow.ts`, `src/domain/write/model-text.ts`, `src/domain/format/write-section.ts`, `src/config.ts`, `src/infra/settings.ts`, `client/src/client/settings-card.tsx`, `test/core/write-preview-{confirmation,diff,settings}.test.ts`, `client/test/diff-rows.test.ts`, `npm run typecheck` / `npm test` / `npm run typecheck -w client` / `npm test -w client` / `npm run build -w client`
+
+### Why
+
+Map #354：`write` 的写后回显是输出行为，应归用户；默认从整文件回读改成统一 diff（只在 update 上生效），并给出「仅一行确认」的静默形态。决策票 #355/#356/#357，规格 #359。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0025-write-preview-modes.md` (created)
+- `docs/specs/write-preview-spec.md` (created)
+- `README.md` / `README.zh.md`：工具表 write 行、Write preview 段、配置样例、设置卡片清单
+- `CHANGELOG.md` `[Unreleased]`：`write.preview` 一条
+- `CONTEXT.md`：Preview mode 词条
+- `src/infra/settings.ts` / `src/config.ts`：快照默认 `diff`

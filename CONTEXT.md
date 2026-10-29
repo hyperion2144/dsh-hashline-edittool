@@ -165,3 +165,7 @@ _Avoid_: not found, skipped
 Logical reclaim is the immediate drop in `(page_count − freelist_count) × page_size` after the purge; physical reclaim is the file size returning at store shutdown when the `pending_vacuum` marker triggers a synchronous VACUUM. The tool reports the former and marks the latter; it never VACUUMs inline.
 _Avoid_: freed bytes (say which), compact
 
+**Preview mode**:
+`write.preview` — `full` re-reads the written file and serves every row; `diff` renders an update as the one unified diff every edit tool uses (creates stay read-style); `confirmation` returns a single line and serves nothing, so its anchors do not exist yet. The user's switch, not a tool parameter (#354).
+_Avoid_: echo level, auto-read (that names only the `full` mode)
+

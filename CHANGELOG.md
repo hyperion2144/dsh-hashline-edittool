@@ -9,6 +9,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 - `lsp.idle_timeout_ms` 设置：语言服务器空闲超过该窗口（默认 5 分钟，0 = 永不）即被回收，下次用到再拉起（#306）。
 - `format.fallback_full_file` 设置（默认关）：range 模式下服务器不支持局部格式化时的回退必须是显式选择——自动路径静默跳过，`format` 工具显式带 range 则以 `E_FORMAT_UNSUPPORTED` 拒绝而不是悄悄格式化整文件（#315）。
 - 新增 `delete` 工具：删除普通文件并回收该路径的 `anchor_meta` / `anchor_lines` / 所有会话的 `served` / 所有深度的 `undo`，报告逻辑释放量；物理空间在存储关闭时 VACUUM 归还（#322）。
+- 新增 `write.preview` 设置（默认 `diff`）：`write` 写后回显可选统一 diff / 整文件回读 / 仅一行确认；`confirmation` 不回显内容也不分配锚点，卡片 gutter 只有行号（#354 / #359）。
 
 ### Changed
 

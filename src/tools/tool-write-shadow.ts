@@ -11,10 +11,12 @@
  * The execute body:
  *   1. resolves the target and reads the pre-write content (`before`),
  *   2. writes through the fs bridge (policy + observation preserved),
- *   3. re-reads via `readAndServe` so the written lines are served — the model
- *      sees the `行号:锚点` preview and can edit immediately,
+ *   3. assembles the MODEL channel per `write.preview` (map #354): `full`
+ *      re-reads via `readAndServe` and serves every written row; `diff` draws an
+ *      update as the unified diff every edit tool uses (minting only the rows it
+ *      renders); `confirmation` returns one line and serves nothing,
  *   4. computes structured diff rows (`-`/`+`/context, each with its anchor)
- *      for the web card's gutter.
+ *      for the web card's gutter (blank hashes under `confirmation`).
  *
  * Contract parity: the JSON parameter vocabulary
  * (`{file_path, content, sandbox_permissions?, justification?}`) and the
@@ -29,18 +31,18 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { execCwd, execSessionKey, openWorkspaceStore, anchorForInWorkspace } from "../domain/session/session-view.js";
-import { createResume, responseBudgetChars } from "../infra/response-stream.js";
+import { createResume, responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import { withWorkspace } from "../domain/session/session-view.js";
 import { formatWindowSummary } from "../domain/session/read-window.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
-import { computeHunkDiffs, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
-import { detectEnding, genDiff, restoreEndings, stripBOM } from "../render/edit-diff.js";
+import { computeHunkDiffs, diffDictFrom, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
+import { detectEnding, genDiff, restoreEndings, stripBOM, type DiffBlock } from "../render/edit-diff.js";
 import { anchorsFor } from "../domain/session/anchor-state.js";
 import { loadServed } from "../domain/session/served.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf, splitLines } from "../infra/utils.js";
-import { autoFormatMode, isJsonOutput } from "../config.js";
+import { autoFormatMode, isJsonOutput, writePreviewMode } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
 import {
@@ -54,12 +56,10 @@ import {
 import { runAutoFormat, type AutoFormatOutcome } from "../domain/format/auto-format.js";
 import { buildWriteFormatSection } from "../domain/format/write-section.js";
 import type { FormatSection } from "../domain/format/types.js";
-import { renderFormatSection } from "../domain/edit/edit-response.js";
+import { AUTO_READ_HEADING, buildWriteModelText, writeConfirmationText, type WriteModelBase } from "../domain/write/model-text.js";
+import { renderUnifiedDiff } from "../domain/edit/edit-response.js";
 
 /** Canonical write value: built-in contract plus the card/model extensions. */
-/** #273 (review M2): said when the overwritten file's previous bytes were not valid UTF-8 — no honest per-line diff exists against a U+FFFD stand-in. */
-const WRITE_LOSSY_BEFORE_NOTE =
-	"[Previous content had undecodable bytes (shown as U+FFFD); its per-line diff is omitted, and the file was fully overwritten as UTF-8.]";
 
 export interface WriteValue {
 	path: string;
@@ -76,9 +76,6 @@ export interface WriteValue {
 	diagnostics?: DiagMetaEntry[];
 	modelText: string;
 }
-/** Model-facing heading that precedes the auto-read preview (hook parity). */
-const AUTO_READ_HEADING = "--- Auto-read (hashline anchors) ---";
-
 
 /**
  * Build the `write` shadow definition.
@@ -319,13 +316,61 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 							});
 				const diagMeta = diagnostics === undefined ? undefined : diagnosticsMeta([diagnostics]);
 				const diagSection = diagnostics === undefined ? "" : formatDiagnosticsSection([diagnostics]);
-				// ---- model channel: serve the written lines (fresh anchors) ----
-				const served = await readAndServe(io, rawPath, cwd, {
-					sessionKey,
-					maxChars: responseBudgetChars(),
-					signal,
-					exec,
-				}).catch(() => undefined);
+				// ---- model channel ----
+				// `write.preview` (map #354) decides how much of the echo returns:
+				// `full` re-reads the file and serves every written row; `diff` draws the
+				// update as a unified diff; `confirmation` returns one line and serves
+				// nothing — no file window, no resume token, no anchors minted.
+				const previewMode = writePreviewMode();
+				// A diff needs BOTH sides and a faithful `before`: a create has none, and a
+				// lossy pre-write read has no honest old text (#273) — those two stay on
+				// the read-style path, which is also what `full` always did.
+				const useDiff = previewMode === "diff" && operation === "update" && !beforeLossy;
+				// The read-style path is `full`, `diff` outside its diff case (create /
+				// lossy before), and nothing under `confirmation` — that mode serves nothing.
+				const readStyle = previewMode !== "confirmation" && !useDiff;
+				const served = readStyle
+					? await readAndServe(io, rawPath, cwd, {
+							sessionKey,
+							maxChars: responseBudgetChars(),
+							signal,
+							exec,
+						}).catch(() => undefined)
+					: undefined;
+				// The `+` side is minted for the rows the diff RENDERS (the card's own
+				// allocation, #188) — the same rows the model reads, so they are writable
+				// immediately.
+				let diffAnchors: string[] | undefined;
+				let diffBlocks: DiffBlock[] | undefined;
+				let diffText: string | undefined;
+				if (useDiff) {
+					diffAnchors = await allocateForRenderedRows(absolute, before ?? "", after, beforeHashes, {
+						cwd,
+						sessionKey,
+					});
+					diffBlocks = genDiff(
+						before ?? "",
+						after,
+						contextLinesCfg(),
+						diffAnchors,
+						beforeHashes,
+						undefined,
+						{ path: absolute },
+					).blocks;
+					if (!isJsonOutput()) {
+						// A diff is a REPORT, not a file window: it spills through the EDIT path
+						// (ADR-0013), never through read's `[Lines X-Y of N]` sentence.
+						const spilled = await spillModelTextOverflow({
+							sessionKey,
+							producer: "write",
+							consumer: "read",
+							kind: "report-segment",
+							modelText: renderUnifiedDiff([{ path: rawPath, blocks: diffBlocks }]),
+							budgetChars: responseBudgetChars(),
+						});
+						diffText = spilled.modelText;
+					}
+				}
 				// The section is completed here — after the preview — because
 				// eligible rows quote the preview's fresh anchors (write-section.ts).
 				let formatSection: FormatSection | undefined;
@@ -343,7 +388,8 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 							sessionKey,
 							preCallServed,
 							created: operation === "create",
-							servedHashes: served?.hashes,
+							rowless: previewMode === "confirmation",
+							servedHashes: served?.hashes ?? diffAnchors,
 							// #312: a lossy pre-write read has no honest before text —
 							// withholding against U+FFFD stand-ins would silently drop
 							// rows, so the section stays conservative (shows).
@@ -376,64 +422,69 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 						windowSentence = formatWindowSummary(previewWindow, { resumeToken: token });
 					}
 				}
-				// JSON mode stays PURE JSON — the read envelope's rule: the window and the
-				// token ride INSIDE the payload instead of being appended as prose, which
-				// used to leave `modelText` unparseable (and threw when diagnostics were
-				// merged into it below).
-				const baseText =
-					served === undefined
-						? `Wrote ${rawPath} (${operation}).`
-						: isJsonOutput() && served.normalized !== undefined && served.hashes !== undefined
-							? JSON.stringify({
-									// The shared read payload already knows how to carry a window;
-									// the token is the one field it does not take, so it is added.
-									...buildReadJson(served.normalized, served.hashes, 1, served.hashes.length, rawPath, undefined, previewWindow),
-									...(continuation === undefined ? {} : { continuation }),
-								})
-							: `${AUTO_READ_HEADING}\n${served.text}${windowSentence === undefined ? "" : `\n\n${windowSentence}`}`;
-				// #131: diagnostics ride BOTH channels — a field in the JSON envelope,
-				// an appended section in text mode. The envelope stays parseable.
-				// The JSON envelope carries the marker-keyed projection (diff-aligned);
-				// the value field keeps the meta shape for the web card.
+				// The model channel is assembled in ONE place (`domain/write/model-text`):
+				// the preview mode decides the base, and this call appends the sections in
+				// the contract's order (diagnostics → lossy note → format section) while
+				// keeping a JSON envelope parseable.
 				const diagJson = diagnostics === undefined ? undefined : diagnosticsJson([diagnostics]);
-				const modelText =
-					diagSection === ""
-						? baseText
-						: isJsonOutput() && baseText.startsWith("{")
-							? JSON.stringify({ ...JSON.parse(baseText) as object, diagnostics: diagJson })
-							: `${baseText}\n\n${diagSection}`;
-
-				// #273 (review M2): a lossy pre-write read means the OLD side of this
-				// overwrite was U+FFFD stand-ins — say so where the model reads. Text
-				// appends prose; JSON rides inside the payload, which stays parseable.
-				const finalModelText = !beforeLossy
-					? modelText
-					: isJsonOutput() && modelText.startsWith("{")
-						? JSON.stringify({
-								...(JSON.parse(modelText) as object),
-								beforeLossy: true,
-								warnings: [WRITE_LOSSY_BEFORE_NOTE],
-							})
-						: `${modelText}\n\n${WRITE_LOSSY_BEFORE_NOTE}`;
-				// map #275: the format section rides both channels — appended prose in
-				// text mode, a field inside the JSON envelope (stays parseable).
-				const withFormats =
-					formatSection === undefined
-						? finalModelText
-						: isJsonOutput() && finalModelText.startsWith("{")
-							? JSON.stringify({ ...(JSON.parse(finalModelText) as object), formats: [formatSection] })
-							: `${finalModelText}\n\n${renderFormatSection(formatSection)}`;
+				let base: WriteModelBase;
+				if (useDiff && diffBlocks !== undefined) {
+					base = isJsonOutput()
+						? {
+								kind: "json",
+								payload: {
+									path: rawPath,
+									operation,
+									diff: diffDictFrom(before ?? "", after, diffAnchors, beforeHashes),
+								},
+							}
+						: { kind: "text", text: diffText ?? "" };
+				} else if (served !== undefined) {
+					base =
+						isJsonOutput() && served.normalized !== undefined && served.hashes !== undefined
+							? {
+									kind: "json",
+									payload: {
+										// The shared read payload already knows how to carry a window;
+										// the token is the one field it does not take, so it is added.
+										...buildReadJson(served.normalized, served.hashes, 1, served.hashes.length, rawPath, undefined, previewWindow),
+										...(continuation === undefined ? {} : { continuation }),
+									},
+								}
+							: {
+									kind: "text",
+									text: `${AUTO_READ_HEADING}\n${served.text}${windowSentence === undefined ? "" : `\n\n${windowSentence}`}`,
+								};
+				} else {
+					base =
+						isJsonOutput() && previewMode === "confirmation"
+							? { kind: "json", payload: { path: rawPath, operation } }
+							: { kind: "text", text: writeConfirmationText(rawPath, operation) };
+				}
+				const modelText = buildWriteModelText(base, {
+					...(diagnostics === undefined ? {} : { diagnostics: { section: diagSection, json: diagJson } }),
+					...(beforeLossy ? { beforeLossy: true } : {}),
+					...(formatSection === undefined ? {} : { formatSection }),
+				});
 				// ---- web card channel: structured rows with `行号:锚点` ----
 				// #273 (review M2): no per-line diff against a U+FFFD stand-in — the
 				// `-` side would show bytes the disk never had; the note says why.
-				const diffRows = beforeLossy ? undefined : await buildDiffRows(
-					absolute,
-					before,
-					after,
-					beforeHashes,
-					served !== undefined ? served.hashes : undefined,
-					{ cwd, sessionKey },
-				).catch(() => undefined);
+				let diffRows: EditCardDiffRow[] | undefined;
+				if (!beforeLossy) {
+					diffRows =
+						diffBlocks !== undefined
+							? diffRowsFromBlocks(diffBlocks)
+							: previewMode === "confirmation"
+								? buildUnanchoredDiffRows(absolute, before, after)
+								: await buildDiffRows(
+									absolute,
+										before,
+										after,
+										beforeHashes,
+										served !== undefined ? served.hashes : undefined,
+										{ cwd, sessionKey },
+									).catch(() => undefined);
+				}
 
 				// NO second serve here. The rows above were minted through
 				// `allocateForRenderedRows`, which now names EVERY rendered row and
@@ -451,7 +502,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 					...(diffRows !== undefined ? { diffRows } : {}),
 					...(diagMeta !== undefined ? { diagnostics: diagMeta } : {}),
 				...(formatSection !== undefined ? { formats: [formatSection] as never } : {}),
-					modelText: withFormats,
+				modelText,
 				} as WriteValue;
 		}).catch((error: unknown) => ({
 			path: pathFromArgs(args) ?? "",
@@ -464,6 +515,31 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 	});
 }
 
+/**
+ * Card rows for the confirmation echo: the same diff SHAPE, no anchors.
+ *
+ * The mode mints and serves nothing (map #354), so a row must not name an
+ * anchor the model could not use. Blank hashes are exactly what the client's
+ * `gutterLabel` degrades to a bare line number — the card keeps its diff and
+ * its line numbers, and loses only the anchor column.
+ */
+function buildUnanchoredDiffRows(
+	absolutePath: string,
+	before: string | null,
+	after: string,
+): EditCardDiffRow[] {
+	const blanks = (text: string): string[] => new Array<string>(splitLines(text).length).fill("");
+	const { blocks } = genDiff(
+		before ?? "",
+		after,
+		contextLinesCfg(),
+		blanks(after),
+		before === null ? undefined : blanks(before),
+		undefined,
+		{ path: absolutePath },
+	);
+	return diffRowsFromBlocks(blocks);
+}
 /**
  * Structured diff rows for the card gutter: `-` removed (pre-write anchors),
  * `+` added and context (post-write anchors). Anchors come from the same
