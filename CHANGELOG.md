@@ -4,6 +4,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- `grep` 字面模式（`regex: false`）搜目录不再恒返回「No matches」：模式作为一个参数原样传给 ripgrep，字面量改用独立的 `--fixed-strings`，不再把 `-F` 拼在模式文本前面（#384）。
+- `grep` 改由 ripgrep 直接产出命中（`rg --json`），不再逐行用 JS 匹配；锚点、上下文行、预算续取、二进制保真等契约不变（#384，ADR-0028）。
+- `grep` 的模式方言改为 ripgrep 正则（原先是 JavaScript 正则）：ripgrep 拒收的模式即坏模式（`E_BAD_SHAPE`），与官方 grep 工具同口径（#384，ADR-0028）。
+
 ## [0.10.5] - 2026-10-29
 
 ### Changed

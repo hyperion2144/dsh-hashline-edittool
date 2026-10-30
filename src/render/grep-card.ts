@@ -67,12 +67,13 @@ function metaBytes(meta: unknown): number {
  * - regex mode highlights the WHOLE match (never a capture group) and skips
  *   zero-width matches — there is no character to mark, and advancing past them
  *   is what keeps the scan finite;
- * - case sensitivity follows the matcher (the tool has no `-i` switch).
+ * - case sensitivity follows the matcher: the tool has no `-i` switch, but a
+ *   pattern may carry ripgrep's own inline flag (`(?i)foo`).
  *
  * Pure: no IO, no regex compilation cache, safe to call per row.
  * @param text - the full line text to scan.
  * @param pattern - the grep pattern string.
- * @param regex - true when `pattern` is a JavaScript-flavre regex.
+ * @param regex - true when `pattern` is a regular expression. The spans are computed with the plugin's own JavaScript matcher, so a pattern only ripgrep's engine accepts (an inline `(?i)` flag, say) marks nothing.
  * @returns the spans, ascending and non-overlapping; empty when nothing is markable.
  */
 export function matchSpans(text: string, pattern: string, regex: boolean): MatchSpan[] {

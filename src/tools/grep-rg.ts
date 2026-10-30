@@ -1,22 +1,34 @@
 /**
- * ripgrep pre-filter for the grep tool (#183).
+ * ripgrep as the grep tool's search ENGINE (#384).
  *
- * `grep` used to read EVERY candidate file into JS and run a per-line RegExp.
- * With this pre-filter, ripgrep (the same binary DSH's own search ships)
- * decides which files contain a match first, so files without hits are never
- * read at all — the dominant cost on large trees.
+ * `grep` used to READ every candidate file and match it with a per-line
+ * JavaScript RegExp. A pre-filter came later (`rg --files-with-matches`) and
+ * narrowed the file LIST, but the matching itself still happened in JS — so
+ * the answer came from a different engine than the one that decided which
+ * files to read, and the two could disagree.
  *
- * Deliberately conservative by contract: the filter only NARROWS a file list
- * the caller already produced (identical include/exclude semantics are
- * preserved, because the caller's list is the input), and ANY failure — binary
- * missing, spawn error — including the SYNCHRONOUS refusal of an over-long
- * command line, which `execFile` throws instead of reporting (#260) — non-zero
- * exit, timeout, oversized output: every one of them returns `undefined`, so the
- * caller simply keeps its full list and runs the JS engine it has always run.
- * grep never fails because ripgrep did.
+ * ripgrep is the engine now. `rg --json` reports every hit as a structured
+ * record — file, 1-based line number, line text — and this module parses those
+ * records into {@link RgMatch}es. Everything above it (anchors, context, the
+ * read budget, the spill file) stays the plugin's own contract.
  *
- * Line numbers are NOT taken from ripgrep: the caller needs file content for
- * anchors and context anyway, and its own matcher is the output contract.
+ * Three deliberate deviations from DSH's own grep tool:
+ *
+ * - `--no-config` comes FIRST: without it ripgrep reads the host's
+ *   `RIPGREP_CONFIG_PATH` (or an `rg.conf` next to the binary), and that
+ *   config may set `--pre` — an arbitrary preprocessor run against every
+ *   file the search touches. A search must never execute the host's config.
+ * - `--text` (`-a`): ripgrep's default binary handling stops at the first NUL
+ *   byte and counts it as a line break, so every line number after it is off
+ *   by one and the NUL-bearing line's own match is reported against the wrong
+ *   line (#268). `--text` makes ripgrep search the file as text, so its line
+ *   numbers agree with the plugin's own reader.
+ * - the file list rides on the command line, so it is sliced by LENGTH, never
+ *   by file count (#260) — see `infra/argv-limit`.
+ *
+ * A literal pattern is `--fixed-strings`, NEVER a `-F` prefix glued onto the
+ * pattern: ripgrep reads `-Ffoo` as the TEXT `-Ffoo`, which matches nothing
+ * and turns every literal search into a silent "No matches" (#384).
  *
  * @module dsh-hashline-edittool/tools/grep-rg
  */
@@ -58,93 +70,460 @@ function resolveRg(): string | undefined {
 	}
 }
 
-/** One rg invocation's outcome: an answer, a definitive "nothing matched", or a failure. */
-export type RgOutcome = "matched" | "no-match" | "failed";
+/**
+ * One hit reported by ripgrep: the file it sits in, and its 1-based line
+ * number.
+ *
+ * The path is the text ripgrep reported and the line number is the one
+ * ripgrep counted — which is why the search runs with `--text`: see the
+ * module note on the NUL-byte line shift.
+ */
+export interface RgMatch {
+	/** The file the hit is in, exactly as ripgrep reported it. */
+	path: string;
+	/** The 1-based line number of the hit. */
+	line: number;
+	/**
+	 * The hit's line text, as ripgrep saw it (the trailing newline stripped).
+	 *
+	 * This is the search's SNAPSHOT of the line: the plugin serves the text it
+	 * reads now, and compares it against this one to notice a file that
+	 * changed after the search ran.
+	 */
+	text: string;
+	/**
+	 * The hit's character offset within its line, when ripgrep could say.
+	 *
+	 * It is what places a hit in the READ line space on a file whose line
+	 * space ripgrep cannot reproduce (#147): the offset says which line of
+	 * that space the hit is on.
+	 */
+	offset?: number;
+}
+
 
 /**
- * Classify an `execFile` result from `rg --files-with-matches`.
- *
- * Exit 0 = matched; exit 1 = NOTHING matched — an ANSWER, not a failure.
- * Collapsing the two made the caller keep its whole candidate list and re-read the
- * tree with the JS engine, so a zero-hit grep — the very case this pre-filter exists
- * to make cheap — was the one that burned the read budget instead. Everything else
- * (ENOENT, timeout, exit 2 for a rejected pattern) stays a failure, and the caller
- * keeps its list.
+ * The text of a line ripgrep could not decode — it sends the bytes instead.
+ * The official grep tool answers with the same placeholder.
  */
-export function classifyRgExit(
-	error: { code?: string | number | null } | null | undefined,
-): RgOutcome {
-	if (error === null || error === undefined) return "matched";
-	return error.code === 1 ? "no-match" : "failed";
+export const NOT_UTF8_LINE = "(line is not valid UTF-8)";
+/**
+ * What one ripgrep search produced.
+ *
+ * The distinction the caller lives on: "ripgrep answered, and the answer
+ * is nothing" is an ANSWER (`ok` with an empty match list), while "ripgrep
+ * could not answer" is a failure the caller may fall back from.
+ */
+export type RgSearchOutcome =
+	/** ripgrep answered: `matches` may be empty (there was nothing to find). */
+	| { kind: "ok"; matches: RgMatch[] }
+	/** ripgrep could not run at all (the binary is missing or not executable). */
+	| { kind: "unavailable" }
+	/** ripgrep rejected the pattern (its regex engine does not accept it). */
+	| { kind: "invalid-pattern"; message: string }
+	/** ripgrep ran and failed (spawn error, timeout, oversized output). */
+	| { kind: "failed"; message: string };
+
+/** One ripgrep search: what to look for, and where. */
+export interface RgSearchOptions {
+	/** The pattern to search for. */
+	pattern: string;
+	/** Literal (fixed-string) pattern: `pattern` is not a regex. */
+	literal: boolean;
+	/** The candidate files, as an explicit list of paths. */
+	files: readonly string[];
+	/** The most hits to report per file (ripgrep `--max-count`); omitted = no cap. */
+	limit?: number;
+	/** An optional abort signal. */
+	signal?: AbortSignal;
+	/** The per-invocation timeout cap, in milliseconds. */
+	timeoutMs?: number;
+	/** Overrides the ripgrep executable path (for tests); resolved internally when omitted. */
+	rgPath?: string;
 }
 
 let rgResolved: string | undefined | null;
 
 /**
- * Run `rg --files-with-matches` over an explicit file list.
+ * The ripgrep binary, resolved once per process.
  *
- * The list goes on the command line, so it is split by LENGTH, never by file
- * count (#260): every invocation's flags plus its chunk must fit the
- * command-line budget (`infra/argv-limit`). A list that cannot fit at all — a
- * pattern or a single path wider than the whole budget — is "no rg answer"
- * rather than a spawn the OS is guaranteed to refuse.
- *
- * @param pattern - the grep pattern, passed to rg as-is (see the dialect note in
- *   the caller: rg-rejected patterns must fall back to the JS engine).
- * @param files - the candidate files (the caller's already-filtered list).
- * @param timeoutMs - per-invocation cap; a timeout yields undefined.
- * @returns the subset of `files` that contain a match (input order), or
- *   undefined when ripgrep is unavailable or the invocation failed for any
- *   reason — the caller then keeps the full list.
+ * @returns the binary path, or undefined when ripgrep cannot be resolved at all.
  */
-export async function rgFilesWithMatches(
-	pattern: string,
-	files: string[],
-	timeoutMs = 15_000,
-): Promise<string[] | undefined> {
-	if (files.length === 0) return undefined;
+function rgBinary(): string | undefined {
 	if (rgResolved === null) return undefined;
 	rgResolved ??= resolveRg();
-	if (rgResolved === undefined) return undefined;
-	const rg = rgResolved;
+	return rgResolved;
+}
 
-	// #260: chunked by the LENGTH of the command line, never by file count. rg's
-	// own path, the flags and the pattern ride on every invocation, so they come off
-	// the budget first; each chunk is an independent `rg -l` over an explicit
-	// --file list.
-	const fixedArgs: readonly string[] = ["--no-config", "--files-with-matches", "-e", pattern];
-	const argsFor = (chunk: readonly string[]): string[] => [...fixedArgs, ...chunk];
-	const chunks = planArgvChunks([rg, ...fixedArgs], files, ARGV_BUDGET);
-	if (chunks === undefined) return undefined;
+/**
+ * Whether an `rg --files` invocation produced a usable listing.
+ *
+ * Exit 1 means "nothing was listed", which is an answer for a listing too;
+ * every other failure is a failure.
+ */
+function rgListedOk(error: { code?: string | number | null } | null | undefined): boolean {
+	return error === null || error === undefined || error.code === 1;
+}
 
-	const out: string[] = [];
-	const run = (chunk: readonly string[]) =>
-		new Promise<string | undefined>((resolve) => {
-			try {
-				execFile(
-					rg,
-					argsFor(chunk),
-					{ timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
-					(error, stdout) => resolve(classifyRgExit(error) === "failed" ? undefined : stdout),
-				);
-			} catch {
-				// A spawn the OS refuses BEFORE a process exists throws here instead of
-				// reporting through the callback — an over-long command line (E2BIG /
-				// ENAMETOOLONG, #260), a binary path that cannot be executed. Inside a
-				// promise executor that throw would REJECT the promise, and the caller's
-				// "keep my list" fallback would never run: that is the reported symptom.
-				// A failed spawn is this optional pre-filter failing, which the contract
-				// above already spells as undefined.
-				resolve(undefined);
-			}
-		});
-	for (const chunk of chunks) {
-		const chunkOut = await run(chunk);
-		if (chunkOut === undefined) return undefined;
-		out.push(...chunkOut.split("\n").filter((line) => line !== ""));
+/**
+ * The flags every invocation carries, in the order the tool always uses.
+ *
+ * The pattern rides in `--regexp=<pattern>` and the files behind `--`, so a
+ * value that starts with a dash can never be read as a flag. A literal
+ * pattern is `--fixed-strings` — an independent flag, never a `-F` prefix
+ * glued onto the pattern (#384).
+ */
+function fixedRgArgs(pattern: string, literal: boolean, limit?: number): string[] {
+	return [
+		// FIRST, and always: without it ripgrep reads the host's
+		// RIPGREP_CONFIG_PATH (or an rg.conf next to the binary), and that config
+		// may set `--pre` — an arbitrary preprocessor run against every file
+		// the search touches.
+		"--no-config",
+		"--json",
+		// Search binary files as text: without it ripgrep stops at the first NUL
+		// byte and counts it as a line break, so every line number after it is
+		// off by one (#268).
+		"--text",
+		...(limit !== undefined ? [`--max-count=${limit}`] : []),
+		...(literal ? ["--fixed-strings"] : []),
+		`--regexp=${pattern}`,
+		"--",
+	];
+}
+
+/**
+ * Build the complete argv of one search (the binary itself excluded).
+ *
+ * @param opts - the pattern, whether it is literal, the per-file cap and the
+ *   files to search.
+ * @returns the argv, in the order it is spawned.
+ */
+export function buildRgArgv(opts: {
+	pattern: string;
+	literal: boolean;
+	limit?: number;
+	files: readonly string[];
+}): string[] {
+	return [...fixedRgArgs(opts.pattern, opts.literal, opts.limit), ...opts.files];
+}
+
+/** What one ripgrep process did, before any search result is derived from it. */
+type RgProcess =
+	| { kind: "exited"; code: number; stdout: string; stderr: string }
+	| { kind: "spawn-error"; code: string | undefined; message: string }
+	| { kind: "timeout"; message: string }
+	| { kind: "output-too-large"; message: string };
+
+/** The shape of the error `execFile` reports (a spawn error, an exit code, a kill). */
+interface RgExecError {
+	code?: string | number | undefined;
+	killed?: boolean;
+	message: string;
+}
+
+/**
+ * The most stdout one invocation may produce before the search fails.
+ *
+ * A `--json` record per matching line, so a tree-wide search that matches
+ * everywhere can be large; the ceiling is generous, and crossing it is a
+ * FAILURE rather than a truncated answer — half an answer reads as a whole one.
+ */
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+/** The per-invocation timeout when the caller names none. */
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * ripgrep's own words for "I will not run this pattern".
+ *
+ * ripgrep rejects a pattern it cannot compile with exit code 2 — the same code
+ * it uses for an unreadable path — so the stderr text is what separates "your
+ * regex is wrong" (the caller's problem, worth reporting as such) from "the
+ * search failed" (an environment problem).
+ */
+const PATTERN_ERROR = /regex parse error|error parsing glob/i;
+
+/**
+ * Run one ripgrep process and hand back what it did.
+ *
+ * The spawn is wrapped so that a refusal the OS raises BEFORE a process exists
+ * — an over-long command line (E2BIG / ENAMETOOLONG, #260), a binary that
+ * cannot be executed — cannot escape: inside a promise executor such a throw
+ * REJECTS the promise, and a rejected search is not an answer.
+ */
+function runRgProcess(
+	rg: string,
+	args: string[],
+	opts: RgSearchOptions,
+): Promise<RgProcess> {
+	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	return new Promise<RgProcess>((resolve) => {
+		try {
+			execFile(
+				rg,
+				args,
+				{
+					timeout: timeoutMs,
+					maxBuffer: MAX_OUTPUT_BYTES,
+					...(opts.signal ? { signal: opts.signal } : {}),
+				},
+				(error, stdout, stderr) => {
+					if (error === null) {
+						resolve({ kind: "exited", code: 0, stdout, stderr });
+						return;
+					}
+					const failure = error as RgExecError;
+					// The timeout kills the child: the callback reports the kill, not
+					// an exit code.
+					if (failure.killed === true) {
+						resolve({ kind: "timeout", message: `ripgrep timed out after ${timeoutMs}ms` });
+						return;
+					}
+					if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+						resolve({
+							kind: "output-too-large",
+							message: `ripgrep produced more than ${MAX_OUTPUT_BYTES} bytes of output`,
+						});
+						return;
+					}
+					// A spawn error carries an errno STRING; an exit code is a number.
+					if (typeof failure.code === "string") {
+						resolve({ kind: "spawn-error", code: failure.code, message: failure.message });
+						return;
+					}
+					resolve({
+						kind: "exited",
+						code: typeof failure.code === "number" ? failure.code : 2,
+						stdout,
+						stderr,
+					});
+				},
+			);
+		} catch (error) {
+			const failure = error as RgExecError;
+			resolve({
+				kind: "spawn-error",
+				code: typeof failure.code === "string" ? failure.code : undefined,
+				message: failure.message,
+			});
+		}
+	});
+}
+
+/** The first lines of a stderr, flattened into one readable line. */
+function summarizeStderr(stderr: string): string {
+	return stderr
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line !== "")
+		.slice(0, 3)
+		.join(" ");
+}
+
+/**
+ * Parse one `rg --json` stdout into its hits.
+ *
+ * Only `match` records are hits; `begin`, `end` and `summary` records are
+ * progress. A record that cannot be read is a FAILURE, never a partial answer:
+ * raw `rg --json` is an internal transport, so a broken record means the
+ * transport broke.
+ */
+function parseRgMatches(
+	stdout: string,
+): { kind: "ok"; matches: RgMatch[] } | { kind: "failed"; message: string } {
+	const matches: RgMatch[] = [];
+	for (const line of stdout.split("\n")) {
+		if (line.length === 0) continue;
+		let record: unknown;
+		try {
+			record = JSON.parse(line);
+		} catch (error) {
+			return {
+				kind: "failed",
+				message: `ripgrep produced a record that is not JSON: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+		if (typeof record !== "object" || record === null) {
+			return { kind: "failed", message: "ripgrep produced a record that is not an object" };
+		}
+		const typed = record as { type?: unknown; data?: unknown };
+		if (typed.type !== "match") continue;
+		const data = typed.data;
+		if (typeof data !== "object" || data === null) {
+			return { kind: "failed", message: "ripgrep produced a match record with no data" };
+		}
+		const { path, line_number: lineNumber, lines, submatches } = data as {
+			path?: unknown;
+			line_number?: unknown;
+			lines?: unknown;
+			submatches?: unknown;
+		};
+		const pathText =
+			typeof path === "object" && path !== null ? (path as { text?: unknown }).text : undefined;
+		if (typeof pathText !== "string") {
+			return { kind: "failed", message: "ripgrep produced a match record with no path" };
+		}
+		if (typeof lineNumber !== "number" || !Number.isInteger(lineNumber)) {
+			return { kind: "failed", message: "ripgrep produced a match record with no line number" };
+		}
+		if (typeof lines !== "object" || lines === null) {
+			return { kind: "failed", message: "ripgrep produced a match record with no line content" };
+		}
+		const lineContent = lines as { text?: unknown; bytes?: unknown };
+		let text: string;
+		if (typeof lineContent.text === "string") {
+			text = lineContent.text.replace(/\r?\n$/, "");
+		} else if (typeof lineContent.bytes === "string") {
+			// A line that is not valid UTF-8: ripgrep sends its bytes, so the
+			// text is unknowable and the placeholder says so.
+			text = NOT_UTF8_LINE;
+		} else {
+			return {
+				kind: "failed",
+				message: "ripgrep produced a match record with neither line text nor bytes",
+			};
+		}
+		const offset = submatchOffset(submatches, lineContent.text);
+		matches.push({ path: pathText, line: lineNumber, text, ...(offset !== undefined ? { offset } : {}) });
 	}
-	const hit = new Set(out);
-	return files.filter((file) => hit.has(file));
+	return { kind: "ok", matches };
+}
+
+
+/**
+ * The character offset of a byte offset inside one line.
+ *
+ * ripgrep counts BYTES; the plugin's text is decoded. The conversion walks
+ * the line's characters until their byte lengths add up to the reported
+ * offset — the offset of the hit inside the line ripgrep matched.
+ *
+ * The walk goes by CODE POINT, not by code unit: an astral character (an
+ * emoji) is four bytes but two UTF-16 code units, and counting its halves
+ * would overshoot the offset — the hit's seat would be lost, and the hit
+ * with it.
+ */
+function charOffsetInLine(lineText: string, byteStart: number): number | undefined {
+	let bytes = 0;
+	let index = 0;
+	for (const char of lineText) {
+		if (bytes === byteStart) return index;
+		bytes += Buffer.byteLength(char, "utf8");
+		index += char.length;
+	}
+	return bytes === byteStart ? lineText.length : undefined;
+}
+
+/**
+ * The hit's character offset within its line, from ripgrep's submatch.
+ *
+ * `undefined` when ripgrep reported no submatch (or a line it could not
+ * decode) — the hit then cannot be placed inside its line, and the caller
+ * places it by its line number alone.
+ */
+function submatchOffset(submatches: unknown, lineText: unknown): number | undefined {
+	if (!Array.isArray(submatches) || submatches.length === 0) return undefined;
+	if (typeof lineText !== "string") return undefined;
+	const first = submatches[0] as { start?: unknown };
+	if (typeof first.start !== "number") return undefined;
+	return charOffsetInLine(lineText, first.start);
+}
+/**
+ * Merge the hits of several invocations: grouped by file, ascending by line
+ * number inside a file.
+ *
+ * A file belongs to exactly one invocation, so the merge never invents a hit;
+ * it only puts the chunks back into one readable order.
+ */
+function mergeRgMatches(matches: readonly RgMatch[]): RgMatch[] {
+	const byFile = new Map<string, Map<number, RgMatch>>();
+	for (const match of matches) {
+		let lines = byFile.get(match.path);
+		if (lines === undefined) {
+			lines = new Map<number, RgMatch>();
+			byFile.set(match.path, lines);
+		}
+		// The first hit of a line wins: the same line reported twice carries the
+		// same text and offset, and one row is one line.
+		if (!lines.has(match.line)) lines.set(match.line, match);
+	}
+	const merged: RgMatch[] = [];
+	for (const [path, lines] of byFile) {
+		for (const line of [...lines.keys()].sort((a, b) => a - b)) merged.push(lines.get(line)!);
+	}
+	return merged;
+}
+
+/**
+ * Turn what ripgrep did into the outcome the caller asked for.
+ *
+ * @param process - what the process did.
+ * @returns the outcome, or the reason there is none.
+ */
+function classifyRgProcess(process: RgProcess): RgSearchOutcome {
+	if (process.kind === "spawn-error") {
+		// The binary is not there at all: nothing can be answered.
+		if (process.code === "ENOENT") return { kind: "unavailable" };
+		return { kind: "failed", message: `ripgrep could not be started: ${process.message}` };
+	}
+	if (process.kind === "timeout" || process.kind === "output-too-large") {
+		return { kind: "failed", message: process.message };
+	}
+	const { code, stdout, stderr } = process;
+	// Exit 0 = hits. Exit 1 = NOTHING hit, which is an ANSWER, not a failure:
+	// collapsing the two is what made a zero-hit grep re-read the whole tree.
+	if (code === 0) {
+		const parsed = parseRgMatches(stdout);
+		if (parsed.kind === "failed") return parsed;
+		return { kind: "ok", matches: parsed.matches };
+	}
+	if (code === 1) return { kind: "ok", matches: [] };
+	// Exit 2 is ripgrep's own error, and stderr says WHICH error it is.
+	if (code === 2 && PATTERN_ERROR.test(stderr)) {
+		return { kind: "invalid-pattern", message: summarizeStderr(stderr) };
+	}
+	const detail = summarizeStderr(stderr);
+	return {
+		kind: "failed",
+		message: `ripgrep exited with code ${code}${detail === "" ? "" : `: ${detail}`}`,
+	};
+}
+
+/**
+ * Search with ripgrep and report every hit.
+ *
+ * The file list rides on the command line, so it is sliced by LENGTH, never by
+ * file count (#260): every invocation's flags come off the budget first, and
+ * each chunk is an independent ripgrep run whose hits are merged back
+ * together.
+ *
+ * @param opts - the pattern, the files, and the per-invocation limits.
+ * @returns the hits, or the reason there are none to report.
+ */
+export async function rgSearchMatches(opts: RgSearchOptions): Promise<RgSearchOutcome> {
+	if (opts.files.length === 0) return { kind: "ok", matches: [] };
+	const rg = opts.rgPath ?? rgBinary();
+	if (rg === undefined) return { kind: "unavailable" };
+	const fixed = fixedRgArgs(opts.pattern, opts.literal, opts.limit);
+	const chunks = planArgvChunks([rg, ...fixed], opts.files, ARGV_BUDGET);
+	if (chunks === undefined) {
+		// No slicing of this list can be spawned: a single path wider than the
+		// whole budget, or flags that spend it alone. Abstaining beats handing
+		// the OS a command line it must refuse.
+		return {
+			kind: "failed",
+			message: "the file list does not fit any command line ripgrep could be given",
+		};
+	}
+	const collected: RgMatch[] = [];
+	for (const chunk of chunks) {
+		const outcome = classifyRgProcess(await runRgProcess(rg, [...fixed, ...chunk], opts));
+		// A failed chunk is the whole search: a partial answer would read as a
+		// complete one.
+		if (outcome.kind !== "ok") return outcome;
+		collected.push(...outcome.matches);
+	}
+	return { kind: "ok", matches: mergeRgMatches(collected) };
 }
 
 /**
@@ -169,10 +548,8 @@ export async function rgFiles(
 	signal?: AbortSignal,
 	timeoutMs = 15_000,
 ): Promise<string[] | undefined> {
-	if (rgResolved === null) return undefined;
-	rgResolved ??= resolveRg();
-	if (rgResolved === undefined) return undefined;
-	const rg = rgResolved;
+	const rg = rgBinary();
+	if (rg === undefined) return undefined;
 	const listed = await new Promise<{ ok: boolean; stdout: string }>((resolve) => {
 		execFile(
 			rg,
@@ -190,8 +567,8 @@ export async function rgFiles(
 				"!**/node_modules/**",
 				".",
 			],
-			{ cwd: root, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) },
-			(error, stdout) => resolve({ ok: classifyRgExit(error) !== "failed", stdout }),
+			{ cwd: root, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, ...(signal ? { signal } : {}) },
+			(error, stdout) => resolve({ ok: rgListedOk(error), stdout }),
 		);
 	});
 	if (!listed.ok) return undefined;

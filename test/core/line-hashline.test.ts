@@ -15,7 +15,7 @@ import { withTempFile, setupIntegrationTest, getText, useNumberedRows } from "..
 // file asserts numbered rows, so every test here pins it ON.
 useNumberedRows();
 import { genDiff } from "../../src/render/edit-diff.js";
-import { grepFileContent } from "../../src/tools/tool-grep.js";
+import { buildGrepSection } from "../../src/tools/grep-search.js";
 import {
 	parseHashRef,
 	fmtRegion,
@@ -201,8 +201,10 @@ describe("grep — line#hash output", () => {
 		});
 	});
 
-	it("grepFileContent returns no section when there is no match", async () => {
-		const section = await grepFileContent("/x", "a\nb\nc\n", "zzz");
+	it("a section with no match has no rows to show", () => {
+		// The section builder is the search layer's own seam since #384: the
+		// engine produces the positions, and the builder turns them into rows.
+		const section = buildGrepSection("/x", ["a", "b", "c"], [], "zzz");
 		expect(section).toBeUndefined();
 	});
 });

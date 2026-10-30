@@ -20,6 +20,7 @@ import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildUndoTool } from "../../src/tools/tool-undo.js";
 import { buildFormatTool } from "../../src/tools/tool-format.js";
 import { buildGrepTool } from "../../src/tools/tool-grep.js";
+import type { RgMatch, RgSearchOutcome } from "../../src/tools/grep-rg.js";
 import { buildDeleteTool } from "../../src/tools/tool-delete.js";
 import { buildRenameTool } from "../../src/tools/tool-rename.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
@@ -440,4 +441,14 @@ export async function makeTag(
 	// v2.0: anchors are {anchor, line?} — the line is an optional positional
 	// hint, never the identity. Return the bare anchor form.
 	return { anchor: hashes[line - 1]! };
+}
+
+/**
+ * The hits of a ripgrep outcome, or an empty list when the search did not answer.
+ *
+ * The engine's seam reports "did not answer" as an outcome, so a test that
+ * only cares about the hits reads them through this one helper.
+ */
+export function rgMatchesOf(outcome: RgSearchOutcome): RgMatch[] {
+	return outcome.kind === "ok" ? outcome.matches : [];
 }
