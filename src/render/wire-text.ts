@@ -20,7 +20,8 @@
  * model speaks English. ADR-0024 records the whole contract.
  *
  * @module dsh-hashline-edittool/wire-text
- */
+*/
+import { type GrepTruncation } from "../domain/grep/stats.js";
 
 /**
  * One text the client resolves: a stable key plus the params that fill it.
@@ -61,7 +62,21 @@ export interface RowTitleFacts {
 	 * The response budget CUT the window, so the rest of the file is reachable
 	 * through a resume token (issue 374).
 	 */
-	readonly truncated?: boolean;
+  readonly truncated?: boolean;
+  /**
+   * #386: the number of hits a grep found — the TRUE total, or a lower
+   * bound when the search stopped at the per-file cap and could not say
+   * more.
+   */
+  readonly hits?: number | string;
+  /**
+   * #386: the number of hit rows the response served.
+   */
+  readonly served?: number;
+  /**
+   * #386: which cut took the rest of the hits away.
+   */
+  readonly truncatedBy?: GrepTruncation;
 }
 
 /**
@@ -88,7 +103,15 @@ export interface RowTitleFacts {
 export function rowTitle(kind: RowTitleKind, facts: RowTitleFacts): LocalizedText {
 	const params: Record<string, string | number> = {};
 	if (facts.path !== undefined) params.path = facts.path;
-	// A window is a READ concept: only a read serves a line range.
+  // A window is a READ concept: only a read serves a line range.
+  // #386: a GREP row's title is its counts — the same slot the read row's
+  // window fills. A search that found 300 hits and served 100 says so, and
+  // says WHICH cut took the rest away. The key names the wording (a cut is
+  // a fact, and a template cannot say "and it was cut" without a
+  // conditional) and the params carry the numbers.
+  if (kind === "grep" && facts.hits !== undefined && facts.served !== undefined) {
+    return { key: grepStatsKey(facts.truncatedBy), params: { hits: facts.hits, served: facts.served } };
+  }
 	if (kind !== "read") return { key: `row.title.${kind}`, params };
 	const { start, end, total } = facts;
 	// A window needs BOTH ends and the file's length: half a range is not a
@@ -107,6 +130,19 @@ export function rowTitle(kind: RowTitleKind, facts: RowTitleFacts): LocalizedTex
 	// A call that named no window read the whole file.
 	if (typeof total === "number") return { key: "row.title.read.total", params: { ...params, total } };
 	return { key: "row.title.read", params };
+}
+
+/**
+ * The key that names a grep row's count wording, by the cut that happened.
+ *
+ * @param truncated - which cut took the hits away, when one did.
+ * @returns the vocabulary key of the wording.
+ */
+function grepStatsKey(truncated: RowTitleFacts["truncatedBy"]): string {
+  if (truncated === "limit") return "row.title.grep.stats.limit";
+  if (truncated === "budget") return "row.title.grep.stats.budget";
+  if (truncated === "limit+budget") return "row.title.grep.stats.limit_budget";
+  return "row.title.grep.stats";
 }
 
 /**

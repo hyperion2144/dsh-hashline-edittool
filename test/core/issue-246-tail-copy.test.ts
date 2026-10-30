@@ -106,17 +106,22 @@ describe("grep's spill notice", () => {
 					.getTool("grep")
 					.execute("grep-1", { path: ".", pattern: "needle", limit: rows.length }),
 			);
-			const notice = /\(Omitted (\d+) lines \(~(\d+) chars\)\. Use grep \{resume: "([^"]+)"\} to continue\.\)/.exec(
-				text,
-			);
+			// #386: the notice carries the search's TRUE hit count, so the model
+			// knows the scale of what it did not get.
+			const notice =
+				/\(Omitted (\d+) lines \(~(\d+) chars\)(?:; (\d+) matches in total)?\. Use grep \{resume: "([^"]+)"\} to continue\.\)/.exec(
+					text,
+				);
 			expect(notice).not.toBeNull();
+			// The file carries 900 matching lines, and the search found every one.
+			expect(notice?.[3]).toBe("900");
 
 			const resumed = getText(
 				await harness.getTool("grep").execute("grep-2", {
 					path: ".",
 					pattern: "needle",
 					limit: rows.length,
-					resume: notice![3],
+					resume: notice![4],
 				}),
 			);
 			expect(resumed).not.toContain("[E_");
