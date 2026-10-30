@@ -122,18 +122,23 @@ function rowTitleText(
 	return wire === undefined ? fallback : t(wire.key, wire.params);
 }
 /**
- * The read row's TRAILING SUFFIX (#374): what the read served — the window it
- * cut, the file's length, or the resume hint a budget-cut window carries.
+ * The row's TRAILING SUFFIX: the fact the folded row's TITLE cannot carry.
  *
- * The folded row's TITLE keeps its own word (读取/Read): the title names the row,
- * and the window is a fact about the call. The fact rides at the row's end, in the
- * weak-colour slot the diff stat uses — the SAME slot, so the two rows read alike.
+ * A READ's fact is the window it served (#374); a GREP's is the hit counts
+ * it produced (#386). Both travel on the SAME carrier (`meta.rowTitle`) and
+ * are resolved by the host's key, so the reader sees them in the language
+ * they chose.
+ *
+ * The folded row's TITLE keeps its own word (读取/Read, 搜索文件内容/Grep): the
+ * title names the row, and the fact is about the call. The fact rides at the
+ * row's end, in the weak-colour slot the diff stat uses — the SAME slot, so
+ * the rows read alike.
  *
  * @param t - the vocabulary seat.
  * @param block - the running or settled call.
- * @returns the suffix text, or `null` when the call carries no window facts.
+ * @returns the suffix text, or `null` when the call carries no facts.
  */
-function readWindowSuffix(t: ToolViewProps["t"], block: ToolCallBlock): string | null {
+function rowSuffixText(t: ToolViewProps["t"], block: ToolCallBlock): string | null {
 	const wire = rowTitleFromMeta("kind" in block ? block.meta : undefined);
 	if (wire === undefined) return null;
 	return t(wire.key, wire.params);
@@ -527,7 +532,7 @@ export function HashlineReadRow({ toolName, block, cwd, home, openFile, inspect,
 		// The read row's TITLE is its own word — the window is a fact about the
 		// call, and the fact rides at the row's end (#374).
 		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
-		titleSuffix: titleOverride === undefined ? readWindowSuffix(t, block) : null,
+		titleSuffix: titleOverride === undefined ? rowSuffixText(t, block) : null,
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
@@ -649,8 +654,10 @@ export function HashlineGrepRow({ toolName, block, cwd, home, openFile, inspect,
 		// `titleOverride` lets `ast_grep` wear this row under its own name: the card
 		// data is grep-shaped (files/rows/spans), so the drawing is identical and
 		// only the label differs.
-		title: titleOverride === undefined ? rowTitleText(t, block, t(model.titleKey)) : titleOverride,
-		titleSuffix: null,
+		// #386: the grep row's TITLE is its own word — the hit counts are a fact
+		// about the call, and they ride at the row's end.
+		title: titleOverride === undefined ? t(model.titleKey) : titleOverride,
+		titleSuffix: titleOverride === undefined ? rowSuffixText(t, block) : null,
 		summary: model.summary,
 		// The shipped search row draws no raw-input body: a search has a card or
 		// nothing, and an error body already arrives through `output`.
