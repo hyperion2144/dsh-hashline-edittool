@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-10-30
+
 ### Fixed
 
 - `grep` 字面模式（`regex: false`）搜目录不再恒返回「No matches」：模式作为一个参数原样传给 ripgrep，字面量改用独立的 `--fixed-strings`，不再把 `-F` 拼在模式文本前面（#384）。
