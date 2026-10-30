@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getText, setupIntegrationTest, withTempDir } from "../support/fixtures.js";
-import { rgFilesWithMatches } from "../../src/tools/grep-rg.js";
+import { rgSearchMatches } from "../../src/tools/grep-rg.js";
 
 type GrepTool = {
 	execute(
@@ -109,7 +109,12 @@ describe("grep memory budget — oversized files (issue #167)", () => {
 
 			// Without rg the JS engine reads everything by contract — and the budget
 			// notice is then the CORRECT answer, so this case is only meaningful with rg.
-			if ((await rgFilesWithMatches("needle-not-anywhere-198", [aTxt], 15_000)) === undefined) return;
+			const probe = await rgSearchMatches({
+				pattern: "needle-not-anywhere-198",
+				literal: false,
+				files: [aTxt],
+			});
+			if (probe.kind === "unavailable") return;
 
 			const res = await (harness.getTool("grep") as unknown as GrepTool).execute("g", {
 				path: ".",

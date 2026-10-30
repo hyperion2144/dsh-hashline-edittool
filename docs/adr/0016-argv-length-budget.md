@@ -1,6 +1,6 @@
 # ADR-0016 — argv is budgeted by command-line LENGTH, never by item count
 
-> **Status**: Accepted (2026-10-09; issue [#260](https://github.com/hyperion2144/dsh-hashline-edittool/issues/260) — implemented in the same change).
+> **Status**: Accepted (2026-10-09; issue [#260](https://github.com/hyperion2144/dsh-hashline-edittool/issues/260) — implemented in the same change). Amended by [ADR-0028](0028-grep-rg-engine.md): the ripgrep pre-filter became the search engine, so the planner's refusal now fails the SEARCH — which the plugin's own matcher then answers — instead of only the pre-filter.
 
 ## Problem Statement
 

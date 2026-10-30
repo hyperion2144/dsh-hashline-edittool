@@ -17,6 +17,18 @@
  * (ADR-0009), against the live file when its version stamp still matches,
  * otherwise as caution-flagged snapshot text.
  *
+ * ripgrep is the ENGINE here (#384), not a pre-filter: one `rg --json` search
+ * produces the matches (file, line number), and only the files that actually
+ * match are read for the served text. The pattern reaches ripgrep as ONE
+ * `--regexp=` argument — a literal pattern as `--fixed-strings` — so it can
+ * never be mangled on the way in: the old pre-filter glued `-F` onto the
+ * pattern text, so every literal search looked for "-F<pattern>" and answered
+ * "No matches" for hits and misses alike. The plugin's own line matcher
+ * survives only as the DEGRADED path — for the one case ripgrep cannot run
+ * at all: a missing binary, or a run that failed. A pattern ripgrep's own
+ * engine REJECTS is a bad pattern (E_BAD_SHAPE, like the official grep
+ * tool's SEARCH_INVALID_PATTERN) — never another engine's opinion.
+ *
  * Structured presentation: the canonical value carries `files` / `truncated` /
  * `total`. `output.render` projects the model text from those fields.
  * `output.presentationMeta` derives the search-card projection.
@@ -53,54 +65,23 @@ import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } fro
 import { withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
-import { rgFiles, rgFilesWithMatches } from "./grep-rg.js";
+import { rgFiles } from "./grep-rg.js";
+import {
+	planGrepSearch,
+	DEFAULT_LIMIT,
+	type GrepSectionRow,
+	type GrepToolOptions,
+} from "./grep-search.js";
 import { toLF } from "../render/edit-diff.js";
 import { rowTitle } from "../render/wire-text.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
 	capGrepMeta,
 	grepPresentationFromMeta,
-	matchSpans,
 	type GrepFileRows,
-	type MatchSpan,
 } from "../render/grep-card.js";
 import { fmtMarker, hashlineHeader, contextLinesCfg, hashSep, canon, contentChecksum, fmtHashlineRow, anchorWidth } from "../hashline/hash-assign.js";
 
-/**
- * One row in a grep section's context set (hash + content, used to render the
- * model text) plus the card facts: whether the capped match list contains it,
- * and the highlight spans of every pattern occurrence in the line.
- */
-export interface GrepSectionRow {
-	position: number;
-	content: string;
-	isMatch: boolean;
-	/** Highlight spans for this line (empty when nothing is markable). */
-	spans: MatchSpan[];
-	/** Pointer rows: content replaced by a bash pointer (over budget per #205). */
-	pointer?: true;
-}
-
-export interface GrepFileSection {
-	path: string;
-	/** Absolute path of the section's file (for anchor allocation). */
-	absolutePath: string;
-	/** Total lines of the section's file (for recordServed). */
-	lineCount: number;
-	matches: GrepSectionRow[];
-	contextRows: GrepSectionRow[];
-}
-
-export interface GrepToolOptions {
-	/** Cap on matches per file. Default 100. */
-	limit?: number;
-	/** Number of context rows above and below each match. Default 0. */
-	context?: number;
-	/** If true, `pattern` is treated as a JavaScript regex. Default TRUE (v2.0.2). */
-	regex?: boolean;
-}
-
-const DEFAULT_LIMIT = 100;
 
 /**
  * The per-row allowance the scan charges for a row's marker — the rendered
@@ -111,52 +92,6 @@ const DEFAULT_LIMIT = 100;
  */
 const ROW_MARKER_ALLOWANCE = 24;
 
-/**
- * Pure helper: extract rows from one file's content given a matcher.
- * `content` must already be in the read line space (toLF — issue #147).
- * ADR-0013: allocation is the CALLER's job — only rows actually returned to
- * the model get anchors (persisted == served == visible).
- */
-export async function grepFileContent(
-	path: string,
-	content: string,
-	pattern: string,
-	opts: GrepToolOptions = {},
-): Promise<GrepFileSection | undefined> {
-	const matcher = buildMatcher(pattern, opts.regex !== false);
-	const lines = visLines(content);
-	if (lines.length === 0) return undefined;
-	const limit = opts.limit ?? DEFAULT_LIMIT;
-	const context = Math.max(0, opts.context ?? 0);
-	const matchPositions: number[] = [];
-	for (let i = 0; i < lines.length && matchPositions.length < limit; i++) {
-		if (matcher(lines[i]!)) matchPositions.push(i);
-	}
-	if (matchPositions.length === 0) return undefined;
-
-	const contextSet = new Set<number>();
-	for (const p of matchPositions) {
-		for (let k = Math.max(0, p - context); k <= Math.min(lines.length - 1, p + context); k++) {
-			contextSet.add(k);
-		}
-	}
-	const matchSet = new Set(matchPositions);
-	const rows: GrepSectionRow[] = [...contextSet]
-		.sort((a, b) => a - b)
-		.map((position) => ({
-			position,
-			content: lines[position]!,
-			isMatch: matchSet.has(position),
-			spans: matchSpans(lines[position]!, pattern, opts.regex !== false),
-		}));
-	return {
-		path,
-		absolutePath: path,
-		lineCount: lines.length,
-		matches: rows.filter((row) => matchSet.has(row.position)),
-		contextRows: rows,
-	};
-}
 
 /** Render one section: rows with anchors where available, pointer for oversize. */
 function renderSection(
@@ -190,21 +125,6 @@ function renderSection(
 	return headerLines.join("\n");
 }
 
-function buildMatcher(pattern: string, regex: boolean): (line: string) => boolean {
-	if (!regex) {
-		const needle = pattern;
-		return (line) => line.includes(needle);
-	}
-	let compiled: RegExp;
-	try {
-		compiled = new RegExp(pattern);
-	} catch (error) {
-		throw new Error(
-			`[E_BAD_SHAPE] Grep regex "${pattern}" is invalid: ${error instanceof Error ? error.message : String(error)}.`,
-		);
-	}
-	return (line) => compiled.test(line);
-}
 
 interface GrepCanonicalValue {
 	files: GrepFileRows[];
@@ -237,11 +157,11 @@ export function buildGrepTool(io: FileIO) {
 			},
 			pattern: {
 				type: "string",
-				description: "Pattern to match; treated as a JavaScript-flavre regex by default. Pass `regex: false` for literal substring matching.",
+				description: "Pattern to match; treated as a ripgrep regular expression by default. Pass `regex: false` for literal substring matching.",
 			},
 			regex: {
 				type: "boolean",
-				description: "Treat `pattern` as a JavaScript-flavre regex (default true). Pass `regex: false` for literal substring matching.",
+				description: "Treat `pattern` as a regular expression (ripgrep syntax, default true). Pass `regex: false` for literal substring matching.",
 			},
 			context: {
 				type: "number",
@@ -508,8 +428,9 @@ export function buildGrepTool(io: FileIO) {
 					context: typeof params.context === "number" ? params.context : contextLinesCfg(),
 					regex: params.regex !== false,
 				};
-				// Pre-build matcher so a bad regex fails before any IO.
-				buildMatcher(params.pattern, opts.regex);
+				// The per-file match cap. It rides to ripgrep as `--max-count`, so the
+				// engine stops exactly where the plugin's own matcher would.
+				const limit = opts.limit ?? DEFAULT_LIMIT;
 
 				const root = await io.resolve(params.path ?? ".", cwd, signal2);
 				abortIf(signal2);
@@ -529,18 +450,23 @@ export function buildGrepTool(io: FileIO) {
 					const relOf = (p: string) => relative(root, p);
 					files = files.filter((p) => matchInclude(includeGlob!, relOf(p)));
 				}
-				// ripgrep pre-filter (#183): only files WITH a match go on to the read
-				// and anchor stage. Any rg failure returns undefined and the full list
-				// is kept (JS engine, as always).
-				if (files.length > 1) {
-					const narrow = await rgFilesWithMatches(
-						opts.regex === false ? `-F${params.pattern}` : params.pattern,
-						files,
-					);
-					if (narrow !== undefined) {
-						files = narrow;
-					}
-				}
+				// ripgrep is the ENGINE (#384): one search produces the matches, and
+				// only the files that carry a hit are read for the served text. The
+				// pattern rides in ONE `--regexp=` argument (a literal pattern as
+				// `--fixed-strings`), never glued to the pattern text — the old
+				// pre-filter's `-F<pattern>` made every literal search look for the
+				// text "-F<pattern>" and answer "No matches" for hits and misses alike.
+				const plan = await planGrepSearch({
+					pattern: params.pattern,
+					regex: opts.regex,
+					limit,
+					context: opts.context ?? 0,
+					files,
+					signal: signal2,
+				});
+				// Only the files that matched are read at all; in the degraded path
+				// every candidate is read, because the matcher needs its content.
+				const candidates = plan.candidates;
 
 				const fileSections: string[] = [];
 				const cardFiles: GrepFileRows[] = [];
@@ -554,12 +480,14 @@ export function buildGrepTool(io: FileIO) {
 				let usedChars = 0;
 				let spilling = false;
 				let headerEmitted = false;
+				// Files that changed after the search ran (their rows are a snapshot).
+				const staleFiles: string[] = [];
 
 				// ADR-0013: the scan runs to COMPLETION — nothing is refused by size.
 				// Sections fitting the per-response budget are returned (allocated +
 				// served here); everything past the budget spills as unallocated rows
 				// and is served at resume time.
-				for (const file of files) {
+				for (const file of candidates) {
 					abortIf(signal2);
 					let raw: string;
 					let lossy = false;
@@ -579,8 +507,19 @@ export function buildGrepTool(io: FileIO) {
 						continue; // unreadable file — skipped, never a refusal
 					}
 					const text = toLF(raw);
-					const section = await grepFileContent(file, text, params.pattern, opts);
+					const lines = visLines(text);
+					// The search's rows for this file: the engine's hits, placed in the
+					// read line space — or the plugin's own matcher's rows, when ripgrep
+					// could not answer at all.
+					const section = plan.sectionFor(file, { raw, lines, lossy });
 					if (section === undefined) continue;
+					if (section.stale) {
+						// The file changed after the search ran: its rows are the
+						// search's SNAPSHOT, not the file's current text. They are served
+						// unserved (the file no longer holds them) and the response names
+						// the file.
+						staleFiles.push(file);
+					}
 				// #205 Q5: a single row over the budget is pointer-ized and the segment
 				// keeps assembling — one pathological line never destroys a section.
 				for (const row of section.contextRows) {
@@ -607,7 +546,9 @@ export function buildGrepTool(io: FileIO) {
 						// stand-ins for undecodable bytes, so `edit` refuses it and an anchor
 						// minted here could never verify a write-back. Its rows stay unserved
 						// — `[line N] content` — the honest shape for "found, but lossy".
-						const allocated = lossy
+						// A STALE file is not editable either: its rows are the search's
+						// snapshot, and the file no longer holds that text.
+						const allocated = lossy || section.stale
 							? []
 							: await anchorForInWorkspace({
 									cwd,
@@ -761,10 +702,22 @@ export function buildGrepTool(io: FileIO) {
 					});
 				}
 
+
+				// The cautions name the files that changed after the search ran: their
+				// rows are the search's snapshot, not the file's current text.
+				const cautionText = staleFiles
+					.map(
+						(file) =>
+							`[Caution: ${relative(root, file) || basename(file)} changed after the search ran; the rows below are the earlier snapshot and are not editable.]`,
+					)
+					.join("\n");
 				if (fileSections.length === 0 && spillRows.length === 0) {
 					const noMatchModelText = jsonOutput
-						? JSON.stringify({ total: 0, truncated: false, files: [] })
-						: `No matches for "${params.pattern}" in ${root}.`;
+						? JSON.stringify({ total: 0, truncated: false, files: [] }) +
+						(cautionText === "" ? "" : `\n${cautionText}`)
+						: cautionText === ""
+							? `No matches for "${params.pattern}" in ${root}.`
+							: cautionText;
 					return {
 						files: [],
 						truncated: false,
@@ -795,8 +748,8 @@ export function buildGrepTool(io: FileIO) {
 					total: totalMatches,
 					...(continuation !== undefined ? { continuation } : {}),
 					modelText: jsonOutput
-						? JSON.stringify({ total: totalMatches, truncated: truncated || spillRows.length > 0, files: jsonFiles, ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`)
-						: `${fileSections.join("\n\n")}${noticeText === "" ? "" : `\n${noticeText}`}`,
+						? JSON.stringify({ total: totalMatches, truncated: truncated || spillRows.length > 0, files: jsonFiles, ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`) + (cautionText === "" ? "" : `\n${cautionText}`)
+						: `${cautionText === "" ? "" : `${cautionText}\n\n`}${fileSections.join("\n\n")}${noticeText === "" ? "" : `\n${noticeText}`}`,
 				};
 				return value;
 		}).catch((error: unknown) => ({

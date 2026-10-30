@@ -865,3 +865,36 @@ Map #354：`write` 的写后回显是输出行为，应归用户；默认从整�
 - host 拼装文案一律稳定 key + params 过 wire；未知 key 拒收回落行自带标签，屏幕永不出现 key 字面量；模型可见文本通道保持英文（`window.truncated` 布尔属协议可加项，不在此边界内）。
 - `window.truncated` 只由 continuation 判定（`assembleServedRead`）；≠ `end < totalLines`（后者是 limit 给小，不是截断）。
 - 换行开关是每卡实时渲染状态，非配置、不持久化；gutter 两态钉死 `pre`。
+
+## 2026-10-30 — ADR-0028：grep 的搜索引擎改回 ripgrep（#384）
+
+**Type:** contract（ADR-0028）+ 实现形态变更（预过滤退役）
+**Confidence:** High（根 1919 例 + 2 skipped 全绿；client 300 例 + build 全绿；双 typecheck 干净；ripgrep 15.0.0 实测退出码与行号行为）
+**Evidence:** 票 [#384](https://github.com/hyperion2144/dsh-hashline-edittool/issues/384)；官方实现 `deepseek-harness/packages/fs/tool-fs-search/src/{grep.ts,search-core.ts}`（`buildGrepCommand` / `parseGrepMatches` / `runRipgrep`）；ripgrep 15.0.0 本机实测（exit 0/1/2 口径、`--text` 对 NUL 行号的对齐、显式路径不受 ignore 规则影响）；`docs/line-hashline-spec.md`（v1 规格的 “ripgrep-flavour regex” 与 “ripgrep 产出命中”）
+
+### Why
+
+`grep` 此前有两个引擎：JS 逐行匹配决定“什么命中”，ripgrep 只做 `rg --files-with-matches` 预过滤。字面模式把模式拼成 `-F<pattern>` 传给 `rg -e`，ripgrep 于是去搜字面文本 `-F<pattern>`，恒 exit 1；而 exit 1 早已被升格为最终答案，于是命中与未命中一律回答 “No matches”（假阴性，#384）。维护者裁决：照抄官方 DSH grep 的形态，把 ripgrep 放回引擎位——`rg --json` 直接产出命中（文件/行号），插件只在其上接回锚点、上下文行、预算 spill/resume、二进制保真与漂移提示。
+
+### 本轮定案（复核时照此）
+
+- argv 固定为 `["--no-config", "--json", "--text", (--max-count=N), (--fixed-strings), "--regexp=<pattern>", "--", ...files]`：`--no-config` 必须第一个（宿主 RIPGREP_CONFIG_PATH 可注入 `--pre`）；字面量是独立 flag，**绝不**把 `-F` 拼在模式文本上（那正是 #384 本体）。
+- `--text`（`-a`）是本插件对官方的必要偏离：ripgrep 默认把 NUL 当行分隔符并在 NUL 处停止搜索，行号会整体偏移、NUL 所在行的命中会报在错误行上（#268）；`--text` 让它的行号与插件自己的 reader 对齐。
+- 插件自带的逐行 matcher 不再是主引擎，只在 ripgrep **根本跑不起来**时降级接管（二进制缺失 / 运行失败）：「grep 不会因为 ripgrep 出错而失败」这条契约仍然成立；而**模式被 ripgrep 拒绝**是坏模式，直接报 `E_BAD_SHAPE`（官方工具同样报 `SEARCH_INVALID_PATTERN`）——不静默换一个引擎作答，方言只此一种。
+- **read line space（ADR-0008）是 ripgrep 复现不了的那一个契约**：read 空间把裸 CR 也折成 LF，ripgrep 只数 LF。带裸 CR 的文件行号会漂移，跨 CR 的正则甚至会误命中——命中**仍是 ripgrep 判的**，由「命中在行内的偏移量」定位到 read 空间的行号（`src/tools/grep-search.ts` 的 `indexLineSpaces` / `readSpacePosition`），不靠插件自己的 matcher 重新匹配，方言不分裂。
+- **漂移窗口被关上**：ripgrep 读过文件、插件又读一次，两次之间文件可能变了。搜索看到的行文本与插件现在读到的行文本逐行比对，不一致即判该文件「搜索后已变」：该文件按**搜索当时的快照**作答（行不 serve、不给锚点），并在响应里点名 caution——「标成命中却已不是那一行」的假阳性就此消失（票面「漂移 caution 行」这一项）。
+- 候选清单仍是插件自己的（ripgrep 的 `--files` 列举或插件走查），`grep_respect_gitignore` / `include` / 隐藏项与 node_modules 规则的语义不变；显式列在命令行上的路径不受 ignore 规则影响（ripgrep 15.0.0 实测）。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0028-grep-rg-engine.md` (created)
+- `docs/adr/0017-binary-refusal-stops-read-not-grep.md` (amended：预过滤退役，搜索自身改用 `--text`)
+- `src/tools/grep-rg.ts`：预过滤接缝（`rgFilesWithMatches` / `classifyRgExit`）退役，改为 `rgSearchMatches` / `buildRgArgv`；命中记录带上行文本与行内偏移（官方记录形态）；`rgFiles` 不变
+- `src/tools/grep-search.ts` (created)：搜索层——引擎调用、命中按文件分组、read 行空间定位、漂移比对、section 行构造；降级路径（插件 matcher）在同层
+- `src/tools/tool-grep.ts`：管线改为「rg 产出命中 → 只读命中文件 → 锚点/context/预算/spill」；行构造与匹配下放到搜索层，工具层回到「工具面 + 预算/续取」
+- `src/domain/edit/prompts.ts` / `src/render/grep-card.ts`：模式方言措辞改为 ripgrep 正则
+- `README.md` / `README.zh.md`：grep 工具行（镜像）
+- `CHANGELOG.md` `[Unreleased]`：#384 两条
+- `AGENTS.md` l0 decisions 0001–0027 → 0001–0028，追加 grep 搜索引擎主题
+- `docs/adr/0016-argv-length-budget.md` / `docs/adr/0017-binary-refusal-stops-read-not-grep.md` (amended：预过滤退役，搜索自身改用 `--text`)
+- 测试：`test/core/issue-384-grep-engine.test.ts`（引擎）、`test/core/issue-384-grep-search.test.ts`（搜索层：定位 + 漂移）、`test/core/issue-384-grep-repro.test.ts`（复现矩阵）、`test/core/issue-384-grep-rg-unavailable.test.ts`（降级路径 + 模式被拒报错）、`test/core/grep-rg-argv-limit.test.ts`（迁移）、`test/core/grep-rg-prefilter.test.ts`（删除，接缝已不存在）

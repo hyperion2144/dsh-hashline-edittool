@@ -1,22 +1,25 @@
 /**
- * #260 — the pre-filter sized each `rg` invocation by FILE COUNT (`CHUNK = 400`),
- * not by the LENGTH of the command line it builds. Count is not a bound on argv:
- * 400 paths at 120 chars compose a ~48,000-char command line, and an OS that
- * cannot hold it fails the spawn instead of running rg.
+ * #260 — the search engine sizes each `rg` invocation by command-line
+ * LENGTH, never by FILE COUNT.
+ *
+ * The pre-filter that came before it sized the file list by count
+ * (`CHUNK = 400`), not by the LENGTH of the command line it builds. Count is
+ * not a bound on argv: 400 paths at 120 chars compose a ~48,000-char command
+ * line, and an OS that cannot hold it fails the spawn instead of running rg.
  *
  * On Windows that is `CreateProcess`'s 32,767-char limit and the error is
- * `spawn ENAMETOOLONG`; Node raises it SYNCHRONOUSLY out of `execFile` (verified
- * on this repo's Node: an over-limit argv throws `spawn E2BIG` at the call, not
- * through the callback). A synchronous throw inside the promise executor REJECTS
- * the promise, so the caller's "keep the full list" fallback never ran and the
+ * `spawn ENAMETOOLONG`; Node raises it SYNCHRONOUSLY out of `execFile`
+ * (verified on this repo's Node: an over-limit argv throws `spawn E2BIG` at
+ * the call, not through the callback). A synchronous throw inside the promise
+ * executor REJECTS the promise, so the caller's fallback never ran and the
  * whole grep failed — that is the reported symptom.
  *
- * The OS limit is not fakeable on the machine running these tests, so the spawn
- * is: the mock composes the command line the way the platform would, enforces
- * the Windows limit on it, and otherwise answers like `rg -l` (a chunk's files
- * whose NAME contains `hit` matched; exit 1 when none did). Every assertion below
- * is therefore measured on the REAL argv the module builds — the only substituted
- * piece is the kernel.
+ * The OS limit is not fakeable on the machine running these tests, so the
+ * spawn is: the mock composes the command line the way the platform would,
+ * enforces the Windows limit on it, and otherwise answers like `rg --json`
+ * (a chunk's files whose NAME contains `hit` matched; exit 1 when none did).
+ * Every assertion below is therefore measured on the REAL argv the engine
+ * builds — the only substituted piece is the kernel.
  *
  * @module
  */
@@ -49,7 +52,7 @@ vi.mock("node:child_process", () => ({
 		file: string,
 		args: string[],
 		_opts: unknown,
-		callback: (error: { code?: string | number } | null, stdout: string) => void,
+		callback: (error: { code?: string | number } | null, stdout: string, stderr: string) => void,
 	) => {
 		const argv = [file, ...args];
 		const commandLine = harness.commandLine(argv);
@@ -60,20 +63,39 @@ vi.mock("node:child_process", () => ({
 			// `child_process` surfaces it as a synchronous throw.
 			throw new Error("spawn ENAMETOOLONG");
 		}
-		// args = flags…, pattern, files… — answer like `rg --files-with-matches`.
-		const files = args.slice(4);
+		// The files ride behind `--`; the flags ride before it.
+		const separator = args.indexOf("--");
+		const files = separator === -1 ? [] : args.slice(separator + 1);
 		const hits = files.filter((candidate) => candidate.includes("hit"));
 		if (hits.length === 0) {
-			callback({ code: 1 }, "");
+			// Exit 1 = nothing matched: an ANSWER, not a failure.
+			callback({ code: 1 }, "", "");
 			return {} as never;
 		}
-		callback(null, `${hits.join("\n")}\n`);
+		// Answer like `rg --json`: one match record per hit file.
+		const stdout = hits
+			.map((path) =>
+				JSON.stringify({
+					type: "match",
+					data: {
+						path: { text: path },
+						lines: { text: "needle\n" },
+						line_number: 1,
+						absolute_offset: 0,
+						submatches: [{ match: { text: "needle" }, start: 0, end: 6 }],
+					},
+				}),
+			)
+			.join("\n");
+		callback(null, stdout, "");
 		return {} as never;
 	},
 }));
 
 import { planArgvChunks } from "../../src/infra/argv-limit.js";
-import { rgFilesWithMatches } from "../../src/tools/grep-rg.js";
+import { rgSearchMatches } from "../../src/tools/grep-rg.js";
+import { rgMatchesOf } from "../support/fixtures.js";
+
 
 /** A candidate path of EXACTLY `length` characters, self-describing for the fake rg. */
 function pathOf(length: number, index: number, marker = "miss"): string {
@@ -92,16 +114,20 @@ function reset(): void {
 	harness.alwaysThrow = undefined;
 }
 
-describe("rgFilesWithMatches sizes each invocation by command-line length (#260)", () => {
+describe("the engine sizes each invocation by command-line length (#260)", () => {
 	it("survives the reported shape: 400 files, ~120-char paths", async () => {
 		reset();
 		const files = longPaths(400, 120, [0, 399]);
 
 		// Pre-fix: one 400-file chunk ≈ 48,400 chars — over the limit, so the spawn
 		// throws out of the executor and this await REJECTS with ENAMETOOLONG.
-		const matched = await rgFilesWithMatches("needle", files, 15_000);
+		const outcome = await rgSearchMatches({ pattern: "needle", literal: true, files });
 
-		expect(matched).toEqual([files[0], files[399]]);
+		expect(outcome.kind).toBe("ok");
+		expect(rgMatchesOf(outcome)).toMatchObject([
+			{ path: files[0], line: 1 },
+			{ path: files[399], line: 1 },
+		]);
 		expect(harness.invocations.length).toBeGreaterThan(1);
 		for (const invocation of harness.invocations) {
 			expect(invocation.commandLine).toBeLessThanOrEqual(WINDOWS_COMMAND_LINE_LIMIT);
@@ -115,7 +141,9 @@ describe("rgFilesWithMatches sizes each invocation by command-line length (#260)
 		// count-based code passes — every element here is load-bearing.
 		const files = longPaths(6, 6_300, [4]);
 
-		expect(await rgFilesWithMatches("needle", files, 15_000)).toEqual([files[4]]);
+		const outcome = await rgSearchMatches({ pattern: "needle", literal: true, files });
+		expect(outcome.kind).toBe("ok");
+		expect(rgMatchesOf(outcome)).toMatchObject([{ path: files[4], line: 1 }]);
 		for (const invocation of harness.invocations) {
 			expect(invocation.commandLine).toBeLessThanOrEqual(WINDOWS_COMMAND_LINE_LIMIT);
 		}
@@ -127,32 +155,38 @@ describe("rgFilesWithMatches sizes each invocation by command-line length (#260)
 		// file would pass every limit assertion above and lose rg's whole point.
 		const files = longPaths(400, 20, [7]);
 
-		expect(await rgFilesWithMatches("needle", files, 15_000)).toEqual([files[7]]);
+		const outcome = await rgSearchMatches({ pattern: "needle", literal: true, files });
+		expect(outcome.kind).toBe("ok");
+		expect(rgMatchesOf(outcome)).toMatchObject([{ path: files[7], line: 1 }]);
 		expect(harness.invocations).toHaveLength(1);
 	});
 });
 
 describe("a spawn that throws synchronously is a FAILURE outcome, never a rejection (#260)", () => {
-	it("answers undefined so the caller keeps its full list", async () => {
+	it("answers 'failed', so the caller can fall back", async () => {
 		reset();
 		harness.alwaysThrow = new Error("spawn ENAMETOOLONG");
 
-		// The documented contract of this seam: ANY failure — binary missing, spawn
-		// error, non-zero exit, timeout — returns undefined. A synchronous spawn
-		// throw used to escape the promise (and the contract) as a rejection.
+		// The documented contract of this seam: ANY failure — binary missing,
+		// spawn error, timeout — is an OUTCOME. A synchronous spawn throw used to
+		// escape the promise (and the contract) as a rejection.
 		await expect(
-			rgFilesWithMatches("needle", [pathOf(30, 1), pathOf(30, 2)], 15_000),
-		).resolves.toBeUndefined();
+			rgSearchMatches({ pattern: "needle", literal: true, files: [pathOf(30, 1), pathOf(30, 2)] }),
+		).resolves.toMatchObject({ kind: "failed" });
 	});
 
 	it("gives up on a path no command line can hold, without rejecting", async () => {
 		reset();
 		// One path longer than the whole budget: no chunking can save it, so the
-		// planner abstains — the module answers undefined AND never hands the OS a
+		// planner abstains — the engine answers 'failed' AND never hands the OS a
 		// command line it would have to refuse (acceptance criterion a).
 		await expect(
-			rgFilesWithMatches("needle", [pathOf(40_000, 1), pathOf(30, 2)], 15_000),
-		).resolves.toBeUndefined();
+			rgSearchMatches({
+				pattern: "needle",
+				literal: true,
+				files: [pathOf(40_000, 1), pathOf(30, 2)],
+			}),
+		).resolves.toMatchObject({ kind: "failed" });
 		expect(harness.invocations).toHaveLength(0);
 	});
 });

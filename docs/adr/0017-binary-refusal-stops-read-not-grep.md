@@ -1,6 +1,6 @@
 # ADR-0017 — A backend's binary refusal stops `read`, not `grep`
 
-> **Status**: Accepted (2026-10-10; issue [#268](https://github.com/hyperion2144/dsh-hashline-edittool/issues/268) — implemented in the same change). Extended by [ADR-0018](0018-nul-text-fidelity-classification.md): a refusal is classified by fidelity — a lossless refusal is served and editable.
+> **Status**: Accepted (2026-10-10; issue [#268](https://github.com/hyperion2144/dsh-hashline-edittool/issues/268) — implemented in the same change). Extended by [ADR-0018](0018-nul-text-fidelity-classification.md): a refusal is classified by fidelity — a lossless refusal is served and editable. Amended by [ADR-0028](0028-grep-rg-engine.md): the ripgrep pre-filter became the search ENGINE, so the search itself now runs with `--text` — the consequence below about the pre-filter not needing `-a` describes the arrangement ADR-0028 replaced.
 
 ## Problem Statement
 
