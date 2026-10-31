@@ -23,6 +23,7 @@
 import { pathToFileURL } from "node:url";
 import { languageForPath } from "../ast/language.js";
 import { getLspManager } from "./manager.js";
+import { forgetDocumentWrite, noteDocumentWrite } from "./write-tracker.js";
 
 /** How a written document reaches the LSP layer. */
 export type DocumentSyncHook = (absolutePath: string, text: string) => void;
@@ -42,9 +43,17 @@ export function setDocumentSyncHook(next: DocumentSyncHook | undefined): void {
  *
  * @param absolutePath - the file that was just written.
  * @param text - its new content.
+ *
+ * #388: the write is also RECORDED — the ledger of the newest write per
+ * document is what lets the diagnostics delivery notice that a later
+ * write overtook the one it is serving.
  */
 export function notifyDocumentWritten(absolutePath: string, text: string): void {
 	try {
+		// #388: the write path is the only place that knows a file changed on
+		// disk. Record it FIRST, so the diagnostics delivery can tell whether
+		// the write it serves is still the newest one for this file.
+		noteDocumentWrite(pathToFileURL(absolutePath).href, text);
 		if (hook !== undefined) {
 			hook(absolutePath, text);
 			return;
@@ -80,6 +89,8 @@ export function setDocumentClosedHook(next: DocumentCloseHook | undefined): void
  */
 export function notifyDocumentClosed(absolutePath: string): void {
 	try {
+		// #388: the document is gone — no write owns it any more.
+		forgetDocumentWrite(pathToFileURL(absolutePath).href);
 		if (closeHook !== undefined) {
 			closeHook(absolutePath);
 			return;

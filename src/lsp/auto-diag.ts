@@ -47,6 +47,7 @@ import { anchorForInWorkspace, execSessionKey, workspaceCwd } from "../domain/se
 import type { FileIO } from "../infra/fs-bridge.js";
 import { getLspManager } from "./manager.js";
 import type { LspSession } from "./session.js";
+import { latestWriteFor, markAsyncInjection } from "./write-tracker.js";
 
 /**
  * How long a tool holds its result for an inline push. Measured on a real
@@ -100,6 +101,12 @@ export interface FileDiagnostics {
 	totalSeen: number;
 	/** Whether entries were dropped at {@link MAX_REPORTED_DIAGNOSTICS}. */
 	truncated: boolean;
+	/**
+	 * A model-facing line appended after the rows. #388: a report enqueued for
+	 * an earlier write can still be delivered after a newer one (the platform
+	 * queues without waking), so the newer report says which one wins.
+	 */
+	readonly note?: string;
 }
 
 /**
@@ -191,13 +198,18 @@ export async function deliverDiagnosticsAfterWrite(
 	input: AfterWriteInput,
 ): Promise<FileDiagnostics | undefined> {
 	try {
+		// #388: the write this delivery serves is the one the ledger knows
+		// about — until a LATER write to the same file lands.
+		const tracked = latestWriteFor(input.uri);
+		const generation = tracked?.generation;
+		const writeNumber = tracked?.writeNumber;
 		// A cold start has nobody to wait on inline — the push cannot arrive
 		// before a session exists — so the background path takes over at once.
 		if (input.session === undefined) {
-			startAsyncWait(input);
+			startAsyncWait(input, generation, writeNumber);
 			return undefined;
 		}
-		const verified = await verifiedReport(input.session, input.uri, input.text, {
+		const verified = await verifiedReport(input.session, input.uri, () => currentText(input), {
 			open: (next) => {
 				const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
 				open?.(next);
@@ -208,21 +220,80 @@ export async function deliverDiagnosticsAfterWrite(
 		if (verified === undefined) {
 			// The guarantee could not be established inside the window — the
 			// bounded background wait continues it and injects when it can.
-			startAsyncWait(input);
+			startAsyncWait(input, generation, writeNumber);
 			return undefined;
 		}
-		const report = await collectReport(input, verified.items);
+		// #388: a newer write landed while we verified — the report describes
+		// content the model has already moved past. Drop it.
+		if (!stillCurrent(input.uri, generation)) return undefined;
+		const report = await collectReport(input, verified.items, verified.text);
 		if (report === undefined) return undefined;
 		// #223: `collectReport` minted the anchors AND served them; the
 		// observation is the only thing left, and it is not a store write.
 		await observeReport(input);
-		return report;
+		// #388: an earlier write's delayed diagnostics may still be on their way
+		// (the platform queues without waking) — the fresh report says which one
+		// wins, and clears the flag.
+		const note = supersedeNote(input.uri);
+		return note === undefined ? report : { ...report, note };
 	} catch (error) {
 		console.error(
 			`dsh-hashline-edittool: automatic diagnostics failed for ${input.displayPath}: ${error instanceof Error ? error.message : String(error)}`,
 		);
 		return undefined;
 	}
+}
+
+/**
+ * The content the delivery should speak about: the newest write the
+ * ledger knows for this file, falling back to the write this delivery
+ * serves.
+ */
+function currentText(input: AfterWriteInput): string {
+	return latestWriteFor(input.uri)?.text ?? input.text;
+}
+
+/**
+ * Is the write this delivery serves still the newest one for its file?
+ *
+ * #388: the delivery captured its write's generation when it started. A
+ * different generation means a newer write landed meanwhile — and that
+ * write has its own delivery, so this one has nothing left to say.
+ * `undefined` means the write never reached the ledger (nothing to
+ * compare) — the delivery keeps its previous behaviour.
+ */
+function stillCurrent(uri: string, generation: number | undefined): boolean {
+	if (generation === undefined) return true;
+	return latestWriteFor(uri)?.generation === generation;
+}
+
+/**
+ * The note a FRESH report carries when an earlier write's delayed diagnostics
+ * may still be on their way (#388).
+ *
+ * `agent.inject` queues without waking: a report enqueued for an earlier
+ * write can be delivered after a newer one, and the plugin cannot withdraw
+ * it. So the newer report says which of the two wins — and the flag is
+ * cleared, because the model has now been told.
+ */
+function supersedeNote(uri: string): string | undefined {
+	const tracked = latestWriteFor(uri);
+	if (tracked === undefined || tracked.hadAsyncInjection !== true) return undefined;
+	tracked.hadAsyncInjection = false;
+	return "An earlier write's delayed diagnostics may still arrive; if they do, this report takes precedence.";
+}
+
+/**
+ * The C′ preamble (#388): a report enqueued for an earlier write can be
+ * delivered after a newer one — the platform queues without waking, so the
+ * plugin cannot withdraw it. The report therefore says WHICH write it
+ * describes, and that a newer write wins.
+ */
+function supersedePreamble(path: string, writeNumber: number | undefined): string[] {
+	if (writeNumber === undefined) return [];
+	return [
+		`This report describes write #${writeNumber} of ${path}. If a newer write has landed since, its diagnostics take precedence over this one.`,
+	];
 }
 
 /**
@@ -261,17 +332,35 @@ export interface VerifiedReportOptions {
  *    reverted, real content.
  * 3. Budget out → `undefined` ("no answer yet"), never an unverifiable
  *    report. The probe lives only in the server's document state.
+ *
+ * #388: `text` is a RESOLVER, not a snapshot. The content a write put
+ * on disk can be overtaken by a later write while the probe is in
+ * flight, and the probe PUSHES text into the server — reverting to the
+ * snapshot would roll the server's view of the file back to a version
+ * the model has left behind. The probe therefore re-reads the current
+ * content before every step, and the returned `text` is the content
+ * the items actually describe.
  */
 export async function verifiedReport(
 	session: LspSession,
 	uri: string,
-	text: string,
+	text: () => string | undefined,
 	opts: VerifiedReportOptions,
-): Promise<{ items: readonly unknown[] } | undefined> {
+): Promise<{ items: readonly unknown[]; text: string } | undefined> {
 	const pulled = await session.pullDiagnostics?.(uri, PULL_TIMEOUT_MS);
-	if (pulled !== undefined) return { items: pulled.items };
+	if (pulled !== undefined) {
+		const current = text();
+		return current === undefined ? undefined : { items: pulled.items, text: current };
+	}
 	const nonce = `dsh_probe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-	const probeText = `${text}\n${nonce};`;
+	// #388: the probe's second wait accepts "a push that no longer mentions
+	// the nonce" — but a push that arrived BEFORE the probe qualifies too.
+	// The session counts pushes, so only pushes that arrived after the probe
+	// may answer it.
+	const baseline = session.diagnosticsRevision;
+	const base = text();
+	if (base === undefined) return undefined;
+	const probeText = `${base}\n${nonce};`;
 	const deadline = Date.now() + opts.budgetMs;
 	opts.open(probeText);
 	if (
@@ -281,19 +370,27 @@ export async function verifiedReport(
 			(items) => itemsMentionNonce(items, nonce),
 			deadline,
 			opts.signal,
+			baseline,
 		)) === undefined
 	) {
 		return undefined;
 	}
-	opts.open(text);
-	const settled = await waitPushMatching(
-		session,
-		uri,
-		(items) => !itemsMentionNonce(items, nonce),
-		deadline,
-		opts.signal,
-	);
-	return settled === undefined ? undefined : { items: settled };
+	// #388: the revert syncs the CURRENT content, not the snapshot this
+	// wait started with. A newer write may have landed while the probe was
+	// in flight, and reverting to the old text would roll the server's view
+	// of the file back to a version the model has left behind.
+	const revert = text();
+	if (revert === undefined) return undefined;
+	opts.open(revert);
+		const settled = await waitPushMatching(
+			session,
+			uri,
+			(items) => !itemsMentionNonce(items, nonce),
+			deadline,
+			opts.signal,
+			baseline,
+		);
+	return settled === undefined ? undefined : { items: settled, text: revert };
 }
 
 /** Does this report still carry the probe's sentinel diagnostic? */
@@ -311,13 +408,42 @@ async function waitPushMatching(
 	match: (items: readonly unknown[]) => boolean,
 	deadline: number,
 	signal?: AbortSignal,
+	/** Only pushes that arrived AFTER this counter may answer the wait. */
+	minRevision = 0,
 ): Promise<readonly unknown[] | undefined> {
 	for (;;) {
 		if (signal?.aborted || Date.now() >= deadline) return undefined;
-		const items = session.getDiagnostics(uri);
-		if (items !== undefined && match(items)) return items;
+		// #388: a push that was already sitting in the session (it arrived
+		// before the probe) satisfies "no nonce" too — so the wait only
+		// looks at pushes that came in after the probe started.
+		if (session.diagnosticsRevision > minRevision) {
+			const items = session.getDiagnostics(uri);
+			if (items !== undefined && match(items)) return items;
+		}
 		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
+}
+
+/**
+ * The content a probe should sync the server with, for a caller that
+ * brought its OWN snapshot (#388).
+ *
+ * The manual `lsp diagnostics` path reads the file itself, so its snapshot
+ * can be NEWER than the ledger (an edit outside the plugin) or OLDER (a
+ * write that landed while the probe was in flight). The rule: a write the
+ * ledger knows AND that landed after this call started wins — that is the
+ * content the file has now; otherwise the caller's own snapshot stands.
+ *
+ * @param uri - the document's URI.
+ * @param generation - the ledger's generation when the call started.
+ * @param fallback - the caller's own snapshot.
+ */
+export function currentContentFor(uri: string, generation: number | undefined, fallback: string): string {
+	const tracked = latestWriteFor(uri);
+	if (tracked !== undefined && tracked.generation !== generation) {
+		return tracked.text;
+	}
+	return fallback;
 }
 
 /**
@@ -329,10 +455,14 @@ async function waitPushMatching(
  * an empty push (the server looked and found nothing — clean, not silent),
  * or only severities this feature does not report.
  */
-async function collectReport(input: AfterWriteInput, pushedArg?: readonly unknown[]): Promise<FileDiagnostics | undefined> {
+async function collectReport(
+	input: AfterWriteInput,
+	pushedArg: readonly unknown[] | undefined,
+	text: string,
+): Promise<FileDiagnostics | undefined> {
 	const pushed = pushedArg ?? input.session?.getDiagnostics(input.uri);
 	if (pushed === undefined || pushed.length === 0) return undefined;
-	const lines = splitLines(input.text);
+	const lines = splitLines(text);
 	// NO dense read: every entry ever READ below belongs to a line in
 	// `diagLineNos`, and the mint fills exactly those in. Paying for a query
 	// over the file's whole anchor table to fill an array the next statement
@@ -374,7 +504,7 @@ async function collectReport(input: AfterWriteInput, pushedArg?: readonly unknow
 	const diagAllocated = await anchorForInWorkspace({
 		cwd: workspaceCwd() ?? "",
 		absolutePath: input.absolutePath,
-		content: input.text,
+		content: text,
 		lines: diagLineNos,
 		sessionKey: execSessionKey(input.exec),
 	});
@@ -425,7 +555,11 @@ async function observeReport(input: AfterWriteInput): Promise<void> {
  * `agent.inject` — the queue-without-waking primitive, so the model meets the
  * diagnostics on its next natural step and an idle model is never interrupted.
  */
-function startAsyncWait(input: AfterWriteInput): void {
+function startAsyncWait(
+	input: AfterWriteInput,
+	generation: number | undefined,
+	writeNumber: number | undefined,
+): void {
 	const agent = input.exec.agent;
 	if (agent === undefined) return;
 	const signal = input.exec.signal;
@@ -441,31 +575,42 @@ function startAsyncWait(input: AfterWriteInput): void {
 				const remaining = Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt));
 				session = (await manager?.waitForSession(input.languageId, input.workspaceRoot, remaining)) ?? undefined;
 				if (session === undefined || signal.aborted) return;
+				// #388: a newer write landed while the server booted — ITS delivery
+				// owns the file now.
+				if (!stillCurrent(input.uri, generation)) return;
 				// The write synced NOBODY (the server was not up), and an LSP
 				// server has no disk watcher — left alone it would never learn
 				// the file changed. Tell it now: the fresh session has surely
 				// never seen this document, so this is a `didOpen`.
 				const openDocument = manager?.openDocumentFor(input.languageId, input.uri);
-				openDocument?.(input.text);
+				openDocument?.(currentText(input));
 			}
-			const verified = await verifiedReport(
-				session,
-				input.uri,
-				input.text,
-				{
-					open: (next) => {
-						const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
-						open?.(next);
-					},
-					budgetMs: Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt)),
-					signal,
+			// #388: the probe PUSHES text into the server. An old text would roll
+			// the server's view of the file back to a version the model has left
+			// behind — so a wait that no longer owns the file stops before it
+			// touches the server at all.
+			if (!stillCurrent(input.uri, generation)) return;
+			const verified = await verifiedReport(session, input.uri, () => currentText(input), {
+				open: (next) => {
+					const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
+					open?.(next);
 				},
-			);
+				budgetMs: Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt)),
+				signal,
+			});
 			if (verified === undefined || signal.aborted) return;
-			const report = await collectReport({ ...input, session }, verified.items);
+			// #388: a newer write landed while we verified — what we hold
+			// describes content the model has already moved past. Drop it.
+			if (!stillCurrent(input.uri, generation)) return;
+			const report = await collectReport({ ...input, session }, verified.items, verified.text);
 			if (report === undefined) return;
+			if (!stillCurrent(input.uri, generation)) return;
 			await observeReport(input);
-			agent.inject(buildInjectedMessage(input, report));
+			agent.inject(buildInjectedMessage(input, report, writeNumber));
+			// #388: the platform queues this message without waking the model, so it
+			// can still be delivered after a newer write. The plugin cannot withdraw
+			// it — the next inline report says which one wins.
+			if (generation !== undefined) markAsyncInjection(input.uri, generation);
 		} catch {
 			// A background delivery that fails stays silent: the write succeeded,
 			// and the model can always ask `lsp diagnostics` itself.
@@ -486,9 +631,13 @@ function startAsyncWait(input: AfterWriteInput): void {
  * stays local to the source object — `MessageSourceMap` has no
  * plugin-producer key to type it against.
  */
-function buildInjectedMessage(input: AfterWriteInput, report: FileDiagnostics): UserMessage {
+function buildInjectedMessage(
+	input: AfterWriteInput,
+	report: FileDiagnostics,
+	writeNumber: number | undefined,
+): UserMessage {
 	return createUserMessage({
-		content: [{ type: "text", text: formatInjectedText(input, report) }],
+		content: [{ type: "text", text: formatInjectedText(input, report, writeNumber) }],
 		source: {
 			// v4 session admission (#165): the kind must be the producer's OWN,
 			// non-empty kind — the literal "plugin" is the retired v3 wrapper and is
@@ -509,9 +658,14 @@ function buildInjectedMessage(input: AfterWriteInput, report: FileDiagnostics): 
 }
 
 /** The injected text: origin (file, tool, call id) first, anchored rows under it. */
-function formatInjectedText(input: AfterWriteInput, report: FileDiagnostics): string {
+function formatInjectedText(
+	input: AfterWriteInput,
+	report: FileDiagnostics,
+	writeNumber: number | undefined,
+): string {
 	return [
 		`[LSP diagnostics arrived late for ${report.path}]`,
+		...supersedePreamble(report.path, writeNumber),
 		`written by ${report.toolName} (call ${String(input.exec.callId)}):`,
 		renderRows(report),
 	].join("\n");
@@ -551,6 +705,7 @@ export function formatDiagnosticsSection(reports: readonly FileDiagnostics[]): s
 				`… further diagnostics omitted (report capped at ${MAX_REPORTED_DIAGNOSTICS}); call \`lsp diagnostics\` for the full list.`,
 			);
 		}
+		if (report.note !== undefined) parts.push(report.note);
 	}
 	return parts.join("\n");
 }
@@ -599,6 +754,11 @@ export type DiagJsonRow = {
 export type DiagJsonEntry = {
 	path: string;
 	rows: Record<string, DiagJsonRow>;
+	/**
+	 * The same line the text section appends (#388): which report wins when an
+	 * earlier write's delayed diagnostics are still on their way.
+	 */
+	note?: string;
 };
 
 export function diagRowsToJson(rows: readonly DiagRow[]): Record<string, DiagJsonRow> {
@@ -617,5 +777,9 @@ export function diagRowsToJson(rows: readonly DiagRow[]): Record<string, DiagJso
 }
 
 export function diagnosticsJson(reports: readonly FileDiagnostics[]): DiagJsonEntry[] {
-	return reports.map(({ path, rows }) => ({ path, rows: diagRowsToJson(rows) }));
+	return reports.map(({ path, rows, note }) => ({
+		path,
+		rows: diagRowsToJson(rows),
+		...(note !== undefined ? { note } : {}),
+	}));
 }
