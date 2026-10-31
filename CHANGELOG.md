@@ -7,6 +7,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 ### Added
 
 - README 增加 dsh-plugin.org 收录徽章（Listed on dsh-plugin.org）。
+- 新增 `screenshots.json`：在插件仓库里声明市场截图，dsh-market 等店面按此展示。
+
+### Changed
+
+- npm 包的 `description` 对齐当前工具集：去掉已在 0.4 契约中移除的 `batch_edit`，补上 write/grep/delete/rename/ast_grep/ast_edit/lsp/format，并把标记形态改成 `<anchor>`（可选 `<anchor>:<line>`）。
 
 ## [0.10.6] - 2026-10-30
 
