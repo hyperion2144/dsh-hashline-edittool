@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- README 增加 dsh-plugin.org 收录徽章（Listed on dsh-plugin.org）。
+
 ## [0.10.6] - 2026-10-30
 
 ### Fixed
