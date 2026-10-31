@@ -389,7 +389,7 @@ export function buildLspTool(io: FileIO) {
 				// "no answer yet" is returned only when the guarantee could not be
 				// established inside the budget — never a stale pre-change report,
 				// which is what the old arrivedAlready short-circuit served.
-				const verified = await verifiedReport(session, uri, text, {
+				const verified = await verifiedReport(session, uri, () => text, {
 					open: (next) => sync(next),
 					budgetMs: DIAGNOSTIC_WAIT_MS,
 					signal: exec.signal,

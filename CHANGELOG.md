@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- LSP 自动诊断不再投递过期内容：同一文件的后续写入落地后，先前写入的延迟诊断会被丢弃（模型只收到最新一次写入的诊断，且报告里的锚点对应当前文件），诊断探针也不再把旧文本回灌给语言服务器（#388，ADR-0029）。
+
 ## [0.10.6] - 2026-10-30
 
 ### Fixed

@@ -898,3 +898,47 @@ Map #354：`write` 的写后回显是输出行为，应归用户；默认从整�
 - `AGENTS.md` l0 decisions 0001–0027 → 0001–0028，追加 grep 搜索引擎主题
 - `docs/adr/0016-argv-length-budget.md` / `docs/adr/0017-binary-refusal-stops-read-not-grep.md` (amended：预过滤退役，搜索自身改用 `--text`)
 - 测试：`test/core/issue-384-grep-engine.test.ts`（引擎）、`test/core/issue-384-grep-search.test.ts`（搜索层：定位 + 漂移）、`test/core/issue-384-grep-repro.test.ts`（复现矩阵）、`test/core/issue-384-grep-rg-unavailable.test.ts`（降级路径 + 模式被拒报错）、`test/core/grep-rg-argv-limit.test.ts`（迁移）、`test/core/grep-rg-prefilter.test.ts`（删除，接缝已不存在）
+
+## 2026-10-31 — 取证笔记：LSP 自动诊断的异步时序与「过期诊断」（#388）
+
+**Type:** evidence（研究笔记；不含决策）
+**Confidence:** Medium（结论来自代码路径推导；未做真机复现 —— 本会话无 LSP server 可用）
+**Evidence:** 票 [#388](https://github.com/hyperion2144/dsh-hashline-edittool/issues/388)；`src/lsp/auto-diag.ts`（`:146` prepareWriteDiagnostics、`:190-219` deliverDiagnosticsAfterWrite、`:265-297` verifiedReport、`:308-321` waitPushMatching、`:428-474` startAsyncWait、`:489-518` buildInjectedMessage/formatInjectedText）；`src/lsp/session.ts`（`:169-191` push 入口、`:218-225` 文档版本）；`src/lsp/sync.ts:46-60`、`:106-119`；`src/tools/tool-edit.ts:334`、`:362-373`、`:613-636`；`node_modules/@deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts:201-209`（`agent.inject` 契约）；`test/core/auto-diag.test.ts`
+
+### Why
+
+自动诊断的异步投递路径没有「过期守卫」：诊断结果不带版本/指纹/时间戳，`verifiedReport` 只保证「这份报告对得上本次写入时捕获的文本」，不保证「这份文本是该文件最新一次 edit 的文本」；同一文件连续两次写 = 两条后台等待并发注入。报告人现象（第二次 edit 先完成、第一次 edit 的延迟诊断后到，agent 收到旧文件内容的诊断）落在 `src/lsp/auto-diag.ts:451-468`。仓内此前**没有任何**讨论「诊断过期 / 异步诊断时序 / 诊断与 edit 顺序」的 ADR、研究笔记或报告，故本笔记是该主题的首篇取证；票 #388 待诊断（标签 bug + needs-triage）。
+
+### Path / Affected typed relationships
+
+- `docs/research/lsp-auto-diagnostics-staleness.md` (created)
+- 票 [#388](https://github.com/hyperion2144/dsh-hashline-edittool/issues/388) (created)
+
+## 2026-10-31 — ADR-0029：诊断新鲜度契约（晚到的诊断只说最新一次写，或不说）（#388）
+
+**Type:** contract（ADR-0029）+ 实现形态变更（异步投递加「最新一次写」守卫）
+**Confidence:** High（确定性红→绿回路；根 1921 例 + 2 skipped 全绿；client 300 例 + build 全绿；双 typecheck 干净）
+**Evidence:** 票 [#388](https://github.com/hyperion2144/dsh-hashline-edittool/issues/388)；`src/lsp/write-tracker.ts`（新）、`src/lsp/auto-diag.ts`、`src/lsp/sync.ts`、`src/tools/tool-lsp.ts`；`test/core/issue-388-stale-diagnostics.test.ts`（红→绿回路）；`docs/research/lsp-auto-diagnostics-staleness.md`（取证笔记 + 复现记录）
+
+### Why
+
+自动诊断的「新鲜度」此前只有一层：`verifiedReport` 能证明「这份报告对得上我刚写下的文本」，证明不了「这份文本是该文件最新一次写的文本」。两次写同一文件 = 两条后台等待并发注入，第一条的延迟诊断排在第二次的编辑结果之后抵达，模型拿到旧文件的源码行与已经不存在的锚点；更糟的是探针把写时快照 `didChange` 回灌给 server，把 server 的文档视图回滚到模型已经离开的版本。仓内的 push 版本账本（`diagnosticsVersion` / `documentVersion`）本来能判新鲜度，但 tsserver 的推送不带 `version`，比不了 —— 守卫只能由插件自己记账。
+
+### 本轮定案（复核时照此）
+
+- **写路径是唯一知道「文件变了」的地方**：`notifyDocumentWritten`（四个写工具的唯一漏斗）登记每个文档最新一次写的内容 + 一个永不重复的 generation（`src/lsp/write-tracker.ts`，按文档数与字节双预算有界）。
+- **一次写 = 一份报告**：交付层捕获自己那次写的 generation，被更新的写盖过时**丢弃**报告（新一轮交付会报最新一次写）—— 模型不会拿到过期的那份，也不会拿到两份同一内容的报告。
+- **探针灌给 server 的必须是当前内容**：`verifiedReport` 的 text 由快照改为 resolver（每一步重新取当前内容），回退步推的永远是当前文本，server 的文档视图不会被旧文本回滚。
+- **报告的行、锚点、served 集合按「被验证的那份文本」渲染**（`collectReport` 收 text 参数），三者永远描述同一个版本。
+- **账本掉了就停**（fail-closed）：文档不在账本里时交付层认为「不是最新」→ 丢弃，而不是猜。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0029-diagnostic-freshness.md` (created)
+- `src/lsp/write-tracker.ts` (created)：最新一次写的账本
+- `src/lsp/auto-diag.ts`：`deliverDiagnosticsAfterWrite` 捕获 generation；`verifiedReport` 的 text 改 resolver 并返回被验证的文本；`collectReport` 按该文本渲染；`startAsyncWait` 在探针前与注入前各查一次 generation
+- `src/lsp/sync.ts`：写路径登记（`noteDocumentWrite`）、删除路径注销（`forgetDocumentWrite`）
+- `src/tools/tool-lsp.ts`：手动 `lsp diagnostics` 改用 resolver（内容仍是它自己从磁盘读的快照）
+- `test/core/issue-388-stale-diagnostics.test.ts` (created)：红→绿回路
+- `AGENTS.md` l0 decisions 0001–0028 → 0001–0029，追加诊断新鲜度主题
+- `CHANGELOG.md` `[Unreleased]` Fixed 一行（#388）
