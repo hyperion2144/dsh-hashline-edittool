@@ -13,6 +13,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 - npm 包的 `description` 对齐当前工具集：去掉已在 0.4 契约中移除的 `batch_edit`，补上 write/grep/delete/rename/ast_grep/ast_edit/lsp/format，并把标记形态改成 `<anchor>`（可选 `<anchor>:<line>`）。
 
+### Fixed
+
+- `grep` 的命中数与截断不再静默：每个文件一节末尾报该文件的真命中数与本次返回数，被每文件上限或响应预算截断时写明是哪一刀截的（续取段同样逐文件报）；canonical `total` 改为真命中数（触到上限时补一趟不限额计数），并新增 `truncatedBy`（#386，ADR-0029）。
+- `grep` 卡片折叠行标题尾显示命中数与截断原因（双语，与 read 行窗口同一槽位）（#386，ADR-0029）。
+
 ## [0.10.6] - 2026-10-30
 
 ### Fixed

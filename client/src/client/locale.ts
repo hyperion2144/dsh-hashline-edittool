@@ -114,6 +114,17 @@ export const EN_CARD_DICTIONARY = {
 	"row.title.read.window.truncated":
 		"L{start}–{end} · {total} lines total — truncated by the budget; resume to continue",
 	"row.title.read.total": "{total} lines total",
+	// #386: the GREP row's trailing suffix — the counts the call produced:
+	// how many hits it found, how many it served, and which cut took the
+	// rest away. The cut is its OWN key (a template cannot say "and it was
+	// cut" without a conditional).
+	"row.title.grep.stats": "{hits} matches · {served} served",
+	"row.title.grep.stats.limit":
+		"{hits} matches · {served} served — truncated by the per-file limit",
+	"row.title.grep.stats.budget":
+		"{hits} matches · {served} served — truncated by the response budget",
+	"row.title.grep.stats.limit_budget":
+		"{hits} matches · {served} served — truncated by the per-file limit and the response budget",
 	// The row's own state words.
 	"row.running": "Running",
 	"row.failed": "Failed",
@@ -304,7 +315,15 @@ export const WIRE_TEXT_KEYS = {
 	"row.title.read.window": true,
 	"row.title.read.window.truncated": true,
 	"row.title.read.total": true,
-	"row.title.grep": true,
+	// #386: the host's grep row now carries the COUNTS, not the row's own
+	// word — so `row.title.grep` is no longer a WIRE key. It stays in the
+	// vocabulary (the grep card's tab list names itself with it), but a
+	// meta that still carries it is REFUSED, and the row keeps its own
+	// label instead of drawing the word twice.
+	"row.title.grep.stats": true,
+	"row.title.grep.stats.limit": true,
+	"row.title.grep.stats.budget": true,
+	"row.title.grep.stats.limit_budget": true,
 	"row.title.edit": true,
 	"row.title.write": true,
 	// #377: the language-server routes' texts. The host names the wording; the
@@ -390,6 +409,12 @@ export const ZH_CARD_DICTIONARY = {
 	"row.title.read.window": "L{start}–{end} · 共 {total} 行",
 	"row.title.read.window.truncated": "L{start}–{end} · 共 {total} 行 · 已按预算截断，resume 可续读",
 	"row.title.read.total": "共 {total} 行",
+	// #386: the grep 行尾统计 — 命中多少、返回多少、哪一刀截断的。
+	"row.title.grep.stats": "{hits} 处匹配 · 已返回 {served} 处",
+	"row.title.grep.stats.limit": "{hits} 处匹配 · 已返回 {served} 处 · 已按每文件上限截断",
+	"row.title.grep.stats.budget": "{hits} 处匹配 · 已返回 {served} 处 · 已按响应预算截断",
+	"row.title.grep.stats.limit_budget":
+		"{hits} 处匹配 · 已返回 {served} 处 · 已按每文件上限与响应预算截断",
 	"row.running": "运行中",
 	"row.failed": "失败",
 	"row.stopped": "已停止",

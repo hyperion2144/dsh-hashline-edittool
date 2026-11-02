@@ -328,6 +328,11 @@ export function stampChanged(
 export function formatOmittedNotice(opts: {
 	omittedLines: number;
 	omittedChars?: number | undefined;
+	/**
+	 * The TRUE number of matches the search found (#386): the scale of what
+	 * was left out, so the model knows whether it is looking at a sliver.
+	 */
+	totalMatches?: number | undefined;
 	consumer: string;
 	token: string;
 }): string {
@@ -335,7 +340,10 @@ export function formatOmittedNotice(opts: {
 		opts.omittedChars === undefined
 			? `${opts.omittedLines} lines`
 			: `${opts.omittedLines} lines (~${opts.omittedChars} chars)`;
-	return `(Omitted ${amount}. Use ${opts.consumer} {resume: "${opts.token}"} to continue.)`;
+	// #386: the notice says how much was left out; the total says how big the
+	// search was.
+	const scope = opts.totalMatches === undefined ? "" : `; ${opts.totalMatches} matches in total`;
+	return `(Omitted ${amount}${scope}. Use ${opts.consumer} {resume: "${opts.token}"} to continue.)`;
 }
 
 /**

@@ -126,7 +126,7 @@ The opaque handle a truncated result carries — a random id bound to a sidecar 
 _Avoid_: continuation id, spill path (never exposed), cursor
 
 **Continuation notice**:
-The one parenthesized sentence a truncated result carries — `(Omitted N lines (~C chars). Use <consumer> {resume: "TOKEN"} to continue.)` — built once by `formatOmittedNotice` so every spilling channel spells it the same way. The byte count appears only for channels that know it (the shared spill helper and grep); read's `[Continued report]` footer omits it, and a read window closes with the window sentence instead.
+The one parenthesized sentence a truncated result carries — `(Omitted N lines (~C chars). Use <consumer> {resume: "TOKEN"} to continue.)` — built once by `formatOmittedNotice` so every spilling channel spells it the same way. The byte count appears only for channels that know it (the shared spill helper and grep); read's `[Continued report]` footer omits it, and a read window closes with the window sentence instead. A channel that knows the search's true hit count adds it as a clause — `(Omitted N lines (~C chars); 300 matches in total. Use grep {resume: "TOKEN"} to continue.)` — so the reader learns the scale of what it did not get.
 _Avoid_: footer, overflow message
 
 **Version stamp**:
@@ -146,6 +146,28 @@ _Avoid_: footer, pagination hint
 **Anchor cursor**:
 An `offset`/`limit` given as a live anchor instead of a number: it names the window's first / last line (a closed range), so a continuation survives renumbering. Mixable with numbers; an inverted range is `[E_BAD_SHAPE]`, a dead anchor `[E_STALE]`.
 _Avoid_: anchor marker (that is the row prefix handed back to `edit`), line hint
+## Grep hits
+
+**Per-file cap**:
+The ceiling on the matches ONE file contributes to a search (default 100, the `limit` parameter). The engine stops there, so the hits a capped search collected are the cap — never the file's hit count.
+_Avoid_: match limit, truncation (that is the word for a cut the CALLER sees)
+
+**True hit count**:
+The number of matching LINES a file carries, which the per-file cap hides. It comes from a second, UNCAPPED counting pass over the files that reached the cap; the files that did not reach it need no second pass, because the engine read them whole. Lines, not occurrences: the plugin's unit is a row, so the count must add up with what was served.
+_Avoid_: total matches (that is the value the tool reports), match occurrences
+
+**Lower bound**:
+A count the search could not settle, written `≥N` — the cap cut the search and the counting pass could not say more (ripgrep unavailable, or the pass itself failed). The plugin says "at least N", never "N".
+_Avoid_: estimate, approximation
+
+**Truncation**:
+Which cut took hits away from an answer: `limit` (the per-file cap), `budget` (the response budget), or both. It is a FACT about the call, so it rides the wire as a stable key rather than as a word.
+_Avoid_: truncation reason, cut type
+
+**Count line**:
+The bracketed line a search's file section ends with — `[Matches: 300 total, 100 served. Truncated by the per-file limit (100).]` — the file's true hit count, what this response served of it, and which cut took the rest. Every section carries one, in the first response and in every continuation.
+_Avoid_: stats line, summary line, footer
+
 
 ## Deletion and reclamation
 

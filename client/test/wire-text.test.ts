@@ -101,6 +101,57 @@ describe("the lossy note", () => {
 	});
 });
 
+/**
+ * The grep row's COUNTS (#386): how many hits the call found, how many it
+ * served, and which cut took the rest away.
+ *
+ * The counts travel as FACTS (ADR-0026): the key names the wording, the
+ * params fill it. The cut is its own key — a template cannot say "and it
+ * was cut" without a conditional.
+ */
+describe("the grep row's counts (#386)", () => {
+	it("renders the counts and the cut in the reader's language", () => {
+		const en = translator(EN_CARD_DICTIONARY);
+		const zh = translator(ZH_CARD_DICTIONARY);
+		const wire = rowTitleFromMeta({
+			rowTitle: { key: "row.title.grep.stats.limit", params: { hits: 300, served: 100 } },
+		});
+		expect(wire).toEqual({
+			key: "row.title.grep.stats.limit",
+			params: { hits: 300, served: 100 },
+		});
+		expect(en(wire!.key, wire!.params)).toBe(
+			"300 matches · 100 served — truncated by the per-file limit",
+		);
+		expect(zh(wire!.key, wire!.params)).toBe("300 处匹配 · 已返回 100 处 · 已按每文件上限截断");
+	});
+
+	it("renders a lower bound as it is — the count is not exact", () => {
+		const en = translator(EN_CARD_DICTIONARY);
+		const zh = translator(ZH_CARD_DICTIONARY);
+		const wire = rowTitleFromMeta({
+			rowTitle: { key: "row.title.grep.stats", params: { hits: "≥100", served: 100 } },
+		});
+		expect(en(wire!.key, wire!.params)).toBe("≥100 matches · 100 served");
+		expect(zh(wire!.key, wire!.params)).toBe("≥100 处匹配 · 已返回 100 处");
+	});
+
+	it("the host's grep keys and the client's accepted keys are ONE list", () => {
+		// The host NAMES the keys, the client ACCEPTS them. A key the host
+		// sends and the client does not carry would be REFUSED — the row would
+		// show nothing at all.
+		const named = [...HOST_WIRE_TEXT.matchAll(/"(row\.title\.grep[.A-Za-z0-9_]*)"/g)].map(
+			(match) => match[1]!,
+		);
+		expect(named.length).toBeGreaterThanOrEqual(4);
+		for (const key of named) {
+			expect(Object.hasOwn(WIRE_TEXT_KEYS, key)).toBe(true);
+			expect(Object.hasOwn(EN_CARD_DICTIONARY, key)).toBe(true);
+			expect(Object.hasOwn(ZH_CARD_DICTIONARY, key)).toBe(true);
+		}
+	});
+});
+
 describe("the settings card's labels", () => {
 	it("every key the card asks for exists in BOTH dictionaries", () => {
 		// The card's labels used to be Chinese words in the component; they are

@@ -17,6 +17,7 @@
 import { resolve } from "node:path";
 import { rgSearchMatches, type RgMatch } from "./grep-rg.js";
 import { matchSpans, type MatchSpan } from "../render/grep-card.js";
+import { type GrepFileHits } from "../domain/grep/stats.js";
 
 /** The per-file cap on matches, and the context window around them. */
 export interface GrepToolOptions {
@@ -139,12 +140,15 @@ function matchPositions(
 	lines: readonly string[],
 	matcher: (line: string) => boolean,
 	limit: number,
-): number[] {
+): { positions: number[]; total?: number } {
 	const positions: number[] = [];
 	for (let i = 0; i < lines.length && positions.length < limit; i++) {
 		if (matcher(lines[i]!)) positions.push(i);
 	}
-	return positions;
+	// The scan reached the END of the file, so the count IS the hit count. It
+	// stopped at the cap, so there may be more hits the scan never looked
+	// for: the count is then a LOWER BOUND, and it stays unknown (#386).
+	return { positions, total: positions.length < limit ? positions.length : undefined };
 }
 
 /**
@@ -198,6 +202,7 @@ export interface GrepFileContent {
 	lossy: boolean;
 }
 
+
 /** One file's search result: the rows its section is built from. */
 export interface GrepFileSearch {
 	/** The section's rows: the matches and their context rows, in line order. */
@@ -215,6 +220,10 @@ export interface GrepFileSearch {
 	 * them), with a caution naming the file.
 	 */
 	stale: boolean;
+	/**
+	 * What the search knows about this file's hits (#386).
+	 */
+	hits: GrepFileHits;
 }
 
 /**
@@ -227,6 +236,11 @@ export interface GrepFileSearch {
 export interface GrepSearchPlan {
 	/** The files to read: the ones the engine matched (the degraded path: all of them). */
 	readonly candidates: string[];
+	/**
+	 * The files whose hits reached the per-file cap: their true total is not in
+	 * the plan, and another pass has to count it (#386).
+	 */
+	readonly cappedFiles: readonly string[];
 	/**
 	 * The rows of one file's section, given the file's text.
 	 *
@@ -284,8 +298,19 @@ export async function planGrepSearch(request: GrepSearchRequest): Promise<GrepSe
 	const engineHits =
 		search.kind === "ok" ? groupMatchesByFile(search.matches, request.files) : undefined;
 	if (engineHits !== undefined) {
+		// #386: the engine stops at the per-file cap, so a file that reached the
+		// cap may carry MORE hits than the search collected — and the search
+		// cannot tell. Those files are the ones a second, uncapped counting pass
+		// has to answer for; every other file's count is already exact.
+		const cappedFiles: string[] = [];
+		for (const [file, fileHits] of engineHits) {
+			// The engine stops at the cap, so a file that reached it may carry more
+			// hits than it reported: its true total needs another pass (#386).
+			if (fileHits.length >= request.limit) cappedFiles.push(file);
+		}
 		return {
 			candidates: [...engineHits.keys()],
+			cappedFiles,
 			sectionFor: (file, content) =>
 				engineSection(file, content, engineHits.get(file) ?? [], request),
 		};
@@ -295,8 +320,9 @@ export async function planGrepSearch(request: GrepSearchRequest): Promise<GrepSe
 	const matcher = buildMatcher(request.pattern, request.regex);
 	return {
 		candidates: [...request.files],
+		cappedFiles: [],
 		sectionFor: (file, content) => {
-			const positions = matchPositions(content.lines, matcher, request.limit);
+			const { positions, total } = matchPositions(content.lines, matcher, request.limit);
 			const section = buildGrepSection(file, content.lines, positions, request.pattern, request);
 			if (section === undefined) return undefined;
 			return {
@@ -304,6 +330,7 @@ export async function planGrepSearch(request: GrepSearchRequest): Promise<GrepSe
 				matches: section.matches,
 				lineCount: content.lines.length,
 				stale: false,
+				hits: { reported: positions.length, total },
 			};
 		},
 	};
@@ -328,6 +355,11 @@ function engineSection(
 	request: GrepSearchRequest,
 ): GrepFileSearch | undefined {
 	if (hits.length === 0) return undefined;
+	// #386: the engine's count for this file, and whether it is the whole
+	// truth. A file that reached the cap may carry more hits than the
+	// engine reported, so its total is unknown until another pass counts it.
+	const reported = hits.length;
+	const total = hits.length < request.limit ? hits.length : undefined;
 	const diverged = hasBareCr(content.raw);
 	const spaces = diverged ? indexLineSpaces(content.raw) : undefined;
 	const placed: Array<{ position: number; text: string }> = [];
@@ -356,7 +388,13 @@ function engineSection(
 			isMatch: true,
 			spans: matchSpans(row.text, request.pattern, request.regex),
 		}));
-		return { contextRows: rows, matches: rows, lineCount: content.lines.length, stale: true };
+		return {
+			contextRows: rows,
+			matches: rows,
+			lineCount: content.lines.length,
+			stale: true,
+			hits: { reported, total },
+		};
 	}
 	const section = buildGrepSection(
 		file,
@@ -366,7 +404,13 @@ function engineSection(
 		request,
 	);
 	if (section === undefined) return undefined;
-	return { contextRows: section.contextRows, matches: section.matches, lineCount: content.lines.length, stale: false };
+	return {
+		contextRows: section.contextRows,
+		matches: section.matches,
+		lineCount: content.lines.length,
+		stale: false,
+		hits: { reported, total },
+	};
 }
 
 /** The two line spaces of one file, indexed once. */

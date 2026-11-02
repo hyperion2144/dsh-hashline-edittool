@@ -41,7 +41,7 @@ import { assertNoRetiredLineNumbers } from "../contract/contract.js";
 import { MAX_READ_LINE_BYTES } from "../infra/constants.js";
 import { formatSize } from "../domain/session/file-view.js";
 import { minimatch } from "minimatch";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import type { Context as CordisContext } from "@deepseek-ai/cordis";
 
 import type { FileIO } from "../infra/fs-bridge.js";
@@ -65,14 +65,24 @@ import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } fro
 import { withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
-import { rgFiles } from "./grep-rg.js";
+import { rgFiles, rgCountMatchingLines } from "./grep-rg.js";
 import {
 	planGrepSearch,
 	DEFAULT_LIMIT,
 	type GrepSectionRow,
 	type GrepToolOptions,
+	type GrepSearchPlan,
 } from "./grep-search.js";
 import { toLF } from "../render/edit-diff.js";
+import {
+	combineTruncations,
+	formatGrepStats,
+	hitCountText,
+	limitCutFor,
+	GREP_TRUNCATIONS,
+	type GrepFileHits,
+	type GrepTruncation,
+} from "../domain/grep/stats.js";
 import { rowTitle } from "../render/wire-text.js";
 import { grepDescription } from "../domain/edit/prompts.js";
 import {
@@ -126,11 +136,72 @@ function renderSection(
 }
 
 
+
+
+
 interface GrepCanonicalValue {
 	files: GrepFileRows[];
 	truncated: boolean;
+	/**
+	 * The number of hits the search found — the TRUE total when it is known
+	 * (#386).
+	 */
 	total: number;
+	/**
+	 * Whether `total` IS the true hit count (#386). Absent means it is: a
+	 * value without the flag carries the count the search found, which is
+	 * exact whenever nothing was cut.
+	 */
+	totalExact?: boolean;
+	/**
+	 * Which cut happened, when one did (#386): the per-file cap, the response
+	 * budget, or both.
+	 */
+	truncatedBy?: GrepTruncation;
+	/**
+	 * The number of hit rows this response served (#386).
+	 */
+	served?: number;
 	continuation?: { resume: string; remaining: number };
+}
+
+/**
+ * The TRUE hit count of the files the search capped (#386).
+ *
+ * The engine stops at the per-file cap, so a file that reached the cap may
+ * carry more hits than the search collected — and the search cannot say more.
+ * Those files get a second, uncapped counting pass; every other file's count
+ * is already exact, so the common case costs nothing.
+ *
+ * @param plan - the search's plan: which files reached the cap.
+ * @param pattern - the pattern to count with.
+ * @param regex - whether the pattern is a regular expression.
+ * @param signal - the abort signal.
+ * @returns the count of each capped file, keyed by the file's own path.
+ */
+async function countCappedHits(
+	plan: GrepSearchPlan,
+	pattern: string,
+	regex: boolean,
+	signal: AbortSignal | undefined,
+): Promise<Map<string, number>> {
+	const counts = new Map<string, number>();
+	if (plan.cappedFiles.length === 0) return counts;
+	const counted = await rgCountMatchingLines({
+		pattern,
+		literal: !regex,
+		files: plan.cappedFiles,
+		...(signal !== undefined ? { signal } : {}),
+	});
+	// The two sides may spell the same file differently, so the counts are
+	// matched by RESOLVED path.
+	const byResolved = new Map<string, number>();
+	for (const [path, count] of counted) byResolved.set(resolve(path), count);
+	for (const file of plan.cappedFiles) {
+		const count = byResolved.get(resolve(file));
+		if (count !== undefined) counts.set(file, count);
+	}
+	return counts;
 }
 
 /**
@@ -215,6 +286,13 @@ export function buildGrepTool(io: FileIO) {
 					},
 					truncated: { type: "boolean", required: true },
 					total: { type: "integer", required: true },
+					// #386: whether `total` IS the true hit count.
+					totalExact: { type: "boolean" },
+					// #386: which cut happened — the per-file cap, the response budget,
+					// or both.
+					truncatedBy: { type: "string", enum: [...GREP_TRUNCATIONS] },
+					// #386: the number of hit rows this response served.
+					served: { type: "integer" },
 					continuation: {
 						type: "object",
 						additionalProperties: false,
@@ -243,7 +321,13 @@ export function buildGrepTool(io: FileIO) {
 					}),
 					// issue 375: the folded row's title travels as a key + params — a
 					// search names no file of its own, so the title carries no path.
-					rowTitle: rowTitle("grep", {}),
+					// #386: the title carries the COUNTS the call produced — how many
+					// hits it found, how many it served, and which cut took the rest.
+					rowTitle: rowTitle("grep", {
+						hits: v.totalExact === false ? hitCountText(undefined, v.total) : v.total,
+						served: v.served ?? 0,
+						...(v.truncatedBy !== undefined ? { truncatedBy: v.truncatedBy } : {}),
+					}),
 				} as never;
 			},
 		},
@@ -281,12 +365,35 @@ export function buildGrepTool(io: FileIO) {
 				if (typeof (args as Record<string, unknown>).resume === "string") {
 					const token = (args as Record<string, unknown>).resume as string;
 					const sidecar = await loadResume(sessionKey, token, "grep");
+					// #386: the spill carries the search's TRUE hit count and the cut that
+					// happened, so the continuation answers with the same total the first
+					// segment gave — the search does not restart at the segment.
+					const spillMeta = sidecar.meta;
+					const searchTotal = typeof spillMeta.hitTotal === "number" ? spillMeta.hitTotal : undefined;
+					const searchTotalExact = spillMeta.hitTotalExact !== false;
+					const searchTruncation: GrepTruncation | undefined =
+						spillMeta.truncatedBy === "limit" ||
+							spillMeta.truncatedBy === "budget" ||
+							spillMeta.truncatedBy === "limit+budget"
+							? spillMeta.truncatedBy
+							: undefined;
+					const searchLimit = typeof spillMeta.limit === "number" ? spillMeta.limit : DEFAULT_LIMIT;
+					// The per-file hits travel with the spill, so a continuation ends
+					// every one of its sections with the SAME count line the first
+					// segment did (#386).
+					const spillFileHits = (spillMeta.fileHits ?? {}) as Record<
+						string,
+						GrepFileHits
+					>;
 					const remaining = await readSpillRows(sidecar, sidecar.total - sidecar.cursor);
 					const take = takeRowsWithinBudget(remaining, budget, (row) => codeUnits(row.content) + ROW_MARKER_ALLOWANCE);
+					const overflow = take.overflow;
 					const servedParts: string[] = [];
 					const cardFiles: GrepFileRows[] = [];
 					const cautions: string[] = [];
 					let servedCount = 0;
+					// The HIT rows this segment served (context rows are chrome).
+					let servedHits = 0;
 					// group by path, preserving order
 					const groups: Array<{ path: string; rows: SegmentRow[] }> = [];
 					for (const row of take.included) {
@@ -364,12 +471,34 @@ export function buildGrepTool(io: FileIO) {
 									: `[line ${row.number}] ${row.text}`,
 							);
 						}
+						// #386: the section ends with its own count line, exactly as the
+						// first segment's did — the file's true count, what THIS segment
+						// served of it, and which cut took the rest.
+						const groupHits = spillFileHits[group.path];
+						const groupServed = group.rows.filter((row) => row.kind !== "ctx").length;
+						if (groupHits !== undefined) {
+							servedParts.push(
+								formatGrepStats({
+									...(groupHits.total !== undefined ? { total: groupHits.total } : {}),
+									reported: groupHits.reported,
+									served: groupServed,
+									limitCut: limitCutFor(groupHits, searchLimit),
+									budgetCut: overflow.length > 0,
+									limit: searchLimit,
+								}),
+							);
+						}
 						cardFiles.push({ path: group.path, rows: rowsOut });
 						servedCount += group.rows.length;
+						servedHits += group.rows.filter((row) => row.kind !== "ctx").length;
 					}
-					const overflow = take.overflow;
 					let continuation: { resume: string; remaining: number } | undefined;
 					const parts = [...cautions, ...servedParts];
+					// #386: the continuation ends with the search's own counts.
+					const resumedTruncation = combineTruncations(
+						searchTruncation,
+						overflow.length > 0 ? "budget" : undefined,
+					);
 					if (overflow.length > 0) {
 						const next = await createResume({
 							sessionKey,
@@ -378,6 +507,15 @@ export function buildGrepTool(io: FileIO) {
 							kind: "scan-continuation",
 							rows: overflow,
 							stamps: sidecar.stamps,
+							// #386: the search's totals travel with the spill, so the
+							// continuation reports the same numbers.
+							meta: {
+								hitTotal: searchTotal,
+								hitTotalExact: searchTotalExact,
+								truncatedBy: resumedTruncation,
+								limit: searchLimit,
+								fileHits: spillFileHits,
+							},
 						});
 						continuation = { resume: next.token, remaining: overflow.length };
 						parts.push(
@@ -385,6 +523,8 @@ export function buildGrepTool(io: FileIO) {
 								omittedLines: overflow.length,
 								omittedChars: overflow.reduce((a, r) => a + codeUnits(r.content), 0),
 								consumer: "grep",
+								// #386: the notice carries the search's true total.
+								...(searchTotal !== undefined ? { totalMatches: searchTotal } : {}),
 								token: next.token,
 							}),
 						);
@@ -392,8 +532,13 @@ export function buildGrepTool(io: FileIO) {
 					const modelText = parts.join("\n");
 					return {
 						files: cardFiles,
-						truncated: overflow.length > 0,
-						total: servedCount,
+						truncated: overflow.length > 0 || resumedTruncation !== undefined,
+						// #386: the search's TRUE total — the continuation is part of the
+						// same search, so the total does not restart at the segment.
+						total: searchTotal ?? servedCount,
+						...(searchTotal !== undefined ? { totalExact: searchTotalExact } : {}),
+						served: servedHits,
+						...(resumedTruncation !== undefined ? { truncatedBy: resumedTruncation } : {}),
 						...(continuation !== undefined ? { continuation } : {}),
 						modelText,
 					} satisfies GrepCanonicalValue & { modelText: string };
@@ -467,6 +612,11 @@ export function buildGrepTool(io: FileIO) {
 				// Only the files that matched are read at all; in the degraded path
 				// every candidate is read, because the matcher needs its content.
 				const candidates = plan.candidates;
+				// #386: the TRUE hit count of the files the search capped. The engine
+				// stops at the per-file cap, so a file that reached it may carry more
+				// hits than the search collected; those files get a second, uncapped
+				// counting pass, and every other file's count is already exact.
+				const trueTotals = await countCappedHits(plan, params.pattern, opts.regex, signal2);
 
 				const fileSections: string[] = [];
 				const cardFiles: GrepFileRows[] = [];
@@ -475,13 +625,25 @@ export function buildGrepTool(io: FileIO) {
 				const spillRows: SegmentRow[] = [];
 				const spillStamps: ResumeSidecar["stamps"] = [];
 				const spillStampPaths = new Set<string>();
-				let totalMatches = 0;
+				// The TRUE hit count across the files (#386) — what the search found,
+				// not what it collected.
+				let hitTotal = 0;
+				// The number of hit rows THIS response served.
+				let servedMatches = 0;
+				// Whether every file's count is exact (a lower bound is not).
+				let hitTotalExact = true;
+				// Which cuts happened, across the files.
+				let limitCut = false;
+				let budgetCut = false;
 				let truncated = false;
 				let usedChars = 0;
 				let spilling = false;
 				let headerEmitted = false;
 				// Files that changed after the search ran (their rows are a snapshot).
 				const staleFiles: string[] = [];
+				// What the search knows about each file's hits, so the spill can
+				// carry them to the continuation (#386).
+				const fileHitsByFile = new Map<string, GrepFileHits>();
 
 				// ADR-0013: the scan runs to COMPLETION — nothing is refused by size.
 				// Sections fitting the per-response budget are returned (allocated +
@@ -529,8 +691,22 @@ export function buildGrepTool(io: FileIO) {
 					}
 				}
 					const displayPath = relative(root, file) || basename(file);
-					totalMatches += section.matches.length;
-					truncated = truncated || section.matches.length >= (opts.limit ?? DEFAULT_LIMIT);
+					// #386: the file's TRUE hit count. The counting pass answers for the
+					// files the search capped; for every other file the search's own count
+					// IS the truth, because the engine read the whole file.
+					const fileTotal = trueTotals.get(file) ?? section.hits.total;
+					const fileHits: GrepFileHits = {
+						reported: section.hits.reported,
+						...(fileTotal !== undefined ? { total: fileTotal } : {}),
+					};
+					// The cap cut hits exactly when the file carries more than the
+					// search reported — which the counting pass settles.
+					const fileLimitCut = limitCutFor(fileHits, limit);
+					hitTotal += fileTotal ?? fileHits.reported;
+					if (fileTotal === undefined) hitTotalExact = false;
+					limitCut = limitCut || fileLimitCut;
+					truncated = truncated || fileLimitCut;
+					fileHitsByFile.set(file, fileHits);
 					const sectionChars =
 						codeUnits(section.contextRows.map((row) => row.content).join("\n")) +
 						ROW_MARKER_ALLOWANCE * (section.contextRows.length + 1);
@@ -539,7 +715,10 @@ export function buildGrepTool(io: FileIO) {
 					// served (anchored, editable), the tail spills to the resume token. A
 					// file larger than the whole budget used to answer with an empty shell
 					// — the notice and nothing else.
-					const admitRows = async (rows: GrepSectionRow[]): Promise<void> => {
+					const admitRows = async (
+						rows: GrepSectionRow[],
+						budgetCutForFile: boolean,
+					): Promise<void> => {
 						const positions = rows.map((row) => row.position + 1);
 						// #223: same single entry point as the section branch above.
 						// A lossy file is not editable (#273): its text carries U+FFFD
@@ -579,9 +758,24 @@ export function buildGrepTool(io: FileIO) {
 						if ((servedRows.length > 0 || lossy) && exec !== undefined) {
 							await io.emitObserved(file, exec, signal2).catch(() => undefined);
 						}
+						// #386: the section says what it found and what it served — a
+						// capped search must not read like a complete one.
+						const servedHits = rows.filter((row) => row.isMatch).length;
 						fileSections.push(
-							renderSection(displayPath, rows, anchorsByPosition, lineNumbersEnabled(), !headerEmitted),
+							[
+								renderSection(displayPath, rows, anchorsByPosition, lineNumbersEnabled(), !headerEmitted),
+								formatGrepStats({
+									...(fileTotal !== undefined ? { total: fileTotal } : {}),
+									reported: fileHits.reported,
+									served: servedHits,
+									limitCut: fileLimitCut,
+									budgetCut: budgetCutForFile,
+									limit,
+								}),
+							].join("\n"),
 						);
+						servedMatches += servedHits;
+						budgetCut = budgetCut || budgetCutForFile;
 						headerEmitted = true;
 						cardFiles.push({
 							path: displayPath,
@@ -621,7 +815,7 @@ export function buildGrepTool(io: FileIO) {
 						}
 					};
 					if (!spilling && usedChars + sectionChars <= budget) {
-						await admitRows(section.contextRows);
+						await admitRows(section.contextRows, false);
 						usedChars += sectionChars;
 					} else {
 						// The section does not fit whole. Split it per ROW instead of
@@ -663,13 +857,14 @@ export function buildGrepTool(io: FileIO) {
 							}
 						}
 						spilling = true;
+						budgetCut = budgetCut || split.overflow.length > 0;
 						if (!spillStampPaths.has(file)) {
 							spillStampPaths.add(file);
 							const version = await io.statVersion(file, signal2).catch(() => undefined);
 							spillStamps.push({ path: file, version });
 						}
 						if (split.included.length > 0) {
-							await admitRows(split.included);
+							await admitRows(split.included, split.overflow.length > 0);
 							usedChars += split.used;
 						}
 						for (const row of split.overflow) {
@@ -677,6 +872,10 @@ export function buildGrepTool(io: FileIO) {
 						}
 					}
 				}
+				// #386: WHICH cut happened — the per-file cap, the response budget, or
+				// both. The model and the card both need to say it.
+				const truncatedBy: GrepTruncation | undefined =
+					limitCut && budgetCut ? "limit+budget" : limitCut ? "limit" : budgetCut ? "budget" : undefined;
 				function rowContent(section: { contextRows: Array<{ position: number; content: string }> }, position: number): string {
 					return section.contextRows.find((row) => row.position === position)?.content ?? "";
 				}
@@ -691,6 +890,17 @@ export function buildGrepTool(io: FileIO) {
 						kind: "scan-continuation",
 						rows: spillRows,
 						stamps: spillStamps,
+						// #386: the search's totals travel with the spill, so the
+						// continuation reports the same numbers.
+						meta: {
+							hitTotal,
+							hitTotalExact,
+							truncatedBy,
+							limit,
+							// The per-file counts travel too, so a continuation ends every
+							// one of its sections with the same count line (#386).
+							fileHits: Object.fromEntries(fileHitsByFile),
+						},
 					});
 					const omittedChars = spillRows.reduce((acc, row) => acc + codeUnits(row.content), 0);
 					continuation = { resume: token, remaining: spillRows.length };
@@ -698,6 +908,7 @@ export function buildGrepTool(io: FileIO) {
 						omittedLines: spillRows.length,
 						omittedChars,
 						consumer: "grep",
+						totalMatches: hitTotal,
 						token,
 					});
 				}
@@ -734,21 +945,26 @@ export function buildGrepTool(io: FileIO) {
 					return {
 						files: [],
 						truncated: true,
-						total: totalMatches,
+						total: hitTotal,
 						...(continuation !== undefined ? { continuation } : {}),
+						served: servedMatches,
 						modelText: jsonOutput
-							? JSON.stringify({ total: totalMatches, truncated: true, files: [], ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`)
+							? JSON.stringify({ total: hitTotal, truncated: true, totalExact: hitTotalExact, truncatedBy: "budget", files: [], ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`)
 							: `Matches exist but exceed the per-response budget.\n${noticeText}`,
 					} satisfies GrepCanonicalValue & { modelText: string };
 				}
 
 				const value: GrepCanonicalValue & { modelText: string } = {
 					files: cardFiles,
- 				truncated: truncated || spillRows.length > 0,
-					total: totalMatches,
+					truncated: truncated || spillRows.length > 0,
+					// #386: the TRUE hit count, and which cut took the rest away.
+					total: hitTotal,
+					totalExact: hitTotalExact,
+					...(truncatedBy !== undefined ? { truncatedBy } : {}),
+					served: servedMatches,
 					...(continuation !== undefined ? { continuation } : {}),
 					modelText: jsonOutput
-						? JSON.stringify({ total: totalMatches, truncated: truncated || spillRows.length > 0, files: jsonFiles, ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`) + (cautionText === "" ? "" : `\n${cautionText}`)
+						? JSON.stringify({ total: hitTotal, truncated: truncated || spillRows.length > 0, totalExact: hitTotalExact, ...(truncatedBy !== undefined ? { truncatedBy } : {}), files: jsonFiles, ...(continuation !== undefined ? { continuation } : {}) }) + (noticeText === "" ? "" : `\n${noticeText}`) + (cautionText === "" ? "" : `\n${cautionText}`)
 						: `${cautionText === "" ? "" : `${cautionText}\n\n`}${fileSections.join("\n\n")}${noticeText === "" ? "" : `\n${noticeText}`}`,
 				};
 				return value;

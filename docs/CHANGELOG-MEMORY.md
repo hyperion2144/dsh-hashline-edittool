@@ -898,3 +898,38 @@ Map #354：`write` 的写后回显是输出行为，应归用户；默认从整�
 - `AGENTS.md` l0 decisions 0001–0027 → 0001–0028，追加 grep 搜索引擎主题
 - `docs/adr/0016-argv-length-budget.md` / `docs/adr/0017-binary-refusal-stops-read-not-grep.md` (amended：预过滤退役，搜索自身改用 `--text`)
 - 测试：`test/core/issue-384-grep-engine.test.ts`（引擎）、`test/core/issue-384-grep-search.test.ts`（搜索层：定位 + 漂移）、`test/core/issue-384-grep-repro.test.ts`（复现矩阵）、`test/core/issue-384-grep-rg-unavailable.test.ts`（降级路径 + 模式被拒报错）、`test/core/grep-rg-argv-limit.test.ts`（迁移）、`test/core/grep-rg-prefilter.test.ts`（删除，接缝已不存在）
+
+## 2026-10-30 — ADR-0029：grep 的命中数与截断口径（#386）
+
+**Type:** contract（ADR-0029 grep 命中数/截断口径；canonical `total` 语义变更）
+**Confidence:** High（根 1930 例 + 2 skipped 全绿——`hashline-limit` 那条在并行负载下超时、单跑 26.6s 绿，与本改动无关；client 303 例 + build/verify-bundle 全绿；双 typecheck 干净；ripgrep 15.2.0 本机实测 `--count` 受 `--max-count` 约束、单文件默认不带文件名；两轴评审（Standards + Spec）各一轮，结论已全部落地）
+**Evidence:** 票 [#386](https://github.com/hyperion2144/dsh-hashline-edittool/issues/386)；ADR-0028（ripgrep 是引擎）、ADR-0013（响应预算）、ADR-0026（host 文案 key 化）；ripgrep 15.2.0 本机实测（`--count`、`--count-matches`、`--max-count` 交互、`--with-filename`）
+
+### Why
+
+`grep` 的每文件上限（ripgrep 的 `--max-count`）让「搜到的命中数」永远等于上限而非文件真命中数；这份数据又只在 canonical value 里躺着，模型文本与卡片标题两处都不说。结果是：被上限截断的搜索与完整搜索读起来一模一样，卡片脚注写「showing 100 of 100 matches」而文件其实有 300 处命中。票面要求把「真总数 / 已返回数 / 哪一刀截的」同时接到模型文本与卡片标题两条通道上。
+
+### 本轮定案（复核时照此）
+
+- **真总数是第二趟、且不限额**：触到每文件上限的文件补一趟 `rg --count`（**不带** `--max-count`，带了就等于上限）；没触顶的文件引擎已读全文件，其计数本身就是真数，常态零开销。模式仍是一个 argv 元素（`--regexp=<pattern>`），字面量仍是独立的 `--fixed-strings` flag（#384 的教训）。
+- **计数口径是「命中的行」而非「命中次数」**：插件的粒位是行，数字必须与已返回的行数对得上，故用 `--count` 而非 `--count-matches`。
+- **canonical `total` 改为真命中数**，另加 `totalExact`（是否精确；触顶文件的真数算不出来时只能给下界，模型文本写 `≥N`）与 `truncatedBy`（`limit` | `budget` | `limit+budget`）；`truncated` 的口径随之改为「有没有发生截断」，与 `truncatedBy` 一致。
+- **模型文本逐文件报**：每节末尾一行 `[Matches: 300 total, 100 served. Truncated by the per-file limit (100).]`（计数属于文件，统计行就跟文件走）；**续取段同样逐文件报**——逐文件的计数随 spill 的 sidecar 一起走，所以续取里的每一节都以与首段同一句计数行收尾；预算溢出的 notice 带上全搜索总数（首段与续取段都带）。
+- **卡片标题尾同步**：折叠行尾缀承载命中数与截断原因（与 read 行窗口同一槽位，#374 的形态）；过 wire 的是**事实 + 命名措辞的 key**（ADR-0026）：`row.title.grep.stats*` 四个 key + `hits`/`served` 两个参数；「被截断」是独立 key（模板没法无代价地说「而且还被截断了」）。宿主唯一自己拼的限定符是下界的 `≥`（数学符号，不是词；措辞仍在客户端词表里）。宿主不再发 `row.title.grep`，该 key 退出 WIRE_TEXT_KEYS（仍留在词表里——grep 卡的页签用它自称），旧会话里带着它的 meta 会被拒，行不会把「Grep」画两遍。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0029-grep-hit-counts.md` (created)
+- `CONTEXT.md`：新增「Grep hits」段（每文件上限 / 真命中数 / 下界 / 截断 / 计数行五个词），并改写「Continuation notice」条目（notice 可带真总数）
+- `src/domain/grep/stats.ts` (created)：grep 命中的词汇层——命中数事实（`GrepFileHits`）、截断口径（`GrepTruncation` + 共享清单 `GREP_TRUNCATIONS`）、上限是否截断的判定（`limitCutFor`）、计数行（`formatGrepStats`）、下界写法（`hitCountText`）；工具层与 render 层都从这里取，词不再各写一份
+- `src/tools/grep-rg.ts`：新增计数通道 `rgCountMatchingLines` / `buildRgCountArgv`（无 `--max-count`、`--with-filename`）；模式参数抽成 `rgPatternArgs`，搜索与计数两趟共用一份（ADR-0028 的 argv 形状只有一处改动点）
+- `src/tools/grep-search.ts`：计划带出「触顶文件」（`cappedFiles`）；每个文件的命中事实（`GrepFileHits`，取自 domain 层）；降级路径的 matcher 扫到文件尾时计数即真数
+- `src/tools/tool-grep.ts`：统计行、真总数、`totalExact`/`truncatedBy`、卡片标题、notice 带总数、逐文件计数随 spill 透传（首段与续取段同一句）
+- `src/infra/response-stream.ts`：`formatOmittedNotice` 可选带总数
+- `src/render/wire-text.ts`：`rowTitle` 对 grep 走计数 key
+- `client/src/client/locale.ts`：`row.title.grep.stats*` 四个 key（en/zh 镜像）+ `WIRE_TEXT_KEYS` 放行；`row.title.grep` 退出 WIRE_TEXT_KEYS（宿主不再发它）
+- `client/src/client/tool-row.tsx`：grep 行标题改回行自带词、尾缀承载计数（`readWindowSuffix` → `rowSuffixText`，两个行共用一个载体）
+- `README.md` / `README.zh.md`：grep 工具行（镜像）
+- `CHANGELOG.md` `[Unreleased]`：#386 两条
+- `AGENTS.md` l0 decisions 0001–0028 → 0001–0029，追加 grep 命中数主题
+- 测试：`test/core/issue-386-grep-hit-counts.test.ts`（新建：真总数 / 统计行 / 预算截断 / 续取逐文件统计行与 notice / 卡片标题 / JSON 路径 / 计数 argv 不带 `--max-count` / canonical value 过 output schema）；`test/core/presentation.test.ts`（`total` 口径随之变更）、`test/core/issue-246-tail-copy.test.ts`（notice 形状带上总数）、`client/test/wire-text.test.ts`（客户端把四个计数 key 渲染成读者语言）

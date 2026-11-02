@@ -186,10 +186,21 @@ function fixedRgArgs(pattern: string, literal: boolean, limit?: number): string[
 		// off by one (#268).
 		"--text",
 		...(limit !== undefined ? [`--max-count=${limit}`] : []),
-		...(literal ? ["--fixed-strings"] : []),
-		`--regexp=${pattern}`,
-		"--",
+		...rgPatternArgs(pattern, literal),
 	];
+}
+
+/**
+ * The flags that carry the PATTERN, in the order every invocation uses them.
+ *
+ * The pattern rides in `--regexp=<pattern>` and the files behind `--`, so a
+ * value that starts with a dash can never be read as a flag. A literal
+ * pattern is `--fixed-strings` — an independent flag, never a `-F` prefix
+ * glued onto the pattern (#384). ONE builder, so the search and the counting
+ * pass cannot drift apart on how the pattern reaches the engine.
+ */
+function rgPatternArgs(pattern: string, literal: boolean): string[] {
+	return [...(literal ? ["--fixed-strings"] : []), `--regexp=${pattern}`, "--"];
 }
 
 /**
@@ -206,6 +217,62 @@ export function buildRgArgv(opts: {
 	files: readonly string[];
 }): string[] {
 	return [...fixedRgArgs(opts.pattern, opts.literal, opts.limit), ...opts.files];
+}
+
+/**
+ * One ripgrep COUNT: how many lines of each file carry the pattern.
+ *
+ * The count is a pass of its OWN (#386): the search stops at the per-file cap
+ * (`--max-count`), so the number of hits it collected is the cap, not the
+ * file's hit count. A count that inherited the cap would report the cap and
+ * call it the total — which is exactly what the tool used to answer.
+ */
+export interface RgCountOptions extends RgInvocationOptions {
+	/** The pattern to search for. */
+	pattern: string;
+	/** Literal (fixed-string) pattern: `pattern` is not a regex. */
+	literal: boolean;
+	/** The candidate files, as an explicit list of paths. */
+	files: readonly string[];
+	/** Overrides the ripgrep executable path (for tests); resolved internally when omitted. */
+	rgPath?: string;
+}
+
+/**
+ * The flags a counting pass carries (the binary itself excluded).
+ *
+ * NO `--max-count`: the count is the number of matching lines, and a capped
+ * count is the cap. `--with-filename` forces the path onto every line —
+ * without it ripgrep prints a bare number when it is given ONE file, and the
+ * count would have no file to belong to.
+ *
+ * The pattern rides in `--regexp=<pattern>` and the files behind `--`, exactly
+ * as in the search: a literal pattern is the `--fixed-strings` FLAG, never a
+ * `-F` prefix glued onto the pattern text (#384).
+ */
+function countRgArgs(pattern: string, literal: boolean): string[] {
+	return [
+		// FIRST, and always — see `fixedRgArgs` for why.
+		"--no-config",
+		"--text",
+		"--count",
+		"--with-filename",
+		...rgPatternArgs(pattern, literal),
+	];
+}
+
+/**
+ * Build the complete argv of one counting pass (the binary itself excluded).
+ *
+ * @param opts - the pattern, whether it is literal, and the files to count.
+ * @returns the argv, in the order it is spawned.
+ */
+export function buildRgCountArgv(opts: {
+	pattern: string;
+	literal: boolean;
+	files: readonly string[];
+}): string[] {
+	return [...countRgArgs(opts.pattern, opts.literal), ...opts.files];
 }
 
 /** What one ripgrep process did, before any search result is derived from it. */
@@ -245,6 +312,17 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const PATTERN_ERROR = /regex parse error|error parsing glob/i;
 
 /**
+ * The knobs every ripgrep invocation shares — the search and the count
+ * alike.
+ */
+interface RgInvocationOptions {
+	/** An optional abort signal. */
+	signal?: AbortSignal;
+	/** The per-invocation timeout cap, in milliseconds. */
+	timeoutMs?: number;
+}
+
+/**
  * Run one ripgrep process and hand back what it did.
  *
  * The spawn is wrapped so that a refusal the OS raises BEFORE a process exists
@@ -255,7 +333,7 @@ const PATTERN_ERROR = /regex parse error|error parsing glob/i;
 function runRgProcess(
 	rg: string,
 	args: string[],
-	opts: RgSearchOptions,
+	opts: RgInvocationOptions,
 ): Promise<RgProcess> {
 	const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	return new Promise<RgProcess>((resolve) => {
@@ -524,6 +602,60 @@ export async function rgSearchMatches(opts: RgSearchOptions): Promise<RgSearchOu
 		collected.push(...outcome.matches);
 	}
 	return { kind: "ok", matches: mergeRgMatches(collected) };
+}
+
+/**
+ * Parse one `rg --count` stdout into the count of each file.
+ *
+ * The lines are `path:count`. The path may itself contain a colon (a Windows
+ * drive), so the COUNT is what follows the LAST one — the file's name is
+ * never guessed.
+ */
+function parseRgCounts(stdout: string): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const line of stdout.split("\n")) {
+		if (line.length === 0) continue;
+		const at = line.lastIndexOf(":");
+		if (at <= 0) continue;
+		const count = Number(line.slice(at + 1));
+		if (!Number.isInteger(count)) continue;
+		counts.set(line.slice(0, at), count);
+	}
+	return counts;
+}
+
+/**
+ * Count the matching lines of each file — the TRUE hit count (#386).
+ *
+ * The search stops at the per-file cap, so the number of hits it collected
+ * is the cap and not the file's hit count. This pass has no cap of its own:
+ * it counts every matching line of every file it is given.
+ *
+ * A count that cannot be made is NO count: the map comes back empty (or
+ * partial), and the caller falls back to what the search collected. A count
+ * is a fact about the file, never a guess.
+ *
+ * @param opts - the pattern, the files to count, and the per-invocation limits.
+ * @returns the count of each file that carries hits.
+ */
+export async function rgCountMatchingLines(opts: RgCountOptions): Promise<Map<string, number>> {
+	const counts = new Map<string, number>();
+	if (opts.files.length === 0) return counts;
+	const rg = opts.rgPath ?? rgBinary();
+	if (rg === undefined) return counts;
+	const fixed = countRgArgs(opts.pattern, opts.literal);
+	const chunks = planArgvChunks([rg, ...fixed], opts.files, ARGV_BUDGET);
+	if (chunks === undefined) return counts;
+	for (const chunk of chunks) {
+		const process = await runRgProcess(rg, [...fixed, ...chunk], opts);
+		// Exit 0 = hits, exit 1 = nothing matched (an answer); anything else is
+		// a failure, and a failure is no count at all.
+		if (process.kind !== "exited" || (process.code !== 0 && process.code !== 1)) {
+			return counts;
+		}
+		for (const [path, count] of parseRgCounts(process.stdout)) counts.set(path, count);
+	}
+	return counts;
 }
 
 /**

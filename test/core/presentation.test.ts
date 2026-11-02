@@ -144,7 +144,9 @@ describe("tool-grep structured presentation", () => {
 				exec(ctx),
 			)) as { files: unknown[]; truncated: boolean; total: number };
 			expect(value.truncated).toBe(true);
-			expect(value.total).toBe(50);
+			// #386: `total` is the file's TRUE hit count — the cap collected 50 of
+			// the 150 matching lines, and the count pass says how many there are.
+			expect(value.total).toBe(150);
 		});
 	});
 });
