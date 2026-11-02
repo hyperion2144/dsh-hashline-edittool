@@ -162,8 +162,8 @@ function installAgentTools(rootCtx: Context, agent: Agent): void {
 	agent.ctx.effect(async () => {
 		// `fs` is host-plane: use the plugin's own context (covered by
 		// inject) rather than the agent's scoped one, whose fiber chain does
-		// not declare it. Session cwd still reaches the bridge per call via
-		// exec.agent.session.header.cwd.
+		// not declare it. The session's LIVE working directory reaches the bridge
+		// per call, asked of the host (see domain/session/live-cwd.ts).
 		const io = ctxFsIO(rootCtx.fs as FileSystem, rootCtx);
 		const sandbox = new FsSandboxController(rootCtx);
 

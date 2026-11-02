@@ -58,10 +58,6 @@ export function sessionKeyFor(sessionId?: string): string {
   return fallbackSessionKey ??= randomUUID();
 }
 
-export function execCwd(exec: ToolExecution): string {
-  return exec.agent?.session.header.cwd ?? process.cwd();
-}
-
 export function execSessionKey(exec: ToolExecution): string {
   return sessionKeyFor(exec.agent?.session.id);
 }

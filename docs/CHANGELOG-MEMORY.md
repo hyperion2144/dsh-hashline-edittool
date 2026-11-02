@@ -976,3 +976,31 @@ Map #354：`write` 的写后回显是输出行为，应归用户；默认从整�
 - `test/core/issue-388-stale-diagnostics.test.ts` (created)：红→绿回路
 - `AGENTS.md` l0 decisions 0001–0028 → 0001–0029，追加诊断新鲜度主题
 - `CHANGELOG.md` `[Unreleased]` Fixed 一行（#388）
+
+## 2026-11-02 — ADR-0031：活的工作目录契约（每次调用按会话「当前目录」解析相对路径）（#394）
+
+**Type:** contract（ADR-0031）+ 实现形态变更（每次调用的 cwd 取点从会话头改为向宿主活取）
+**Confidence:** High（确定性红→绿回路；根 1936 例 + 2 skipped 全绿；双 typecheck 干净）
+**Evidence:** 票 [#394](https://github.com/hyperion2144/dsh-hashline-edittool/issues/394)；`src/domain/session/live-cwd.ts`（新 seam）、11 个工具的 execute 入口；`test/core/issue-394-worktree-cwd.test.ts`（红→绿回路，6 例）
+
+### Why
+
+会话头里的 `cwd` 是**创建时**的目录，按设计终身不变；而会话的**工作目录**是会动的（进入 worktree、`cd` 都会提交 `working-directory/change`）。插件此前一律按会话头解析相对路径，于是 worktree 切换后：`read` 读回的是旧检出的同名文件，`write`/`edit` 落在旧检出，锚点与 undo 账本也归档在旧检出的 workspace store 下 —— 模型以为自己在 worktree 里改，实际改的是另一棵树。宿主的内置 fs 工具每次调用都向 `workingDirectory` 服务活取，插件与它从这一刻起不再一致。
+
+### 本轮定案（复核时照此）
+
+- **唯一取点**：`src/domain/session/live-cwd.ts` 是插件对「这个会话现在在哪工作」的唯一答案；每次调用向宿主的 `workingDirectory` 服务活取一次（`ctx.get`，可选依赖），不再有第二处取 cwd 的写法。
+- **宿主的答案连同它的失败一起算数**：`ensure(agent, signal)` 失败即抛出（内置 fs 工具同样如此），插件绝不替宿主换一个目录；只有**宿主根本没有该服务**（老 harness）时才回落到会话头的 `cwd`。
+- **绝不探测磁盘找 worktree**：同一时刻可能有多个检出，只有宿主知道本会话在哪个。
+- **一次调用只解析一次**：`withLiveWorkspace(exec, fn)` 把「解析当前目录 + 进入 workspace scope」合成一步，并把同一个值交给回调；ambient workspace、开哪个 store、路径解析、写诊断的 cwd 全部读它，彼此不可能对「在哪工作」产生分歧。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0031-live-session-cwd.md` (created)
+- `src/domain/session/live-cwd.ts` (created)：live working directory seam（`liveCwd` 由同步改为异步 + `withLiveWorkspace`）
+- `src/domain/session/session-view.ts`：不再自带也不转出 cwd 取点（中间人已除）
+- `src/tools/tool-{read,edit,grep,undo,delete,rename,format,write-shadow,ast-grep,ast-edit,lsp}.ts`：每次调用走 `withLiveWorkspace(exec, …)`（解析当前目录 + 进入 scope 一步完成）；`ast_grep` / `lsp` 无 scope body，只取 `liveCwd(exec)`；写诊断的 cwd 改用同一个值
+- `CONTEXT.md` 「Language」段：新增 **Live working directory** 词条
+- `test/core/issue-394-worktree-cwd.test.ts` (created)：红→绿回路（相对读 / 相对 edit / 相对写跟随当前目录 + store 隔离 + 无服务回落会话头 + 宿主失败即抛出）
+- `AGENTS.md` l0 decisions 0001–0030 → 0001–0031，追加「活的工作目录」主题
+- `CHANGELOG.md` `[Unreleased]` Fixed 一行（#394）

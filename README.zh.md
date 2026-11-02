@@ -340,7 +340,8 @@ front-matter 围栏损坏会快速失败并告警。
 $DSH_HOME/plugins/dsh-hashline-edittool/<projectKey>/hash-store.sqlite
 ```
 
-`<projectKey>` 是会话 cwd 的人类可读编码，并行工作区之间永不共享锚点与 undo 历史。
+`<projectKey>` 是会话**当前工作目录**的人类可读编码（DSH 此刻为该会话报告的目录；会话切进 worktree 后即另起一份存储），
+并行工作区之间永不共享锚点与 undo 历史。
 工作区之外的调用方回落到共享主目录存储。served 行按 7 天 TTL 清理；损坏的存储自动
 隔离重建。
 

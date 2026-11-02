@@ -31,7 +31,7 @@ import {
 } from "../infra/error-result.js";
 import type { FileIO, FileProbe } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { execCwd, withWorkspace } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { loadHashStore, type HashStore, type PurgeReport } from "../domain/session/hash-store.js";
 import { clearAlignmentNotice } from "../domain/session/anchor-state.js";
 import { notifyDocumentClosed } from "../lsp/sync.js";
@@ -310,8 +310,7 @@ export function buildDeleteTool(io: FileIO, sandbox: FsSandboxController) {
 			};
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-				const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 				const signal = exec.signal;
 				const paths = requestPaths(args);
 				const results: DeleteResultValue[] = [];

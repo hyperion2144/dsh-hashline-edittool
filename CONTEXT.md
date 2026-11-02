@@ -107,6 +107,10 @@ _Avoid_: failure list (that is the model-side `fail[]` array, brackets and all),
 A failure carrying an `[E_*]` code from the tool's own vocabulary (`E_STALE`, `E_BAD_SHAPE`, `E_BATCH_ABORT`, …). The only kind converted into a structured error value; aborts, sandbox denials and unexpected crashes rethrow to the host untouched.
 _Avoid_: any failure, host error, framework error
 
+**Live working directory**:
+The directory a session is working in RIGHT NOW. It MOVES: DSH commits a `working-directory/change` when the model enters a worktree or calls `cd`, and every relative path the plugin resolves — and every workspace-keyed store it opens — follows it. The session header's `cwd` is the OTHER thing: the creation-time directory, frozen for the session's life, and only the fallback when the host cannot answer.
+_Avoid_: session cwd (that names the header's frozen copy), repo root, checkout
+
 ## Segmented responses
 
 **Per-response budget**:

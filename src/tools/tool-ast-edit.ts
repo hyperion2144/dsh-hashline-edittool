@@ -19,7 +19,8 @@ import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/er
 import { E_AST_DISABLED } from "../ast/codes.js";
 import { AstError, getAstClient } from "../ast/client.js";
 import { runFileEdits, type PreparedItem } from "../domain/edit/edit-engine.js";
-import { execCwd, execSessionKey, withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
+import { execSessionKey, anchorForInWorkspace } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "../render/edit-card.js";
 import { recordEchoServes } from "../domain/session/session-view.js";
@@ -190,7 +191,7 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
 		// its undo history under a DIFFERENT workspace — and `undo_last_edit`, which
 		// does wrap, answered "No undo history" for an edit that had happened.
 		async execute(args: { readonly pat: string; readonly out: string; readonly path: string }, exec: ToolRunContext) {
-			return withWorkspace(execCwd(exec), () => runAstEdit(args, exec, io, sandbox)).catch((error: unknown) => ({
+			return withLiveWorkspace(exec, (cwd) => runAstEdit(args, exec, io, sandbox, cwd)).catch((error: unknown) => ({
 				path: args.path,
 				pat: args.pat,
 				count: 0,
@@ -209,6 +210,7 @@ export function buildAstEditTool(io: FileIO, sandbox: FsSandboxController) {
  * @param exec - execution identity, cancellation and cwd.
  * @param io - the session's file access.
  * @param sandbox - the sandbox controller for the write.
+ * @param cwd - the session's live working directory, resolved by the call site.
  * @returns the canonical value `edit` returns for the same kind of change.
  */
 async function runAstEdit(
@@ -216,8 +218,8 @@ async function runAstEdit(
 	exec: ToolRunContext,
 	io: FileIO,
 	sandbox: FsSandboxController,
+	cwd: string,
 ) {
-	const cwd = execCwd(exec);
 	const absolutePath = await io.resolve(args.path, cwd);
 	const language = languageForPath(absolutePath);
 	if (language === undefined) {
@@ -408,7 +410,7 @@ async function runAstEdit(
 	}
 	// #131: captured BEFORE the write, so the wait measures pushes against a
 	// pre-write baseline. undefined = disabled / no manager / no ready server.
-	const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
+	const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
 	await commitFileResult(result, {
 		io,
 		exec: exec as never,

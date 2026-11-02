@@ -32,9 +32,9 @@ import {
 	type FileDiff,
 } from "../render/edit-card.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
+import { execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { withWorkspace } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { notifyDocumentWritten } from "../lsp/sync.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
@@ -136,8 +136,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			return { card: "diff", title: `Undo ${path}`, diffs };
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-			const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 			// The revert allocates anchors for the restored content's diff window,
 			// and the anchor port writes only to an OPEN store (#171 probe).
 			await openWorkspaceStore(cwd);
@@ -229,7 +228,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const restoredRange = changedRange(currentNormalized, undo.content);
 			// #131: baseline BEFORE the revert, so the wait measures pushes
 			// against a pre-write baseline.
-			const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
+				const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
 			try {
 				await io.writeText(
 					absolutePath,

@@ -415,9 +415,10 @@ workspace** being edited:
 $DSH_HOME/plugins/dsh-hashline-edittool/<projectKey>/hash-store.sqlite
 ```
 
-`<projectKey>` is a human-navigable encoding of the session cwd, so parallel workspaces
-never share anchors or undo history. Callers outside a workspace fall back to the
-shared-home store. A 7-day TTL prunes served rows; corrupt stores are quarantined and
+`<projectKey>` is a human-navigable encoding of the session's live working directory —
+the one DSH reports for the session right now, so a session that moved into a worktree
+gets its own store — so parallel workspaces never share anchors or undo history. Callers
+outside a workspace fall back to the shared-home store. A 7-day TTL prunes served rows;
 rebuilt automatically.
 
 The `delete` tool purges a path's four row families (`anchor_meta`, `anchor_lines`, `served` across every session, `undo` at every depth) in one transaction and reports the logical bytes freed. When those bytes actually drop it writes `pending_vacuum`; shutdown runs a synchronous VACUUM and clears the marker only on success.

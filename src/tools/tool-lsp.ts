@@ -28,7 +28,8 @@ import { toLF } from "../render/edit-diff.js";
 // The SAME anchor assigner `read` uses, so a row the card shows carries the
 // marker an `edit` accepts — otherwise the card would be decorative.
 import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashline/hash-assign.js";
-import { observeServedRows, anchorForInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { observeServedRows, anchorForInWorkspace, execSessionKey } from "../domain/session/session-view.js";
+import { liveCwd } from "../domain/session/live-cwd.js";
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
@@ -316,7 +317,7 @@ export function buildLspTool(io: FileIO) {
 			// would require building a field the wrapper owns.
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		): Promise<any> {
-			const cwd = execCwd(exec);
+			const cwd = await liveCwd(exec);
 			// `status` and `warm` are LANGUAGE-level: they answer "what is up"
 			// and "make it up" without a document, so they branch before the
 			// path is even resolved (#318).

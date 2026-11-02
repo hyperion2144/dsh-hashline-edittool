@@ -74,9 +74,9 @@ import {
 	type FileDiff,
 } from "../render/edit-card.js";
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
+import { execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { withWorkspace } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { genDiff } from "../render/edit-diff.js";
 import { editDiffLegend, renderFileDiffGroup, renderFormatSection } from "../domain/edit/edit-response.js";
 import { diffDictFrom, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
@@ -331,7 +331,7 @@ async function applyFileGroup(
 		const absolutePath = await io.resolve(displayPath, cwd, signal);
 		// #131: captured BEFORE anything is written, so the diagnostics wait
 		// measures pushes against a pre-write baseline. undefined = skip.
-		const diagCtx = prepareWriteDiagnostics(absolutePath, execCwd(exec));
+		const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
 		const items = group.map(({ index, edit }) =>
 			buildPreparedItem(index, displayPath, edit as never, absolutePath),
 		);
@@ -524,8 +524,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 			return { card: "diff", title: `Edit ${path}`, diffs };
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-				const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 				// The engine allocates anchors for the edit's diff window (and the
 				// undo snapshot carries them); the anchor port writes only to an OPEN
 				// store, and an edit can be the session's first tool call (#171 probe).

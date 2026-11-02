@@ -30,9 +30,9 @@ import type { Context } from "@deepseek-ai/cordis";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { execCwd, execSessionKey, openWorkspaceStore, anchorForInWorkspace } from "../domain/session/session-view.js";
+import { execSessionKey, openWorkspaceStore, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { createResume, responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
-import { withWorkspace } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { formatWindowSummary } from "../domain/session/read-window.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
@@ -200,8 +200,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 			};
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-				const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 				// The write renders its diff and serves the written rows; the anchor
 				// port writes only to an OPEN store (#171 probe).
 				await openWorkspaceStore(cwd);
@@ -262,7 +261,7 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// #131: baseline BEFORE the sync; then tell the language server — the
 				// one `write` path never did, so its diagnostics (and the manual
 				// `lsp diagnostics`) answered from the pre-write text.
-				const diagCtx = prepareWriteDiagnostics(absolute, execCwd(exec));
+				const diagCtx = prepareWriteDiagnostics(absolute, cwd);
 				// The section's eligibility gate is the PRE-CALL served set — capture
 				// it before anything this call might serve (the preview mints later).
 				const preCallServed = await loadServed(sessionKey, absolute);

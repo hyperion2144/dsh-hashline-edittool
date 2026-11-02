@@ -45,7 +45,7 @@ import { basename, join, relative, resolve } from "node:path";
 import type { Context as CordisContext } from "@deepseek-ai/cordis";
 
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey, recordServed, openWorkspaceStore } from "../domain/session/session-view.js";
+import { execSessionKey, recordServed, openWorkspaceStore } from "../domain/session/session-view.js";
 import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import {
 	codeUnits,
@@ -62,7 +62,8 @@ import {
 	takeRowsStrictlyWithinBudget,
 } from "../infra/response-stream.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { withWorkspace, anchorForInWorkspace } from "../domain/session/session-view.js";
+import { anchorForInWorkspace } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
 import { rgFiles, rgCountMatchingLines } from "./grep-rg.js";
@@ -352,8 +353,7 @@ export function buildGrepTool(io: FileIO) {
 			};
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-				const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 				const budget = responseBudgetChars();
