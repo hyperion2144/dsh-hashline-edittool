@@ -19,6 +19,7 @@ import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { LANGUAGES, languageForPath } from "../ast/language.js";
 import { getLspManager, type LspManager } from "../lsp/manager.js";
+import { latestWriteFor } from "../lsp/write-tracker.js";
 import { E_LSP_NO_SERVER } from "../lsp/provider.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
 import type { FileIO } from "../infra/fs-bridge.js";
@@ -31,7 +32,7 @@ import { observeServedRows, anchorForInWorkspace, execCwd, execSessionKey } from
 import { readMetaFromMeta } from "../render/read-card.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
+import { currentContentFor, diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
 
 /** One symbol as the server reports it, flattened for display. */
 interface FlatSymbol {
@@ -380,6 +381,10 @@ export function buildLspTool(io: FileIO) {
 			// Read once: the sync below needs the text, and a position-based operation
 			// needs the same text to turn a line number into a range.
 			// Issue #147 (ADR-0008): the READ LINE SPACE — the server sync and every row below live in the space read serves.
+			// #388: the probe syncs the server, so what it syncs must be the CURRENT
+			// content — a write that lands while the probe is in flight must not be
+			// rolled back by the probe's revert.
+			const generation = latestWriteFor(uri)?.generation;
 			const text = toLF(await io.readText(absolutePath));
 			sync(text);
 			if (args.operation === "diagnostics") {
@@ -389,7 +394,7 @@ export function buildLspTool(io: FileIO) {
 				// "no answer yet" is returned only when the guarantee could not be
 				// established inside the budget — never a stale pre-change report,
 				// which is what the old arrivedAlready short-circuit served.
-				const verified = await verifiedReport(session, uri, text, {
+				const verified = await verifiedReport(session, uri, () => currentContentFor(uri, generation, text), {
 					open: (next) => sync(next),
 					budgetMs: DIAGNOSTIC_WAIT_MS,
 					signal: exec.signal,
@@ -408,7 +413,10 @@ export function buildLspTool(io: FileIO) {
 						raw: `${language.displayName} has not reported diagnostics for this file within ${DIAGNOSTIC_WAIT_MS}ms. That is "no answer yet", not "no problems".`
 					};
 				}
-				const diagLines = splitLines(text);
+				// The rows describe the content the server ANSWERED for — the probe may
+				// have verified a newer write than the snapshot this call read.
+				const verifiedText = verified?.text ?? text;
+				const diagLines = splitLines(verifiedText);
 				// NO dense read: every entry ever READ below belongs to a line in
 				// `diagLineNos`, and those are exactly the lines the mint fills in.
 				// The array stays full length because the rows index it by LINE.
@@ -457,7 +465,7 @@ export function buildLspTool(io: FileIO) {
 				const diagAllocated = await anchorForInWorkspace({
 					cwd,
 					absolutePath,
-					content: text,
+					content: verifiedText,
 					lines: diagLineNos,
 					sessionKey: execSessionKey(exec),
 				});
