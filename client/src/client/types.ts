@@ -295,9 +295,40 @@ export interface LspSlotMeta {
 	readonly attempts?: number;
 }
 
+/**
+ * An `lsp` answer that has NO rows of its own (#397 review): a hover's
+ * contents, the actions a server offers at a range, and a raw `request` JSON.
+ *
+ * The shape is a DISCRIMINATOR (`kind`) rather than three optional fields, so
+ * the block renders exactly one body and a meta carrying two of them is a
+ * malformed meta, not an ambiguous card.
+ */
+export type LspAnswerModel =
+	| { readonly kind: "hover" | "note"; readonly path?: string; readonly text: string }
+	| {
+		readonly kind: "actions";
+		readonly path?: string;
+		readonly actions: readonly LspActionMeta[];
+		/** The host's sentence for an EMPTY list (a card with no rows says why). */
+		readonly note?: string;
+	}
+	| { readonly kind: "json"; readonly path?: string; readonly text: string };
+
+/** One action a server offers at a range: its title, and its LSP kind when it has one. */
+export interface LspActionMeta {
+	readonly title: string;
+	readonly kind?: string;
+}
+
 /** The `lsp` status card: one row per language slot, `warm` included. */
 export interface LspStatusModel {
 	readonly slots: readonly LspSlotMeta[];
+	/**
+	 * The answer's own sentence, when there is no slot to draw (`status` before
+	 * anything has been started). A card with zero rows would otherwise render
+	 * as an empty box; this is what the box says instead.
+	 */
+	readonly note?: string;
 }
 
 /**

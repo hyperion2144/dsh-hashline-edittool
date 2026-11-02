@@ -208,3 +208,17 @@ _Avoid_: anchor copy, re-anchor
 `write.preview` — `full` re-reads the written file and serves every row; `diff` renders an update as the one unified diff every edit tool uses (creates stay read-style); `confirmation` returns a single line and serves nothing, so its anchors do not exist yet. The user's switch, not a tool parameter (#354).
 _Avoid_: echo level, auto-read (that names only the `full` mode)
 
+## Navigation answers
+
+**Navigation operation**:
+One of `goToDefinition` / `findReferences` / `goToImplementation` / `hover` — a question asked AT A CURSOR (`line` plus `symbol` or `character`) whose answer points at other files. Distinct from the single-file operations (`symbols`, `code_actions`, `diagnostics`) whose rows are the queried file's own lines.
+_Avoid_: LSP query (that names the transport), jump/peek (editor gestures, not answers)
+
+**Anchored hit**:
+A navigation row whose file was read and whose line was minted and served inside this call — so the row carries a live anchor and can go straight to `edit` without a second `read`. The plugin's reason for owning the navigation path at all.
+_Avoid_: editable row (all served rows are), resolved row
+
+**Unanchored hit**:
+A row kept for a location that could not be anchored — the file is past `MAX_ANCHORED_FILES` (32), unreadable, or not a local path. It shows `line:character` instead of an anchor. Losing the anchor costs a `read`; dropping the row would lose the answer.
+_Avoid_: fallback row, degraded row (say what was lost)
+

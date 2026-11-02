@@ -4,11 +4,26 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- `lsp` 新增 `goToDefinition` / `findReferences` / `goToImplementation` / `hover` 四个导航操作：`line` 配 `symbol` 或 `character`，命中的行按文件 serve 成可编辑锚点行（#396，ADR-0033）。
+- `lsp` 导航结果按 100 个位置封顶并明说截断；空结果与「服务器不支持该操作」分开作答（#396）。
+- `lsp` 在发请求前校验服务器能力与 `didOpen` 支持，握手里协商出非 UTF-16 位置编码即拒绝（`[E_LSP_UNSUPPORTED_OPERATION]` / `[E_LSP_UNSUPPORTED_SYNC]` / `[E_LSP_BAD_ENCODING]`，#396）。
+- `lsp` 工具带 60s 调用预算，覆盖排队、打开文档、查询与渲染整条生命周期（#396）。
+
 ### Fixed
 
 - 工具注册按「是否需要遮挡同名内置工具」分层：不需遮挡的 6 个改为插件加载期注册一次，需遮挡的 4 个仍在 agent 层（#398）。
 - `lsp` 改为动态分层：内置 `lsp` 在场时走 agent 层遮蔽，不在场时走插件层（#398）。
 - `agent/created` 监听器等工具与提示词安装完成后才返回——重启后恢复会话的第一轮工具面不再残缺（#398）。
+- README 不再声称 `lsp` 起不了服务器时降级到启发式后端：该路径从未接入工具，拿不到服务器一律 `[E_LSP_NO_SERVER]` 拒绝（#396）。
+- `lsp status` / `warm` 在没有已启动服务器时不再画一张空卡片（展开一片空白）：改成一张自带那句话的状态卡（#397 评审）。
+- 导航结果终于穿上多文件卡片：卡片模型的名字白名单只认 `grep` / `ast_grep`，`lsp` 的投影到不了卡片，四个导航操作一路退到原始输入/输出（#397 评审，ADR-0033 D8）。
+- 导航答案的折叠行终于说得出「有多宽」：行尾带 `N 处位置 · M 个文件`，不必展开卡片就知道答案跨了几个文件（#397 评审，ADR-0033 D8）。
+- Windows 上导航重问从不触发：服务器把同一个文件拼成 `file:///d%3A/...`（盘符小写、冒号百分号编码），工具问的是 `file:///D:/...`，字符串比较判成两个文件，于是「像 import 子句」的形状检查永远不成立、重问循环从未跑过；现在按文档身份比较（Windows 下折叠大小写，其他地方保持精确）（#397 评审，ADR-0033 D10）。
+- lsp 的 hover / code_actions / request 现在各自有卡片：悬停内容、动作清单（带 LSP kind）、原始 JSON 都画在行内，不再退化成原始输入输出（#397 评审，ADR-0033 D11）。
+- 导航查询不再把 import 子句当定义：冷启动首答若落在查询文件的 import 行且恰好覆盖该符号，每 500ms 重问一次、直到答案不再是 import 形状或到 15s 截止，暖机时不触发（#397 评审，ADR-0033 D10）。
+- 实测 `typescript-language-server` 不发 `$/typescriptProjectLoading*`，原先新增的括号等待对它无效，保留作为其他服务器的可选信号（#397 评审，ADR-0033 D9）。
 
 ## [0.10.7] - 2026-11-02
 

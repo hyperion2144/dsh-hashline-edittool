@@ -228,7 +228,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | `undo_last_edit` | `{ path }` 撤销该文件最后一次 hashline 编辑 —— 仅当文件仍与存储的编辑后内容一致时；可跨重启。 |
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
 | `ast_edit` | 结构改写：按形状找到位置，把变更交给 `edit` **同一引擎** —— served 校验、undo 记录、diff 与语法门全部生效。 |
-| `lsp` | 能起语言服务器就做符号级工作（按语言启动，与 dsh 的 `lsp` 服务共享）；否则降级启发式后端。其行会被 serve，因此 LSP 输出可直接编辑。`status` 只读查询已启动语言的服务器状态；`warm` 跳过退避立即启动/重拉。 |
+| `lsp` | 能起语言服务器就做符号级工作（按语言启动，与 dsh 的 `lsp` 服务共享）。`goToDefinition` / `findReferences` / `goToImplementation` / `hover` 按光标作答（`line` 配 `symbol` 或 `character`），命中的每一行都被 serve 成可编辑行——引用能直接交给 `edit`；服务器没 advertise 的方法一律 `[E_LSP_UNSUPPORTED_OPERATION]` 拒绝，不去问。其余操作是 `symbols` / `code_actions` / `diagnostics` / `request`；`status` 只读查询已启动语言的服务器状态，`warm` 跳过退避立即启动/重拉。导航结果按 100 个位置封顶，并明说截了多少。 |
 | `format` | 用该文件语言服务器的格式化器格式化——全文，或 `range: {start, end}`（**两端都是本会话 served 锚点**）。文件须已 observed（否则 `[E_NOT_OBSERVED]`）；格式化器无改动即 `noop`；与 `edit` 一样进 undo。手动调用允许冷启动（15s）——因为你点名要它。 |
 | `delete` | 删除普通文件并回收其 hashline 状态：`paths`（1–32 个，重复项合并）逐个删除，再把该路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里清掉。文件不存在也算 `already-absent` 成功并照样回收残留；符号链接、目录与特殊文件拒绝；非本地后端 fail-closed。`workspace-write` 下目标必须在 canonical 可写根内。报告逻辑字节；物理磁盘在存储关闭时 VACUUM 归还。多文件逐路径部分失败，没有 undelete。 |
 | `rename` | 重命名/移动普通文件并迁移其 hashline 状态：`renames`（1–32 个 `{from, to}` 对，完全重复项合并）按请求顺序逐对执行，链式改名成立；每个被移动路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里搬到新路径，改名之前服务过的锚点无需重读即可继续使用。符号链接、目录与特殊文件拒绝；目标已存在时除非是同一 inode 的另一种拼写否则 `[E_EXISTS]`；非本地后端 fail-closed。旧路径记 absent、新路径记 present；不发 write intent。多对逐对部分失败；store 迁移失败只 warning。 |
@@ -327,6 +327,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_GRAMMAR_BUILTIN]` / `[E_GRAMMAR_NO_DESCRIPTOR]` / `[E_GRAMMAR_UNKNOWN]` | 语法目录：内置名冲突 / 该语言无描述符 / 未知语言。 |
 | `[E_GRAMMAR_FETCH_FAILED]` / `[E_GRAMMAR_HASH_MISMATCH]` / `[E_GRAMMAR_NOT_IN_TARBALL]` | 语法下载失败 / SHA-256 不匹配 / tarball 中缺少条目。 |
 | `[E_LSP_NO_SERVER]` / `[E_LSP_BAD_OPERATION]` / `[E_LSP_UNAVAILABLE]` / `[E_LSP_ABORTED]` / `[E_LSP_CLOSED]` / `[E_LSP_NOT_READY]` / `[E_LSP_TIMEOUT]` | LSP：该语言无服务器 / 操作无效 / 服务器不可用 / 请求中止 / 通道已关闭 / 仍在启动 / 超时。 |
+| `[E_LSP_UNSUPPORTED_OPERATION]` / `[E_LSP_UNSUPPORTED_SYNC]` / `[E_LSP_BAD_ENCODING]` | LSP：服务器没 advertise 该操作 / 它拒绝 `didOpen`，看不到光标所在文档 / 它协商出非 UTF-16 的位置编码。三者都在请求发出**之前**就拒绝——“不支持”不等于“没有结果”。 |
  | `[E_LSP_UNEXPECTED]` | LSP：词汇表之外的意外失败——包装进错误词汇表，拒绝仍走错误卡片，而不是以宿主无法无损序列化告终。 |
  | `[E_FORMAT_UNSUPPORTED]` / `[E_FORMAT_EDITS]` | 格式化：服务器无 document formatting provider（显式 range 调用时，还包括无 range provider 且回退开关关闭的情形，#315）/ 格式化器返回了无法应用的 edit（行越界、重叠）。 |
 | `[E_BARE_HASH_PREFIX]` | `lines` 中粘入了带锚点前缀的行；剥除并警告。 |

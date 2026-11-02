@@ -282,3 +282,37 @@ describe("the language-server route's texts (#377)", () => {
 		}
 	});
 });
+
+/**
+ * The navigation row's WIDTH (#397 review): a definition or references answer
+ * lives in OTHER files, so the folded row says how many positions over how many
+ * files — the fact its title cannot carry, in the same weak slot the grep
+ * counts and the diff stat use.
+ */
+describe("the navigation row's width (#397 review)", () => {
+	it("renders the width in the reader's language", () => {
+		const en = translator(EN_CARD_DICTIONARY);
+		const zh = translator(ZH_CARD_DICTIONARY);
+		const wire = rowTitleFromMeta({
+			rowTitle: { key: "row.title.lsp.nav.stats", params: { locations: 3, files: 2 } },
+		});
+		expect(wire).toEqual({
+			key: "row.title.lsp.nav.stats",
+			params: { locations: 3, files: 2 },
+		});
+		expect(en(wire!.key, wire!.params)).toBe("3 locations · 2 files");
+		expect(zh(wire!.key, wire!.params)).toBe("3 处位置 · 2 个文件");
+	});
+
+	it("the host's lsp key and the client's accepted key are ONE list", () => {
+		const named = [...HOST_WIRE_TEXT.matchAll(/"(row\.title\.lsp[.A-Za-z0-9_]*)"/g)].map(
+			(match) => match[1]!,
+		);
+		expect(named).toContain("row.title.lsp.nav.stats");
+		for (const key of named) {
+			expect(Object.hasOwn(WIRE_TEXT_KEYS, key)).toBe(true);
+			expect(Object.hasOwn(EN_CARD_DICTIONARY, key)).toBe(true);
+			expect(Object.hasOwn(ZH_CARD_DICTIONARY, key)).toBe(true);
+		}
+	});
+});

@@ -46,7 +46,7 @@ export interface LocalizedText {
 export const LOSSY_NOTE_TEXT: LocalizedText = { key: "read.lossy" };
 
 /** The tools whose folded row carries a title of its own. */
-export type RowTitleKind = "read" | "edit" | "write" | "grep";
+export type RowTitleKind = "read" | "edit" | "write" | "grep" | "lsp";
 
 /** What the host knows about the row it is titling. */
 export interface RowTitleFacts {
@@ -77,6 +77,15 @@ export interface RowTitleFacts {
    * #386: which cut took the rest of the hits away.
    */
   readonly truncatedBy?: GrepTruncation;
+  /**
+   * #397 review: how many positions a NAVIGATION answer returned — the fact
+   * the folded row's title cannot carry.
+   */
+  readonly locations?: number;
+  /**
+   * #397 review: how many distinct files those positions live in.
+   */
+  readonly files?: number;
 }
 
 /**
@@ -111,6 +120,15 @@ export function rowTitle(kind: RowTitleKind, facts: RowTitleFacts): LocalizedTex
   // conditional) and the params carry the numbers.
   if (kind === "grep" && facts.hits !== undefined && facts.served !== undefined) {
     return { key: grepStatsKey(facts.truncatedBy), params: { hits: facts.hits, served: facts.served } };
+  }
+  // #397 review: a NAVIGATION answer's rows live in OTHER files, so its fact
+  // is how WIDE the answer is — how many positions, over how many files. The
+  // queried path is the row's summary, never one of the answer's own files.
+  if (kind === "lsp" && facts.locations !== undefined && facts.files !== undefined) {
+    return {
+      key: "row.title.lsp.nav.stats",
+      params: { locations: facts.locations, files: facts.files },
+    };
   }
 	if (kind !== "read") return { key: `row.title.${kind}`, params };
 	const { start, end, total } = facts;

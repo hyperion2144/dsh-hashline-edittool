@@ -276,3 +276,27 @@ describe("foldTabs", () => {
 		expect(fold.folded).toEqual([1, 2]);
 	});
 });
+
+describe("the lsp navigation card (ADR-0033 D8)", () => {
+	it("draws the multi-file card for an `lsp` answer carrying the grep projection", () => {
+		// The name lock (grep/ast_grep only) made the projection unreachable for
+		// `lsp`, so navigation answers fell all the way back to raw IO — the
+		// regression reported against #397.
+		const block = settled({
+			call: { name: "lsp", argsRaw: '{"operation":"goToDefinition"}' },
+			meta: {
+				files: [{ path: "src/b.ts", rows: [{ number: 2, hash: "a3f", text: "console.log(alpha);" }] }],
+				truncated: false,
+				total: 1,
+			},
+		});
+		const model = grepCardModel(block);
+		expect(model, "an lsp navigation answer must wear the multi-file card").not.toBeNull();
+		expect(model?.files[0]?.path).toBe("src/b.ts");
+	});
+
+	it("still refuses a meta that is not that projection", () => {
+		const block = settled({ call: { name: "lsp", argsRaw: "{}" }, meta: { path: "src/a.ts", hashlines: [] } });
+		expect(grepCardModel(block)).toBeNull();
+	});
+});
