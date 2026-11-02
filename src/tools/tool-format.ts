@@ -19,7 +19,8 @@ import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-s
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
-import { execCwd, execSessionKey, openWorkspaceStore, withWorkspace } from "../domain/session/session-view.js";
+import { execSessionKey, openWorkspaceStore } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { renderFormatSection } from "../domain/edit/edit-response.js";
 import { runManualFormat } from "../domain/format/manual-format.js";
 import { FORMAT_DESCRIPTION } from "../domain/format/prompts.js";
@@ -133,8 +134,7 @@ export function buildFormatTool(io: FileIO, sandbox: FsSandboxController) {
 			};
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-				const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 				const raw = args as {

@@ -52,8 +52,8 @@ import {
 } from "../render/read-card.js";
 
 import type { FileIO } from "../infra/fs-bridge.js";
-import { execCwd, execSessionKey } from "../domain/session/session-view.js";
-import { withWorkspace } from "../domain/session/session-view.js";
+import { execSessionKey } from "../domain/session/session-view.js";
+import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { takeRebuildWarning } from "../domain/session/hash-store.js";
 import { probeLines } from "../domain/session/anchor-entry.js";
 import {
@@ -261,8 +261,7 @@ export function buildReadTool(io: FileIO) {
 			};
 		},
 		async execute(args, exec) {
-			return withWorkspace(execCwd(exec), async () => {
-				const cwd = execCwd(exec);
+			return withLiveWorkspace(exec, async (cwd) => {
 				const sessionKey = execSessionKey(exec);
 				const signal = exec.signal;
 

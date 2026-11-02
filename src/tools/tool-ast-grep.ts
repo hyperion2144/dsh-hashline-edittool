@@ -27,7 +27,8 @@ import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
 import { getEffectiveConfig, isJsonOutput, lineNumbersEnabled } from "../config.js";
 import { errorFieldSchema, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
-import { observeServedRows, anchorForInWorkspace, execCwd, execSessionKey } from "../domain/session/session-view.js";
+import { observeServedRows, anchorForInWorkspace, execSessionKey } from "../domain/session/session-view.js";
+import { liveCwd } from "../domain/session/live-cwd.js";
 import { renderSummary, servedRowsFor, summaryFooter, summaryGate, summaryIsWorthIt } from "../render/read-summary.js";
 import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../infra/constants.js";
 import { splitLines } from "../infra/utils.js";
@@ -229,7 +230,7 @@ export function buildAstGrepTool(io: FileIO) {
 	},
 		async execute(args: { readonly pat?: string; readonly path: string }, exec: ToolRunContext) {
 			try {
-			const cwd = execCwd(exec);
+				const cwd = await liveCwd(exec);
 			const absolutePath = await io.resolve(args.path, cwd);
 			const language = languageForPath(absolutePath);
 			if (language === undefined) {
