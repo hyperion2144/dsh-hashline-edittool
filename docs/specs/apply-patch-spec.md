@@ -326,3 +326,59 @@ An empty patch succeeds with `Success. No operations in patch.`
   not-existing" has no undo slot.
 - A commit that stops midway leaves layers only for the operations that completed —
   consistent with reporting completed work truthfully.
+
+## Registration and guidance (D3)
+
+### Registration
+
+- The tool is ALWAYS offered while `apply_patch.enabled` is true (the default). The official
+  `@deepseek-ai/dsh-tool-fs` tool may exist beside it (its `applyPatch` composition flag); the
+  name is the same, so exactly one wins:
+  - Probe the registry once per plugin context (the `lsp` pattern, `builtInToolPresent`): a
+    FOREIGN `apply_patch` already registered farther out → register on the **agent layer**,
+    which is nearer and therefore shadows it; remember the definition in `ownToolDefinitions`
+    so a later probe never mistakes ours for a built-in.
+  - No foreign same-name tool, or the registry cannot answer → register ONCE on the **plugin
+    layer**, so every agent has it from its first turn (ADR 0032).
+- Registration follows the flag: disabled disposes the tool and the guidance section together;
+  the settings `document-updated` event re-installs (hot), the seam the edit surface already
+  uses.
+
+### Setting
+
+```yaml
+apply_patch:
+  enabled: true   # default when absent; explicit false removes tool + section
+```
+
+- Schema: `apply_patch: z.object({ enabled: z.boolean() }).volatile()` — volatile on the
+  outermost node only, like `write` / `format`.
+- `resolveSettings` reads `settings?.apply_patch?.enabled ?? defaults.applyPatchEnabled`, with
+  the default `true` in `infra/settings.ts`.
+
+### Guidance section
+
+- Name `tool:apply_patch`, override file `apply_patch.md`, order **136** (after `rename` 135).
+- Compiled default text: intro `apply_patch applies one change set across files: file sections
+  (file / new / move / remove) with anchor hunks (replace / insert / delete)`, then bullets:
+  - Reach for it when a change spans several files or creates, removes or moves a file; a
+    single-file anchored surgery stays `edit`.
+  - Every hunk is addressed by an anchor from this session's read/grep/diff rows — the patch
+    never repeats file content.
+  - The whole patch is checked before anything is written (syntax, shape, paths, anchors); a
+    rejected patch lists every problem at once and changes nothing.
+  - Once applying starts, operations run in order, stop at the first failure and are not rolled
+    back — re-read the affected files before retrying.
+  - A completed add/update/move returns fresh anchors for the changed lines; a new file returns
+    only its path (read it for anchors).
+- Boundary, same section and README: `edit` = one file of anchored surgery; `write` = whole
+  file; `delete` / `rename` stay for exactly their one job; `apply_patch` = the multi-file
+  change set.
+
+### Client and docs
+
+- The settings card gains one toggle beside `write.preview`, writing `apply_patch: { enabled }`
+  (label + hint in both locales).
+- README (both languages): the tool table gains its row, plus a short section with the A′
+  example and the default-on note.
+- `CONTEXT.md`: `apply_patch`, `patch section`, `preflight refusal`.
