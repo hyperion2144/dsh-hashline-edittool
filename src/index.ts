@@ -2,17 +2,28 @@
  * dsh-hashline-edittool — hash-anchored read/edit/undo_last_edit/grep for
  * DeepSeek Harness — a dsh port of the hashline editor.
  *
- * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). On
- * `agent/created` (dsh ≥ 0.1.6; the pre-rename name `agent/session-start` is
- * still registered for older harnesses) it registers the hashline tools and
- * prompt sections on
- * the AGENT's own scope layer, so they shadow the preset's built-in `read` /
- * `edit` for that agent (nearest layer wins in dsh's tool registry) and unwind
- * automatically when the agent is disposed. The built-in `write` stays in
- * place; a scoped `tools/post-execute` listener appends the fresh hashline
- * preview to write results.
+ * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). The
+ * tools sit on TWO layers, and ONE question decides which: does the tool have
+ * to shadow a built-in of the same name?
  *
- * The four `tool:*` guidance sections resolve per agent preset from override
+ * - The tools that MUST shadow a preset built-in (`read`, `write`, `edit`,
+ *   `grep`, `lsp`) go on the AGENT's own scope layer — the agent's nearer
+ *   layer wins over the preset's (nearest layer wins in dsh's tool
+ *   registry), and it is the only layer that can shadow a built-in at all.
+ *   They unwind automatically when the agent is disposed.
+ * - The tools that shadow NOTHING (`ast_grep`, `ast_edit`, `undo_last_edit`,
+ *   `format`, `delete`, `rename`) are registered ONCE on the plugin's own
+ *   layer at plugin load, the way every other dsh plugin registers its
+ *   tools. Every agent inherits them: they do not wait for an agent to
+ *   exist, and they do not vanish when one ends (#398).
+ *
+ * The `agent/created` listener (dsh ≥ 0.1.6; the pre-rename name
+ * `agent/session-start` is still registered for older harnesses) returns only
+ * after the agent-scoped half is installed: the host holds a resumed
+ * session's queued input until every listener has returned, so an early
+ * return hands the model a half-installed tool surface on the first turn.
+ *
+ * The six `tool:*` guidance sections resolve per agent preset from override
  * files in the shared home (see `src/guidance.ts`); deployments without the
  * `agentPresets` service keep the compiled defaults unchanged.
  * @module dsh-hashline-edittool
@@ -21,6 +32,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { FileSystem } from "@deepseek-ai/dsh-fs";
+import { scopeOf } from "@deepseek-ai/dsh-scope";
 import { ctxFsIO } from "./infra/fs-bridge.js";
 import { FsSandboxController } from "./infra/sandbox.js";
 import { registerReadTool } from "./tools/tool-read.js";
@@ -158,108 +170,231 @@ async function resolveAgentSections(
 	}
 }
 
-function installAgentTools(rootCtx: Context, agent: Agent): void {
-	agent.ctx.effect(async () => {
-		// `fs` is host-plane: use the plugin's own context (covered by
-		// inject) rather than the agent's scoped one, whose fiber chain does
-		// not declare it. The session's LIVE working directory reaches the bridge
-		// per call, asked of the host (see domain/session/live-cwd.ts).
-		const io = ctxFsIO(rootCtx.fs as FileSystem, rootCtx);
-		const sandbox = new FsSandboxController(rootCtx);
-
-		// The edit surface (tool schema + its guidance section) depends on
-		// `hashline.require_line_content`: when the flag flips, dispose and
-		// re-register so the model's NEXT step sees the new parameter set
-		// (tools are re-assembled per step — not session-snapshotted).
-		let editDispose: (() => void) | undefined;
-		let editSectionDispose: (() => void) | undefined;
-		let reinstall: Promise<void> = Promise.resolve();
-		const systemPrompt = resolveAgentSystemPrompt(rootCtx, agent);
-		const installEditSurface = async (): Promise<void> => {
-			editDispose = registerEditTool(rootCtx, agent.ctx, io, sandbox);
-			// Re-resolve per install so a rebuilt surface picks up fresh
-			// flag-aware default text (user overrides stay authoritative).
-			const sections = await resolveAgentSections(rootCtx, agent);
-			for (const section of sections) {
-				if (section.name !== "tool:edit") continue;
-				editSectionDispose = systemPrompt.section(section);
+/**
+ * Install the tools that must SHADOW the preset's built-ins on the agent's
+ * own scope layer, and resolve once they are all in place.
+ *
+ * The host holds a resumed session's queued input until every `agent/created`
+ * listener has returned (`packages/core/agent/README.md:207`), so this
+ * promise is what keeps the first turn of a resumed session from seeing a
+ * half-installed tool surface (#398).
+ */
+function installAgentTools(rootCtx: Context, agent: Agent): Promise<void> {
+	let markDone!: () => void;
+	let markFailed!: (error: unknown) => void;
+	const ready = new Promise<void>((resolve, reject) => {
+		markDone = () => resolve();
+		markFailed = (error: unknown) => reject(error);
+	});
+	try {
+		agent.ctx.effect(async () => {
+			try {
+				return await installAgentScopedTools(rootCtx, agent);
+			} catch (error) {
+				// The listener must learn the failure: the host releases a
+				// resumed session's queued input the moment this listener
+				// returns, so a half-installed surface would otherwise reach
+				// the model unannounced.
+				markFailed(error);
+				return () => undefined;
+			} finally {
+				markDone();
 			}
-		};
-		await installEditSurface();
-		const offRebuild = onEditSurfaceRebuild(() => {
-			// Serialize rebuilds; a failure must not unwind the agent install.
-			reinstall = reinstall.then(async () => {
-				try {
-					editDispose?.();
-					editSectionDispose?.();
-					await installEditSurface();
-				} catch (error) {
-					rootCtx.logger.warn(
-						`dsh-hashline-edittool: edit surface rebuild failed for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-			});
 		});
+	} catch (error) {
+		// `ctx.effect` throws when the agent's scope is already gone. The
+		// listener still has to RETURN — one that never settles holds the
+		// host's queued input forever.
+		markFailed(error);
+	}
+	return ready;
+}
+
+/**
+ * Where this plugin's `lsp` tool is registered, per plugin context.
+ *
+ * The official `lsp` plugin is OPT-IN: with it off there is no same-named
+ * built-in at the preset layer, and an agent-layer registration then has
+ * nothing to shadow — the tool is simply missing from a resumed session's
+ * first turn. The FIRST agent asks the registry what is already there, and
+ * the answer decides the layer for every later agent: a built-in is a
+ * deployment fact, not a per-agent one.
+ */
+interface LspPlacement {
+	/** The layer the tool belongs on: the agent's (to shadow) or the plugin's. */
+	layer: "agent" | "plugin";
+	/** Whether the plugin-layer registration already happened (one name per layer). */
+	onPluginLayer: boolean;
+}
+
+/** The `lsp` placement decided per plugin context. */
+const lspPlacements = new WeakMap<Context, LspPlacement>();
+
+/**
+ * Is a same-named tool already registered in a FARTHER layer — one this
+ * plugin's own registration would shadow?
+ *
+ * `tools.get(name, scope)` is the view the agent sees: the global layer,
+ * then the scope chain (the preset), then the agent's own layer last.
+ * BEFORE the plugin registers its own tool, that view holds exactly the
+ * built-ins.
+ *
+ * @param agentCtx - the agent's scoped context.
+ * @param name - the tool name to look for.
+ * @returns whether a farther layer already carries that name.
+ */
+function shadowedToolPresent(agentCtx: Context, name: string): boolean {
+	const scope = scopeOf(agentCtx);
+	if (scope === undefined) return false;
+	return agentCtx.tools.get(name, scope) !== undefined;
+}
+
+/**
+ * Decide — once per plugin context — which layer the `lsp` tool belongs on.
+ *
+ * @param rootCtx - the plugin's own context.
+ * @param agent - the agent being installed.
+ * @returns the placement record for this plugin context.
+ */
+function lspPlacement(rootCtx: Context, agent: Agent): LspPlacement {
+	const existing = lspPlacements.get(rootCtx);
+	if (existing !== undefined) return existing;
+	const placement: LspPlacement = {
+		layer: shadowedToolPresent(agent.ctx, "lsp") ? "agent" : "plugin",
+		onPluginLayer: false,
+	};
+	lspPlacements.set(rootCtx, placement);
+	return placement;
+}
 
 
-		const disposers: Array<() => void> = [offRebuild];
-		// The READ surface is registered ONCE and never rebuilt.
-		//
-		// It used to be gated like the edit surface, because its parameter set
-		// followed `ast.enabled`: the AST sentences and the AST parameters appeared
-		// together, so the model never read about a parameter it could not pass.
-		// The parameters are gone — structure moved to `ast_grep` / `lsp`, whose
-		// surfaces do not vary — so there is nothing left for a rebuild to react
-		// to, and machinery for a change that cannot happen is its own kind of lie.
-		disposers.push(registerReadTool(rootCtx, agent.ctx, io));
-		disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
-		// Structural search is its OWN tool rather than a mode of `read`: it answers
-		// "where does the syntax match", while `read` answers "what are these lines",
-		// and folding one into the other meant a global switch plus parameters that
-		// existed only while it was on.
-		disposers.push(registerAstGrepTool(rootCtx, agent.ctx, io));
-		// The semantic half. omp's rule, and now ours: symbol-aware work goes to a
-		// language server whenever one can be had, because it follows shadowing and
-		// cross-file usage that a syntax tree cannot.
-		disposers.push(registerLspTool(rootCtx, agent.ctx, io));
-		// The write half. It finds the places by shape and hands the change to the
-		// SAME engine `edit` uses — it owns no file I/O and no anchor logic, so the
-		// served-state check, the syntax gate, the diff and the undo entry all
-		// apply exactly as they do to a hand-written edit.
-		disposers.push(registerAstEditTool(rootCtx, agent.ctx, io, sandbox));
-		disposers.push(registerUndoTool(rootCtx, agent.ctx, io, sandbox));
-		// #53: the write tool is fully shadowed — it owns the auto-read preview
-		// (formerly a post-execute hook) AND the write card's structured rows.
-		disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
+/**
+ * The agent-scoped half: every tool that must win over a same-named
+ * built-in, plus the per-preset guidance sections.
+ *
+ * The tool registrations happen BEFORE the first await (the guidance
+ * override read), so the tool surface is complete the moment the agent
+ * exists; only the guidance text lands a tick later.
+ */
+async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<() => void> {
+	// `fs` is host-plane: use the plugin's own context (covered by
+	// inject) rather than the agent's scoped one, whose fiber chain does
+	// not declare it. The session's LIVE working directory reaches the bridge
+	// per call, asked of the host (see domain/session/live-cwd.ts).
+	const io = ctxFsIO(rootCtx.fs as FileSystem, rootCtx);
+	const sandbox = new FsSandboxController(rootCtx);
 
-		// The manual formatter: same undo/serve discipline as a write, with the
-		// language server as the author. Registered once, never rebuilt — its
-		// surface does not vary with any setting.
-		disposers.push(registerFormatTool(rootCtx, agent.ctx, io, sandbox));
-		// The file deleter: the shell path removes bytes but leaves the anchor
-		// store, the observation, and the LSP document behind. This tool owns
-		// all three (map #322).
-		disposers.push(registerDeleteTool(rootCtx, agent.ctx, io, sandbox));
-		// The file renamer: the shell path moves bytes but leaves the anchor
-		// store, the observation, and the LSP document behind. This tool owns
-		// the state migration (map #337).
-		disposers.push(registerRenameTool(rootCtx, agent.ctx, io, sandbox));
-		// Shadow the preset's built-in tool guidance with the hashline
-		// contract. Same section names on the agent's own layer win over the
-		// preset's; text and order come from the per-preset resolution.
-		// tool:edit is managed by the rebuild path above.
+	// The edit surface (tool schema + its guidance section) depends on
+	// `hashline.require_line_content`: when the flag flips, dispose and
+	// re-register so the model's NEXT step sees the new parameter set
+	// (tools are re-assembled per step — not session-snapshotted).
+	let editDispose: (() => void) | undefined;
+	let editSectionDispose: (() => void) | undefined;
+	let reinstall: Promise<void> = Promise.resolve();
+	const systemPrompt = resolveAgentSystemPrompt(rootCtx, agent);
+	const installEditTool = (): void => {
+		editDispose = registerEditTool(rootCtx, agent.ctx, io, sandbox);
+	};
+	const installEditSection = async (): Promise<void> => {
+		// Re-resolve per install so a rebuilt surface picks up fresh
+		// flag-aware default text (user overrides stay authoritative).
 		const sections = await resolveAgentSections(rootCtx, agent);
 		for (const section of sections) {
-			if (section.name === "tool:edit") continue;
-			disposers.push(systemPrompt.section(section));
+			if (section.name !== "tool:edit") continue;
+			editSectionDispose = systemPrompt.section(section);
 		}
+	};
 
-		return () => {
-			editDispose?.();
-			editSectionDispose?.();
-			for (const dispose of disposers) dispose();
-		};
+	const disposers: Array<() => void> = [];
+	// The READ surface is registered ONCE and never rebuilt.
+	//
+	// It used to be gated like the edit surface, because its parameter set
+	// followed `ast.enabled`: the AST sentences and the AST parameters appeared
+	// together, so the model never read about a parameter it could not pass.
+	// The parameters are gone — structure moved to `ast_grep` / `lsp`, whose
+	// surfaces do not vary — so there is nothing left for a rebuild to react
+	// to, and machinery for a change that cannot happen is its own kind of lie.
+	installEditTool();
+	disposers.push(registerReadTool(rootCtx, agent.ctx, io));
+	disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
+	// The semantic half. omp's rule, and now ours: symbol-aware work goes to a
+	// language server whenever one can be had, because it follows shadowing and
+	// cross-file usage that a syntax tree cannot.
+	// `lsp` shadows a built-in ONLY when one is actually there. The official
+	// `lsp` plugin is opt-in: with it off there is nothing at the preset
+	// layer, and an agent-layer registration then leaves the tool out of a
+	// resumed session's first turn. Ask the registry what is already there,
+	// and register where the tool can actually take effect.
+	const placement = lspPlacement(rootCtx, agent);
+	if (placement.layer === "agent") {
+		// A built-in is there to shadow: the agent's layer is nearer, so it wins.
+		disposers.push(registerLspTool(rootCtx, agent.ctx, io));
+	} else if (!placement.onPluginLayer) {
+		// Nothing to shadow: the plugin layer carries the tool for every agent,
+		// and it is there from the first turn. One name per layer, so the
+		// registration happens once.
+		registerLspTool(rootCtx, rootCtx, io);
+		placement.onPluginLayer = true;
+	}
+	// #53: the write tool is fully shadowed — it owns the auto-read preview
+	// (formerly a post-execute hook) AND the write card's structured rows.
+	disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
+
+	const offRebuild = onEditSurfaceRebuild(() => {
+		// Serialize rebuilds; a failure must not unwind the agent install.
+		reinstall = reinstall.then(async () => {
+			try {
+				editDispose?.();
+				editSectionDispose?.();
+				installEditTool();
+				await installEditSection();
+			} catch (error) {
+				rootCtx.logger.warn(
+					`dsh-hashline-edittool: edit surface rebuild failed for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		});
 	});
+	disposers.push(offRebuild);
+
+	// Shadow the preset's built-in tool guidance with the hashline
+	// contract. Same section names on the agent's own layer win over the
+	// preset's; text and order come from the per-preset resolution.
+	const sections = await resolveAgentSections(rootCtx, agent);
+	for (const section of sections) {
+		if (section.name === "tool:edit") {
+			editSectionDispose = systemPrompt.section(section);
+			continue;
+		}
+		disposers.push(systemPrompt.section(section));
+	}
+
+	return () => {
+		editDispose?.();
+		editSectionDispose?.();
+		for (const dispose of disposers) dispose();
+	};
+}
+
+/**
+ * The tools that shadow NOTHING are registered ONCE, on the plugin's own
+ * context — the way every other dsh plugin registers its tools (`tool-goal`,
+ * `dsh-mnemon`, ...). They need no agent context: their file access and
+ * sandbox policy are host-plane products, and the session's live working
+ * directory is asked of the host per call (#398).
+ */
+function installPluginTools(rootCtx: Context): void {
+	const io = ctxFsIO(rootCtx.fs as FileSystem, rootCtx);
+	const sandbox = new FsSandboxController(rootCtx);
+	// Each register function takes the context whose tool layer receives the
+	// registration — the plugin's own context puts them on the plugin layer,
+	// which every agent inherits.
+	registerAstGrepTool(rootCtx, rootCtx, io);
+	registerAstEditTool(rootCtx, rootCtx, io, sandbox);
+	registerUndoTool(rootCtx, rootCtx, io, sandbox);
+	registerFormatTool(rootCtx, rootCtx, io, sandbox);
+	registerDeleteTool(rootCtx, rootCtx, io, sandbox);
+	registerRenameTool(rootCtx, rootCtx, io, sandbox);
 }
 
 /**
@@ -273,6 +408,11 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	// require_line_content / ast / lsp): applied once here and re-applied on
 	// every `settings/document-updated` — the refs are read live each time.
 	installHashlineSettings(rootCtx, config);
+
+	// The tools that shadow nothing are registered once, here — on the
+	// plugin layer, which every agent inherits. Registering them per agent
+	// made a resumed session's first turn miss them entirely (#398).
+	installPluginTools(rootCtx);
 
 	installGrammarRoutes(rootCtx);
 
@@ -300,11 +440,11 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	// harness emits wins, the other is a silent no-op (unknown events are
 	// accepted and never fired). The WeakSet makes double arrival idempotent.
 	const registered = new WeakSet<Agent>();
-	const onAgentStart = ({ agent }: { agent: Agent }): void => {
+	const onAgentStart = async ({ agent }: { agent: Agent }): Promise<void> => {
 		if (registered.has(agent)) return;
 		registered.add(agent);
 		try {
-			installAgentTools(rootCtx, agent);
+			await installAgentTools(rootCtx, agent);
 		} catch (error) {
 			rootCtx.logger.warn(
 				`dsh-hashline-edittool: failed to install tools for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -313,7 +453,7 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	};
 	const onAgentLifecycle = rootCtx.on.bind(rootCtx) as (
 		event: string,
-		handler: (payload: { agent: Agent }) => void,
+		handler: (payload: { agent: Agent }) => void | Promise<void>,
 	) => unknown;
 	onAgentLifecycle("agent/created", onAgentStart);
 	onAgentLifecycle("agent/session-start", onAgentStart);

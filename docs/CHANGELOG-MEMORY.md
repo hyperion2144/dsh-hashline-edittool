@@ -1004,3 +1004,36 @@ Map #354：`write` 的写后回显是输出行为，应归用户；默认从整�
 - `test/core/issue-394-worktree-cwd.test.ts` (created)：红→绿回路（相对读 / 相对 edit / 相对写跟随当前目录 + store 隔离 + 无服务回落会话头 + 宿主失败即抛出）
 - `AGENTS.md` l0 decisions 0001–0030 → 0001–0031，追加「活的工作目录」主题
 - `CHANGELOG.md` `[Unreleased]` Fixed 一行（#394）
+
+## 2026-11-03 — ADR-0032：工具注册分层（插件层 vs agent 层）+ `agent/created` 监听器等安装完成（#398）
+
+**Type:** contract（ADR-0032）+ 实现形态变更（11 个工具的注册层按「是否需要遮挡同名内置工具」分开；监听器从同步改为 await 安装）
+**Confidence:** High（宿主源码与宿主契约双向确认；6 例回归用例；根 1941 例 + 2 skipped 全绿；双 typecheck 干净）
+**Evidence:** 票 [#398](https://github.com/hyperion2144/dsh-hashline-edittool/issues/398)；`src/index.ts`（注册分层 + 安装 promise）；`test/core/agent-tool-registration.test.ts`（新，6 例）；`docs/research/agent-scoped-tools-restart-resume-gap.md`（新，宿主生命周期与层语义的一手取证）
+
+### Why
+
+DSH 重启后恢复一个进行中的会话，**第一轮**的工具面是残缺的：插件的 11 个工具里只有 `edit` 在场，`read`/`write` 退化成内置版（行号语义、无锚点），`lsp` 是官方那个，另外 6 个（`ast_grep`/`ast_edit`/`undo_last_edit`/`format`/`delete`/`rename`）整个不见。下一轮起 11 个全回来。
+
+根因有两条，缺一不可：
+
+1. **注册层用错了**：11 个工具全挂在 agent 层。可只有 5 个（`read`/`write`/`edit`/`grep`/`lsp`）需要遮挡 preset 层的同名内置工具——也只有 agent 层（比 preset 更近）才遮得住；另外 6 个不遮挡任何东西，却跟着 agent 生命周期走：要先有 agent、再等一次 guidance 覆盖文件读盘，才出现在场。
+2. **监听器提前返回**：插件的 `agent/created` 监听器是同步的，把安装丢进 effect 就返回。宿主契约明写「Return only after required asynchronous tool and prompt installation completes」，而宿主正是「await 完 `agent/created` 监听器，随后释放恢复会话排队的输入」——恢复路径的排队输入是从磁盘恢复出来的，没有人类打字那几秒的缓冲，于是第一个模型请求在插件其余工具注册前就组装了工具面。
+
+### 本轮定案（复核时照此）
+
+- **一个问句决定注册层**：这个工具需要遮挡同名内置工具吗？需要 → agent 层（`agent.ctx.tools.register`，随 agent 卸载，且只有它遮得住 preset 层）；不需要 → 插件层（`apply()` 里 `ctx.tools.register` 一次，与 `dsh-mnemon`/`tool-goal` 同一注册方式）。
+- **插件层 = 宿主的 global 层**：插件自己的 context 没有 scope tag，`ScopedLayers.effect` 落到 `this.global`；`view(scope)` 以 global 层为底、agent 自己的层最后写（更近者胜）。
+- **`agent/created` 监听器 await 完整安装**：工具注册排在第一次 `await`（guidance 读盘）之前，于是工具面在 agent 存在的那一刻就齐；监听器 await 完工具与 6 个 guidance 段才返回。
+- **监听器绝不 reject**：宿主对监听器抛错是「创建失败」（`api-catalog` 的 `agent/created` 条目），而一次 guidance 读失败不该毁掉一个会话——它降级到编译好的默认文本。安装失败只记日志；`ctx.effect` 在 agent scope 已消失时抛错也必须让监听器返回（永不 settle 的监听器会把宿主的排队输入永久扣住）。
+- **`lsp` 的层是「决定」出来的，不是固定的**：官方 `dsh-tool-lsp` 是按需启用的（不在默认组合里），所以「有没有内置 lsp 可遮」只有注册表知道，而它直接改变正确答案——有内置 lsp → agent 层遮蔽它；没有 → 插件层（没什么可遮，遮挡层只会让这个工具晚一轮）。**第一个 agent** 用 `tools.get("lsp", scopeOf(agent.ctx))`（注册之前，这个视图里装的正是内置工具）问一次，答案对之后所有 agent 生效；插件层一层只容一个名字，所以那次注册只做一次。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0032-tool-registration-layers.md` (created)
+- `docs/research/agent-scoped-tools-restart-resume-gap.md` (created)：宿主生命周期、层语义、`ctx.effect` 同步/异步行为的一手取证
+- `src/index.ts`：拆成 `installPluginTools`（插件层，6 个）与 `installAgentScopedTools`（agent 层，4 个 + guidance 段）；`installAgentTools` 返回安装完成的 promise，监听器改为 async 并 await；`lsp` 走 `lspPlacement()` 动态决定层
+- `test/core/agent-tool-registration.test.ts` (created)：9 例（插件层先注册 / 非遮挡工具不上 agent 层 / 只注册一次 / 监听器不早返回 / agent scope 已消失时仍返回 / lsp 三种情形）
+- `test/core/agent-event-mount.test.ts`：fake root ctx 补上 `tools` 与 `fs`
+- `AGENTS.md` l0 decisions 0001–0031 → 0001–0032，追加「工具注册分层」主题
+- `CHANGELOG.md` `[Unreleased]` Fixed 三行（#398）

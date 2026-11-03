@@ -22,6 +22,10 @@ function makeRootCtx() {
 			calls.push({ event, handler });
 		},
 		logger: { warn: vi.fn(), info: vi.fn() },
+		// The tools that shadow nothing are registered at plugin load, on the
+		// plugin's own tool layer (#398).
+		tools: { register: vi.fn(() => () => undefined) },
+		fs: { sandboxMode: undefined },
 	};
 	return { rootCtx: rootCtx as never, calls };
 }
