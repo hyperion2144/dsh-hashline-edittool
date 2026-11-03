@@ -382,3 +382,48 @@ apply_patch:
 - README (both languages): the tool table gains its row, plus a short section with the A′
   example and the default-on note.
 - `CONTEXT.md`: `apply_patch`, `patch section`, `preflight refusal`.
+
+## Presentation contract (D4)
+
+### The card
+
+- The tool reuses the multi-file diff card `edit` already ships: register a
+  `tool.call.toolview` entry keyed `apply_patch` at the plugin's takeover priority, and return
+  `{ card: 'diff', title, diffs, diffRowGroups?, failures? }` from `presentationMeta`.
+- Title: `Apply patch (N files)`; `Apply patch (stopped)` for a stopped commit;
+  `Apply patch (no operations)` for an empty patch. Titles ride the existing
+  `rowTitle(key + params)` wire contract, with zh/en entries in the card locale.
+- Order: files appear in **operation order** (the order they occur in the patch). A/M/D is
+  model-text vocabulary and is never a card grouping.
+
+### Diffs
+
+- Fed only from each operation's `changes` (`before` / `after`):
+  - add → `{ path, oldText: null, newText }` — the whole-file create form the card renders today.
+  - update → the hunk diff between `before` and `after`.
+  - move with hunks → the diff at the **destination** path.
+  - delete → `{ path, oldText, newText: "" }` — renders as a whole-file removal.
+  - pure move → no line diff; it shows up in the title count and in `operations` only.
+
+### Call-time preview
+
+- `presentCall` returns a generic card with one line per operation (`A path` / `M path` /
+  `D path` / `M from -> to`) and **no** line diff: at call time the patch carries no old
+  content, so a diff would read as if everything were an addition.
+
+### Stopped and refused
+
+- A stopped commit reuses the card's `failures` list (the same `FileFailureMeta` the
+  multi-file `edit` uses) plus the `(stopped)` title suffix.
+- A whole-patch refusal is the existing error card: `presentationMeta` returns
+  `{ error: ErrorMeta }`. No new component, no new field.
+
+### Review
+
+- Untouched. The Review panel reads the fs intent slots and turn snapshots, not this card;
+  because apply_patch commits through `ctx.fs.*`, its changes appear there for free.
+
+### Client
+
+- One new `tool.call.toolview` key (`apply_patch`) pointing at the existing diff row component,
+  plus title strings in both locales. No new component, no wire-contract change.
