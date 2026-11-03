@@ -274,8 +274,55 @@ An empty patch succeeds with `Success. No operations in patch.`
 - Sandbox escalation — call level (`sandbox_permissions` + `justification`): one approval covers
   the whole patch when the backend confines.
 
-## Left to D2
+## Store contract (D2)
 
-The store side is not in this contract: which rows are re-served after a successful
-operation, when old anchors are revoked, how `delete` purges the four row families, how `move`
-migrates them, and whether `undo_last_edit` covers a patch.
+### Re-serve after a successful operation
+
+- A completed `file` (and a `move` that carries hunks) re-serves through
+  `buildServedRowsFromDiff` — the SAME window `edit` and `format` serve: first→last differing
+  line ± `max(2, context_lines)`, minted and recorded in one transaction by
+  `anchorForInWorkspace`. Serving narrower than the rendered diff would leave context rows
+  visible but uneditable, breaking the served ⊇ rendered invariant.
+- `new` serves nothing and allocates no anchors: the model wrote the content and already knows
+  it; a follow-up edit reads the file. `remove` serves nothing (the path is gone).
+- A pure `move` (no hunks) serves nothing: `renamePath` migrates the served rows, so anchors
+  the model already holds stay valid at the destination.
+- Only the calling session's served set is written.
+
+### Revoking old anchors
+
+- The ordinary remap does it: unchanged lines keep their anchors (contentKey inheritance),
+  changed lines mint new ones, deleted lines release theirs. No grace period — a stale anchor
+  was already refused at preflight, and a later refusal echoes fresh rows (reject-and-serve).
+
+### `remove`
+
+- `remove` uses `HashStore.purgePath`: `anchor_meta`, `anchor_lines`, `served` (every session)
+  and `undo` (every depth) — the same knife as the `delete` tool.
+
+### `move`
+
+- A move applies its hunks at the **source** path first (the anchors belong to the source file
+  and its served rows are recorded there), then `renamePath(from, to)` migrates all four row
+  families to the destination and purges the destination's residue. A pure move is the
+  migration alone.
+
+### `new`
+
+- `new` writes the file, then purges any rows left at that path by a previous incarnation (the
+  path was absent at preflight, but a deleted file's rows can linger until the sweep). No rows
+  are created and nothing is served.
+
+### Partial results
+
+- Only `completed` operations touch the store. `failed`, `skipped` and `unknown` leave it
+  untouched; an `unknown` mutation is settled by the next `read` (drift check).
+
+### `undo_last_edit`
+
+- Each `completed` `file` (and `move` with hunks) pushes **one undo layer for its file**,
+  exactly as a single `edit` would: `undo_last_edit <path>` reverts that file by one layer.
+- `new` and `remove` are not undoable: a removal purges its own history, and "return to
+  not-existing" has no undo slot.
+- A commit that stops midway leaves layers only for the operations that completed —
+  consistent with reporting completed work truthfully.
