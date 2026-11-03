@@ -4,6 +4,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- 工具注册按「是否需要遮挡同名内置工具」分层：不需遮挡的 6 个改为插件加载期注册一次，需遮挡的 4 个仍在 agent 层（#398）。
+- `lsp` 改为动态分层：内置 `lsp` 在场时走 agent 层遮蔽，不在场时走插件层（#398）。
+- `agent/created` 监听器等工具与提示词安装完成后才返回——重启后恢复会话的第一轮工具面不再残缺（#398）。
+
 ## [0.10.7] - 2026-11-02
 
 ### Added
