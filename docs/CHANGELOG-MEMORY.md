@@ -1186,3 +1186,59 @@ DSH 重启后恢复一个进行中的会话，**第一轮**的工具面是残缺
 - `src/tools/tool-lsp.ts`：`looksLikeImportBinding` 改用 `sameDocumentUri`；该函数导出以便直接测试
 - `test/core/render-lsp-locations.test.ts`（+3）、`test/core/lsp-navigation.test.ts`（+2）
 - `docs/adr/0033-lsp-navigation-operations.md`：D10 补「形状检查比的是文档身份」与「历轮观察重释」；`CHANGELOG.md` `[Unreleased]` Fixed 一行
+
+---
+
+## 2026-11-03 — `apply_patch`: a change-set tool beside `edit`
+
+**Type:** new decision + new domain surface
+**Confidence:** High
+**Evidence:** `docs/specs/apply-patch-spec.md` (map #401, five sections),
+`docs/research/apply-patch-official-parity.md` (first-hand read of the shipped
+0.2.2-alpha.3 `apply_patch`), `src/domain/patch/`, `src/tools/tool-apply-patch.ts`,
+`docs/adr/0034-apply-patch-tool.md`
+
+### Why
+
+dsh 0.2.2-alpha.3 ships an `apply_patch` tool (default-off in every shipped
+composition, despite the docs), and this plugin has to answer it: same name,
+same promise — one change set across files — or the model learns two dialects of
+the same idea. The requirement is not parity of syntax; it is parity of the
+contract, expressed in this repository's anchor vocabulary.
+
+### What was decided
+
+- **A separate tool, not a mode of `edit`.** The two failure models conflict:
+  `edit` is per-file atomic and tolerates partial success, a patch is refused
+  as a whole before anything is written and then applied in order, stopping at
+  the first failure without rollback. One tool cannot promise both.
+- **Grammar A′**: `file` / `new` / `move` / `remove` sections, `replace` /
+  `insert` / `delete` hunks, every content line `+`-prefixed. No envelope, no
+  `@@`, no old-content lines — the anchor addresses the line and the served set
+  is the source of truth, so the patch never restates the file.
+- **Default-on**, shadowing a same-name preset tool only when one is actually
+  registered (the `lsp` placement rule); off removes the tool and its prompt
+  section together on a hot settings flip.
+- **Store**: completed updates re-serve through the same window `edit` mints,
+- **Card**: one tab per completed section, including a `remove` (a row-less tab is
+  still a file). Each `DiffRowGroup` carries the section's `kind` (`added` /
+  `modified` / `renamed` / `deleted`) and, for a rename, its `from`; the shared
+  diff card turns that into the tab's sentence (a rename's two paths, a removal's
+  "file deleted") and the strip strikes a deleted label through. The folded row
+  marks each path `+` / `~` / `-` — a bare path list cannot say which file was new
+  and which was deleted.
+  `remove` uses the delete tool's four-family purge, a move applies at the
+  source then migrates rows with `renamePath`.
+
+### Path / Affected typed relationships
+
+- `docs/specs/apply-patch-spec.md` (created, five sections)
+- `docs/research/apply-patch-official-parity.md` (created)
+- `docs/adr/0034-apply-patch-tool.md` (created)
+- `src/domain/patch/{types,parse,plan,preflight,commit,text}.ts` (created)
+- `src/tools/tool-apply-patch.ts`, `src/render/patch-card.ts` (created)
+- `src/index.ts`（`applyPatchPlacement` + the flag-driven install/rebuild）、`src/config.ts`（`applyPatchEnabled` + 重建触发）、`src/infra/settings.ts`、`src/domain/edit/prompts.ts`、`src/guidance/resolve.ts`
+- `client/src/client/{index.ts,locale.ts,settings-card.tsx}`（toolview 键 + 三种标题 + 开关）、`client/scripts/verify-bundle.mjs`（10 个子插件 / 12 个键）
+- `client/src/client/{types,models,diff-block,tab-strip,labels}.ts(x)`（`DiffRowGroup.kind` / `from`、`deletedIndexes`、tab 句子与删除线）
+- `README.md` / `README.zh.md` / `CONTEXT.md` / `CHANGELOG.md`
+- `AGENTS.md`（l0_domains：ADRs 0001–0034）

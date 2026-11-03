@@ -222,3 +222,17 @@ _Avoid_: editable row (all served rows are), resolved row
 A row kept for a location that could not be anchored — the file is past `MAX_ANCHORED_FILES` (32), unreadable, or not a local path. It shows `line:character` instead of an anchor. Losing the anchor costs a `read`; dropping the row would lose the answer.
 _Avoid_: fallback row, degraded row (say what was lost)
 
+## Patch application
+
+**`apply_patch`**:
+The tool that applies ONE change set across files — add, update, delete, move — in one call. Not a replacement for `edit` (single-file anchored surgery stays `edit`), not a directory/glob operation, not a rollback engine, and not a shell wrapper. Its one parameter is `patch: string`.
+_Avoid_: patch tool (the tool IS the patch), batch edit (that is `edit`'s per-file batch), apply (the verb the model already has)
+
+**Patch section**:
+One `file` / `new` / `move` / `remove` block of a patch: the header line naming the path plus the hunks that follow it. A path appears ONCE across the whole patch — a second section for the same path is refused, not merged — and the hunks of one section resolve against that file's pre-patch snapshot.
+_Avoid_: prompt section (that is a system-prompt unit), file header (that is the `file` line alone), chunk, hunk (that is one anchor-addressed edit INSIDE a section)
+
+**Preflight refusal**:
+The whole-patch rejection that happens BEFORE a single byte is written: every check runs, every failure is collected, and one error value lists all problems (truncated after ten entries). Distinct from a stopped commit, which is a success-shaped value that reports the completed work truthfully and rolls nothing back.
+_Avoid_: preflight error (the refusal is ONE value listing every problem), validation error, dry run, rollback
+

@@ -216,11 +216,25 @@ export interface DiffHunkRowMeta {
  */
 export type DiffRowMeta = DiffContentRowMeta | DiffHunkRowMeta;
 
-/** One file's diff rows in a multi-file group (issue #82: per-file tab rendering). */
+/**
+ * One file's diff rows in a multi-file group (issue #82: per-file tab rendering).
+ *
+ * `kind` is the one typed fact about a SECTION that the tab strip draws: a
+ * change set is the only tool that adds, renames and removes files in one call
+ * (#401), so a removed file's tab label is struck through and a renamed one
+ * carries a sentence naming both paths. A group without a `kind` is a plain
+ * content change — which is what every other writer of this shape produces.
+ */
 export interface DiffRowGroup {
 	path: string;
 	rows: readonly DiffRowMeta[];
+	kind?: DiffRowGroupKind | undefined;
+	/** A rename's SOURCE path: the tab's body names both ends. */
+	from?: string | undefined;
 }
+
+/** The section outcomes a change set distinguishes (#401). */
+export type DiffRowGroupKind = "added" | "modified" | "renamed" | "deleted";
 
 /**
  * One grep card row as persisted by the hashline grep tool (ADR-0005): the
@@ -431,7 +445,7 @@ export interface FileFailureMeta {
 
 /** Row model derived per call, mirroring the shipped toolRowModel subset. */
 export interface ToolRowModel {
-	variant: "read" | "edit" | "write" | "grep";
+	variant: "read" | "edit" | "write" | "grep" | "apply_patch";
 	/** The vocabulary key the row's OWN label is drawn with (#375). */
 	titleKey: CardLocaleKey;
 	summary: string;

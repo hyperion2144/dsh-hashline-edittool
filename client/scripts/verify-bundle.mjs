@@ -129,10 +129,10 @@ const ctx = {
 };
 exports_.apply(ctx);
 
-// Eleven toolview keys: read, edit, undo_last_edit, grep, write, delete,
-// rename, the AST tools (which register TWO entries under one sub-plugin),
-// `lsp`, `format`, and the settings card.
-if (ctx.plugins.length !== 9) throw new Error(`expected 9 sub-plugins, got ${ctx.plugins.length}`);
+// Twelve toolview keys: read, edit, undo_last_edit, grep, write, delete,
+// rename, `apply_patch`, the AST tools (which register TWO entries under one
+// sub-plugin), `lsp`, `format`, and the settings card.
+if (ctx.plugins.length !== 10) throw new Error(`expected 10 sub-plugins, got ${ctx.plugins.length}`);
 const keys = ctx.slots.registeredEntries
 	.filter((entry) => entry?.options?.name === "tool.call.toolview")
 	.map((entry) => `${entry.options.key}:${entry.options.priority}:${entry.options.locale}`);
@@ -154,6 +154,9 @@ const expected = [
 	// The rename card needs its own row too: a moved pair reads nothing like
 	// raw input/output.
 	"rename:-2:hashline.card",
+	// #401: the change-set row IS the edit diff row (a patch is an edit of
+	// several files), so it borrows that component under its own key.
+	"apply_patch:-2:hashline.card",
 	"ast_grep:-2:hashline.card",
 	"ast_edit:-2:hashline.card",
 	"lsp:-2:hashline.card",
@@ -214,16 +217,17 @@ const settingsCardPlugin = ctx.plugins.find((p) => p.name === "hashline-settings
 if (JSON.stringify(settingsCardPlugin?.inject) !== JSON.stringify(["slots", "configForms"])) {
 	throw new Error(`settings card injects unavailable services: ${settingsCardPlugin?.inject?.join(", ")}`);
 }
-// ELEVEN, not ten: the AST sub-plugin loops over its FOUR keys (ast_grep,
-// ast_edit, lsp, format) and each iteration asks the slot for its entry, so
-// seven single-key sub-plugins plus four. The count is asserted rather than
-// assumed so a sub-plugin added without a key cannot pass quietly.
-if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 11) {
+// TWELVE: the AST sub-plugin loops over its FOUR keys (ast_grep, ast_edit,
+// lsp, format) and each iteration asks the slot for its entry, so eight
+// single-key sub-plugins (read, edit, undo, grep, write, delete, rename,
+// apply_patch) plus four. The count is asserted rather than assumed so a
+// sub-plugin added without a key cannot pass quietly.
+if (ctx.slots.injectCalls.filter((key) => key === "tool.call.toolview").length !== 12) {
 	throw new Error("expected every toolview to inject the tool.call.toolview declaration");
 }
 console.log("bundle evaluation OK:");
 console.log("  - factory registered under", registered[0].id);
-console.log("  - exports {inject, apply} mount 8 toolview plugins + 1 settings card");
+console.log("  - exports {inject, apply} mount 9 toolview plugins + 1 settings card");
 console.log("  - registrations:", keys.join(", "));
 console.log("  - components:", ctx.slots.registeredEntries.filter((e) => e && typeof e === "object").map((e) => e.component.name).join(", "));
 console.log("  - settings card:", settingsCards.join(", "));

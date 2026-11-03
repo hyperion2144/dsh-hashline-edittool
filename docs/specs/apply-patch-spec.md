@@ -170,9 +170,20 @@ Every check runs and every failure is collected — no short-circuit:
    `start` must not follow `end`.
 5. **Sandbox** — the call-level policy, one escalation for the whole patch.
 
-Refusals are aggregated into **one** error value, each line
+Refusals are aggregated into **one** error value, one entry per problem, in **patch order**
+(preflight discovers them in two passes, so the list is sorted before it is rendered —
+the model reads it against the text it just sent). Each entry is
 `operation N (kind path, patch line L): [CODE] message`, truncated after 10 entries with
 `and N more`.
+
+- `CODE` is the most **specific** code the engine reported: a container's `E_BATCH_ABORT`
+  is peeled off, because "the batch failed" is not something the caller can act on.
+- A rejection echo (a stale anchor's fresh rows) rides as indented continuation lines
+  under its entry, capped at 10 lines; it is load-bearing for reject-and-serve, and the
+  cap keeps ten problems from burying the list that names them.
+- A path written twice is refused **symmetric to the spelling**: whether a move's
+  destination is claimed by an earlier section or by a later one, exactly one section is
+  refused — the answer never depends on which section the model wrote first.
 
 ### Phase 2 — commit (sequential, stops at the first failure, never rolls back)
 
@@ -302,10 +313,15 @@ An empty patch succeeds with `Success. No operations in patch.`
 
 ### `move`
 
-- A move applies its hunks at the **source** path first (the anchors belong to the source file
-  and its served rows are recorded there), then `renamePath(from, to)` migrates all four row
-  families to the destination and purges the destination's residue. A pure move is the
-  migration alone.
+- A move RENAMES FIRST, then writes its hunks at the **destination**. The order is not a
+  preference: the provider's rename fence compares the probe taken at preflight against the
+  file's fingerprint at rename time, and writing a hunk changes that fingerprint — so
+  "write then rename" reports `[E_RENAME_STALE]` for the patch's own write and leaves the
+  source edited with the move undone. Renaming first keeps the fence answering "did somebody
+  ELSE touch this file", and the hunks then land where the operation says they belong.
+- The anchors belong to the source file's snapshot; `renamePath(from, to)` migrates all four
+  row families to the destination (purging the destination's residue) and the served window
+  is recorded there. A pure move is the migration alone — no rows are written.
 
 ### `new`
 
@@ -387,24 +403,48 @@ apply_patch:
 
 ### The card
 
-- The tool reuses the multi-file diff card `edit` already ships: register a
-  `tool.call.toolview` entry keyed `apply_patch` at the plugin's takeover priority, and return
-  `{ card: 'diff', title, diffs, diffRowGroups?, failures? }` from `presentationMeta`.
+- **One section, one single-function tool's card** (the rule the review settled on): `new`
+  draws a write's `+` rows, `file` an edit's anchored hunks, `move` a rename's sentence plus
+  its hunks, and `remove` a tab that says the file is deleted. Register a `tool.call.toolview`
+  entry keyed `apply_patch` at the plugin's takeover priority; the payload is `{ card: 'diff',
+  title, diffs, diffRowGroups?, failures? }` from `presentationMeta`.
 - Title: `Apply patch (N files)`; `Apply patch (stopped)` for a stopped commit;
   `Apply patch (no operations)` for an empty patch. Titles ride the existing
-  `rowTitle(key + params)` wire contract, with zh/en entries in the card locale.
-- Order: files appear in **operation order** (the order they occur in the patch). A/M/D is
-  model-text vocabulary and is never a card grouping.
-
+  `rowTitle(key + params)` wire contract, THREE keys (`row.title.apply_patch.files` /
+  `.stopped` / `.empty`), each present in the wire-key whitelist and in both locales — a
+  key the whitelist does not carry is dropped and the row falls back to its variant's label
+  (which is how the card once announced itself as a read).
+- `diffRowGroups` is ALWAYS present, one group per **completed operation** — a row-less
+  group is still a file. Each group carries the section's `kind` (`added` / `modified` /
+  `renamed` / `deleted`) and, for a rename, its `from` source path; the group KIND is the
+  card's one typed fact about a section, and the shared card keys the tab's tone, its
+  sentence and the strip's strikethrough off it. A group without `kind` is a plain content
+  change (every other writer of this shape).
+- Tab body: a rename shows `renamed {from} to {to}` (localised) above its hunks; a removal
+  shows `file deleted` and no rows at all. **No tab body is ever empty** — an empty panel
+  is how a moved file used to read as "nothing happened", and how a removed file read as
+  "this file is not in the patch".
+- Tab strip: a `deleted` tab label is red AND struck through (the error tone plus the
+  deletion mark, no dot — a dot means the file FAILED, a different fact).
+- Order: files appear in **operation order** (the order they occur in the patch), named by
+  the caller's display spelling. A/M/D is model-text vocabulary and is never a card grouping.
+- The folded row's path list marks every section's OUTCOME: `+ path` created, `~ path`
+  edited, `- path` removed, `from -> to` renamed. A list of bare paths cannot say which file
+  was new and which was deleted, which is the whole point of a change set; `+` / `~` / `-`
+  are the diff stat's own words at zero locale cost. A move keeps its two ends together —
+  the arrow is the rename tool's spelling, and a comma between them reads as "two files
+  changed".
 ### Diffs
 
 - Fed only from each operation's `changes` (`before` / `after`):
   - add → `{ path, oldText: null, newText }` — the whole-file create form the card renders today.
   - update → the hunk diff between `before` and `after`.
   - move with hunks → the diff at the **destination** path.
-  - delete → `{ path, oldText, newText: "" }` — renders as a whole-file removal.
-  - pure move → no line diff; it shows up in the title count and in `operations` only.
-
+  - delete → **no diff at all**, in either channel: the tab's `deleted` kind names the path
+    and the card renders its sentence. A `-` row is the edit card's vocabulary, not the
+    delete card's.
+  - pure move → no line diff; the tab carries the rename sentence, and `operations` carries
+    the ledger.
 ### Call-time preview
 
 - `presentCall` returns a generic card with one line per operation (`A path` / `M path` /
@@ -425,5 +465,8 @@ apply_patch:
 
 ### Client
 
-- One new `tool.call.toolview` key (`apply_patch`) pointing at the existing diff row component,
-  plus title strings in both locales. No new component, no wire-contract change.
+- One new `tool.call.toolview` key (`apply_patch`) pointing at the SHARED edit row: the
+  `meta.diffs` / `meta.diffRowGroups` payload is exactly what `edit` sends, and the section
+  outcome + tab note (#401) are drawn by that same card. `DiffRowGroup` grew two optional
+  fields (`kind`, `from`) and the tab strip one optional prop (`deletedIndexes`); no new
+  component, no wire-contract change.

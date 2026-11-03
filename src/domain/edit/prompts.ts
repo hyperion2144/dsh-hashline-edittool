@@ -215,3 +215,48 @@ export const RENAME_GUIDANCE: ToolGuidance = {
 		"`rename`: under workspace-write both source and destination must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`. Only use the escalation fields when the schema advertises them.",
 	],
 };
+
+/**
+ * `apply_patch` guidance (map #401).
+ *
+ * The compiled default text of the `tool:apply_patch` prompt section: the
+ * grammar in one line, then the five rules the model cannot guess — where the
+ * tool belongs, that anchors (not copied text) address the lines, that the
+ * whole patch is checked before anything is written, that a stopped commit is
+ * not rolled back, and what a completed operation hands back.
+ */
+export const APPLY_PATCH_GUIDANCE: ToolGuidance = {
+	intro:
+		"apply_patch applies one change set across files: file sections (file / new / move / remove) with anchor hunks (replace / insert / delete)",
+	lines: [
+		"Reach for it when a change spans several files or creates, removes or moves a file; a single-file anchored surgery stays `edit`.",
+		"Every hunk is addressed by an anchor from this session's read/grep/diff rows — the patch never repeats file content.",
+		"The whole patch is checked before anything is written (syntax, shape, paths, anchors); a rejected patch lists every problem at once and changes nothing.",
+		"Once applying starts, operations run in order, stop at the first failure and are not rolled back — re-read the affected files before retrying.",
+		"A completed add/update/move returns fresh anchors for the changed lines; a new file returns only its path (read it for anchors).",
+	],
+};
+
+/**
+ * `apply_patch` tool description (map #401).
+ *
+ * The grammar is short enough to state in full here — a tool that makes the
+ * model guess its own input format spends its first call learning it — and the
+ * rest of the text is the two facts the schema cannot carry: the whole patch is
+ * preflighted, and a commit that stops is not rolled back.
+ *
+ * @param cfg - the effective settings (only the disable notice reads them).
+ * @returns the model-facing schema description.
+ */
+export function applyPatchDescription(cfg: EffectiveHashlineConfig): string {
+	const disabled = cfg.applyPatchEnabled
+		? ""
+		: " (Disabled by settings: this tool should not be offered at all.)";
+	return (
+		"Apply one change set across several files in a single call. The patch is text: a sequence of file sections, each with anchor-addressed hunks. Section headers (un-prefixed, keyword at column 0): `file <path>` (update an existing file), `new <path>` (create it; the `+` lines are its whole content), `move <from> -> <to>` (optionally with hunks), `remove <path>` (delete it). Hunk headers inside `file`/`move`: `replace <anchor>` (replace that line with the `+` lines), `replace <start>..<end>` (replace the range), `insert <anchor>` (put the `+` lines after that line), `delete <anchor>` / `delete <start>..<end>` (delete; no content lines follow). Every content line starts with `+` at column 0; a bare `+` is an empty line; content may contain any word because it is always behind `+`. Anchors come from this session's read/grep/diff rows - the patch NEVER repeats the old file content, and a `line:anchor` hint is accepted. Hunks in one section apply against the file's pre-patch snapshot; overlapping ranges are refused. " +
+		"The WHOLE patch is checked before anything is written (syntax, shape, paths, anchors): every problem is reported at once and a refused patch changes nothing. Once applying starts, operations run in patch order, stop at the first failure and are NOT rolled back - the completed work is reported truthfully. " +
+		"A completed update/move returns fresh anchors for the changed lines; a `new` file returns only its path, so read it before editing. " +
+		"Paths resolve against the session cwd." +
+		disabled
+	);
+}

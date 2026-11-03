@@ -38,7 +38,7 @@
 
 A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the built-in
 `read` / `edit` / `grep` tools with **hash-anchored** versions and adds `delete`, `rename`,
-`undo_last_edit`, `ast_grep`, `ast_edit`, and an `lsp` tool on top:
+`undo_last_edit`, `ast_grep`, `ast_edit`, `apply_patch`, and an `lsp` tool on top:
 
 - **Every line carries a content anchor** — a variable-length Base62 marker (2 characters
   covers the first 3,844 lines; the encoding grows only as the file demands). The model
@@ -292,6 +292,51 @@ or an invocation fails — `grep` never fails because ripgrep did.
 | `format` | Formats a file with its language server's formatter — the whole file, or `range: {start, end}` where **both ends are this session's served anchors**. The file must already be observed (`[E_NOT_OBSERVED]` otherwise); `noop` when the formatter changes nothing; enters undo like `edit`. A cold start is allowed here (15 s) because you asked for it by name. |
 | `delete` | Deletes regular files and reclaims their hashline state: `paths` (1–32, duplicates collapse) are removed one by one, then the path's `anchor_meta` / `anchor_lines` / `served` (every session) / `undo` (every depth) rows are purged in one transaction. A missing path is `already-absent` success and still reclaims residue; symlinks, directories and special files are refused; non-local backends fail closed. Under `workspace-write` the target must be inside the canonical writable roots. Reports logical bytes; physical disk returns at store shutdown (VACUUM). Partial failures are per path; there is no undelete. |
 | `rename` | Renames or moves regular files and migrates their hashline state: `renames` (1–32 `{from, to}` pairs, exact duplicates collapse) run in request order, so chains work; each moved path's `anchor_meta` / `anchor_lines` / `served` (every session) / `undo` (every depth) rows move to the new path in one transaction, so anchors served before the rename stay usable without a re-read. Symlinks, directories and special files are refused; an existing destination is `[E_EXISTS]` unless it is the same inode under another spelling; non-local backends fail closed. The old path gets an absent observation, the new path a present one; no write intent. Partial failures are per pair; a store migration failure is a warning. |
+| `apply_patch` | Applies **one change set** in one call — add, update, delete and move across several files — through `patch: string`. The patch is a sequence of file sections (`file` / `new` / `move` / `remove`) whose hunks (`replace` / `insert` / `delete`) are addressed by anchors from this session's read/grep/diff rows; the patch never repeats file content. The whole patch is checked first (syntax, shape, paths, anchors): a rejected patch lists every problem at once and changes nothing. Once applying starts, operations run in order and stop at the first failure — nothing is rolled back, so re-read the affected files before retrying. A completed add/update/move returns fresh anchors for the changed lines. |
+
+### `apply_patch` — one change set in one call
+
+`apply_patch` applies one change set in one call: **add**, **update**, **delete** and **move**
+across several files. It is the multi-file counterpart of `edit` — single-file anchored
+surgery stays `edit`.
+
+A patch is a sequence of **file sections**; every content line is prefixed with `+`, so a
+section header is the only thing that can appear un-prefixed:
+
+```text
+file src/greet.ts
+replace Ab
++  return `hi ${name}`
+replace Ef..Gh
++  if (!name) return "hi"
+insert Cd
++
++// trailing note
+delete Ij
+
+new src/hello.ts
++export function hello(name: string) {
++  return `hi ${name}`
++}
+
+move src/old.ts -> src/new.ts
+
+remove src/dead.ts
+```
+
+Section headers: `file <path>` (update), `new <path>` (create), `move <from> -> <to>`,
+`remove <path>` (delete). Hunk headers inside a section: `replace <anchor>` /
+`replace <start>..<end>`, `insert <anchor>`, `delete <anchor>` / `delete <start>..<end>`.
+
+The anchor addresses the line — **the patch never copies file content**. The anchors are the
+ones from this session's read/grep/diff rows (`Ab`, `Ef`, `Gh`, `Cd`, `Ij` above), so a hunk
+can only touch a line the model has actually seen.
+
+Two phases: the **whole patch is checked first** (syntax, shape, paths, anchors) and a rejected
+patch changes nothing; then the commit runs **in order and stops at the first failure**,
+without rolling back what already landed — re-read the affected files before retrying.
+
+**On by default.** `apply_patch.enabled: false` removes the tool and its guidance section.
 
 ### Output modes
 
@@ -336,6 +381,8 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
       editorconfig: true    # honor .editorconfig indent settings when formatting (default on)
     write:
       preview: diff          # post-write echo: full | diff | confirmation (default diff)
+    apply_patch:
+      enabled: true          # offer the apply_patch tool + its guidance section (default on)
 ```
 
 Migrating from 0.1.6? A pre-0.1.7 `~/.dsh/settings.yaml` is imported **by dsh itself**
@@ -345,8 +392,9 @@ key did not carry over, set it in the form above.
 
 ### Per-preset guidance
 
-The `tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` guidance sections are
-plain-markdown override files in the plugin's shared home, keyed by preset id — see
+The `tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` /
+`tool:rename` / `tool:apply_patch` guidance sections are plain-markdown override files in the
+plugin's shared home, keyed by preset id — see
 [`docs/adr/0001`](docs/adr/0001-guidance-override-files.md). Emptying a file resets to the
 compiled default; a broken front-matter fence is fast-failed with a warning.
 
@@ -395,6 +443,7 @@ compiled default; a broken front-matter fence is fast-failed with a warning.
 | `[E_EXISTS]` | `rename` refuses an existing destination that is not the same file under another spelling. |
 | `[E_OP_INS]` | Informational: `ins` placed lines after the anchor. |
 | `[E_PASTE_DUP]` | Replacement line matches an adjacent file line; kept verbatim. |
+| `[E_PATCH_REFUSED]` | The whole patch was rejected before any change: the preflight collected every problem (syntax, shape, paths, anchors) into ONE refusal, and nothing was written. |
 | `[E_SERVED_RECORD]` | Diagnostics: served state could not be persisted (storage failure); the response carries a re-read notice instead of silently losing the rows. |
 | `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | Served-state verification failed; the range is echoed fresh. `E_RANGE_STALE` is also what the host's `FS_STALE_VERSION` is reported as: same remedy (re-read), different cause. |
 | `[E_RESUME_CONFLICT]` | A read request carried both a resume token and `offset`/`limit`; the token already names the window — pass one or the other. |

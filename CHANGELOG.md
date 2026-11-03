@@ -6,6 +6,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Added
 
+- 新增 `apply_patch` 工具：一次调用应用跨文件的新增/修改/删除/移动变更集，整包预检通过后才落盘，默认开启（#401，ADR-0034）。
+- `apply_patch` 的卡片一文件一 tab，每个 section 对齐单功能工具：`new` 走 write 的整文件新增行、`file` 走 edit 的锚点 diff、`move` 的 tab 写明「从 X 重命名为 Y」、`remove` 的 tab 标题红字删除线并写「文件已删除」（不再把被删内容画成 diff）；折叠行路径带 `+` / `~` / `-` 标识，标题走三个 `rowTitle` 键并补齐中英文与 wire 白名单（#401）。
 - `lsp` 新增 `goToDefinition` / `findReferences` / `goToImplementation` / `hover` 四个导航操作：`line` 配 `symbol` 或 `character`，命中的行按文件 serve 成可编辑锚点行（#396，ADR-0033）。
 - `lsp` 导航结果按 100 个位置封顶并明说截断；空结果与「服务器不支持该操作」分开作答（#396）。
 - `lsp` 在发请求前校验服务器能力与 `didOpen` 支持，握手里协商出非 UTF-16 位置编码即拒绝（`[E_LSP_UNSUPPORTED_OPERATION]` / `[E_LSP_UNSUPPORTED_SYNC]` / `[E_LSP_BAD_ENCODING]`，#396）。
@@ -13,6 +15,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Fixed
 
+- `apply_patch` 的 `move` + hunk 永远失败：改成**先 rename 再把 hunk 写到目标**，不再让 rename 的 fence 把补丁自己的写入当成外部改动（#401）。
 - 工具注册按「是否需要遮挡同名内置工具」分层：不需遮挡的 6 个改为插件加载期注册一次，需遮挡的 4 个仍在 agent 层（#398）。
 - `lsp` 改为动态分层：内置 `lsp` 在场时走 agent 层遮蔽，不在场时走插件层（#398）。
 - `lsp` 的层探测改为判归属：命中同名工具时先确认不是本插件自己注册的；探测不可信（无 scope、注册表报错）时兜底注册到插件层（#398）。

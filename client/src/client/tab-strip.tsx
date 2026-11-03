@@ -44,6 +44,12 @@ const CSS_TEXT = [
 	// while keeping the strip's own active/hover states.
 	".dshl-tabstrip-tab[data-tone=error]{color:var(--dsw-alias-state-error-primary)}",
 	".dshl-tabstrip-tab[data-tone=error]::before{content:\"\";width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-error-primary);display:inline-block;margin-right:6px;vertical-align:middle}",
+	// #401: a REMOVED file's tab. The label is the only place a change set names
+	// a file that no longer exists, so the outcome rides on it: red (the same
+	// error tone) AND struck through — a colour alone is not a deletion mark.
+	// No dot: the dot means "this file failed", which is a different fact.
+	".dshl-tabstrip-tab[data-tone=deleted]{color:var(--dsw-alias-state-error-primary);text-decoration:line-through}",
+	".dshl-tabstrip-tab[data-tone=deleted]:hover{color:var(--dsw-alias-state-error-primary);text-decoration:line-through}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/tab-strip.css";
@@ -92,6 +98,12 @@ export interface TabStripProps {
 	 * a glance without opening anything.
 	 */
 	errorIndexes?: readonly number[] | undefined;
+	/**
+	 * Indexes of tabs whose file was REMOVED by the call (#401). A change set
+	 * deletes files as well as changing them, and a struck-through red label is
+	 * the delete card's own word for that outcome.
+	 */
+	deletedIndexes?: readonly number[] | undefined;
 	/** Index of the tab being shown (owned by the card). */
 	activeIndex: number;
 	/** Tab selection; the card switches its body and resets its own state. */
@@ -132,6 +144,7 @@ export interface TabStripProps {
 export function TabStrip({
 	paths,
 	errorIndexes,
+	deletedIndexes,
 	activeIndex,
 	onSelect,
 	labels,
@@ -255,7 +268,14 @@ export function TabStrip({
 						"aria-controls": panelId,
 						tabIndex: index === activeIndex ? 0 : -1,
 						onClick: () => onSelectIndex(index),
-						"data-tone": errorIndexes?.includes(index) === true ? "error" : undefined,
+						// One tone per tab: a failure outranks a removal (a file that
+						// failed is not a file that went away).
+						"data-tone":
+							errorIndexes?.includes(index) === true
+								? "error"
+								: deletedIndexes?.includes(index) === true
+									? "deleted"
+									: undefined,
 						children: path,
 					});
 				}),

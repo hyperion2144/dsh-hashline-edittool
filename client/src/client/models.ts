@@ -157,6 +157,7 @@ const VARIANT_TITLE_KEYS: Record<string, CardLocaleKey> = {
 	grep: "row.title.grep",
 	edit: "row.title.edit",
 	write: "row.title.write",
+	apply_patch: "row.title.apply_patch",
 };
 
 const SUMMARY_KEYS: Record<string, string[]> = {
@@ -165,6 +166,9 @@ const SUMMARY_KEYS: Record<string, string[]> = {
 	grep: ["query", "pattern", "url"],
 	edit: ["path", "file_path"],
 	write: ["file_path", "path"],
+	// A patch's summary is its section paths, derived from the patch text
+	// (see `collectPatchPaths`), never the raw blob.
+	apply_patch: ["patch"],
 };
 
 const FILE_PATH_KEYS = ["path", "file_path"];
@@ -185,6 +189,98 @@ function collectEditPaths(args: Record<string, unknown>): string[] {
 		out.push(path);
 	}
 	return out;
+}
+
+/**
+ * Collect the sections a patch names, in patch order.
+ *
+ * The `apply_patch` row's summary is the set of files the call touches AND what
+ * happened to each — `edit` shows the same fact as joined per-item paths, but a
+ * change set both creates and removes files, so a plain path list cannot say
+ * which is which. The outcome travels as the entry's marker (see
+ * {@link PATCH_SECTION_MARKERS}).
+ *
+ * A `move` keeps its two ends in ONE entry: the arrow is the rename tool's own
+ * spelling, and a comma between them would read as "two files changed" — the
+ * opposite of what a move says.
+ */
+function collectPatchSections(args: Record<string, unknown>): PatchSection[] {
+	const patch = args.patch;
+	if (typeof patch !== "string") return [];
+	const seen = new Set<string>();
+	const out: PatchSection[] = [];
+	for (const line of patch.split("\n")) {
+		const match = /^(file|new|remove|move) (.+)$/.exec(line);
+		if (match === null) continue;
+		const kind = match[1] as PatchSection["kind"];
+		const whole = match[2]!.trim();
+		if (whole === "") continue;
+		if (kind === "move") {
+			// `from -> to`: one entry, both ends trimmed; an empty end is not a
+			// section (the parser refuses it, so the row does not invent one).
+			const [from, to] = whole.split(" -> ").map((part) => part.trim());
+			if (from === undefined || from === "" || to === undefined || to === "") continue;
+			const key = from + " -> " + to;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push({ kind, path: from, destination: to });
+			continue;
+		}
+		if (seen.has(whole)) continue;
+		seen.add(whole);
+		out.push({ kind, path: whole });
+	}
+	return out;
+}
+
+/** One section of a patch, as the folded row's path list needs it. */
+interface PatchSection {
+	kind: "new" | "remove" | "file" | "move";
+	path: string;
+	/** A move's destination — the arrow's right-hand side. */
+	destination?: string;
+}
+
+/**
+ * The marker a section wears in the folded row's path list (#401).
+ *
+ * A plain path list cannot tell a created file from an edited one from a
+ * removed one, which is exactly what a reader of a change set needs to know.
+ * `+` / `~` / `-` are the diff stat's own words at zero locale cost; a move
+ * needs none, because `from -> to` already says it.
+ */
+const PATCH_SECTION_MARKERS = {
+	new: "+",
+	remove: "-",
+	file: "~",
+} as const;
+
+/**
+ * The folded row's path list: one entry per section, the outcome in front.
+ *
+ * `+ created.ts, ~ edited.ts, old.ts -> moved.ts, - dead.ts` — the markers are
+ * the diff stat's own vocabulary at zero locale cost, and a move keeps its arrow
+ * because the arrow IS the fact.
+ *
+ * @param entries - the sections, in patch order.
+ * @param cwd - session workspace root; workspace-rooted paths display relative.
+ * @param home - host account home; a leftover POSIX home path displays as `~`.
+ * @returns the joined summary.
+ */
+function patchSummary(
+	entries: readonly PatchSection[],
+	cwd: string | undefined,
+	home: string | undefined,
+): string {
+	const shown = (path: string): string =>
+		abbreviateHomePath(relativizeToCwd(firstLine(path), cwd), home);
+	return entries
+		.map((entry) =>
+			entry.kind === "move"
+				? shown(entry.path) + " -> " + shown(entry.destination ?? "")
+				: PATCH_SECTION_MARKERS[entry.kind] + " " + shown(entry.path),
+		)
+		.join(", ");
 }
 
 
@@ -227,7 +323,15 @@ export function toolRowModel(
 	home: string | undefined,
 ): ToolRowModel {
 	const variant =
-		toolName === "edit" ? "edit" : toolName === "write" ? "write" : toolName === "grep" ? "grep" : "read";
+		toolName === "edit"
+			? "edit"
+			: toolName === "write"
+				? "write"
+				: toolName === "grep"
+					? "grep"
+					: toolName === "apply_patch"
+						? "apply_patch"
+						: "read";
 	const done = "kind" in block;
 	const argsRaw = (done ? block.call?.argsRaw : block.argsRaw) ?? "";
 	const state = !done
@@ -243,6 +347,14 @@ export function toolRowModel(
 	} else {
 		base = abbreviateHomePath(relativizeToCwd(deriveSummary(variant, argsRaw), cwd), home);
 		// issue #81: edit with no top-level path — relativize each per-item path individually.
+		// A PATCH is many files AND several outcomes: its summary lists every
+		// section, each wearing its marker (`+` created, `~` edited, `-` removed,
+		// `from -> to` renamed), the way `edit` lists its per-item paths.
+		if (variant === "apply_patch") {
+			const args = parseArgs(argsRaw);
+			const entries = args === undefined ? [] : collectPatchSections(args);
+			if (entries.length > 0) base = patchSummary(entries, cwd, home);
+		}
 		if (variant === "edit") {
 			const args = parseArgs(argsRaw);
 			if (args !== undefined && pickString(args, SUMMARY_KEYS.edit) === undefined) {
@@ -798,7 +910,20 @@ export function metaDiffRowGroups(meta: unknown): DiffRowGroup[] | null {
 			if (parsed === null) return null;
 			rows.push(parsed);
 		}
-		out.push({ path: g.path, rows });
+		// The section outcome (#401). A group without one is a plain content
+		// change — every writer of this shape but the change-set tool. An
+		// unknown kind is DROPPED, not refused: the rows are still drawable, and
+		// one unreadable field must not cost the reader every tab.
+		const kind = g.kind;
+		const from = g.from;
+		out.push({
+			path: g.path,
+			rows,
+			...(kind === "added" || kind === "modified" || kind === "renamed" || kind === "deleted"
+				? { kind }
+				: {}),
+			...(typeof from === "string" ? { from } : {}),
+		});
 	}
 	return out;
 }

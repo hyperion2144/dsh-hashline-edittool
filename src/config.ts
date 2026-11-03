@@ -132,6 +132,15 @@ lsp?: {
 		preview?: "full" | "diff" | "confirmation";
 	};
 	/**
+	 * The `apply_patch` capability's namespace entry (map #401).
+	 *
+	 * `enabled` (default true) decides whether the tool AND its guidance section
+	 * are offered at all; an explicit false removes both.
+	 */
+	apply_patch?: {
+		enabled?: boolean;
+	};
+	/**
 	 * Bounded-anchor-store budgets exposed by issue #179 / #180.
 	 *
 	 * Unset on a per-field basis falls back to the host-side constants
@@ -209,6 +218,13 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 		.object({
 			preview: z.union(["full", "diff", "confirmation"]),
 		})
+		.volatile(),
+		// `apply_patch.enabled` (map #401). Volatile on the OUTERMOST node only —
+		// the same rule the `write` / `format` / `lsp` subtrees follow.
+		apply_patch: z
+			.object({
+				enabled: z.boolean(),
+			})
 		.volatile(),
 		// Bounded-store budgets (#179 / #180). `.volatile()` sits on the outermost
 		// node only — same rule the `ast` and `lsp` subtrees follow, because
@@ -368,6 +384,7 @@ export {
 	isEditorconfigEnabled,
 	isJsonOutput,
 	lineNumbersEnabled,
+	isApplyPatchEnabled,
 } from "./infra/settings.js";
 export type { AutoFormatMode, EffectiveHashlineConfig, OutputFormat, WritePreviewMode } from "./infra/settings.js";
 import { normalizeAutoFormatMode, normalizeWritePreviewMode } from "./infra/settings.js";
@@ -514,8 +531,16 @@ const sep =
 		settings?.write?.preview,
 		defaults.writePreview,
 	);
+	// `apply_patch.enabled` (map #401): the tool and its guidance section are
+	// offered unless the user says otherwise. Default ON — only an explicit
+	// `false` turns the capability off.
+	const applyPatchEnabled =
+		typeof settings?.apply_patch?.enabled === "boolean"
+			? settings.apply_patch.enabled
+			: defaults.applyPatchEnabled;
 	const prev = getEffectiveConfig();
 	const flagChanged = prev.requireLineContent !== requireLine;
+	const patchChanged = prev.applyPatchEnabled !== applyPatchEnabled;
 	const astChanged = prev.astEnabled !== astOn;
 	const next: EffectiveHashlineConfig = {
 		separator: sep,
@@ -536,11 +561,15 @@ const sep =
 		formatFallbackFullFile: fallbackFullFile,
 		editorconfig: editorconfigCfg,
 		writePreview,
+		applyPatchEnabled,
 		grepRespectGitignore,
 	};
 	setEffectiveSnapshot(next);
 	applyHashlineShape({ separator: sep, contextLines: nctx });
-	if (flagChanged) rebuildEditSurfaces();
+	// One rebuild path for both surfaces: the edit surface follows
+	// `require_line_content`, the patch surface follows `apply_patch.enabled`
+	// (map #401), and a flip of either must reach the model on the next step.
+	if (flagChanged || patchChanged) rebuildEditSurfaces();
 	if (astChanged && !astOn) {
 		// Only the ARENA release is left of the AST switch's side effects.
 		//

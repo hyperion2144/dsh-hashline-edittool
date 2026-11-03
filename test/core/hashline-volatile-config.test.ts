@@ -112,6 +112,7 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			editorconfig: true,
 			maxResponseChars: 48000,
 			writePreview: "diff",
+			applyPatchEnabled: true,
 		});
 	});
 });

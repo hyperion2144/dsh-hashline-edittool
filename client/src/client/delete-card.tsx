@@ -50,6 +50,7 @@ const detailStyle: CSSProperties = {
 
 /**
  * Render the `delete` card.
+ *
  * @param props - the standard tool-view owner props.
  * @returns the disclosure row, or a plain "Delete" row while it is running.
  */
