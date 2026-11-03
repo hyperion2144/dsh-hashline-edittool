@@ -1,14 +1,14 @@
 # `apply_patch` — implementation spec
 
-Status: **draft v2 (A′)** — prototype artifact for the ticket
+Status: **accepted** — the grammar chapter for the ticket
 [原型：锚点优先的 patch 文本长什么样（三份候选文法 + 真实样例）](https://github.com/hyperion2144/dsh-hashline-edittool/issues/409),
 under map [#401](https://github.com/hyperion2144/dsh-hashline-edittool/issues/401).
-v1 shipped three Codex-shaped candidates and was rejected: the patch must not carry file
-content at all, and the Codex envelope is not ours. v2 keeps candidate A's skeleton (file
-sections + hunk blocks + `+` content lines) and drops the envelope, the `***`/`@@`
-vocabulary and the old-content lines.
+Accepted 2026-11-03. Prototype v2 (A′) lived at `2adad8e`; the accepted text is the commit
+that carries this line. Supersedes prototype v1 (`05b7cda`), whose three Codex-shaped
+candidates were rejected: a patch never copies file content, and the Codex envelope is not
+ours. Everything under “Grammar A′” is normative for implementation tickets.
 
-Owners (once accepted): `src/domain/patch/` (parse + preflight + commit),
+Owners: `src/domain/patch/` (parse + preflight + commit),
 `src/tools/tool-apply-patch.ts`, `src/render/` + `client/` (diff card), `src/guidance/`.
 
 ## Purpose
