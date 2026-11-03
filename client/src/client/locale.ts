@@ -81,6 +81,9 @@ export const EN_CARD_DICTIONARY = {
 	"lsp.status.noClient":
 		"The language-server client is not enabled, so `symbols` / `code_actions` / `diagnostics` have no server. Installed servers are still probed.",
 	"lsp.row.canInstall": "One-click install available",
+	// #397 review: an `lsp` answer with no rows still gets a card — this is what
+	// an empty action list says.
+	"lsp.answer.noActions": "No action is offered here.",
 	"lsp.status.serverNotStarted": "No server has been started for this language yet.",
 	"lsp.status.serverStarting": "The server is still starting.",
 	"lsp.row.noBuiltinCommand":
@@ -125,6 +128,9 @@ export const EN_CARD_DICTIONARY = {
 		"{hits} matches · {served} served — truncated by the response budget",
 	"row.title.grep.stats.limit_budget":
 		"{hits} matches · {served} served — truncated by the per-file limit and the response budget",
+	// #397 review: a NAVIGATION answer's folded row says how WIDE the answer is
+	// — how many positions, over how many files.
+	"row.title.lsp.nav.stats": "{locations} locations · {files} files",
 	// The row's own state words.
 	"row.running": "Running",
 	"row.failed": "Failed",
@@ -324,6 +330,7 @@ export const WIRE_TEXT_KEYS = {
 	"row.title.grep.stats.limit": true,
 	"row.title.grep.stats.budget": true,
 	"row.title.grep.stats.limit_budget": true,
+	"row.title.lsp.nav.stats": true,
 	"row.title.edit": true,
 	"row.title.write": true,
 	// #377: the language-server routes' texts. The host names the wording; the
@@ -379,6 +386,7 @@ export const ZH_CARD_DICTIONARY = {
 	"lsp.status.noClient":
 		"语言服务器客户端未启用，所以 `symbols` / `code_actions` / `diagnostics` 没有可用的服务器。已装的服务器仍然会被探测到。",
 	"lsp.row.canInstall": "可一键安装",
+	"lsp.answer.noActions": "这里没有可用的动作。",
 	"lsp.status.serverNotStarted": "该语言还没有已启动的服务器。",
 	"lsp.status.serverStarting": "服务器仍在启动中。",
 	"lsp.row.noBuiltinCommand": "插件没有它的内置命令，可用下方「指定服务器」直接填",
@@ -415,6 +423,8 @@ export const ZH_CARD_DICTIONARY = {
 	"row.title.grep.stats.budget": "{hits} 处匹配 · 已返回 {served} 处 · 已按响应预算截断",
 	"row.title.grep.stats.limit_budget":
 		"{hits} 处匹配 · 已返回 {served} 处 · 已按每文件上限与响应预算截断",
+	// #397 review: 导航答案的折叠行说「有多宽」——多少处位置、跨几个文件。
+	"row.title.lsp.nav.stats": "{locations} 处位置 · {files} 个文件",
 	"row.running": "运行中",
 	"row.failed": "失败",
 	"row.stopped": "已停止",

@@ -26,6 +26,7 @@
  *
  * @module dsh-hashline-edittool/lsp/session
  */
+import { negotiatedPositionEncoding } from "./capabilities.js";
 import { encodeMessage, MessageReader } from "./framing.js";
 
 /** The byte-level channel to a server. */
@@ -155,6 +156,25 @@ export class LspSession {
 	#diagnosticVersions = new Map<string, number | undefined>();
 	/** Counts pushes, so a waiter can tell a new one from silence. */
 	#diagnosticsRevision = 0;
+	/**
+	 * Depth of the `$/typescriptProjectLoadingStart` … `End` bracket.
+	 *
+	 * A server indexing a big project answers navigation questions from a
+	 * PARTIAL index until it is done — a `goToDefinition` on an imported symbol
+	 * comes back as the import specifier, then as the real declaration seconds
+	 * later. That is the same shape a correct server gives for a genuinely
+	 * absent symbol, so the honest countermeasure is to wait for the server to
+	 * say it is done.
+	 */
+	#projectLoading = 0;
+	/**
+	 * Whether a server has EVER bracketed a project load.
+	 *
+	 * The signal is optional and only TypeScript servers send it. "Never seen"
+	 * means "unknown", and unknown is treated as READY — the same leniency this
+	 * session already gives an absent `textDocumentSync`.
+	 */
+	#sawProjectLoading = false;
 
 	constructor(transport: LspTransport, options: LspSessionOptions = {}) {
 		this.#transport = transport;
@@ -187,6 +207,23 @@ export class LspSession {
 			// "a server said there is nothing" — an empty list and silence are
 			// different answers and a reader has to be able to tell them apart.
 			this.#diagnosticsRevision += 1;
+			return undefined;
+		});
+		// PROJECT LOADING (tsserver's own bracket). Answers produced while a
+		// project is still being indexed come from a PARTIAL index, and the tool
+		// waits on this counter instead of reporting the shallow answer as the
+		// definition. Registered at CONSTRUCTION, not on first use: the bracket
+		// usually opens during boot, before any tool call exists to subscribe.
+		// Both messages are answered the same way whether the server sends them
+		// as notifications or as requests — the return value IS the response,
+		// and an unhandled request would have answered `null` anyway.
+		this.on("$/typescriptProjectLoadingStart", () => {
+			this.#sawProjectLoading = true;
+			this.#projectLoading += 1;
+			return undefined;
+		});
+		this.on("$/typescriptProjectLoadingEnd", () => {
+			this.#projectLoading = Math.max(0, this.#projectLoading - 1);
 			return undefined;
 		});
 	}
@@ -281,6 +318,44 @@ export class LspSession {
 	/** Whether the handshake completed and the session is still open. */
 	get isReady(): boolean {
 		return this.#state === "ready";
+	}
+
+	/**
+	 * Whether the server says it is still indexing its project.
+	 *
+	 * A server that never sent the loading bracket reports NOT loading: "no
+	 * signal" means "unknown", and unknown is ready. Only a server that
+	 * announced a start and has not ended it holds navigation back.
+	 */
+	get projectLoading(): boolean {
+		return this.#sawProjectLoading && this.#projectLoading > 0;
+	}
+
+	/**
+	 * Wait, boundedly, until the server stops announcing a project load.
+	 *
+	 * A POLL rather than a promise per notification: a server may bracket
+	 * several loads, and a promise would have to be re-armed on each start
+	 * without missing one that arrives between arming and awaiting. A 50 ms
+	 * tick over a bounded budget costs nothing next to the seconds an index
+	 * takes. The budget is the caller's, because only the caller knows whether
+	 * waiting beats answering from a partial index.
+	 *
+	 * @param budgetMs - longest wait, in milliseconds.
+	 * @param signal - optional cancellation.
+	 * @returns `"idle"` when loading stopped (or never started), `"timeout"` when
+	 *   the budget ran out while it was still loading.
+	 */
+	async waitForProjectLoad(budgetMs: number, signal?: AbortSignal): Promise<"idle" | "timeout"> {
+		if (!this.projectLoading) return "idle";
+		const deadline = Date.now() + Math.max(0, budgetMs);
+		while (this.projectLoading) {
+			if (signal?.aborted === true) throw new Error("[E_LSP_ABORTED] The query was cancelled.");
+			if (this.#state === "closed") break;
+			if (Date.now() >= deadline) return "timeout";
+			await new Promise<void>((resolve) => setTimeout(resolve, 50));
+		}
+		return this.projectLoading ? "timeout" : "idle";
 	}
 
 	/**
@@ -419,6 +494,13 @@ export class LspSession {
 		// server sits in its own initialization waiting for it.
 		this.notify("initialized", {});
 		this.#serverCapabilities = result?.capabilities ?? {};
+		// The columns this session sends are UTF-16 code-unit offsets, and so is
+		// everything this plugin renders — a server that negotiated UTF-8 or
+		// UTF-32 would have every column land on a different character, with no
+		// visible symptom until an answer points at the wrong token. Refuse at
+		// the only moment the answer is known; the manager turns the throw into a
+		// failed slot with the reason attached.
+		negotiatedPositionEncoding(this.#serverCapabilities);
 		this.#serverInfo = result?.serverInfo;
 		this.#state = "ready";
 		return { capabilities: this.#serverCapabilities, ...(this.#serverInfo === undefined ? {} : { serverInfo: this.#serverInfo }) };

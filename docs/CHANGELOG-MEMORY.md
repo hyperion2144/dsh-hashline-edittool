@@ -1037,3 +1037,152 @@ DSH 重启后恢复一个进行中的会话，**第一轮**的工具面是残缺
 - `test/core/agent-event-mount.test.ts`：fake root ctx 补上 `tools` 与 `fs`
 - `AGENTS.md` l0 decisions 0001–0031 → 0001–0032，追加「工具注册分层」主题
 - `CHANGELOG.md` `[Unreleased]` Fixed 三行（#398）
+
+## 2026-11-03 — ADR-0033：lsp 导航操作（命中行按文件 serve，请求前先查能力）（#396）
+
+**Type:** contract（ADR-0033）+ 新增能力（四个一等公民导航操作）
+**Confidence:** High（双 typecheck 干净；全量 1968 例中仅新增用例与既有套件全绿；新增 29 例）
+**Evidence:** `src/lsp/capabilities.ts`、`src/render/lsp-locations.ts`（新）、`src/tools/tool-lsp.ts`、`src/lsp/{session,provider}.ts`、`client/src/client/tool-row.tsx`；`test/core/{render-lsp-locations,lsp-navigation}.test.ts`（新，29 例）；内置对照组 `deepseek-harness@ce7073d512` 的 `packages/lsp/tool-lsp`
+
+### Why
+
+本插件的 `lsp` 只能 `symbols` / `code_actions` / `diagnostics` / `request` / `status` / `warm` —— 模型最常问的四件事（定义、引用、实现、悬停）只能走 `request`，还得自己写 0-based UTF-16 列号。DSH 内置 `lsp` 工具正好把这四个做成一等公民，但它的答案是 `path:line:character` 字符串，不可编辑——那不是本插件的契约（能答的行必须能直接 `edit`）。另有一层诚实性缺口：此前从不看服务器 advertise 了什么，未声明的方法会被真的发出去，回来的协议错误或空列表与「那里真没东西」长得一模一样。
+
+### 本轮定案（复核时照此）
+
+- **四个操作，一套光标规则**：`goToDefinition` / `findReferences` / `goToImplementation` / `hover` 成为 operation 值；`findReferences` 恒带 `includeDeclaration: true`。列号由 `symbol` 的 `indexOf` 决定，`character`（1 起）是显式回退——新旧位置操作共用同一个 `resolveColumn`。
+- **命中行按自己的文件 serve**：答案指向别的文件，所以每个 distinct 文件读一次、给命中行铸锚并 serve（与 `read`/`grep`/`symbols` 同一对 `anchorForInWorkspace` / `observeServedRows`）。别的文件里的一行因此也可直接编辑。
+- **铸锚有上限，位置没有**：单次最多读 `MAX_ANCHORED_FILES`（32）个文件；超出或读不到的文件行保留、锚点为空，文本回退到 `line:character`。丢锚点只是多一次 `read`，丢位置就是丢答案。
+- **能力先于请求**：`supportsOperation` 未声明 → `[E_LSP_UNSUPPORTED_OPERATION]` 且一个字节都不发；显式拒绝 `didOpen`（`textDocumentSync: 0` 或 `{openClose:false}`）→ `[E_LSP_UNSUPPORTED_SYNC]`；`textDocumentSync` 缺失仍按未知处理（大量可用服务器不声明它）。
+- **位置编码在握手里谈一次**：非 UTF-16 直接 `[E_LSP_BAD_ENCODING]`，manager 把这次抛错变成带原因的失败槽，退避不空转。
+- **答案有界且写明**：`maxLocations`（100）+ `min(16 000, responseBudgetChars())`，省略/截断标记计入上限；`No results.` / `No hover information.` 与任何拒绝区分。
+- **卡片复用多文件（grep）投影**：导航行属于别的文件，read 投影（单一 `path`）会撒谎；meta 用 grep 投影，客户端 `HashlineLspRow` 优先它、验证不通过再回退 read 投影，不新增组件。
+
+### 未移植（有意）
+
+- seam 的闭合联合与「禁 JSON-RPC 逃生口」：本插件保留 `request`——够到没人包过的方法，在这里比「保证没人够到未包过的方法」更值。
+- 内置工具的「强制会话工作区」：本插件走 `liveCwd`（ADR-0031），更贴合。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0033-lsp-navigation-operations.md` (created)
+- `src/lsp/capabilities.ts` (created)：操作词汇表 + 方法映射 + 能力/同步/编码读取；`provider.ts` 改为从这里引用（去重）
+- `src/render/lsp-locations.ts` (created)：`renderUri` / 位置归一化 / 分组 / 上限 / 悬停文本（纯函数）
+- `src/tools/tool-lsp.ts`：四个导航操作 + `character` 参数 + `line`/`symbol` 参数补声明 + 输出 schema（`locations`/`groups`/`truncated`/`totalLocations`/`hover`）+ `timeoutMs` + grep 投影与 search 卡
+- `src/lsp/session.ts`：握手后协商位置编码
+- `client/src/client/tool-row.tsx`：`HashlineLspRow` 优先多文件卡
+- `test/core/{render-lsp-locations,lsp-navigation}.test.ts` (created)：17 + 12 例
+- `README.md` / `README.zh.md`：`lsp` 行重写、三个新错误码；删掉「降级启发式后端」这一不实说法
+- `CHANGELOG.md` `[Unreleased]` Added 四行 + Fixed 一行
+- `AGENTS.md` l0 decisions 0001–0031 → 0001–0033，追加「LSP 导航操作」主题
+
+## 2026-11-03 — #397 评审三修：状态空卡、导航卡名字锁、冷启动索引
+
+**Type:** 缺陷修复（两处显示层 + 一处语义层）+ ADR-0033 补 D9
+**Confidence:** High（双 typecheck + 根 1975 例 + 客户端 306 例全绿；新增 9 例）
+**Evidence:** #397 评审评论（真人实测四个操作均通，报告三个尾巴）；`client/src/client/models.ts`、`src/lsp/session.ts`、`src/tools/tool-lsp.ts`、`test/core/{lsp-session,lsp-navigation}.test.ts`、`client/test/{grep-card,lsp-status}.test.ts`
+
+### Why
+
+三项均为此前未实测到的洞：状态卡片在没启动任何服务器时画空卡（`slots: []` 仍被视为有效模型）；导航投影到不了卡片（`grepCardModel` 按工具名白名单，`lsp` 不在内，与当年 `ast_grep` 同名锁 bug 同源）；tsserver 冷启动期索引未完，import 符号的 `goToDefinition` 先回 import 说明符（形状与真实答案无法区分）。
+
+### 本轮定案（复核时照此）
+
+- **空列表不出卡**：`slots.length === 0` 时 host 不投影、client 也不认，行落到通用体把句子显示出来。
+- **投影按形状不按名字**：`grepCardModel` 白名单加 `lsp`，并补客户端测试钉住（投影合法才穿卡，非法仍回 read/通用）。
+- **冷启动有界等待**：`LspSession` 从构造起计数 `$/typescriptProjectLoadingStart` / `End`（首个括号通常在开机时就开了，晚订阅会漏），`projectLoading` + `waitForProjectLoad(15s)`；不发这对通知的服务器按就绪处理（与 D5 对缺席 `textDocumentSync` 的宽大一致）；超时照常发请求。
+- **写错文件的教训**：本轮一度把 session 改动写到主检出（`src/lsp/session.ts`），已用 `undo_last_edit` + 定向删除全部回退并 `git status` 验证干净；后续一律用 worktree 绝对路径。
+
+### Path / Affected typed relationships
+
+- `src/lsp/session.ts`：`#projectLoading` / `#sawProjectLoading` 字段、构造期订阅、`projectLoading` getter、`waitForProjectLoad`
+- `src/tools/tool-lsp.ts`：导航前有界等待（`PROJECT_LOAD_WAIT_MS`）、空 `slots` 不投影
+- `client/src/client/models.ts`：`grepCardModel` 白名单 + `lspStatusCardModel` 空列表返回 null
+- `test/core/lsp-session.test.ts`（+4）、`test/core/lsp-navigation.test.ts`（+3）、`client/test/grep-card.test.ts`（+2）、`client/test/lsp-status.test.ts`（+1）
+- `docs/adr/0033-lsp-navigation-operations.md`：D8 补实施注记（名字锁）、新增 D9（冷启动索引等待）
+- `CHANGELOG.md` `[Unreleased]` Fixed 三行
+
+**更正（同日实测）**：`typescript-language-server` 根本不发 `$/typescriptProjectLoading*`（探针只收到 `window/logMessage` / `$/typescriptVersion` / `publishDiagnostics`），所以 D9 的括号等待对它无效。实测冷启动窗口：`didOpen` 后 ~280ms 与 ~530ms 仍答 import 子句，~790ms 才答真声明。真正生效的是 ADR-0033 D10：若定义答案落在查询文件的 `import` / `export … from` 行且恰好覆盖该符号（真定义不可能长这样），形状命中后每 500ms 重问，直到答案不再是 import 形状或到 15s 截止；`test/core/lsp-navigation.test.ts` 补 3 例（重问后正确 / 一次就正确时只问一次 / 一直浅答则停并如实返回）。根 1978 例 + 客户端 306 例全绿。
+
+**补（同一轮，按用户要求不开新票）**：`lsp status` 无服务器时改为一张自带那句话的状态卡——host 在 `slots` 为空时把 `raw` 作为 `note` 投给 `card: "lsp-status"`，客户端 `LspStatusCardModel` 收 `note?` 并允许空 slots，`LspStatusBlock` 在该情形渲染一句 note（不再返回 null 导致空白体）。旧 meta（空 slots 无 note）仍返回 null 回落通用体。根 1978 例 + 客户端 307 例全绿。
+
+## 2026-11-03 — #397 三轮评审：折叠行宽度 + ADR 让号 0033（#396）
+
+**Type:** 显示层补完 + 文档协调（ADR 撞号）
+**Confidence:** High（双 typecheck 干净；根全绿；客户端 309 例全绿；新增 3 例）
+**Evidence:** #397 三轮评审评论；`src/render/wire-text.ts`、`src/tools/tool-lsp.ts`、`client/src/client/{locale,tool-row}.tsx`、`test/core/lsp-navigation.test.ts`、`client/test/wire-text.test.ts`
+
+### Why
+
+二轮实测剩两处：导航答案的折叠行只带查询文件路径，不展开不知道答案跳了几个文件；以及本 PR 的 ADR-0032 与 #399 合入的同号 ADR 撞车（两边 l0 都写着 0001–0032）。
+
+### 本轮定案（复核时照此）
+
+- **行尾弱色槽承载「有多宽」**：`rowTitle("lsp", { locations, files })` → `row.title.lsp.nav.stats`（英 `{locations} locations · {files} files`，中 `{locations} 处位置 · {files} 个文件`），params 由 host 携带、文案由客户端 `t()` 解析；查询路径仍是行的 summary。
+- **投影不新增组件**：`lspPresentationMeta` 在 grep 投影上附 `rowTitle`，`HashlineLspRow` 的 `titleSuffix` 改走 `rowSuffixText`，与 edit 的 diff stat、grep 的命中计数同一个槽。
+- **ADR 让号**：本 PR 的 ADR 改为 `0033-lsp-navigation-operations.md`（#399 先合入占住 0032），`AGENTS.md` l0 合并为 0001–0033，两个主题并存。
+- **D10 是截止时间不是次数**：形状命中后每 500ms 重问，直到答案不再是 import 形状或到 15s 截止（三轮实测：冷机重启的索引尾巴超过 5s，预算由 5s 提到 15s）；暖机服务器一分钱不花。
+
+### Path / Affected typed relationships
+
+- `src/render/wire-text.ts`：`RowTitleKind` 加 `lsp`、`RowTitleFacts` 增 `locations` / `files`、`rowTitle` 增 lsp 分支
+- `src/tools/tool-lsp.ts`：`lspPresentationMeta` 在 grep 投影上附 `rowTitle`
+- `client/src/client/locale.ts`：`row.title.lsp.nav.stats`（en/zh）+ `WIRE_TEXT_KEYS`
+- `client/src/client/tool-row.tsx`：`HashlineLspRow` 的 `titleSuffix` 接 `rowSuffixText`
+- `test/core/lsp-navigation.test.ts`（+1）、`client/test/wire-text.test.ts`（+2）
+- `docs/adr/0033-lsp-navigation-operations.md`：D8 补折叠行宽度注记；文件由 0032 改名而来
+- `AGENTS.md` l0 decisions 0001–0032 → 0001–0033；`CHANGELOG.md` `[Unreleased]` Fixed 补一行、D10 措词按截止时间更新
+
+## 2026-11-03 — lsp 的每个答案都有卡片：hover / code_actions / request + 空答案的一句话（#396）
+
+**Type:** 显示层补完（ADR-0033 D11）
+**Confidence:** High（双 typecheck 干净；根全绿；客户端 317 例全绿；新增 10 例）
+**Evidence:** 用户实测反馈（`lsp hover` 仍是原始输入输出）；`src/tools/tool-lsp.ts`、`client/src/client/{types,tool-row,locale}.tsx`、新 `client/src/client/{lsp-answer,lsp-answer-block}.tsx`
+
+### Why
+
+`lsp` 里只有 `symbols` / `diagnostics` 有行（走 read 卡）、导航四操作有 grep 卡、`status` / `warm` 有状态卡；**hover、code_actions、request 三个答案根本没有行**，read 投影是空的，两个卡片模型都拒收，行就退化成原始输入输出。空答案（`No results.` / `No hover information.`）同理。
+
+### 本轮定案（复核时照此）
+
+- **答案的种类由 host 命名**：`lspPresentationMeta` 对 hover / code_actions / request 分别投 `hover` / `actions` / `json` 字段（连同 `operation` 判别器），不再让它们走 read 投影。
+- **一句话也是卡片**：空导航答案投 `note`（`No results.`），空 hover 投 `note`（`No hover information.`），客户端用同一个框画出那句话；`card: "lsp-status"` 除外（那是状态卡的地盘）。
+- **一块组件画三种形状**：`LspAnswerBlock` 按判别器画悬停文本（换行包裹）、动作清单（每行 title + LSP kind）、JSON；空动作清单说 host 那句 note，不画空框。
+- **不新增 wire key**：这次只有客户端词汇表 `lsp.answer.noActions`（en/zh），host 不往线上发文案。
+
+### Path / Affected typed relationships
+
+- `src/tools/tool-lsp.ts`：`code_actions` 返回值增 `actions`；输出 schema 补 `actions`；`lspPresentationMeta` 增 hover / code_actions / request / 空答案四个分支
+- `client/src/client/types.ts`：`LspAnswerModel`（hover|note / actions / json）+ `LspActionMeta`
+- `client/src/client/lsp-answer.ts`（新）：`lspAnswerModel`，软校验，任何偏差回 `null`
+- `client/src/client/lsp-answer-block.tsx`（新）：`LspAnswerBlock` + 自有样式表
+- `client/src/client/tool-row.tsx`：`ToolRow` 增可选 `answer` 槽（在 `lsp` 之后、`diff` 之前），`HashlineLspRow` 接 `lspAnswerModel`
+- `client/src/client/locale.ts`：`lsp.answer.noActions`（en/zh）
+- `test/core/lsp-navigation.test.ts`（+5）、`client/test/lsp-answer.test.ts`（新，+7）
+- `docs/adr/0033-lsp-navigation-operations.md`：新增 D11；`CHANGELOG.md` `[Unreleased]` Fixed 一行
+
+## 2026-11-03 — #397 四轮评审：Windows 上重问循环从未触发（URI 身份比较）（#396）
+
+**Type:** 缺陷修复（语义层）+ 文档重释
+**Confidence:** High（双 typecheck 干净；根全绿；客户端全绿；新增 5 例）
+**Evidence:** #397 四轮评审评论（Windows 实测 + node 一行实证）；`src/render/lsp-locations.ts`、`src/tools/tool-lsp.ts`、`test/core/{render-lsp-locations,lsp-navigation}.test.ts`
+
+### Why
+
+评审在 Windows 上抓到真因：`looksLikeImportBinding` 对「答案文件 == 查询文件」做**字符串**比较，而两侧拼写不同——tsserver 的答案是 `file:///d%3A/...`（盘符小写、冒号百分号编码），工具问的是 `file:///D:/...`（盘符大写、冒号明文）。解码后只差盘符大小写，`d:\...` !== `D:\...` → 形状检查永远不成立 → **重问循环在 Windows 上从未跑过**。
+
+历轮观察由此重释：冷机/暖机的失败从来不是「预算耗尽」，是循环没跑；穿透成功的案例也从未依赖循环。前两轮的预算之争是伪问题（作者机器是 macOS，mock 两侧同一编码器，Windows CI 跑的是同一批 mock）。
+
+### 本轮定案（复核时照此）
+
+- **按文档身份比较，不按字符串**：`sameDocumentUri(left, right)` —— 两侧都解成路径，Windows 世界里 `win32.normalize` + 小写折叠，其他地方保持精确（大小写敏感的文件系统上 `a.ts` 与 `A.ts` 是两个文件）。`pathToFileURL(fileURLToPath(x))` 不修复大小写（Node 保留原 case），所以折叠必须显式做。
+- **世界由 URI 自己决定**：`windowsWorld(uri)` 看 `/X:` 或 `/X%3A` 前缀——`file:` URI 不携带自己的 OS，所以判断只能来自 URI 的拼写。
+- **平台无关的回归用例**：直接驱动 URI 字符串（`file:///d%3A/...` vs `file:///D:/...`），不依赖运行机器是不是 Windows；再一条形状检查用例证明「答案在别的文件时仍为 false」。
+- **预算保留 15s**：现在是给一个真的会跑的循环的上限；到期时如实返回浅答（那是真答案，只是早的答案）。
+
+### Path / Affected typed relationships
+
+- `src/render/lsp-locations.ts`：新增 `sameDocumentUri`（导出）
+- `src/tools/tool-lsp.ts`：`looksLikeImportBinding` 改用 `sameDocumentUri`；该函数导出以便直接测试
+- `test/core/render-lsp-locations.test.ts`（+3）、`test/core/lsp-navigation.test.ts`（+2）
+- `docs/adr/0033-lsp-navigation-operations.md`：D10 补「形状检查比的是文档身份」与「历轮观察重释」；`CHANGELOG.md` `[Unreleased]` Fixed 一行

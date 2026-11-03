@@ -306,7 +306,22 @@ export interface LspStatusBlockProps {
  */
 export function LspStatusBlock({ model }: LspStatusBlockProps): ReactNode {
 	ensureStyles();
-	if (model.slots.length === 0) return null;
+	// No slot to draw: the sentence IS the body. Returning null here rendered
+	// an expanded, empty card — the blank body the #397 review reported.
+	if (model.slots.length === 0) {
+		if (model.note === undefined) return null;
+		return jsx_("div", {
+			className: css.block,
+			children: jsx_("div", {
+				className: css.body,
+				children: jsx_("div", {
+					className: css.slot,
+					"data-state": "empty",
+					children: jsx_("span", { className: css.slotNote, children: model.note }),
+				}),
+			}),
+		});
+	}
 	return jsx_("div", {
 		className: css.block,
 		children: jsx_("div", {

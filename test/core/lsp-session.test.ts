@@ -319,3 +319,36 @@ describe("diagnostics URI normalization", () => {
 	});
 });
 });
+
+describe("the project-loading bracket", () => {
+	it("treats an ABSENT bracket as ready, and follows the one the server opens", () => {
+		const h = harness();
+		// No signal means unknown, and unknown is ready: most servers never send
+		// this, and waiting on silence would stall every navigation call.
+		expect(h.session.projectLoading).toBe(false);
+		h.deliver({ jsonrpc: "2.0", method: "$/typescriptProjectLoadingStart", params: {} });
+		expect(h.session.projectLoading).toBe(true);
+		h.deliver({ jsonrpc: "2.0", method: "$/typescriptProjectLoadingEnd", params: {} });
+		expect(h.session.projectLoading).toBe(false);
+	});
+
+	it("lets a waiter go the moment the bracket closes", async () => {
+		const h = harness();
+		h.deliver({ jsonrpc: "2.0", method: "$/typescriptProjectLoadingStart", params: {} });
+		const waiting = h.session.waitForProjectLoad(2_000);
+		setTimeout(() => h.deliver({ jsonrpc: "2.0", method: "$/typescriptProjectLoadingEnd", params: {} }), 60);
+		await expect(waiting).resolves.toBe("idle");
+	});
+
+	it("gives up at the budget instead of holding the call forever", async () => {
+		const h = harness();
+		h.deliver({ jsonrpc: "2.0", method: "$/typescriptProjectLoadingStart", params: {} });
+		await expect(h.session.waitForProjectLoad(80)).resolves.toBe("timeout");
+	});
+
+	it("answers an END without a START without going negative", () => {
+		const h = harness();
+		h.deliver({ jsonrpc: "2.0", method: "$/typescriptProjectLoadingEnd", params: {} });
+		expect(h.session.projectLoading).toBe(false);
+	});
+});

@@ -69,3 +69,18 @@ describe("lspStatusCardModel (#320)", () => {
 		expect(lspStatusCardModel(settled("status"))).toBeNull();
 	});
 });
+
+describe("an EMPTY slot list", () => {
+	it("draws a card that says the sentence, when the meta carries one", () => {
+		// No slots is still an answer: the sentence is the body. Rendering null
+		// here was the expanded-but-blank card the #397 review reported.
+		expect(lspStatusCardModel(settled({ card: "lsp-status", slots: [], note: "No language has a server slot yet." }))).toEqual({
+			slots: [],
+			note: "No language has a server slot yet.",
+		});
+	});
+
+	it("stays null for an empty list with NO sentence (an older meta)", () => {
+		expect(lspStatusCardModel(settled({ card: "lsp-status", slots: [] }))).toBeNull();
+	});
+});

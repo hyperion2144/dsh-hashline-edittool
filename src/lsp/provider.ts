@@ -29,9 +29,12 @@ import { realpath } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { LANGUAGES } from "../ast/language.js";
 import type { LspSession } from "./session.js";
+import { LSP_METHOD_FOR, type LspOperation } from "./capabilities.js";
 
-/** The operations the seam exposes. */
-export type LspOperation = "goToDefinition" | "findReferences" | "goToImplementation" | "hover";
+// The vocabulary lives in `capabilities.ts` now — the tool needs the same
+// four names and the same method mapping, and two copies of it is how a
+// provider and a tool start disagreeing about what `hover` means.
+export type { LspOperation };
 
 /** One resolved location, as the seam defines it. */
 export interface LspLocation {
@@ -80,14 +83,6 @@ export function extensionToLanguage(): Record<string, string> {
 	return map;
 }
 
-/** The LSP method each operation maps to. */
-const METHOD_FOR: Record<LspOperation, string> = {
-	goToDefinition: "textDocument/definition",
-	findReferences: "textDocument/references",
-	goToImplementation: "textDocument/implementation",
-	hover: "textDocument/hover",
-};
-
 /** How to find a session for a language; injected so the provider is testable. */
 export type SessionLookup = (languageId: string, filePath: string, workspaceRoot: string) => LspSession | undefined;
 
@@ -114,7 +109,7 @@ export function buildProvider(lookup: SessionLookup): LspProvider {
 
 			const uri = pathToFileURL(request.filePath).href;
 			const raw = await session.request(
-				METHOD_FOR[request.operation],
+				LSP_METHOD_FOR[request.operation],
 				{
 					textDocument: { uri },
 					position: { line: request.position.line, character: request.position.character },

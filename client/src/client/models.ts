@@ -996,7 +996,12 @@ export function grepCardModel(block: ToolCallBlock): GrepCardModel | null {
 	// files/rows/spans shape, capped by the same helper. The name was locked to
 	// `grep`, which is why ast_grep rendered as raw IO while carrying drawable
 	// meta.
-	if (parsedToolCall(block)?.name !== "grep" && parsedToolCall(block)?.name !== "ast_grep") return null;
+	// `lsp` wears it too for its NAVIGATION answers (ADR-0033 D8): those rows
+	// live in other files, so they are the same files/rows shape — and locking
+	// the name to grep/ast_grep made the projection unreachable there, exactly
+	// the way it once did for ast_grep.
+	const name = parsedToolCall(block)?.name;
+	if (name !== "grep" && name !== "ast_grep" && name !== "lsp") return null;
 	return grepPresentationMeta(block.meta);
 }
 
@@ -1070,7 +1075,13 @@ export function lspStatusCardModel(block: ToolCallBlock): LspStatusModel | null 
 			...(slot.attempts !== undefined ? { attempts: slot.attempts } : {}),
 		});
 	}
-	return { slots };
+	// An empty slot list is an ANSWER, not a broken card: it carries the sentence
+	// the host projected (`note`). Reading it as a card — rather than falling
+	// back to a generic input/output dump — is what makes the no-server case a
+	// one-line status instead of a JSON pile (#397 review).
+	const note = typeof value.note === "string" && value.note !== "" ? value.note : undefined;
+	if (slots.length === 0) return note === undefined ? null : { slots, note };
+	return note === undefined ? { slots } : { slots, note };
 }
 
 /**

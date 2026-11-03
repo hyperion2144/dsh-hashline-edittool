@@ -31,9 +31,30 @@ import { anchorWidth, fmtHashlineRow, fmtMarker, lineHashesPure } from "../hashl
 import { observeServedRows, anchorForInWorkspace, execSessionKey } from "../domain/session/session-view.js";
 import { liveCwd } from "../domain/session/live-cwd.js";
 import { readMetaFromMeta } from "../render/read-card.js";
+import { rowTitle } from "../render/wire-text.js";
 import { isJsonOutput } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
 import { currentContentFor, diagRowsToJson, verifiedReport } from "../lsp/auto-diag.js";
+import {
+	isLspOperation,
+	LSP_METHOD_FOR,
+	supportsOperation,
+	transientSyncUnsupported,
+	type LspOperation,
+} from "../lsp/capabilities.js";
+import { capGrepMeta, grepPresentationFromMeta } from "../render/grep-card.js";
+import {
+	boundText,
+	fileUriToPath,
+	DEFAULT_MAX_LOCATIONS,
+	DEFAULT_MAX_RESULT_CHARS,
+	groupLocations,
+	hoverContents,
+	normalizeLocationList,
+	resolveLocations,
+	sameDocumentUri,
+	type ResolvedLocation,
+} from "../render/lsp-locations.js";
 
 /** One symbol as the server reports it, flattened for display. */
 interface FlatSymbol {
@@ -103,6 +124,8 @@ function lspDescription(): string {
 		"Prefer this over `ast_grep` and text search for work that is about MEANING: definitions, references, symbols, renames, diagnostics. A server follows shadowing, re-exports and cross-file usage that a syntax tree cannot see; the AST tools answer questions about SHAPE.",
 		"",
 		"Operations:",
+		"- `goToDefinition` / `findReferences` / `goToImplementation` — where a symbol is declared, used, or implemented. Every line it names is served as an editable row, so a hit can be handed straight to `edit`. Needs `line`, plus a column: name the text with `symbol`, or give `character`.",
+		"- `hover` — the server's documentation for the symbol at the cursor. Same cursor rule.",
 		"- `symbols` — the symbols of one file, as the server reports them.",
 		"- `code_actions` — what the server offers at a position (`line`, and `symbol` for the token). Listed, not applied.",
 		"- `diagnostics` — what the server has REPORTED for the file. Waits briefly for its first push; \"no answer yet\" and \"no problems\" are reported as the different things they are.",
@@ -161,6 +184,10 @@ export function buildLspTool(io: FileIO) {
 	const tool = defineTool({
 		name: "lsp",
 		description: lspDescription(),
+		// The whole queued open/query/close lifecycle is bounded, so a server
+		// that stops answering cannot hang the turn. A budget, not a model-facing
+		// knob: it never appears in the schema.
+		timeoutMs: LSP_TOOL_TIMEOUT_MS,
 		parameters: {
 			operation: {
 				type: "string",
@@ -183,6 +210,18 @@ export function buildLspTool(io: FileIO) {
 			payload: {
 				type: "string",
 				description: "For `request`: JSON params. Omitted means `{ textDocument: { uri } }`.",
+			},
+			line: {
+				type: "number",
+				description: "For position-based and navigation operations: the one-based line of the cursor.",
+			},
+			symbol: {
+				type: "string",
+				description: "The text on that line the cursor means. Its position in the line IS the column, so a caller never has to count UTF-16 columns by hand. Wins over `character` when both are given.",
+			},
+			character: {
+				type: "number",
+				description: "For navigation operations: the one-based UTF-16 column of the cursor, when `symbol` is not usable.",
 			},
 		},
 		output: {
@@ -208,6 +247,62 @@ export function buildLspTool(io: FileIO) {
 						},
 					},
 					raw: { type: "string" },
+					// THE NAVIGATION ROWS. `locations` is the exact answer — every
+					// position the server returned, one-based — and `groups` is the
+					// same answer arranged per file so each line can carry the
+					// hashline anchor an `edit` accepts.
+					locations: {
+						type: "array",
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								path: { type: "string", required: true },
+								line: { type: "integer", required: true },
+								character: { type: "integer", required: true },
+							},
+						},
+					},
+					groups: {
+						type: "array",
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								path: { type: "string", required: true },
+								rows: {
+									type: "array",
+									required: true,
+									items: {
+										type: "object",
+										additionalProperties: false,
+										properties: {
+											number: { type: "integer", required: true },
+											hash: { type: "string", required: true },
+											text: { type: "string", required: true },
+											character: { type: "integer", required: true },
+										},
+									},
+								},
+							},
+						},
+					},
+					truncated: { type: "boolean" },
+					totalLocations: { type: "integer" },
+					hover: { type: "string" },
+					// THE ACTION LIST (#397 review): `code_actions` answers with no rows, so
+					// the card draws the list itself. Optional — no other operation sets it.
+					actions: {
+						type: "array",
+						items: {
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								title: { type: "string", required: true },
+								kind: { type: "string" },
+							},
+						},
+					},
 					// THE CARD'S ROWS. `lsp`'s answers are all line-anchored — every symbol
 					// has a line, every diagnostic has a line — so the honest card is the
 					// read card's gutter, and this is its shape (`{number, hash, text}`).
@@ -279,6 +374,25 @@ export function buildLspTool(io: FileIO) {
 		// is exactly what was reported.
 		presentResult: (_args, result) => {
 			if (result.isError) return undefined;
+			// A navigation answer is a SEARCH card, not a read card: its rows
+			// belong to other files. The meta is the grep projection, so the
+			// same well-tested multi-file body draws it.
+			const nav = grepPresentationFromMeta(result.meta);
+			// Only a NON-EMPTY navigation answer is a search card. An empty one
+			// falls through to the generic body, where its "No results." sentence
+			// lives — an empty multi-file card would draw nothing at all.
+			if (nav !== undefined && nav.files.length > 0) {
+				return {
+					card: "search",
+					shape: "matches",
+					files: nav.files.map((file) => ({
+						path: file.path,
+						matches: file.rows.map((row) => ({ lineNumber: row.number, line: row.text })),
+					})),
+					truncated: nav.truncated,
+					total: nav.total,
+				};
+			}
 			const meta = readMetaFromMeta(result.meta);
 			if (meta === undefined) return undefined;
 			const only = result.content.length === 1 ? result.content[0] : undefined;
@@ -310,6 +424,8 @@ export function buildLspTool(io: FileIO) {
 				readonly line?: number;
 				/** The text on that line the range should cover; absent means the line. */
 				readonly symbol?: string;
+				/** For the navigation operations: the one-based UTF-16 column. */
+				readonly character?: number;
 			},
 			exec: ToolRunContext,
 			// The wrapper below supplies the one field the schema adds — `modelText` —
@@ -388,6 +504,26 @@ export function buildLspTool(io: FileIO) {
 			const generation = latestWriteFor(uri)?.generation;
 			const text = toLF(await io.readText(absolutePath));
 			sync(text);
+			// NAVIGATION — a cursor question whose answer points at OTHER files.
+			// It branches before the single-file position path because its rows
+			// are not this file's lines: each hit is read, anchored and served on
+			// its own file, so every row the model sees is one `edit` accepts.
+			if (isLspOperation(args.operation)) {
+				return await navigationValue({
+					operation: args.operation,
+					serverName: language.displayName,
+					queriedPath: args.path,
+					text,
+					line: args.line,
+					character: args.character,
+					symbol: args.symbol,
+					session,
+					uri,
+					cwd,
+					exec,
+					io,
+				});
+			}
 			if (args.operation === "diagnostics") {
 				// THE FRESHNESS GUARANTEE (verifiedReport): pull-first for capable
 				// servers; otherwise the sentinel probe — a guaranteed-error canary
@@ -533,7 +669,7 @@ export function buildLspTool(io: FileIO) {
 			// is the difference, and it is the caller's to make.
 			const lineIndex = args.line === undefined ? 0 : Math.max(0, args.line - 1);
 			const sourceLine = lineIndex === 0 ? (splitLines(text)[0] ?? "") : (splitLines(text)[lineIndex] ?? "");
-			const at = args.symbol === undefined ? 0 : Math.max(0, sourceLine.indexOf(args.symbol));
+			const at = resolveColumn(sourceLine, args);
 			const range = {
 				start: { line: lineIndex, character: at },
 				end: { line: lineIndex, character: args.symbol === undefined ? sourceLine.length : at + args.symbol.length },
@@ -639,10 +775,19 @@ export function buildLspTool(io: FileIO) {
 						? `${action.title}${typeof action.kind === "string" ? `  [${action.kind}]` : ""}`
 						: undefined;
 				}).filter((title): title is string => title !== undefined);
+				// The SAME list, structured: the model text keeps the joined sentences,
+				// while the card draws one row per action with its LSP kind beside it
+				// (#397 review: every answer is a card, and a title list is not a dump).
+				const listed: Array<{ title: string; kind?: string }> = [];
+				for (const raw of actions) {
+					const action = raw as { title?: unknown; kind?: unknown };
+					if (typeof action.title !== "string") continue;
+					listed.push({ title: action.title, ...(typeof action.kind === "string" ? { kind: action.kind } : {}) });
+				}
 				// An action list is not line-anchored: a server offers what it can for a
 				// range, and the range is the caller's, not the answer's. So there are no
 				// rows to draw and the sentence is the card.
-				return { path: args.path, operation: args.operation, server: language.displayName, symbols: [], hashlines: [], totalLines: 0, raw: titles.length === 0 ? "No action is offered here." : titles.join("\n") };
+				return { path: args.path, operation: args.operation, server: language.displayName, symbols: [], hashlines: [], totalLines: 0, actions: listed, raw: titles.length === 0 ? "No action is offered here." : titles.join("\n") };
 			}
 			// A raw `request` answer is whatever the method returns — not necessarily
 			// line-anchored at all — so it gets no rows, and the JSON is both the model
@@ -743,9 +888,16 @@ function statusValue(manager: LspManager, languageId: string | undefined): Recor
  * the persisted meta — a read-shaped projection would draw a file card for an
  * answer about LANGUAGES. Exported because the projection has no surface on
  * the tool object (the DSL consumes it), so the unit test asserts it here.
+ *
+ * @param slots - the slot rows to draw, verbatim.
+ * @param note - the sentence to show when there are NO slots (`status` with
+ *   nothing started); omitted otherwise.
  */
-export function lspStatusMeta(slots: unknown): Record<string, unknown> {
-	return { card: "lsp-status", slots: Array.isArray(slots) ? slots : [] };
+export function lspStatusMeta(slots: unknown, note?: string): Record<string, unknown> {
+	const list = Array.isArray(slots) ? slots : [];
+	// A note rides along only when there is no slot to draw: with slots, the
+	// rows ARE the answer, and the sentence would just repeat them.
+	return { card: "lsp-status", slots: list, ...(list.length === 0 && note !== undefined && note !== "" ? { note } : {}) };
 }
 
 /**
@@ -764,9 +916,95 @@ export function lspPresentationMeta(value: {
 	readonly totalLines?: number;
 	readonly error?: ErrorMeta;
 	readonly slots?: unknown;
+	readonly groups?: readonly unknown[];
+	readonly truncated?: boolean;
+	readonly totalLocations?: number;
+	/** The answer's own sentence — the status card shows it when it has no rows. */
+	readonly raw?: string;
+	/** #397 review: the hover answer's own contents (empty means "no information"). */
+	readonly hover?: string;
+	/** #397 review: what `code_actions` offers here, structured for the card. */
+	readonly actions?: readonly unknown[];
 }): Record<string, unknown> {
 	if (value.error !== undefined) return { error: value.error };
-	if (value.operation === "status" || value.operation === "warm") return lspStatusMeta(value.slots);
+	if (value.operation === "status" || value.operation === "warm") {
+		const slots = Array.isArray(value.slots) ? value.slots : [];
+		// An EMPTY slot list is still an ANSWER, so it is still a card — one that
+		// says the sentence instead of drawing rows. Falling back to generic IO
+		// buried a one-line answer under an input/output dump (#397 review).
+		const note = typeof value.raw === "string" ? value.raw : undefined;
+		return lspStatusMeta(slots, note);
+	}
+	// A navigation answer projects the grep card's multi-file shape: its rows
+	// live in OTHER files, so a read-shaped projection (one `path`) would have
+	// to lie about which file the rows belong to.
+	// An EMPTY answer keeps the read projection on purpose: a multi-file card
+	// with no files draws an empty body, while the read projection's zero rows
+	// make BOTH card models reject the meta and the row falls back to the
+	// generic body — which is where the "No results." sentence lives.
+	if (Array.isArray(value.groups) && value.groups.length > 0) {
+		const capped = capGrepMeta({
+			files: value.groups as never,
+			truncated: value.truncated === true,
+			total: typeof value.totalLocations === "number" ? value.totalLocations : 0,
+		});
+		// #397 review: the folded row could not say the answer spans FILES — it
+		// carried only the queried path. The width rides at the row's end (the same
+		// weak slot the grep counts use), while the path stays the summary.
+		const locations = typeof value.totalLocations === "number" ? value.totalLocations : 0;
+		return {
+			...capped,
+			rowTitle: rowTitle("lsp", { locations, files: value.groups.length }),
+		} as unknown as Record<string, unknown>;
+	}
+	// An EMPTY navigation answer has a sentence and no rows: the sentence IS the
+	// card. Falling back to the read projection dumped the whole call instead.
+	if (
+		Array.isArray(value.groups) &&
+		value.groups.length === 0 &&
+		typeof value.raw === "string" &&
+		value.raw !== ""
+	) {
+		return {
+			operation: typeof value.operation === "string" ? value.operation : "navigation",
+			...(typeof value.path === "string" ? { path: value.path } : {}),
+			note: value.raw,
+		};
+	}
+	// #397 review: EVERY answer is a card. Three of them carry NO rows at all —
+	// a hover's contents, an action list, a raw `request` JSON — so the read
+	// projection below would draw an empty body and the row would fall back to a
+	// raw input/output dump. Each gets its own shape instead.
+	if (value.operation === "hover") {
+		const text = typeof value.hover === "string" ? value.hover : "";
+		const pathed = typeof value.path === "string" ? { path: value.path } : {};
+		// An empty hover is the ANSWER (`No hover information.`): the sentence
+		// draws in the card rather than an empty body.
+		if (text !== "") return { operation: "hover", ...pathed, hover: text };
+		return {
+			operation: "hover",
+			...pathed,
+			note: typeof value.raw === "string" ? value.raw : "No hover information.",
+		};
+	}
+	if (value.operation === "code_actions") {
+		const actions = Array.isArray(value.actions) ? value.actions : [];
+		return {
+			operation: "code_actions",
+			...(typeof value.path === "string" ? { path: value.path } : {}),
+			actions,
+			// An EMPTY list is still the answer: the host's sentence is what the
+			// card says instead of drawing a body-less frame.
+			...(actions.length === 0 && typeof value.raw === "string" ? { note: value.raw } : {}),
+		};
+	}
+	if (value.operation === "request") {
+		return {
+			operation: "request",
+			...(typeof value.path === "string" ? { path: value.path } : {}),
+			json: typeof value.raw === "string" ? value.raw : "",
+		};
+	}
 	return {
 		path: value.path,
 		offset: 1,
@@ -787,6 +1025,15 @@ export function lspPresentationMeta(value: {
  * @returns the model-facing text for the active output mode.
  */
 function lspModelText(value: Record<string, unknown>): string {
+	// A navigation answer has no single file to print under. It is groups (one
+	// per file), and JSON mode is the whole envelope — the exact one-based
+	// positions included — because those columns are what the text view folds
+	// away in favour of editable lines.
+	const navGroups = Array.isArray(value.groups) ? (value.groups as NavigationGroup[]) : undefined;
+	if (navGroups !== undefined) {
+		if (isJsonOutput()) return JSON.stringify(value);
+		return navigationModelText(value, navGroups);
+	}
 	const hashlines = Array.isArray(value.hashlines)
 		? (value.hashlines as Array<{ number?: unknown; hash?: unknown; text?: unknown; messages?: unknown }>)
 		: [];
@@ -831,6 +1078,371 @@ function lspModelText(value: Record<string, unknown>): string {
 	});
 	const symbols = Array.isArray(value.symbols) ? value.symbols.length : 0;
 	return [`${head}${symbols > 0 ? ` (${symbols} symbol(s))` : ""}`, ...body].join("\n");
+}
+
+/**
+ * The tool-call budget: the queued open + query + render lifecycle, not one
+ * request. A server that accepts a document and then stops answering must not
+ * hold the turn; past this the call is failed rather than forgotten.
+ */
+const LSP_TOOL_TIMEOUT_MS = 60_000;
+
+/**
+ * How long a navigation call holds for the server's project index to finish.
+ *
+ * Bounded well under the tool budget: a whole-repo index on a cold start is
+ * usually seconds, and a bracket that never closes must not own the call.
+ */
+const PROJECT_LOAD_WAIT_MS = 15_000;
+
+/**
+ * How long a shape-checked cold-index retry keeps asking.
+ *
+ * TIME, not attempts: a real first call has to boot the server
+ * (2.6–3.1 s) AND index the project, so any fixed small number of retries
+ * runs out inside the index. FIFTEEN seconds covers both: a measured cold
+ * restart (cold page cache, the app's startup I/O still settling) outlasted
+ * five, and the whole retry only ever runs on an answer ALREADY KNOWN to be
+ * shallow — so a warm or merely slow server pays nothing either way. The
+ * tool's own budget is 60 s, so this stays a quarter of it.
+ */
+const COLD_RETRY_BUDGET_MS = 15_000;
+/** Spacing between cold-index retries. */
+const SHALLOW_RETRY_DELAY_MS = 500;
+
+/**
+ * How many distinct files a navigation answer will READ for anchors.
+ *
+ * Every anchored file costs one read plus one anchor mint, and a
+ * project-wide `findReferences` can touch a hundred files. Past this ceiling
+ * the remaining files still get rows — they only lose their anchors, which
+ * costs the caller a `read`, never the location.
+ */
+const MAX_ANCHORED_FILES = 32;
+
+/**
+ * The zero-based UTF-16 column a cursor request names.
+ *
+ * `symbol` wins when it is on the line: its position IS the column, so the
+ * caller never has to count UTF-16 code units — the one thing a model is
+ * reliably bad at. `character` is the explicit fallback, and an absent or
+ * missing symbol means the start of the line.
+ *
+ * @param sourceLine - the line the cursor points into.
+ * @param args - the caller's `symbol` / `character`.
+ * @returns a zero-based column within the line.
+ */
+function resolveColumn(sourceLine: string, args: { readonly symbol?: string; readonly character?: number }): number {
+	if (args.symbol !== undefined && args.symbol !== "") {
+		const at = sourceLine.indexOf(args.symbol);
+		if (at >= 0) return at;
+	}
+	if (args.character !== undefined && Number.isFinite(args.character)) {
+		return Math.max(0, Math.floor(args.character) - 1);
+	}
+	return 0;
+}
+
+/** One line of a navigation answer, anchored when it could be served. */
+interface NavigationRow {
+	readonly number: number;
+	readonly hash: string;
+	readonly text: string;
+	readonly character: number;
+}
+
+/** One file's rows in a navigation answer. */
+interface NavigationGroup {
+	readonly path: string;
+	readonly rows: NavigationRow[];
+}
+
+/** The slice of a live session the navigation path needs. */
+interface NavigationSession {
+	readonly serverCapabilities: Record<string, unknown>;
+	/**
+	 * Whether the server says it is still indexing. Absent on a fake session,
+	 * which is why every read of it is optional.
+	 */
+	readonly projectLoading?: boolean;
+	/** Bounded wait for the index to finish; absent on a fake session. */
+	waitForProjectLoad?(budgetMs: number, signal?: AbortSignal): Promise<"idle" | "timeout">;
+	request(method: string, params: unknown): Promise<unknown>;
+}
+
+/** Everything the navigation branch needs from the caller's frame. */
+interface NavigationInput {
+	readonly operation: LspOperation;
+	readonly serverName: string;
+	readonly queriedPath: string;
+	readonly text: string;
+	readonly line?: number;
+	readonly character?: number;
+	readonly symbol?: string;
+	readonly session: NavigationSession;
+	readonly uri: string;
+	readonly cwd: string;
+	readonly exec: ToolRunContext;
+	readonly io: FileIO;
+}
+
+/**
+ * The rendered-answer budget: the smaller of the plugin's own cap and the
+ * deployment's response budget, so a navigation answer cannot outgrow the
+ * channel it travels on.
+ */
+function maxNavigationChars(): number {
+	return Math.min(DEFAULT_MAX_RESULT_CHARS, responseBudgetChars());
+}
+
+/**
+ * Whether a navigation answer is the IMPORT CLAUSE rather than a definition.
+ *
+ * A server still building its project index resolves an imported symbol to
+ * the import that names it: the target sits in the QUERIED file, on an
+ * `import` / `export … from` line, and covers exactly the symbol asked about.
+ * No real definition looks like that — a definition never lives on an import
+ * clause — so the shape alone is reason enough to ask again in a moment.
+ *
+ * @param answer - the server's raw answer.
+ * @param input - the caller's frame (queried file text, symbol, uri).
+ * @returns true when the answer can only be a cold-index fallback.
+ */
+export function looksLikeImportBinding(answer: unknown, input: NavigationInput): boolean {
+	if (input.operation !== "goToDefinition" && input.operation !== "goToImplementation") return false;
+	const symbol = input.symbol;
+	if (symbol === undefined || symbol === "") return false;
+	const locations = normalizeLocationList(answer);
+	if (locations.length === 0) return false;
+	// (the URI identity — not a raw string compare — is what decides this; see `sameDocumentUri`)
+	const lines = splitLines(input.text);
+	for (const location of locations) {
+		if (!sameDocumentUri(location.uri, input.uri)) return false;
+		const start = (location.range as { start?: { line?: unknown; character?: unknown } } | null)?.start;
+		if (typeof start?.line !== "number" || typeof start.character !== "number") return false;
+		const line = lines[start.line] ?? "";
+		if (!/^\s*(?:import|export)\b/u.test(line)) return false;
+		if (line.slice(start.character, start.character + symbol.length) !== symbol) return false;
+	}
+	return true;
+}
+
+/**
+ * Answer one navigation question.
+ *
+ * The capability is checked BEFORE the request: a method the server never
+ * advertised comes back as a protocol error (or, worse, as an empty list that
+ * reads like "nothing here"), and the model cannot tell those apart from a
+ * real answer. "Unsupported" and "no results" are different facts.
+ *
+ * @param input - the operation, the cursor, the session and the session's IO.
+ * @returns the canonical value the tool wrapper turns into text and a card.
+ */
+async function navigationValue(input: NavigationInput): Promise<Record<string, unknown>> {
+	const capabilities = input.session.serverCapabilities;
+	if (!supportsOperation(capabilities, input.operation)) {
+		throw new Error(
+			`[E_LSP_UNSUPPORTED_OPERATION] ${input.serverName} does not advertise ${input.operation}. Nothing was asked, so this is "unsupported", not "no results". ` +
+			`The AST tools (\`ast_grep\`, \`read\`) still answer questions about shape.`,
+		);
+	}
+	if (transientSyncUnsupported(capabilities)) {
+		throw new Error(
+			`[E_LSP_UNSUPPORTED_SYNC] ${input.serverName} refuses \`didOpen\`, so it never sees the document a cursor points into. Nothing was asked.`,
+		);
+	}
+	// A server still indexing answers from a PARTIAL index, and that answer is
+	// shaped exactly like a real one — an imported symbol resolves to its import
+	// specifier until the project finishes loading. Waiting is the only honest
+	// move: the caller asked for a definition, not for whatever the index had
+	// ready. Bounded, because a server that never ends the bracket must not
+	// turn a navigation call into a hang; servers that never open it are
+	// already "not loading" and cost nothing.
+	if (input.session.projectLoading === true && input.session.waitForProjectLoad !== undefined) {
+		await input.session.waitForProjectLoad(PROJECT_LOAD_WAIT_MS, input.exec.signal);
+	}
+	const sourceLine = splitLines(input.text)[input.line === undefined ? 0 : Math.max(0, input.line - 1)] ?? "";
+	const position = {
+		line: input.line === undefined ? 0 : Math.max(0, input.line - 1),
+		character: resolveColumn(sourceLine, input),
+	};
+	const params =
+		input.operation === "findReferences"
+			? { textDocument: { uri: input.uri }, position, context: { includeDeclaration: true } }
+			: { textDocument: { uri: input.uri }, position };
+	// THE COLD-INDEX RETRY. A server whose project index is still loading
+	// answers `goToDefinition` on an imported symbol with the import clause
+	// that names it — a target inside the QUERIED file, covering exactly the
+	// symbol, on an `import` line. That is never a definition, so the shape
+	// itself is the evidence: wait once or twice and ask again, and the real
+	// declaration arrives as soon as the index does. Shape-checked retries
+	// beat a fixed cold-start sleep: a server that was already warm pays
+	// nothing, and a slow one is not cut off at an arbitrary deadline.
+	let answer = await input.session.request(LSP_METHOD_FOR[input.operation], params);
+	// The budget is TIME, not attempts: a real cold start has to boot the
+	// server (2.6–3.1 s measured) AND index the project, so a fixed two
+	// retries runs out inside the index. Ask again every 500 ms until the
+	// answer stops being an import clause or the budget is gone; a warm
+	// server never enters the loop at all.
+	const deadline = Date.now() + COLD_RETRY_BUDGET_MS;
+	while (looksLikeImportBinding(answer, input) && Date.now() < deadline) {
+		await new Promise<void>((resolve) => setTimeout(resolve, SHALLOW_RETRY_DELAY_MS));
+		answer = await input.session.request(LSP_METHOD_FOR[input.operation], params);
+	}
+
+	if (input.operation === "hover") {
+		const contents = hoverContents(answer);
+		return {
+			path: input.queriedPath,
+			operation: input.operation,
+			server: input.serverName,
+			symbols: [],
+			hashlines: [],
+			totalLines: 0,
+			hover: contents ?? "",
+			raw: contents === null ? "No hover information." : boundText(contents, maxNavigationChars(), "hover"),
+		};
+	}
+
+	const resolved = resolveLocations(normalizeLocationList(answer), pathToFileURL(input.cwd).href);
+	const shown = resolved.slice(0, DEFAULT_MAX_LOCATIONS);
+	const omitted = resolved.length - shown.length;
+	const groups = await anchorGroups(shown, input);
+	const raw =
+		omitted > 0
+			? `… ${omitted} more location${omitted === 1 ? "" : "s"} omitted (limit ${DEFAULT_MAX_LOCATIONS}).`
+			: shown.length === 0
+				? "No results."
+				: undefined;
+	return {
+		path: input.queriedPath,
+		operation: input.operation,
+		server: input.serverName,
+		symbols: [],
+		hashlines: [],
+		totalLines: 0,
+		locations: shown.map((location) => ({
+			path: location.displayPath,
+			line: location.line,
+			character: location.character,
+		})),
+		groups,
+		truncated: omitted > 0,
+		totalLocations: resolved.length,
+		...(raw === undefined ? {} : { raw }),
+	};
+}
+
+/**
+ * Arrange the locations per file and mint an anchor for every line it serves.
+ *
+ * The rows are served exactly like a `read`'s: an anchor the answer shows is
+ * an anchor the next `edit` accepts. Anchoring is per FILE — one read, one
+ * mint, one serve — and bounded by {@link MAX_ANCHORED_FILES}; a file that
+ * cannot be read keeps its rows and loses only its anchors.
+ *
+ * @param locations - the capped, resolved locations.
+ * @param input - the caller's frame (workspace, session key, IO).
+ * @returns one group per file, in first-seen order.
+ */
+async function anchorGroups(
+	locations: readonly ResolvedLocation[],
+	input: NavigationInput,
+): Promise<NavigationGroup[]> {
+	const out: NavigationGroup[] = [];
+	let anchoredFiles = 0;
+	for (const group of groupLocations(locations)) {
+		const absolutePath = group.absolutePath;
+		if (absolutePath === undefined || anchoredFiles >= MAX_ANCHORED_FILES) {
+			out.push({
+				path: group.displayPath,
+				rows: group.entries.map((entry) => ({ number: entry.line, hash: "", text: "", character: entry.character })),
+			});
+			continue;
+		}
+		anchoredFiles += 1;
+		try {
+			const content = toLF(await input.io.readText(absolutePath));
+			const lines = splitLines(content);
+			const wanted = [...new Set(group.entries.map((entry) => entry.line))].sort((a, b) => a - b);
+			const minted = await anchorForInWorkspace({
+				cwd: input.cwd,
+				absolutePath,
+				content,
+				lines: wanted,
+				sessionKey: execSessionKey(input.exec),
+			});
+			const byLine = new Map<number, string>();
+			for (let k = 0; k < wanted.length; k++) byLine.set(wanted[k]!, minted[k]!);
+			await observeServedRows({
+				sessionKey: execSessionKey(input.exec),
+				cwd: input.cwd,
+				absolutePath,
+				rows: wanted
+					.filter((line) => (byLine.get(line) ?? "") !== "")
+					.map((line) => ({ position: line - 1, anchor: byLine.get(line)! })),
+				lineCount: lines.length,
+				exec: input.exec,
+				io: input.io,
+			});
+			const seen = new Set<number>();
+			const rows: NavigationRow[] = [];
+			for (const entry of group.entries) {
+				// One row per LINE: the anchor addresses a line, so two references on
+				// one line are one editable row. The exact columns stay in
+				// `locations`, which is what JSON mode reads.
+				if (seen.has(entry.line)) continue;
+				seen.add(entry.line);
+				rows.push({
+					number: entry.line,
+					hash: byLine.get(entry.line) ?? "",
+					text: lines[entry.line - 1] ?? "",
+					character: entry.character,
+				});
+			}
+			out.push({ path: group.displayPath, rows });
+		} catch {
+			// Unreadable (gone, or outside this store's world): the ROWS survive
+			// and only the anchors are lost. A location is still a location.
+			out.push({
+				path: group.displayPath,
+				rows: group.entries.map((entry) => ({ number: entry.line, hash: "", text: "", character: entry.character })),
+			});
+		}
+	}
+	return out;
+}
+
+/**
+ * The text view of a navigation answer: one section per file, one row per
+ * line, the anchor in the same column every other tool puts it.
+ *
+ * A row whose file could not be read has no anchor, so it falls back to the
+ * `line:character` the server gave — still a usable pointer, just not an
+ * editable one.
+ *
+ * @param value - the canonical value (for the header and the omission note).
+ * @param groups - the per-file rows.
+ * @returns the model-facing text.
+ */
+function navigationModelText(value: Record<string, unknown>, groups: readonly NavigationGroup[]): string {
+	const head = `${value.server ?? "lsp"} — ${value.operation ?? "?"} for ${value.path ?? "?"}`;
+	const note = typeof value.raw === "string" && value.raw !== "" ? value.raw : undefined;
+	if (groups.length === 0) return `${head}\n${note ?? "No results."}`;
+	const anchored = groups.flatMap((group) => group.rows.filter((row) => row.hash !== ""));
+	const width = anchorWidth(anchored.map((row) => fmtMarker(row.hash, row.number)));
+	const body: string[] = [];
+	for (const group of groups) {
+		body.push(`  ${group.path}`);
+		for (const row of group.rows) {
+			body.push(row.hash === ""
+				? `    ${row.number}:${row.character}`
+				: `    ${fmtHashlineRow(fmtMarker(row.hash, row.number), row.text, width)}`);
+		}
+	}
+	const total = typeof value.totalLocations === "number" ? value.totalLocations : anchored.length;
+	const header = `${head} (${total} location${total === 1 ? "" : "s"} in ${groups.length} file${groups.length === 1 ? "" : "s"})`;
+	return [header, ...body, ...(note === undefined ? [] : [note])].join("\n");
 }
 /** Re-exported from the lsp layer: the domain's format tool raises it too. */
 export { E_LSP_NO_SERVER };

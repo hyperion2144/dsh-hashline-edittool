@@ -30,6 +30,8 @@ import { GrepCard } from "./grep-card.js";
 import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, lspStatusCardModel, metaFormatSections, readCardModel, rowTitleFromMeta, toolRowModel, writeCardModel } from "./models.js";
 import { ReadCard } from "./read-card.js";
 import { LspDiagBlock, LspStatusBlock } from "./lsp-block.js";
+import { LspAnswerBlock } from "./lsp-answer-block.js";
+import { lspAnswerModel } from "./lsp-answer.js";
 import { ErrorCard } from "./error-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
 import { errorCardLabels, grepCardLabels, lspBlockLabels } from "./labels.js";
@@ -81,6 +83,8 @@ interface ToolRowProps {
 	lsp: ReturnType<typeof lspCardModel>;
 	/** The `lsp` status card (#320): `status`/`warm` answers draw their slots here. */
 	lspStatus: ReturnType<typeof lspStatusCardModel>;
+	/** #397 review: the row-less answers (hover / code_actions / request) draw here. */
+	answer?: ReturnType<typeof lspAnswerModel>;
 	/** #131: inline diagnostics capsules, one per written file ([] = none). */
 	diag: readonly DiagCapsuleMeta[];
 	state: "running" | "ok" | "error" | "stopped";
@@ -217,6 +221,7 @@ function ToolRow({
 	grep,
 	lsp,
 	lspStatus,
+	answer,
 	error,
 	diag,
 	state,
@@ -232,6 +237,7 @@ function ToolRow({
 	const grepBody = grep ?? null;
 	const lspBody = lsp ?? null;
 	const lspStatusBody = lspStatus ?? null;
+	const answerBody = answer ?? null;
 	const errorBody = error ?? null;
 	const grepLabels = useMemo(() => grepCardLabels(t), [t]);
 	const lspLabels = useMemo(() => lspBlockLabels(t), [t]);
@@ -253,7 +259,7 @@ function ToolRow({
 	// `error` first: a failed call leads with the structured failure card.
 	// `lsp` next: it owns its body outright (frame included), so the read body
 	// never sees diagnostic rows masquerading as lines of a file.
-	const card = errorBody ?? lspStatusBody ?? lspBody ?? diffBody ?? grepBody ?? readBody;
+	const card = errorBody ?? lspStatusBody ?? lspBody ?? answerBody ?? diffBody ?? grepBody ?? readBody;
 	const expandable = bodyRaw != null || outputText !== null || card !== null;
 	const open = expanded && expandable;
 	const bodyText = useMemo(
@@ -451,6 +457,8 @@ function ToolRow({
 								})
 									: lspStatusBody !== null
 										? jsx_(LspStatusBlock, { model: lspStatusBody })
+										: answerBody !== null
+											? jsx_(LspAnswerBlock, { model: answerBody, labels: { noActions: t("lsp.answer.noActions") } })
 										: lspBody !== null
 									? jsx_(LspDiagBlock, {
 										model: lspBody,
@@ -726,21 +734,29 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
 	const error = errorCardModel(block);
 	// The diagnostics rows are drawn by our own block below, so the read/grep/diff
 	// bodies stay out of it — this row owns its body.
-	const lsp = lspCardModel(block);
+	// A NAVIGATION answer (definition / references / implementation) is not one
+	// file's rows: its meta is the grep projection, and the multi-file body that
+	// already draws a search draws it — tabs per file, anchored gutters, the same
+	// editability. Only one of the two bodies is ever non-null: the projections
+	// cannot both validate against one meta.
+	const navigation = grepCardModel(block);
+	const lsp = navigation === null ? lspCardModel(block) : null;
 	const lspStatus = lspStatusCardModel(block);
 	return jsx_(ToolRow, {
 		t,
+		// #397 review: the row-less answers draw their own card (hover / actions / JSON).
+		answer: lspAnswerModel(block),
 		variant: model.variant,
 		toolName,
 		icon: jsx_(IconBrowseOutlineMedium, { size: 14 }),
 		title: "LSP",
-		titleSuffix: null,
+		titleSuffix: rowSuffixText(t, block),
 		summary: model.summary,
 		bodyRaw: model.bodyRaw,
 		output: model.output,
 		errorSummary: model.errorSummary,
 		read: null,
-		grep: null,
+		grep: navigation,
 		diff: null,
 		lsp,
 		lspStatus,
