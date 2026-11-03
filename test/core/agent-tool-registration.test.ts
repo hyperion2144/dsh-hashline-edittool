@@ -50,7 +50,7 @@ function makeRootCtx() {
 	return { rootCtx: rootCtx as never, calls, pluginTools };
 }
 
-function makeAgent(options: { deferEffect?: boolean; builtInLsp?: boolean } = {}) {
+function makeAgent(options: { deferEffect?: boolean; builtInLsp?: boolean; registryThrows?: boolean } = {}) {
 	const agentTools: string[] = [];
 	let deferred: (() => unknown) | undefined;
 	// A REAL scoped context: the `lsp` placement decision reads the scope
@@ -64,7 +64,12 @@ function makeAgent(options: { deferEffect?: boolean; builtInLsp?: boolean } = {}
 			tools: {
 				// The registry's view for this agent: a built-in `lsp` shows up
 				// here BEFORE the plugin registers its own.
-				get: (name: string) => (name === "lsp" ? builtInLsp : undefined),
+				get: (name: string) => {
+					// A registry that refuses to answer: the probe cannot tell
+					// whether a built-in `lsp` is there.
+					if (options.registryThrows === true) throw new Error("REGISTRY_UNAVAILABLE");
+					return name === "lsp" ? builtInLsp : undefined;
+				},
 				register: (def: ToolDef) => {
 					agentTools.push(def.name);
 					return () => undefined;
@@ -200,6 +205,18 @@ describe("#398 — a resumed session's first turn sees the whole tool surface", 
 		apply(rootCtx);
 		const created = calls.find((c) => c.event === "agent/created")!;
 		const { agent, agentTools } = makeAgent();
+		await created.handler({ agent });
+		expect(agentTools).not.toContain("lsp");
+		expect(pluginTools).toContain("lsp");
+	});
+
+	it("registers lsp on the plugin layer when the registry cannot answer", async () => {
+		const { rootCtx, calls, pluginTools } = makeRootCtx();
+		apply(rootCtx);
+		const created = calls.find((c) => c.event === "agent/created")!;
+		// "Cannot tell" is not "there is a built-in": the tool goes where
+		// it is present from the first turn of every agent.
+		const { agent, agentTools } = makeAgent({ registryThrows: true });
 		await created.handler({ agent });
 		expect(agentTools).not.toContain("lsp");
 		expect(pluginTools).toContain("lsp");

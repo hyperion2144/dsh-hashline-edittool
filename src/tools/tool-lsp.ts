@@ -1476,14 +1476,28 @@ const DIAGNOSTIC_SEVERITY: Record<number, string> = {
 	4: "hint",
 };
 
+/** The registered `lsp` definition and the disposer that unregisters it. */
+export interface LspRegistration {
+	/** The tool as the registry holds it — the plugin keeps this to tell its own tool from a built-in. */
+	definition: ReturnType<typeof buildLspTool>;
+	/** The exact disposer that unregisters the tool. */
+	dispose: () => void;
+}
+
 /**
- * Register the tool on an agent's context.
+ * Register the tool on the given context — the agent's own layer (to shadow a
+ * built-in) or the plugin's layer (when there is nothing to shadow).
+ *
+ * Unlike the other registrars this one hands the DEFINITION back: the `lsp`
+ * layer is decided by asking the registry what is already there, and that
+ * answer must never count this plugin's own tool as a built-in.
  *
  * @param _rootCtx - unused; kept for symmetry with the other registrars.
- * @param agentCtx - the agent whose tool surface this joins.
+ * @param agentCtx - the context whose tool layer receives the registration.
  * @param io - the session's file access.
- * @returns a disposer.
+ * @returns the definition and the exact disposer that unregisters it.
  */
-export function registerLspTool(_rootCtx: Context, agentCtx: Context, io: FileIO): () => void {
-	return agentCtx.tools.register(buildLspTool(io));
+export function registerLspTool(_rootCtx: Context, agentCtx: Context, io: FileIO): LspRegistration {
+	const definition = buildLspTool(io);
+	return { definition, dispose: agentCtx.tools.register(definition) };
 }

@@ -230,23 +230,44 @@ interface LspPlacement {
 /** The `lsp` placement decided per plugin context. */
 const lspPlacements = new WeakMap<Context, LspPlacement>();
 
+/** Every tool definition this plugin registered — a probe must never read one as a built-in. */
+const ownToolDefinitions = new WeakSet<object>();
+
+/** What the registry said about a same-named built-in: yes, no, or "cannot tell". */
+type BuiltInProbe = true | false | undefined;
+
 /**
- * Is a same-named tool already registered in a FARTHER layer — one this
+ * Is a same-named built-in ALREADY registered in a farther layer — one this
  * plugin's own registration would shadow?
  *
- * `tools.get(name, scope)` is the view the agent sees: the global layer,
- * then the scope chain (the preset), then the agent's own layer last.
- * BEFORE the plugin registers its own tool, that view holds exactly the
- * built-ins.
+ * `tools.get(name, scope)` is the view the agent sees: the global layer, then
+ * the scope chain (the preset), then the agent's own layer last. Before this
+ * plugin registers its tool, that view holds exactly the OTHER people's tools.
+ *
+ * Two things make the answer untrustworthy, and both fall through to
+ * `undefined` so the caller registers on the safe (plugin) layer:
+ *
+ * - the hit may be THIS plugin's own tool (an earlier agent already put it on
+ *   the plugin layer) — that is not a built-in to shadow;
+ * - the registry may refuse to answer at all (an older host, a scope-less
+ *   context, a throwing getter) — then nothing is known.
  *
  * @param agentCtx - the agent's scoped context.
  * @param name - the tool name to look for.
- * @returns whether a farther layer already carries that name.
+ * @returns `true` only for a farther-layer tool that is not ours.
  */
-function shadowedToolPresent(agentCtx: Context, name: string): boolean {
-	const scope = scopeOf(agentCtx);
-	if (scope === undefined) return false;
-	return agentCtx.tools.get(name, scope) !== undefined;
+function builtInToolPresent(agentCtx: Context, name: string): BuiltInProbe {
+	try {
+		const scope = scopeOf(agentCtx);
+		if (scope === undefined) return undefined;
+		const found = agentCtx.tools.get(name, scope);
+		if (found === undefined) return false;
+		// Our own tool is not a built-in: it shadows nothing, so the safe layer wins.
+		return ownToolDefinitions.has(found) ? false : true;
+	} catch {
+		// The registry could not answer — register where the tool is always there.
+		return undefined;
+	}
 }
 
 /**
@@ -260,7 +281,10 @@ function lspPlacement(rootCtx: Context, agent: Agent): LspPlacement {
 	const existing = lspPlacements.get(rootCtx);
 	if (existing !== undefined) return existing;
 	const placement: LspPlacement = {
-		layer: shadowedToolPresent(agent.ctx, "lsp") ? "agent" : "plugin",
+		// ONLY a confirmed, foreign built-in earns the agent layer. Anything else
+		// — absent, our own, or an unanswerable registry — registers on the plugin
+		// layer, where the tool is in the surface from the first turn.
+		layer: builtInToolPresent(agent.ctx, "lsp") === true ? "agent" : "plugin",
 		onPluginLayer: false,
 	};
 	lspPlacements.set(rootCtx, placement);
@@ -328,12 +352,18 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 	const placement = lspPlacement(rootCtx, agent);
 	if (placement.layer === "agent") {
 		// A built-in is there to shadow: the agent's layer is nearer, so it wins.
-		disposers.push(registerLspTool(rootCtx, agent.ctx, io));
+		const lsp = registerLspTool(rootCtx, agent.ctx, io);
+		// Remember it, so a later probe cannot mistake OUR tool for the built-in.
+		ownToolDefinitions.add(lsp.definition);
+		disposers.push(lsp.dispose);
 	} else if (!placement.onPluginLayer) {
 		// Nothing to shadow: the plugin layer carries the tool for every agent,
 		// and it is there from the first turn. One name per layer, so the
-		// registration happens once.
-		registerLspTool(rootCtx, rootCtx, io);
+		// registration happens once — and its disposer belongs to the PLUGIN
+		// context (it must outlive every agent, so it is deliberately NOT in
+		// `disposers`, which the agent's own teardown runs).
+		const lsp = registerLspTool(rootCtx, rootCtx, io);
+		ownToolDefinitions.add(lsp.definition);
 		placement.onPluginLayer = true;
 	}
 	// #53: the write tool is fully shadowed — it owns the auto-read preview

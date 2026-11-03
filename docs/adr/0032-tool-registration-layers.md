@@ -99,6 +99,46 @@ for every later agent: a built-in is a deployment fact, not a per-agent
 one. The plugin layer takes one name per layer, so that registration
 happens once.
 
+## Amendment (2026-11-03) — the probe must answer OWNERSHIP, and "cannot tell" means the plugin layer
+
+Decision §5 asks the registry whether a built-in `lsp` is there. Two
+refinements make that answer trustworthy; both came from running the
+probe for real. The first attempt asked only "is a same-named tool in
+the view?" and got the answer wrong twice: it read the plugin's OWN
+`lsp` as a built-in to shadow, and it had no way to say "the registry
+would not answer me".
+
+**A. The probe answers OWNERSHIP, not just existence.**
+`tools.get(name, scope)` returns whatever is nearest in the view —
+including a tool this plugin registered itself. Once the plugin layer
+holds the hashline `lsp`, a later probe finds it and would call it a
+built-in. So every definition the plugin registers is remembered in a
+`WeakSet` (`ownToolDefinitions`), and a hit that is one of OURS counts
+as "no built-in": our own tool shadows nothing, and the plugin layer
+is where it already lives.
+
+**B. The probe is THREE-valued, and only a confirmed answer buys the
+agent layer.** The registry may simply fail to answer — a scope-less
+context, an older host, a throwing getter. That is neither "there is
+a built-in" nor "there is not": it is UNKNOWN. So the decision is:
+
+| probe | layer | why |
+| --- | --- | --- |
+| `true` — a farther-layer tool that is NOT ours | agent | there is something to shadow |
+| `false` — nothing there, or the hit is our own | plugin | nothing to shadow |
+| `undefined` — the registry could not answer | plugin | the safe layer: the tool is in the surface from the first turn |
+
+Only `true` reaches the agent layer. Everything else — absent, our own,
+or unanswerable — registers on the plugin layer, where the tool is
+present from the first turn of every agent.
+
+The cost of the fallback is honest and bounded. If a built-in `lsp`
+really does exist but the registry would not answer, the preset's
+nearer layer wins and the model gets the OFFICIAL `lsp` instead of the
+hashline one: a degraded tool, not a missing one. That is the right way
+round — the bug this ADR exists for is a MISSING tool on a resumed
+session's first turn.
+
 ## Alternatives rejected
 
 - **Move all eleven to the plugin layer.** Rejected: the preset's built-ins
@@ -143,6 +183,12 @@ happens once.
   there; otherwise it is on the plugin's layer, next to the six. Either
   way it is in the tool surface from the first turn of a resumed
   session.
+- The layer probe is ownership-aware and three-valued. Only a CONFIRMED
+  built-in — one the registry named, and that is not the plugin's own —
+  earns the agent layer; "absent", "our own" and "the registry would
+  not answer" all land on the plugin layer. An unanswerable registry
+  therefore degrades to the OFFICIAL `lsp` (the preset's nearer layer
+  wins), never to a missing tool.
 - Enabling the official `lsp` plugin MID-SESSION is out of scope: the
   layer was decided when the first agent was installed, and the plugin
   layer cannot yield a name to a nearer layer that appears later.
@@ -189,3 +235,8 @@ happens once.
   on the plugin layer when there is none (registered once); the listener
   does not return before the install ran; and it still returns when the
   agent's scope is already gone.
+- Ownership-aware probe: `src/index.ts` — `ownToolDefinitions` (a
+  `WeakSet` of every definition this plugin registered) and
+  `builtInToolPresent` (three-valued: `true` / `false` / `undefined`);
+  `test/core/agent-tool-registration.test.ts` covers a confirmed
+  built-in, no built-in, and a registry that throws.
