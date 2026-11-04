@@ -203,46 +203,34 @@ describe("grep over a section larger than the per-response budget (#307)", () =>
 		});
 	});
 
-	it("never answers with an empty shell when the first row nearly fills the budget", async () => {
+	it("never answers with an empty shell when a row is huge", async () => {
 		await withTempDir("grep-307-nofit-", async (cwd) => {
-			// A first line that almost fills the budget: its own cost (content + the
-			// per-row allowance) is INSIDE the budget, so it is served — while the
-			// section as a whole does not fit. This is exactly the case that used to
-			// fall through to the notice-only response.
+			// #414: the preview cap cuts a huge row at 2000 bytes, so the section
+			// fits the budget and is served — never the notice-only answer.
 			const first = `needle ${"x".repeat(7954)}`;
 			const second = `needle ${"y".repeat(500)}`;
 			await writeFile(join(cwd, "huge.log"), `${first}\n${second}\n`);
 			applyEffective({ max_response_chars: BUDGET });
 
 			const value = await runGrep(cwd, { path: "huge.log", pattern: "needle" });
-			// Not the notice-only answer — a row the model can read.
 			expect(value.modelText).not.toContain("Matches exist but exceed the per-response budget");
-			expect(servedTexts(value)).toHaveLength(1);
-			expect(servedTexts(value)[0]).toBe(first);
-			// And the row that did not fit is still reachable.
-			expect(value.continuation?.resume).toMatch(/^rs-[0-9a-f]{32}$/);
-			const next = await runGrep(cwd, { resume: value.continuation!.resume });
-			expect(servedTextsMatching(next, "needle ")).toHaveLength(1);
+			expect(servedTexts(value).length).toBeGreaterThanOrEqual(1);
+			expect(servedTexts(value)[0]).toContain("(line truncated)");
+			expect(servedTexts(value)[0]).toContain("needle");
 		});
 	});
 
 	it("serves a hit, not only the context that filled the window", async () => {
 		await withTempDir("grep-307-context-", async (cwd) => {
-			// Three huge context rows sit BEFORE the hit, so a cut that simply takes
-			// the file's first rows would show context and no match — and the JSON
-			// projection would read as "this file has no matches".
+			// Three huge context rows sit BEFORE the hit. #414 truncates each at the
+			// preview cap, so the whole section fits — and the hit is still served.
 			const contextRows = ["x".repeat(4_000), "y".repeat(4_000), "z".repeat(4_000)];
 			const hit = "needle in the middle";
 			await writeFile(join(cwd, "wide.log"), `${[...contextRows, hit].join("\n")}\n`);
 			applyEffective({ max_response_chars: BUDGET });
 
 			const value = await runGrep(cwd, { path: "wide.log", pattern: "needle", context: 3 });
-			// The hit is served…
 			expect(servedTextsMatching(value, hit)).toHaveLength(1);
-			// …and the skipped context rows are not lost: they lead the spill.
-			expect(value.continuation?.resume).toMatch(/^rs-[0-9a-f]{32}$/);
-			const next = await runGrep(cwd, { resume: value.continuation!.resume });
-			expect(servedTexts(next).length).toBeGreaterThan(0);
 
 			// The JSON projection must show the hit too — never an empty match map.
 			applyEffective({ max_response_chars: BUDGET, output_format: "json" });

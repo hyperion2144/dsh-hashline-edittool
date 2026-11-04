@@ -40,11 +40,13 @@
 import { contentKey } from "../../hashline/alloc.js";
 import { contentChecksum } from "../../hashline/hash-assign.js";
 import { splitLines } from "../../infra/utils.js";
-import { allocateInto, type SparseState } from "../../hashline/alloc.js";
-import { ensureAnchorState, normalizeContent, persistAnchorState, persistedAnchorChecksum, persistedAnchorLines, persistedAnchorsFor } from "./anchor-state.js";
+import { allocateIntoRows, type SparseState } from "../../hashline/alloc.js";
+import { ensureAnchorState, ensureAnchorStateByIdentity, normalizeContent, persistAnchorState, persistedAnchorChecksum, persistedAnchorLines, persistedAnchorsFor, type AnchorIdentity } from "./anchor-state.js";
 import type { PersistedAnchorLine } from "./anchor-state.js";
 import { loadHashStore, withStore, withStoreAsync } from "./hash-store.js";
 import { loadServed } from "./served.js";
+
+export type { AnchorIdentity };
 
 // --- types (contract §2.1 / §2.2) -------------------------------------------
 
@@ -58,14 +60,30 @@ export interface AnchorRef {
 	readonly line?: number;
 }
 
+/** One line to mint or reuse, with its CURRENT text (read line space). */
+export interface AnchorRow {
+	/** 1-based line number. */
+	readonly line: number;
+	/** The line's text, without its terminator. */
+	readonly text: string;
+}
+
 /** Input to {@link anchorFor}. */
 export interface AnchorForInput {
 	/** Absolute path; workspace scope is the caller's `withWorkspace`. */
 	readonly path: string;
 	/** 1-based lines that will ACTUALLY reach the model (after truncation). */
-	readonly lines: readonly number[];
-	/** The file's current normalized text. The caller has read it; we do not. */
-	readonly content: string;
+	readonly rows: readonly AnchorRow[];
+	/** The file identity the rows were taken at (#414). */
+	readonly identity: AnchorIdentity;
+	/**
+	 * The file's normalized text, when the caller already holds it.
+	 *
+	 * Required only to REALIGN state after an external change: a caller that
+	 * does not hold it gets `[E_ANCHOR_REALIGN]` and is expected to read the
+	 * file and retry through the content adapter.
+	 */
+	readonly content?: string;
 	/** dsh session key; served state is isolated per session. */
 	readonly sessionKey: string;
 }
@@ -76,6 +94,54 @@ export interface AnchorForResult {
 	readonly anchors: readonly string[];
 	/** The anchors minted in this call (the rest were reused). */
 	readonly minted: readonly string[];
+}
+
+/**
+ * Turn a caller's whole text into the kernel's inputs (#414).
+ *
+ * The content ADAPTER for read / edit / ast / lsp: they already hold the
+ * file's text, so this splits it once and hands over `rows` + `identity`. The
+ * normalized text rides along as `content` because realignment needs it.
+ *
+ * @param content - the file's text as the caller read it (raw is fine).
+ * @param lines - the 1-based lines the tool is about to render.
+ * @returns the rows, their identity, and the normalized text.
+ */
+export function anchorRowsFromContent(
+	content: string,
+	lines: readonly number[],
+): { rows: AnchorRow[]; identity: AnchorIdentity; content: string } {
+	const normalized = normalizeContent(content);
+	const split = splitLines(normalized);
+	return {
+		rows: lines.map((line) => ({ line, text: split[line - 1] ?? "" })),
+		identity: { checksum: contentChecksum(normalized), lineCount: split.length },
+		content: normalized,
+	};
+}
+
+/**
+ * The CONTENT adapter's entry point (#414): the call shape read / edit / ast /
+ * lsp already use — a whole text plus the lines to serve.
+ *
+ * It splits once, derives the identity, and calls {@link anchorFor} with the
+ * text as the realign source. The kernel behind it is the only allocation
+ * path; nothing else mints or reuses a line's anchor.
+ */
+export async function anchorForContent(input: {
+	readonly path: string;
+	readonly lines: readonly number[];
+	readonly content: string;
+	readonly sessionKey: string;
+}): Promise<AnchorForResult> {
+	const adapted = anchorRowsFromContent(input.content, input.lines);
+	return anchorFor({
+		path: input.path,
+		rows: adapted.rows,
+		identity: adapted.identity,
+		content: adapted.content,
+		sessionKey: input.sessionKey,
+	});
 }
 
 /** Why {@link probeLines} refused, which picks the model-facing wording (§2.4). */
@@ -307,36 +373,27 @@ export async function anchorFor(input: AnchorForInput): Promise<AnchorForResult>
  * Split out rather than re-indented so the body reads as it did: the wrapper
  * above owns the transaction, this owns the decision.
  *
- * @param input - path, the exact lines being returned, content, session key.
- * @returns the anchors, aligned with `input.lines`, plus which were minted.
+ * @param input - path, the exact rows being returned, identity, session key.
+ * @returns the anchors, aligned with `input.rows`, plus which were minted.
  */
 async function anchorForInTransaction(input: AnchorForInput): Promise<AnchorForResult> {
-	const { path, sessionKey } = input;
-	// NORMALIZED first, and everything below keys off this value.
-	//
-	// `ensureState` normalizes (BOM + CRLF→LF) to compute the file checksum, so
-	// keying lines off the RAW text gave one file two spellings: a caller that
-	// passed the un-normalized `io.readText` text minted anchors whose contentKey
-	// disagreed with the rows the same call persisted, and the next call over the
-	// normalized text re-minted every line. Measured: serving the BOM/CRLF
-	// spelling and then the clean text for the SAME path produced different
-	// anchors for line 1.
-	const content = normalizeContent(input.content);
-	const lines = [...input.lines];
-	const state = ensureAnchorState(path, content);
-	// Taken from the STATE, not recomputed here: loading the file may have
-	// realigned the state (an external change), and a value captured before that
-	// would be the pre-realign checksum. Writing it back would leave the row
-	// claiming the file is unchanged when it is not — the staleness that turns
-	// every later reader into a spurious remap.
-	const checksum = state.checksum;
-	const currentLines = splitLines(content);
-	const lineCount = currentLines.length;
+	const { path, sessionKey, identity } = input;
+	// #414: the state is addressed by the file's IDENTITY, not by its text. A
+	// caller that already has the text (read / edit / ast / lsp) passes it as
+	// the realign source; a caller that does not (grep) gets
+	// `[E_ANCHOR_REALIGN]` when the file changed underneath, and is expected to
+	// read the file and retry through the content adapter.
+	const state = ensureAnchorStateByIdentity(path, identity, input.content);
+	const { checksum, lineCount } = identity;
+
+	const lines = input.rows.map((row) => row.line);
+	const textByLine = new Map<number, string>();
+	for (const row of input.rows) textByLine.set(row.line, row.text);
 
 	// Reuse where the content still matches; everything else is a candidate for
-	// a fresh mint. `allocateInto` below sees only the misses, so the reuse test
-	// lives here — it is the one place that knows both the persisted key and the
-	// current text.
+	// a fresh mint. `allocateIntoRows` below sees only the misses, so the reuse
+	// test lives here — it is the one place that knows both the persisted key
+	// and the current text.
 	const anchors = new Array<string>(lines.length).fill("");
 	const misses: number[] = [];
 	const anchorRows = persistedAnchorLines(path);
@@ -349,7 +406,9 @@ async function anchorForInTransaction(input: AnchorForInput): Promise<AnchorForR
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i]!;
 		if (!Number.isInteger(line) || line < 1 || line > lineCount) continue;
-		const key = contentKey(currentLines[line - 1]!);
+		const text = textByLine.get(line);
+		if (text === undefined) continue;
+		const key = contentKey(text);
 		// §2.1 item 2: reuse when `anchor_lines` HAS the line and its recorded
 		// content key still matches the current text.
 		const existing = rowsByLine.get(line);
@@ -370,9 +429,11 @@ async function anchorForInTransaction(input: AnchorForInput): Promise<AnchorForR
 
 	const minted: string[] = [];
 	if (misses.length > 0) {
-		// `allocateInto` mints against `used` (which already carries the live set
-		// and this call's release pool) and writes into `state.entries`.
-		const fresh = allocateInto(state, content, misses, used);
+		// `allocateIntoRows` mints against `used` (which already carries the live
+		// set and this call's release pool) and writes into `state.entries`.
+		const missRows = new Map<number, string>();
+		for (const line of misses) missRows.set(line, textByLine.get(line)!);
+		const fresh = allocateIntoRows(state, missRows, lineCount, used);
 		for (let i = 0; i < misses.length; i++) {
 			const anchor = fresh[i]!;
 			if (anchor !== "") {

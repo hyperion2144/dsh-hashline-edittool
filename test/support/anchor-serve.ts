@@ -14,7 +14,7 @@
  *
  * @module test/support/anchor-serve
  */
-import { anchorFor } from "../../src/domain/session/anchor-entry.js";
+import { anchorForContent } from "../../src/domain/session/anchor-entry.js";
 import { anchorsFor, registerAnchorPersistence } from "../../src/domain/session/anchor-state.js";
 import type { PersistedAnchorLine, PersistedAnchorState } from "../../src/domain/session/anchor-state.js";
 import { splitLines } from "../../src/infra/utils.js";
@@ -41,7 +41,7 @@ export async function serveLines(
 	lines?: readonly number[],
 	sessionKey = "test-session",
 ): Promise<string[]> {
-	const { anchors } = await anchorFor({
+	const { anchors } = await anchorForContent({
 		path,
 		content,
 		lines: lines === undefined ? allLines(content) : [...lines],
@@ -66,7 +66,7 @@ export async function servedAnchors(
 	path: string,
 	sessionKey = "test-session",
 ): Promise<string[]> {
-	await anchorFor({ path, content, lines: allLines(content), sessionKey });
+	await anchorForContent({ path, content, lines: allLines(content), sessionKey });
 	return anchorsFor(path, content);
 }
 

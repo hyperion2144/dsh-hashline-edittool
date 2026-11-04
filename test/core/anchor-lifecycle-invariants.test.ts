@@ -12,12 +12,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { anchorsFor } from "../../src/domain/session/anchor-state.js";
-import { anchorFor } from "../../src/domain/session/anchor-entry.js";
+import { anchorForContent } from "../../src/domain/session/anchor-entry.js";
 import { splitLines } from "../../src/infra/utils.js";
 
 /** Serve every line — the ONE allocate entry point (contract §2, LAZY #169). */
 async function serveAll(path: string, content: string): Promise<string[]> {
-	await anchorFor({
+	await anchorForContent({
 		path,
 		content,
 		lines: Array.from({ length: splitLines(content).length }, (_, i) => i + 1),

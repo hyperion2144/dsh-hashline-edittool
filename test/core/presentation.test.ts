@@ -144,9 +144,10 @@ describe("tool-grep structured presentation", () => {
 				exec(ctx),
 			)) as { files: unknown[]; truncated: boolean; total: number };
 			expect(value.truncated).toBe(true);
-			// #386: `total` is the file's TRUE hit count — the cap collected 50 of
-			// the 150 matching lines, and the count pass says how many there are.
-			expect(value.total).toBe(150);
+			// #414: the per-file cap cuts the search, and there is no second counting
+			// pass — `total` is what the search reported, and `truncatedBy` names the cut.
+			expect(value.total).toBeGreaterThanOrEqual(50);
+			expect((value as { truncatedBy?: string }).truncatedBy).toBe("limit");
 		});
 	});
 });

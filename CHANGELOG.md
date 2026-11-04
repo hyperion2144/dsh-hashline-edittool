@@ -6,12 +6,19 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Added
 
+- `grep` 的管道层重建：一次 `rg` 调用走 path（吃默认 ignore）、20 MB 全场输出帽、2000 字节行预览帽、250 条 inline 命中帽；rg 失败即响亮报错，JS 全树降级删除（#414，ADR-0036）。
+- 锚点库改按文件身份寻址：`anchorFor` 收行文本 + 流式 sha256 身份，`grep` 不再整文件重读；`HASH_STORE_VERSION` 升到 8（#414，ADR-0036）。
+
 - 新增 `apply_patch` 工具：一次调用应用跨文件的新增/修改/删除/移动变更集，整包预检通过后才落盘，默认开启（#401，ADR-0034）。
 - `apply_patch` 的卡片一文件一 tab，每个 section 对齐单功能工具：`new` 走 write 的整文件新增行、`file` 走 edit 的锚点 diff、`move` 的 tab 写明「从 X 重命名为 Y」、`remove` 的 tab 标题红字删除线并写「文件已删除」（不再把被删内容画成 diff）；折叠行路径带 `+` / `~` / `-` 标识，标题走三个 `rowTitle` 键并补齐中英文与 wire 白名单（#401）。
 - `lsp` 新增 `goToDefinition` / `findReferences` / `goToImplementation` / `hover` 四个导航操作：`line` 配 `symbol` 或 `character`，命中的行按文件 serve 成可编辑锚点行（#396，ADR-0033）。
 - `lsp` 导航结果按 100 个位置封顶并明说截断；空结果与「服务器不支持该操作」分开作答（#396）。
 - `lsp` 在发请求前校验服务器能力与 `didOpen` 支持，握手里协商出非 UTF-16 位置编码即拒绝（`[E_LSP_UNSUPPORTED_OPERATION]` / `[E_LSP_UNSUPPORTED_SYNC]` / `[E_LSP_BAD_ENCODING]`，#396）。
 - `lsp` 工具带 60s 调用预算，覆盖排队、打开文档、查询与渲染整条生命周期（#396）。
+
+### Changed
+
+- 行空间改为 ripgrep 的 `\n` 模型：CRLF 折叠、裸 CR 是普通字符，落位子系统删除（#414，ADR-0035，取代 ADR-0008）。
 
 ### Fixed
 
