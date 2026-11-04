@@ -91,7 +91,8 @@ describe("readNormFile", () => {
 			const { writeFile } = await import("fs/promises");
 			await writeFile(path, "alpha\rbeta\r", "utf-8");
 			const result = await readNormFile("oldmac.txt", cwd);
-			expect(result.normalized).toBe("alpha\nbeta\n");
+			// #414: a lone CR is a character in its line, not a line ending.
+			expect(result.normalized).toBe("alpha\rbeta\r");
 		});
 	});
 

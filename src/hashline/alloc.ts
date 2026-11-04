@@ -234,7 +234,37 @@ export function allocateInto(
 	lines: number[],
 	used?: Set<string>,
 ): string[] {
+	// The content ADAPTER (#414): callers that already hold the whole text
+	// (read / edit / ast / lsp) keep this shape; it splits once and hands the
+	// kernel the rows it asked for.
 	const currentLines = splitLines(content);
+	const rows = new Map<number, string>();
+	for (const line of lines) {
+		if (line >= 1 && line <= currentLines.length) rows.set(line, currentLines[line - 1]!);
+	}
+	return allocateIntoRows(state, rows, currentLines.length, used);
+}
+
+/**
+ * The allocator KERNEL (#414): mint or reuse anchors for lines given as text.
+ *
+ * The caller supplies the rows and the file's line count — no whole-file text
+ * is needed, which is what lets `grep` mint from ripgrep records. There is ONE
+ * implementation of the reuse/mint rule; `allocateInto` above is the adapter
+ * that builds these rows from a content string.
+ *
+ * @param state - the sparse state to allocate into (mutated).
+ * @param rows - line number → the line's current text.
+ * @param lineCount - the file's current line count (bounds check).
+ * @param used - anchors to avoid; defaults to the state's own live set.
+ * @returns one anchor per row, in ascending line order; `""` out of range.
+ */
+export function allocateIntoRows(
+	state: SparseState,
+	rows: ReadonlyMap<number, string>,
+	lineCount: number,
+	used?: Set<string>,
+): string[] {
 	const avoid = used ?? new Set<string>();
 	if (used === undefined) {
 		for (const [, entry] of state.entries) avoid.add(entry.anchor);
@@ -245,12 +275,12 @@ export function allocateInto(
 	// O(k²) probes and can exhaust the probe cap.
 	const cursorByKey = new Map<number, { offsets: Record<number, number> }>();
 	const out: string[] = [];
-	for (const line of [...new Set(lines)].sort((a, b) => a - b)) {
-		if (line < 1 || line > currentLines.length) {
+	for (const line of [...rows.keys()].sort((a, b) => a - b)) {
+		if (line < 1 || line > lineCount) {
 			out.push("");
 			continue;
 		}
-		const text = currentLines[line - 1]!;
+		const text = rows.get(line)!;
 		const key = contentKey(text);
 		const existing = state.entries.get(line);
 		if (existing && existing.contentKey === key) {

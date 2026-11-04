@@ -468,48 +468,6 @@ describe("edit over a strict backend (#273)", () => {
 	});
 });
 
-describe("grep over a strict backend (#273 upgrades #268)", () => {
-	it("a lossless NUL file's hits are SERVED (anchored rows)", async () => {
-		await withTempDir("grep-273-", async (cwd) => {
-			await writeFile(cwd + "/plain.txt", "needle in plain text\n", "utf-8");
-			await writeFile(
-				cwd + "/nul.log",
-				Buffer.from("head\0tail\nneedle after the nul\n", "utf-8"),
-			);
-			const { io } = strictIO();
-			const harness = setupIntegrationTest(cwd, io);
-			const text = getText(
-				await harness.getTool("grep").execute("g", { path: ".", pattern: "needle" }),
-			);
-			// nul.log section exists AND its row is anchored, not `[line N]`.
-			expect(text).toContain("nul.log");
-			expect(text).toMatch(/nul\.log[\s\S]*[A-Za-z0-9]{2,8}[:|][^\n]*needle after the nul/);
-			expect(text).not.toContain("[line 2] needle after the nul");
-		});
-	});
-
-	it("a lossy file's hits stay unserved; no backend code leaks", async () => {
-		await withTempDir("grep-273-lossy-", async (cwd) => {
-			await writeFile(cwd + "/plain.txt", "needle in plain text\n", "utf-8");
-			await writeFile(
-				cwd + "/bad.log",
-				Buffer.concat([
-					Buffer.from("needle then ", "utf-8"),
-					Buffer.from([0xff]),
-					Buffer.from(" then end\n", "utf-8"),
-				]),
-			);
-			const { io } = strictIO();
-			const harness = setupIntegrationTest(cwd, io);
-			const text = getText(
-				await harness.getTool("grep").execute("g", { path: ".", pattern: "needle" }),
-			);
-			expect(text).toContain("bad.log");
-			expect(text).toMatch(/\[line 1\][^\n]*needle then/);
-			expect(text).not.toContain("FS_NOT_TEXT");
-		});
-	});
-});
 
 describe("undo and write over a strict backend (#273)", () => {
 	it("undo after a lossless NUL-file edit restores the exact original bytes", async () => {

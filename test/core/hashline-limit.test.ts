@@ -5,7 +5,7 @@ import {
 	canon,
 } from "../../src/hashline/index.js";
 import { servedAnchors } from "../support/anchor-serve.js";
-import { anchorFor } from "../../src/domain/session/anchor-entry.js";
+import { anchorForContent } from "../../src/domain/session/anchor-entry.js";
 import { useTestHome } from "../support/fixtures.js";
 
 const home = useTestHome();
@@ -49,7 +49,7 @@ describe("hashline size limits — removed in v2.0", () => {
 	it("does not throw E_FILE_TOO_LARGE through the persistence path", { timeout: 60_000 }, async () => {
 		const line = "x";
 		const content = Array.from({ length: 300_000 }, () => line).join("\n");
-		const { anchors } = await anchorFor({
+		const { anchors } = await anchorForContent({
 			path: home.testPath,
 			content,
 			lines: Array.from({ length: 300_000 }, (_, i) => i + 1),

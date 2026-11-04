@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { anchorsFor, updateAnchorsAfterEdit } from "../../src/domain/session/anchor-state.js";
-import { anchorFor } from "../../src/domain/session/anchor-entry.js";
+import { anchorForContent } from "../../src/domain/session/anchor-entry.js";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { assignAnchors, contentKey } from "../../src/hashline/alloc.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
@@ -70,7 +70,7 @@ function hunkLine5(): { oldStart1: number; oldEnd1: number; finalStart1: number;
  * `allocateForLines`, a second allocation path that has been deleted.
  */
 async function serveAll(path: string, content: string): Promise<string[]> {
-	await anchorFor({
+	await anchorForContent({
 		path,
 		content,
 		lines: Array.from({ length: splitLines(content).length }, (_, i) => i + 1),

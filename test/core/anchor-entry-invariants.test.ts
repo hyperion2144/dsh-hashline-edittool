@@ -25,7 +25,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-	anchorFor,
+	anchorForContent,
 	clearReleasePool,
 	markReleased,
 	probeLines,
@@ -78,7 +78,7 @@ describe("anchorFor — allocation and reuse (#223 §2.1)", () => {
 			await writeFile(path, content, "utf8");
 
 			const result = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [2, 5, 9], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [2, 5, 9], sessionKey: "s1" }),
 			);
 
 			expect(result.anchors).toHaveLength(3);
@@ -96,7 +96,7 @@ describe("anchorFor — allocation and reuse (#223 §2.1)", () => {
 			await writeFile(path, content, "utf8");
 
 			const result = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 99], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 99], sessionKey: "s1" }),
 			);
 			expect(result.anchors[0]).not.toBe("");
 			expect(result.anchors[1]).toBe("");
@@ -110,10 +110,10 @@ describe("anchorFor — allocation and reuse (#223 §2.1)", () => {
 			await writeFile(path, content, "utf8");
 
 			const first = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 2, 3], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 2, 3], sessionKey: "s1" }),
 			);
 			const second = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 2, 3], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 2, 3], sessionKey: "s1" }),
 			);
 
 			expect(second.anchors).toEqual(first.anchors);
@@ -129,7 +129,7 @@ describe("anchorFor — allocation and reuse (#223 §2.1)", () => {
 			await writeFile(path, content, "utf8");
 
 			const result = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 2, 3], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 2, 3], sessionKey: "s1" }),
 			);
 
 			// Invariant 1: three identical lines must still get three identities,
@@ -145,7 +145,7 @@ describe("anchorFor — allocation and reuse (#223 §2.1)", () => {
 			await writeFile(path, content, "utf8");
 
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 4], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 4], sessionKey: "s1" }),
 			);
 
 			// Invariant 6.
@@ -173,7 +173,7 @@ describe("anchorFor — remap keeps identity (#223 §5, invariant 2)", () => {
 			await writeFile(path, before, "utf8");
 
 			const first = await withStore(dir, () =>
-				anchorFor({ path, content: before, lines: [4, 5], sessionKey: "s1" }),
+				anchorForContent({ path, content: before, lines: [4, 5], sessionKey: "s1" }),
 			);
 
 			// Someone (another session, or an external tool) inserts two lines at
@@ -184,7 +184,7 @@ describe("anchorFor — remap keeps identity (#223 §5, invariant 2)", () => {
 			shutdownHashStore(); // drop the in-process cache: force the persisted path
 
 			const second = await withStore(dir, () =>
-				anchorFor({ path, content: after, lines: [6, 7], sessionKey: "s1" }),
+				anchorForContent({ path, content: after, lines: [6, 7], sessionKey: "s1" }),
 			);
 
 			expect(second.anchors).toEqual(first.anchors);
@@ -199,7 +199,7 @@ describe("anchorFor — remap keeps identity (#223 §5, invariant 2)", () => {
 			await writeFile(path, before, "utf8");
 
 			const first = await withStore(dir, () =>
-				anchorFor({ path, content: before, lines: [2], sessionKey: "s1" }),
+				anchorForContent({ path, content: before, lines: [2], sessionKey: "s1" }),
 			);
 
 			const after = before.replace("l-1", "l-1 CHANGED");
@@ -207,7 +207,7 @@ describe("anchorFor — remap keeps identity (#223 §5, invariant 2)", () => {
 			shutdownHashStore();
 
 			const second = await withStore(dir, () =>
-				anchorFor({ path, content: after, lines: [2], sessionKey: "s1" }),
+				anchorForContent({ path, content: after, lines: [2], sessionKey: "s1" }),
 			);
 
 			expect(second.anchors[0]).not.toBe(first.anchors[0]);
@@ -223,7 +223,7 @@ describe("probeLines — the three conditions, and the checksum that is NOT one 
 			const content = lines("l", 5);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [3], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [3], sessionKey: "s1" }),
 			);
 
 			const probe = await withStore(dir, () =>
@@ -239,7 +239,7 @@ describe("probeLines — the three conditions, and the checksum that is NOT one 
 			const content = lines("l", 5);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [3], sessionKey: "SESSION_A" }),
+				anchorForContent({ path, content, lines: [3], sessionKey: "SESSION_A" }),
 			);
 
 			// Cross-session: anchors are SHARED, served state is not.
@@ -289,7 +289,7 @@ describe("probeLines — the three conditions, and the checksum that is NOT one 
 			const content = lines("l", 5);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [4], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [4], sessionKey: "s1" }),
 			);
 
 			// The model remembered line 1; the anchor says line 4. The anchor wins.
@@ -307,7 +307,7 @@ describe("probeLines — the three conditions, and the checksum that is NOT one 
 			const before = lines("l", 6);
 			await writeFile(path, before, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content: before, lines: [5], sessionKey: "s1" }),
+				anchorForContent({ path, content: before, lines: [5], sessionKey: "s1" }),
 			);
 			const recorded = await withStore(dir, async () => persistedAnchorChecksum(path));
 
@@ -342,7 +342,7 @@ describe("probeLines — the three conditions, and the checksum that is NOT one 
 			// the recorded checksum move — "the checksum triggers a remap instead of a
 			// refusal", with the write attributed to the call that owns writes.
 			await withStore(dir, () =>
-				anchorFor({ path, content: after, lines: [5], sessionKey: "s1" }),
+				anchorForContent({ path, content: after, lines: [5], sessionKey: "s1" }),
 			);
 			const afterAllocate = await withStore(dir, async () => persistedAnchorChecksum(path));
 			expect(afterAllocate).toBe(contentChecksum(after));
@@ -355,7 +355,7 @@ describe("probeLines — the three conditions, and the checksum that is NOT one 
 			const content = lines("l", 5);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 2], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 2], sessionKey: "s1" }),
 			);
 
 			const refs: AnchorRef[] = [
@@ -379,7 +379,7 @@ describe("the release pool (contract §4.1)", () => {
 			const content = lines("l", 5);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1], sessionKey: "s1" }),
 			);
 			const released = anchors[0]!;
 
@@ -392,7 +392,7 @@ describe("the release pool (contract §4.1)", () => {
 			shutdownHashStore();
 
 			const after = await withStore(dir, () =>
-				anchorFor({ path, content: sameContent, lines: [3], sessionKey: "s1" }),
+				anchorForContent({ path, content: sameContent, lines: [3], sessionKey: "s1" }),
 			);
 			expect(after.anchors[0]).not.toBe(released);
 		});
@@ -404,7 +404,7 @@ describe("the release pool (contract §4.1)", () => {
 			const content = lines("l", 3);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1], sessionKey: "s1" }),
 			);
 
 			markReleased(path, [anchors[0]!]);
@@ -434,13 +434,13 @@ describe("uniqueness is enforced across calls, not just within one (#217 §1)", 
 			// Serve a lot of lines, then shuffle the file underneath and serve
 			// again — the shape that originally reissued a live anchor (#217).
 			const a = await withStore(dir, () =>
-				anchorFor({ path, content: first, lines: [...Array(20).keys()].map((i) => i + 1), sessionKey: "s1" }),
+				anchorForContent({ path, content: first, lines: [...Array(20).keys()].map((i) => i + 1), sessionKey: "s1" }),
 			);
 			const second = [`m-0`, `m-1`, ...Array.from({ length: 38 }, (_, i) => `l-${i + 2}`)].join("\n");
 			await writeFile(path, second, "utf8");
 			shutdownHashStore();
 			const b = await withStore(dir, () =>
-				anchorFor({ path, content: second, lines: [...Array(20).keys()].map((i) => i + 1), sessionKey: "s2" }),
+				anchorForContent({ path, content: second, lines: [...Array(20).keys()].map((i) => i + 1), sessionKey: "s2" }),
 			);
 
 			// Invariant 1 on the CURRENT file: every live anchor names exactly one
@@ -491,7 +491,7 @@ describe("release is three-way (contract §4, invariant 4)", () => {
 			const content = lines("l", 5);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [2], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [2], sessionKey: "s1" }),
 			);
 			const doomed = anchors[0]!;
 			// Before: live, served and usable.
@@ -525,9 +525,9 @@ describe("release is three-way (contract §4, invariant 4)", () => {
 			const content = lines("l", 4);
 			await writeFile(path, content, "utf8");
 			// Both sessions read the same line, so both hold the same anchor.
-			await withStore(dir, () => anchorFor({ path, content, lines: [1], sessionKey: "A" }));
+			await withStore(dir, () => anchorForContent({ path, content, lines: [1], sessionKey: "A" }));
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1], sessionKey: "B" }),
+				anchorForContent({ path, content, lines: [1], sessionKey: "B" }),
 			);
 
 			await withStore(dir, () => releaseLines({ path, lines: [1], content, sessionKey: "A" }));
@@ -554,7 +554,7 @@ describe("release is three-way (contract §4, invariant 4)", () => {
 			const content = ["l-0", "l-0", "l-0", "l-0"].join("\n");
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1], sessionKey: "s1" }),
 			);
 			const doomed = anchors[0]!;
 			await withStore(dir, () => releaseLines({ path, lines: [1], content, sessionKey: "s1" }));
@@ -562,7 +562,7 @@ describe("release is three-way (contract §4, invariant 4)", () => {
 			// Three lines carry byte-identical content, so every one of them is a
 			// candidate for the freed anchor. None may get it.
 			const again = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [2, 3, 4], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [2, 3, 4], sessionKey: "s1" }),
 			);
 			expect(again.anchors).not.toContain(doomed);
 		});
@@ -592,10 +592,10 @@ describe("the used-set is the FILE's rows ∪ this call's pool — no store-wide
 			await writeFile(a, content, "utf8");
 			await writeFile(b, content, "utf8");
 			const first = await withStore(dir, () =>
-				anchorFor({ path: a, content, lines: [1, 2, 3], sessionKey: "s1" }),
+				anchorForContent({ path: a, content, lines: [1, 2, 3], sessionKey: "s1" }),
 			);
 			const second = await withStore(dir, () =>
-				anchorFor({ path: b, content, lines: [1, 2, 3], sessionKey: "s1" }),
+				anchorForContent({ path: b, content, lines: [1, 2, 3], sessionKey: "s1" }),
 			);
 			expect(first.anchors.every((anchor) => anchor !== "")).toBe(true);
 			expect(second.anchors).toEqual(first.anchors);
@@ -612,7 +612,7 @@ describe("the used-set is the FILE's rows ∪ this call's pool — no store-wide
 			const content = ["same", "same", "same", "same"].join("\n");
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 2, 3, 4], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 2, 3, 4], sessionKey: "s1" }),
 			);
 			expect(anchors.every((anchor) => anchor !== "")).toBe(true);
 			expect(new Set(anchors).size).toBe(4);
@@ -630,7 +630,7 @@ describe("invariant 7 — a refusal is SELF-CONSISTENT (#223 §9)", () => {
 			const content = lines("l", 6);
 			await writeFile(path, content, "utf8");
 			const { anchors } = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [1, 2, 3, 4, 5, 6], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [1, 2, 3, 4, 5, 6], sessionKey: "s1" }),
 			);
 			const doomed = anchors[2]!;
 			// The three-way release: dead, unserved for s1, pooled for this call.
@@ -652,7 +652,7 @@ describe("invariant 7 — a refusal is SELF-CONSISTENT (#223 §9)", () => {
 			// …and the marker the same session gets next IS usable by it: the recovery
 			// the refusal exists to enable, with no re-read in between.
 			const remint = await withStore(dir, () =>
-				anchorFor({ path, content, lines: [3], sessionKey: "s1" }),
+				anchorForContent({ path, content, lines: [3], sessionKey: "s1" }),
 			);
 			expect(remint.anchors[0]).not.toBe("");
 			const retry = await withStore(dir, () =>

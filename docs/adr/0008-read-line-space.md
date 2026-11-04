@@ -1,6 +1,6 @@
 # ADR-0008 — One line space: every line-number producer splits toLF text
 
-> **Status**: Accepted (issue #147, maintainer spec in the re-triage comment, 2026-09-20).
+> **Status**: Superseded by [ADR-0035](0035-line-space-rg-alignment.md) (2026-11-04, #414).
 
 ## Problem Statement
 

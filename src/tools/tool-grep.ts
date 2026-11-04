@@ -62,17 +62,17 @@ import {
 	takeRowsStrictlyWithinBudget,
 } from "../infra/response-stream.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { anchorForInWorkspace } from "../domain/session/session-view.js";
+import { anchorForInWorkspace, anchorForRowsInWorkspace } from "../domain/session/session-view.js";
 import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { splitLines, visLines, abortIf } from "../infra/utils.js";
 import { gatherFiles, matchInclude } from "../infra/file-scan.js";
-import { rgFiles, rgCountMatchingLines } from "./grep-rg.js";
+import { runGrep } from "./grep-rg.js";
+import { readFileIdentity } from "../infra/file-identity.js";
 import {
-	planGrepSearch,
 	DEFAULT_LIMIT,
+	sectionsFromRows,
 	type GrepSectionRow,
 	type GrepToolOptions,
-	type GrepSearchPlan,
 } from "./grep-search.js";
 import { toLF } from "../render/edit-diff.js";
 import {
@@ -180,30 +180,6 @@ interface GrepCanonicalValue {
  * @param signal - the abort signal.
  * @returns the count of each capped file, keyed by the file's own path.
  */
-async function countCappedHits(
-	plan: GrepSearchPlan,
-	pattern: string,
-	regex: boolean,
-	signal: AbortSignal | undefined,
-): Promise<Map<string, number>> {
-	const counts = new Map<string, number>();
-	if (plan.cappedFiles.length === 0) return counts;
-	const counted = await rgCountMatchingLines({
-		pattern,
-		literal: !regex,
-		files: plan.cappedFiles,
-		...(signal !== undefined ? { signal } : {}),
-	});
-	// The two sides may spell the same file differently, so the counts are
-	// matched by RESOLVED path.
-	const byResolved = new Map<string, number>();
-	for (const [path, count] of counted) byResolved.set(resolve(path), count);
-	for (const file of plan.cappedFiles) {
-		const count = byResolved.get(resolve(file));
-		if (count !== undefined) counts.set(file, count);
-	}
-	return counts;
-}
 
 /**
  * Register the hashline `grep` tool on the calling agent's scope.
@@ -580,129 +556,124 @@ export function buildGrepTool(io: FileIO) {
 				const root = await io.resolve(params.path ?? ".", cwd, signal2);
 				abortIf(signal2);
 				const rootStat = await lstat(root);
-				let files: string[];
-				if (rootStat.isFile()) {
-					files = [root];
-				} else if (rootStat.isDirectory()) {
-					const listed = getEffectiveConfig().grepRespectGitignore
-						? await rgFiles(root, signal2)
-						: undefined;
-					files = listed ?? (await gatherFiles(root, opts, signal2));
-				} else {
-					throw new Error(`[E_NOT_TEXT] Path is neither file nor directory: ${params.path}`);
-				}
-				if (includeGlob !== undefined) {
-					const relOf = (p: string) => relative(root, p);
-					files = files.filter((p) => matchInclude(includeGlob!, relOf(p)));
-				}
-				// ripgrep is the ENGINE (#384): one search produces the matches, and
-				// only the files that carry a hit are read for the served text. The
-				// pattern rides in ONE `--regexp=` argument (a literal pattern as
-				// `--fixed-strings`), never glued to the pattern text — the old
-				// pre-filter's `-F<pattern>` made every literal search look for the
-				// text "-F<pattern>" and answer "No matches" for hits and misses alike.
-				const plan = await planGrepSearch({
+				// #414: ONE ripgrep invocation walks the path itself, with ripgrep's
+				// own ignore semantics — a build directory a parent `.gitignore`
+				// excludes is never walked at all. No file list, no chunking, no
+				// second engine.
+				const searchOpts = {
 					pattern: params.pattern,
-					regex: opts.regex,
-					limit,
+					literal: opts.regex === false,
+					path: root,
+					...(includeGlob !== undefined ? { include: includeGlob } : {}),
 					context: opts.context ?? 0,
-					files,
+					...(getEffectiveConfig().grepRespectGitignore ? {} : { ignoreIgnore: true }),
 					signal: signal2,
-				});
-				// Only the files that matched are read at all; in the degraded path
-				// every candidate is read, because the matcher needs its content.
-				const candidates = plan.candidates;
-				// #386: the TRUE hit count of the files the search capped. The engine
-				// stops at the per-file cap, so a file that reached it may carry more
-				// hits than the search collected; those files get a second, uncapped
-				// counting pass, and every other file's count is already exact.
-				const trueTotals = await countCappedHits(plan, params.pattern, opts.regex, signal2);
+				};
+				let outcome = await runGrep(searchOpts);
+				// A named path under an ignored ancestor is a real use: ONE wide
+				// retry, only when the first search found nothing (#414 Q3).
+				if (outcome.kind === "ok" && !outcome.rows.some((row) => row.match)) {
+					const wide = await runGrep({ ...searchOpts, ignoreAncestors: true });
+					if (wide.kind === "ok" && wide.rows.some((row) => row.match)) outcome = wide;
+				}
+				if (outcome.kind === "unavailable") {
+					throw new Error(
+						"[E_SEARCH_UNAVAILABLE] ripgrep is not available; install it or put `rg` on PATH. The search has no second engine.",
+					);
+				}
+				if (outcome.kind === "invalid-pattern") {
+					throw new Error(`[E_BAD_SHAPE] Grep pattern "${params.pattern}" was rejected by ripgrep: ${outcome.message}`);
+				}
+				if (outcome.kind === "overflow") throw new Error(`[E_SEARCH_OVERFLOW] ${outcome.message}`);
+				if (outcome.kind === "failed") throw new Error(`[E_SEARCH_FAILED] ${outcome.message}`);
+				const sections = sectionsFromRows(outcome.rows, root, limit, params.pattern, opts.regex !== false, opts.context ?? 0);
 
 				const fileSections: string[] = [];
+
 				const cardFiles: GrepFileRows[] = [];
+
 				const jsonOutput = isJsonOutput();
+
 				const jsonFiles: Array<{ path: string; matches: Record<string, string> }> = [];
+
 				const spillRows: SegmentRow[] = [];
+
 				const spillStamps: ResumeSidecar["stamps"] = [];
+
 				const spillStampPaths = new Set<string>();
-				// The TRUE hit count across the files (#386) — what the search found,
-				// not what it collected.
 				let hitTotal = 0;
-				// The number of hit rows THIS response served.
 				let servedMatches = 0;
-				// Whether every file's count is exact (a lower bound is not).
 				let hitTotalExact = true;
-				// Which cuts happened, across the files.
 				let limitCut = false;
 				let budgetCut = false;
 				let truncated = false;
 				let usedChars = 0;
 				let spilling = false;
 				let headerEmitted = false;
-				// Files that changed after the search ran (their rows are a snapshot).
-				const staleFiles: string[] = [];
-				// What the search knows about each file's hits, so the spill can
-				// carry them to the continuation (#386).
 				const fileHitsByFile = new Map<string, GrepFileHits>();
+				// #414: the search no longer re-reads files, so nothing can go stale
+				// between the search and the serve; kept for the caution text below.
+				const staleFiles: string[] = [];
 
-				// ADR-0013: the scan runs to COMPLETION — nothing is refused by size.
-				// Sections fitting the per-response budget are returned (allocated +
-				// served here); everything past the budget spills as unallocated rows
-				// and is served at resume time.
-				for (const file of candidates) {
+				for (const section of sections) {
 					abortIf(signal2);
-					let raw: string;
-					let lossy = false;
+					const file = section.path;
+					// #414: the file's identity comes from a STREAMING read — the
+					// file is never held in memory. Rows whose preview was cut are
+					// shown but not anchored (their text is not the line's text).
+					let identity: { checksum: string; lineCount: number };
 					try {
-						// #268/#273: `readTextTolerant` is `readText` first — every text file
-						// is read exactly as before — and falls back to the backend's raw
-						// bytes only when it was refused as text. A NUL byte no longer
-						// answers "No matches" for content `rg -a` finds; when the bytes are
-						// valid UTF-8 the file is lossless and its hits are served — only a
-						// lossy file (U+FFFD stand-ins) stays unserved.
-						const tolerant = await io.readTextTolerant(file, signal2);
-						raw = tolerant.text;
-						lossy = tolerant.fidelity === "lossy";
+						identity = await readFileIdentity(file, signal2);
 					} catch {
-						// An abort is never "this file is unreadable": ask the signal itself.
 						abortIf(signal2);
 						continue; // unreadable file — skipped, never a refusal
 					}
-					const text = toLF(raw);
-					const lines = visLines(text);
-					// The search's rows for this file: the engine's hits, placed in the
-					// read line space — or the plugin's own matcher's rows, when ripgrep
-					// could not answer at all.
-					const section = plan.sectionFor(file, { raw, lines, lossy });
-					if (section === undefined) continue;
-					if (section.stale) {
-						// The file changed after the search ran: its rows are the
-						// search's SNAPSHOT, not the file's current text. They are served
-						// unserved (the file no longer holds them) and the response names
-						// the file.
-						staleFiles.push(file);
+					section.lineCount = identity.lineCount;
+					// #205 Q5: a single row over the budget is pointer-ized and the
+					// segment keeps assembling — one pathological line never destroys
+					// a section.
+					for (const row of section.contextRows) {
+						if (codeUnits(row.content) + ROW_MARKER_ALLOWANCE > budget) {
+							row.content = `[Line ${row.position + 1} is ~${codeUnits(row.content)} chars, exceeds the ${budget}-char per-response budget; content not shown. Use bash: sed -n '${row.position + 1}p' ${file} | head -c ${budget}]`;
+							row.pointer = true;
+						}
 					}
-				// #205 Q5: a single row over the budget is pointer-ized and the segment
-				// keeps assembling — one pathological line never destroys a section.
-				for (const row of section.contextRows) {
-					if (codeUnits(row.content) + ROW_MARKER_ALLOWANCE > budget) {
-						row.content = `[Line ${row.position + 1} is ~${codeUnits(row.content)} chars, exceeds the ${budget}-char per-response budget; content not shown. Use bash: sed -n '${row.position + 1}p' ${file} | head -c ${budget}]`;
-						row.pointer = true;
+					const anchorableRows = section.contextRows.filter((row) => row.anchorable && !row.pointer);
+					let allocated: readonly string[] = [];
+					if (anchorableRows.length > 0) {
+						try {
+							allocated = await anchorForRowsInWorkspace({
+								cwd,
+								absolutePath: file,
+								rows: anchorableRows.map((row) => ({ line: row.position + 1, text: row.content })),
+								identity,
+								sessionKey,
+							});
+						} catch (error) {
+							// The anchored state was written for different content: read the
+							// file and realign through the content adapter (rare).
+							if (!(error instanceof Error) || !error.message.includes("E_ANCHOR_REALIGN")) throw error;
+							const tolerant = await io.readTextTolerant(file, signal2);
+							allocated = await anchorForInWorkspace({
+								cwd,
+								absolutePath: file,
+								content: tolerant.text,
+								lines: anchorableRows.map((row) => row.position + 1),
+								sessionKey,
+							});
+						}
 					}
-				}
+					const anchorsByPosition = new Map<number, string>();
+					anchorableRows.forEach((row, index) => {
+						const anchor = allocated[index] ?? "";
+						if (anchor !== "") anchorsByPosition.set(row.position, anchor);
+					});
 					const displayPath = relative(root, file) || basename(file);
-					// #386: the file's TRUE hit count. The counting pass answers for the
-					// files the search capped; for every other file the search's own count
-					// IS the truth, because the engine read the whole file.
-					const fileTotal = trueTotals.get(file) ?? section.hits.total;
-					const fileHits: GrepFileHits = {
-						reported: section.hits.reported,
-						...(fileTotal !== undefined ? { total: fileTotal } : {}),
-					};
-					// The cap cut hits exactly when the file carries more than the
-					// search reported — which the counting pass settles.
-					const fileLimitCut = limitCutFor(fileHits, limit);
-					hitTotal += fileTotal ?? fileHits.reported;
+					const reported = section.matches.length;
+					const fileTotal = section.limitCut ? undefined : reported;
+					const fileHits: GrepFileHits = { reported, ...(fileTotal !== undefined ? { total: fileTotal } : {}) };
+					const fileLimitCut = section.limitCut;
+					hitTotal += fileTotal ?? reported;
 					if (fileTotal === undefined) hitTotalExact = false;
 					limitCut = limitCut || fileLimitCut;
 					truncated = truncated || fileLimitCut;
@@ -710,63 +681,23 @@ export function buildGrepTool(io: FileIO) {
 					const sectionChars =
 						codeUnits(section.contextRows.map((row) => row.content).join("\n")) +
 						ROW_MARKER_ALLOWANCE * (section.contextRows.length + 1);
-					// #307: the admission is per ROW, not per section. A section that does
-					// not fit whole is SPLIT: the prefix that fits the remaining budget is
-					// served (anchored, editable), the tail spills to the resume token. A
-					// file larger than the whole budget used to answer with an empty shell
-					// — the notice and nothing else.
-					const admitRows = async (
-						rows: GrepSectionRow[],
-						budgetCutForFile: boolean,
-					): Promise<void> => {
-						const positions = rows.map((row) => row.position + 1);
-						// #223: same single entry point as the section branch above.
-						// A lossy file is not editable (#273): its text carries U+FFFD
-						// stand-ins for undecodable bytes, so `edit` refuses it and an anchor
-						// minted here could never verify a write-back. Its rows stay unserved
-						// — `[line N] content` — the honest shape for "found, but lossy".
-						// A STALE file is not editable either: its rows are the search's
-						// snapshot, and the file no longer holds that text.
-						const allocated = lossy || section.stale
-							? []
-							: await anchorForInWorkspace({
-									cwd,
-									absolutePath: file,
-									content: text,
-									lines: positions,
-									sessionKey,
-								});
-						const anchorsByPosition = new Map<number, string>();
-						const servedRows: Array<{ position: number; anchor: string; key: string | null }> = [];
-						rows.forEach((row, index) => {
-							if (row.pointer) return;
-							const anchor = allocated[index] ?? "";
-							anchorsByPosition.set(row.position, anchor);
-							if (anchor !== "") {
-								servedRows.push({
-									position: row.position,
-									anchor,
-									key: contentChecksum(canon(row.content)),
-								});
-							}
-						});
-						// Served by the mint above; only the OBSERVATION is left.
-						// #273: a lossy group serves nothing, but its rows were still SHOWN —
-						// observing them is what lets `write` replace the file (`edit` refuses
-						// it via [E_LOSSY_BYTES]). Skipping it left the file un-writable,
-						// with a remedy (`read()` first) a lossy read can never satisfy.
-						if ((servedRows.length > 0 || lossy) && exec !== undefined) {
+					const admitRows = async (rows: GrepSectionRow[], budgetCutForFile: boolean): Promise<void> => {
+						const servedRows: Array<{ position: number; anchor: string }> = [];
+						for (const row of rows) {
+							if (row.pointer) continue;
+							const anchor = anchorsByPosition.get(row.position) ?? "";
+							if (anchor !== "") servedRows.push({ position: row.position, anchor });
+						}
+						if (servedRows.length > 0 && exec !== undefined) {
 							await io.emitObserved(file, exec, signal2).catch(() => undefined);
 						}
-						// #386: the section says what it found and what it served — a
-						// capped search must not read like a complete one.
 						const servedHits = rows.filter((row) => row.isMatch).length;
 						fileSections.push(
 							[
 								renderSection(displayPath, rows, anchorsByPosition, lineNumbersEnabled(), !headerEmitted),
 								formatGrepStats({
 									...(fileTotal !== undefined ? { total: fileTotal } : {}),
-									reported: fileHits.reported,
+									reported,
 									served: servedHits,
 									limitCut: fileLimitCut,
 									budgetCut: budgetCutForFile,
@@ -790,25 +721,19 @@ export function buildGrepTool(io: FileIO) {
 						if (jsonOutput) {
 							const context = opts.context ?? contextLinesCfg();
 							const matches: Record<string, string> = {};
-							const anchorsByPos = anchorsByPosition;
-							// #259: the KEY is the marker, so it is spelled by the ONE formula —
-							// hand-built here, this site leaked a line number with the switch OFF.
-							// A row that could not be anchored keeps its bare line number: then
-							// that number is the only handle there is.
 							const keyOf = (position: number): string => {
-								const anchor = anchorsByPos.get(position) ?? "";
+								const anchor = anchorsByPosition.get(position) ?? "";
 								return anchor === "" ? `${position + 1}` : fmtMarker(anchor, position + 1);
 							};
-							// Only the rows THIS response returns are projected (#307): a
-							// partially served section must not claim the rows it spilled.
 							const servedPositions = new Set(rows.map((row) => row.position));
 							for (const match of section.matches) {
 								if (!servedPositions.has(match.position)) continue;
-								matches[keyOf(match.position)] = rowContent(section, match.position);
+								matches[keyOf(match.position)] = match.content;
 								for (let k = Math.max(0, match.position - context); k <= Math.min(section.lineCount - 1, match.position + context); k++) {
 									if (k === match.position) continue;
 									if (!servedPositions.has(k)) continue;
-									matches[keyOf(k)] = rowContent(section, k);
+									const row = section.contextRows.find((candidate) => candidate.position === k);
+									if (row !== undefined) matches[keyOf(k)] = row.content;
 								}
 							}
 							jsonFiles.push({ path: displayPath, matches });
@@ -818,32 +743,12 @@ export function buildGrepTool(io: FileIO) {
 						await admitRows(section.contextRows, false);
 						usedChars += sectionChars;
 					} else {
-						// The section does not fit whole. Split it per ROW instead of
-						// dropping all of it: the prefix that fits the remaining budget is
-						// served, the tail spills and stays reachable through the resume
-						// token. The row cost is the one the continuation charges, so a row
-						// costs the same on either side of the cut.
-						//
-						// The split is STRICT — a row that does not fit is not taken, so the
-						// response never passes the budget. That is safe for the FIRST
-						// section: what is left of the budget IS the whole budget there, and
-						// a row bigger than that is pointer-ized above (#205) — so the first
-						// row always fits and the response is never the empty shell #307
-						// reported. A LATER section may leave too little room for any
-						// row: then the whole section spills, as it did before.
 						const remaining = Math.max(0, budget - usedChars);
 						const rowCost = (row: GrepSectionRow): number => codeUnits(row.content) + ROW_MARKER_ALLOWANCE;
 						let split = spilling
 							? { included: [] as GrepSectionRow[], overflow: section.contextRows, used: 0 }
 							: takeRowsStrictlyWithinBudget(section.contextRows, remaining, rowCost);
 						if (split.included.length > 0 && !split.included.some((row) => row.isMatch)) {
-							// The window was filled by the section's LEADING context rows: the
-							// response would show context and no hit, and the JSON projection
-							// would read as "this file has no matches". Restart at the first hit —
-							// the skipped context rows go to the SPILL, so the continuation serves
-							// them first and nothing is lost. This is the answer to the ticket's
-							// open question: the cut is per row, but it never lands BEFORE the
-							// section's first hit.
 							const firstHit = section.contextRows.findIndex((row) => row.isMatch);
 							if (firstHit > 0) {
 								const fromHit = takeRowsStrictlyWithinBudget(section.contextRows.slice(firstHit), remaining, rowCost);

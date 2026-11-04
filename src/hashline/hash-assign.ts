@@ -26,6 +26,7 @@
  * @module dsh-hashline-edittool/hashline/hash-assign
  */
 import { splitLines } from "../infra/utils.js";
+import { createHash } from "node:crypto";
 import { assignAnchors } from "./alloc.js";
 import { lineNumbersEnabled } from "../infra/settings.js";
 
@@ -230,9 +231,16 @@ export function hashOf(canonLine: string): string {
 	return idxToHash(cyrb53(canonLine) % (62 ** 3), 3);
 }
 
-/** Whole-content fingerprint (hash-store snapshot key). 53-bit → 14 hex. */
+/**
+ * Whole-content fingerprint (hash-store snapshot key).
+ *
+ * #414 (ADR-0036): a crypto sha256 over the normalized text, computed by the
+ * platform — never a hand-written fold. 64 hex. The store's schema version is
+ * bumped with it, so rows written under the old 53-bit spelling are wiped
+ * instead of being compared against a value they can never match.
+ */
 export function contentChecksum(content: string): string {
-	return cyrb53(content).toString(16).padStart(14, "0");
+	return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 /**

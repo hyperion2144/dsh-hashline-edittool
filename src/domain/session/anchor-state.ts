@@ -82,13 +82,28 @@ export function registerAnchorPersistence(impl: AnchorStatePersistence | undefin
 
 // ---- the per-path sparse state ---------------------------------------------
 
+/**
+ * The file identity an allocation is addressed by (#414).
+ *
+ * `checksum` is the sha256 of the normalized text's UTF-8 bytes; `lineCount`
+ * is that text's line count. Both are properties of the file the rows were
+ * taken from, so a caller that observed them can allocate without holding the
+ * text — and two spellings of one file name the same identity.
+ */
+export interface AnchorIdentity {
+	readonly checksum: string;
+	readonly lineCount: number;
+}
 /** Content-base normalization (BOM + CRLF→LF): raw io.readText (grep/lsp/ast)
  * and normalized read text must produce the SAME state — without this the two
  * spellings of one file checksum differently and thrash the state.
+ *
+ * #414 (ADR-0035): the fold is CRLF → LF only. A bare CR stays a character,
+ * because ripgrep splits on `\n` alone and every tool now shares that space.
  */
 export function normalizeContent(content: string): string {
 	const bom = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
-	return bom.includes("\r\n") ? bom.replace(/\r\n/g, "\n").replace(/\r/g, "\n") : bom;
+	return bom.includes("\r\n") ? bom.replace(/\r\n/g, "\n") : bom;
 }
 
 /**
@@ -110,9 +125,46 @@ export function normalizeContent(content: string): string {
  */
 function ensureState(path: string, rawContent: string): SparseState {
 	const content = normalizeContent(rawContent);
-	const checksum = contentChecksum(content);
-	const currentLines = splitLines(content);
-	const lineCount = currentLines.length;
+	return ensureStateAt(
+		path,
+		{ checksum: contentChecksum(content), lineCount: splitLines(content).length },
+		content,
+	);
+}
+
+/**
+ * The file's sparse state, addressed by an EXTERNAL identity (#414).
+ *
+ * The caller already knows the file's checksum and line count (a streaming
+ * read of the bytes), so it can ask for anchors without handing the whole
+ * text over. This is the allocation kernel's door for `grep`, whose rows come
+ * from ripgrep records rather than from a full read.
+ *
+ * Realignment after an external change still needs the text: the LCS pairs the
+ * persisted rows to the file's CURRENT lines. A caller without it is told to
+ * read the file and retry (`[E_ANCHOR_REALIGN]`) rather than mint rows under a
+ * checksum nobody can vouch for.
+ *
+ * @param path - absolute path the state belongs to.
+ * @param identity - the checksum/line-count the caller observed.
+ * @param rawContent - the file's current text, when the caller has it.
+ * @returns the state, realigned to its content when it had drifted.
+ */
+export function ensureAnchorStateByIdentity(
+	path: string,
+	identity: AnchorIdentity,
+	rawContent?: string,
+): SparseState {
+	if (rawContent !== undefined) return ensureState(path, rawContent);
+	return ensureStateAt(path, identity, undefined);
+}
+
+function ensureStateAt(
+	path: string,
+	identity: AnchorIdentity,
+	content: string | undefined,
+): SparseState {
+	const { checksum, lineCount } = identity;
 	// Store-less window (pure unit tests, a mount with no store): nothing to read
 	// and nowhere to write back to.
 	if (!persistence) return { checksum, lineCount, entries: new Map() };
@@ -157,6 +209,12 @@ function ensureState(path: string, rawContent: string): SparseState {
 	// served lines only) so a served line keeps its anchor at its new
 	// position; content that vanished releases its anchor for reuse.
 	if (state.checksum !== checksum || state.lineCount !== lineCount) {
+		if (content === undefined) {
+			throw new Error(
+				`[E_ANCHOR_REALIGN] ${path}: the anchored state was written for different content; read the file and retry.`
+			);
+		}
+		const currentLines = splitLines(content);
 		const ordered = [...state.entries].sort((a, b) => a[0] - b[0]);
 		const aligned = alignPreservedBounded(
 			ordered.map(([, e]) => e.contentKey),

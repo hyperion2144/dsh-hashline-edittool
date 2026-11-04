@@ -26,12 +26,12 @@ describe("detectEnding", () => {
     expect(detectEnding("")).toBe("\n");
   });
 
-  it("detects lone CR when no LF is present", () => {
-    expect(detectEnding("hello\rworld")).toBe("\r");
+  it("treats a lone CR as a character, not a line ending (#414)", () => {
+    expect(detectEnding("hello\rworld")).toBe("\n");
   });
 
-  it("detects lone CR for a single trailing CR", () => {
-    expect(detectEnding("a\r")).toBe("\r");
+  it("treats a single trailing CR as a character (#414)", () => {
+    expect(detectEnding("a\r")).toBe("\n");
   });
 
   it("prefers CRLF over lone CR when both appear", () => {
@@ -48,8 +48,8 @@ describe("toLF", () => {
     expect(toLF("hello\r\nworld")).toBe("hello\nworld");
   });
 
-  it("converts bare \\r to \\n", () => {
-    expect(toLF("hello\rworld")).toBe("hello\nworld");
+  it("leaves a bare \\r alone (ripgrep's line space, #414)", () => {
+    expect(toLF("hello\rworld")).toBe("hello\rworld");
   });
 
   it("leaves already-LF text unchanged", () => {
@@ -57,7 +57,7 @@ describe("toLF", () => {
   });
 
   it("handles mixed line endings", () => {
-    expect(toLF("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
+    expect(toLF("a\r\nb\rc\nd")).toBe("a\nb\rc\nd");
   });
 
   it("returns empty string for empty input", () => {

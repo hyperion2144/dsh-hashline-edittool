@@ -40,7 +40,10 @@ export const HASH_STORE_BUSY_TIMEOUT = 1000;
  * `last_open_integrity_check`, `last_rebuild_at`) — see the note in
  * `buildStore`: the wipe touches only the anchor state, never `meta`.
  */
-export const HASH_STORE_VERSION = 7;
+// #414 (ADR-0036): 7 → 8 — the file identity is a crypto sha256 (64 hex)
+// instead of the 53-bit cyrb53 fold, so every row written under the old rule
+// is wiped rather than compared against a value it can never match.
+export const HASH_STORE_VERSION = 8;
 /**
  * How many successive edits `undo_last_edit` can walk back on one path
  * (#151/P5). The undo row family is a bounded STACK: the newest entry is the

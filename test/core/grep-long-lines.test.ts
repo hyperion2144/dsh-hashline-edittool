@@ -102,7 +102,7 @@ describe("grep long lines", () => {
 		}
 	});
 
-	it("pointer-izes rows over the per-response budget, with a sed pointer (#205)", async () => {
+	it("cuts a row at the preview cap instead of shipping the giant line (#414)", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "grep-huge-"));
 		try {
 			const huge = "HUGE " + "z".repeat(MAX_READ_LINE_BYTES + 1024);
@@ -113,10 +113,10 @@ describe("grep long lines", () => {
 				path: "huge.txt",
 			});
 			const text = getText(res);
-			expect(text).toContain("content not shown");
-			expect(text).toContain("sed -n '1p'");
-			expect(text).toContain("head -c 48000");
-			// The giant content itself is not shipped.
+			// #414: the preview cap cuts the row at 2000 bytes and marks it; the
+			// giant content itself is never shipped.
+			expect(text).toContain("(line truncated)");
+			expect(text).toContain("HUGE");
 			expect(text.length).toBeLessThan(MAX_READ_LINE_BYTES);
 		} finally {
 			await rm(dir, { recursive: true, force: true });

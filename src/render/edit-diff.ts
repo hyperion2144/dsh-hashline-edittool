@@ -45,17 +45,19 @@ import { currentScopeLabelAt, type ScopeLabelAt } from "./scope-registry.js";
 export type LineEnding = "\r\n" | "\n" | "\r";
 
 export function detectEnding(content: string): LineEnding {
-	const lfIdx = content.indexOf("\n");
-	if (lfIdx === -1) {
-		return content.indexOf("\r") >= 0 ? "\r" : "\n";
-	}
-	const crlfIdx = content.indexOf("\r\n");
-	if (crlfIdx === -1) return "\n";
-	return crlfIdx < lfIdx ? "\r\n" : "\n";
+	// #414 (ADR-0035): the line space is ripgrep's `\n` model. A bare CR is a
+	// CHARACTER inside its line, never a line terminator, so a file with no
+	// CRLF breaks has no ending to restore — `\n` is the only honest answer.
+	const crlf = content.indexOf("\r\n");
+	if (crlf === -1) return "\n";
+	const lf = content.indexOf("\n");
+	return crlf < lf ? "\r\n" : "\n";
 }
 
 export function toLF(text: string): string {
-	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	// #414 (ADR-0035): CRLF folds to LF; a bare CR does NOT — ripgrep splits
+	// on `\n` alone, and the whole repo now shares that one line space.
+	return text.replace(/\r\n/g, "\n");
 }
 
 export function restoreEndings(text: string, ending: LineEnding): string {

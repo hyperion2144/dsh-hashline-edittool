@@ -77,7 +77,7 @@ describe("the undo stack stores a checksum instead of a second body (#176)", () 
 		expect(row.result_checksum).toBeTruthy();
 		// 14 hex chars of cyrb53 — the whole point is that it is a fixed small
 		// string where a full body used to be.
-		expect(row.result_checksum!.length).toBeLessThan(32);
+		expect(row.result_checksum!.length).toBe(64);
 
 		// And the revert itself is unaffected.
 		const undoText = getText(await harness.getTool("undo_last_edit").execute("u", { path: "mod.ts" }));

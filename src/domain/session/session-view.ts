@@ -44,7 +44,7 @@ import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 import type { ServedRow, ResolvedRange } from "../../hashline/anchor-pipeline.js";
 import { fmtServedRows } from "../../hashline/anchor-pipeline.js";
 import { configDir, hashStorePath, resolveTarget } from "../../infra/paths.js";
-import { anchorFor, markReleased } from "./anchor-entry.js";
+import { anchorFor, anchorRowsFromContent, markReleased, type AnchorIdentity, type AnchorRow } from "./anchor-entry.js";
 
 // --- workspace (owned by infra/workspace, re-exported for this seam's callers) ---
 export { withWorkspace, workspaceCwd };
@@ -250,10 +250,48 @@ export async function anchorForInWorkspace(opts: {
   return withWorkspace(opts.cwd, async () => {
     // No explicit `loadHashStore` here: `anchorFor` loads the store itself
     // before it writes, so naming it twice only adds a line that can drift.
+    // #414: the content ADAPTER — the kernel takes rows + identity, and this
+    // turns a caller's whole text into both.
+    const adapted = anchorRowsFromContent(opts.content, opts.lines);
     const { anchors } = await anchorFor({
       path: opts.absolutePath,
-      lines: opts.lines,
-      content: opts.content,
+      rows: adapted.rows,
+      identity: adapted.identity,
+      content: adapted.content,
+      sessionKey: opts.sessionKey,
+    });
+    return anchors;
+  });
+}
+
+/**
+ * Allocate anchors from rows a caller already holds (#414) — the door `grep`
+ * uses: its rows come from ripgrep records and its identity from a streaming
+ * read, so no whole-file text crosses this seam.
+ *
+ * Realignment still needs the text: the kernel answers `[E_ANCHOR_REALIGN]`
+ * when the file changed underneath, and the caller is expected to read the
+ * file and retry through {@link anchorForInWorkspace}.
+ *
+ * @param opts.cwd - the workspace root for this execution.
+ * @param opts.absolutePath - the file the rows belong to.
+ * @param opts.rows - the 1-based lines and their current text.
+ * @param opts.identity - the checksum/line-count observed for the file.
+ * @param opts.sessionKey - the session these rows are served to.
+ * @returns the anchors, aligned with `opts.rows` (`""` outside the file).
+ */
+export async function anchorForRowsInWorkspace(opts: {
+  cwd: string;
+  absolutePath: string;
+  rows: readonly AnchorRow[];
+  identity: AnchorIdentity;
+  sessionKey: string;
+}): Promise<readonly string[]> {
+  return withWorkspace(opts.cwd, async () => {
+    const { anchors } = await anchorFor({
+      path: opts.absolutePath,
+      rows: opts.rows,
+      identity: opts.identity,
       sessionKey: opts.sessionKey,
     });
     return anchors;
