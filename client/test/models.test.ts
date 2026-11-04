@@ -847,3 +847,76 @@ describe("metaFormatSections (#275)", () => {
 		expect("formats" in (plain ?? {})).toBe(false);
 	});
 });
+
+describe("apply_patch row (map #401)", () => {
+	it("is its own variant, titled with its own word, never 'read'", () => {
+		const model = toolRowModel(
+			"apply_patch",
+			running("{\"patch\":\"file a.ts\\nreplace Ab\\n+x\"}", "apply_patch"),
+			undefined,
+			undefined,
+		);
+		expect(model.variant).toBe("apply_patch");
+		expect(model.titleKey).toBe("row.title.apply_patch");
+	});
+
+	it("summarises every path the patch names, not the first line of the blob", () => {
+		const patch = [
+			"new a.ts",
+			"+a",
+			"",
+			"file b.ts",
+			"replace Ab",
+			"+b",
+			"",
+			"move c.ts -> d.ts",
+		].join("\n");
+		const model = toolRowModel(
+			"apply_patch",
+			running(JSON.stringify({ patch }), "apply_patch"),
+			undefined,
+			undefined,
+		);
+		// Every section wears its marker, and the move's two ends stay ONE entry
+		// joined by the rename tool's arrow.
+		expect(model.summary).toBe("+ a.ts, ~ b.ts, c.ts -> d.ts");
+	});
+
+	it("renders one tab per completed operation from the host's row groups", () => {
+		const card = diffCardModel(
+			settled({
+				call: { name: "apply_patch", argsRaw: "{\"patch\":\"\"}" },
+				meta: {
+					diffs: [],
+					diffRowGroups: [
+						{ path: "created.ts", rows: [] },
+						{ path: "a.ts", rows: [] },
+					],
+				},
+			}),
+		);
+		expect(card?.rowGroups?.map((group) => group.path)).toStrictEqual(["created.ts", "a.ts"]);
+	});
+
+	it("hands each section's outcome to the tab strip", () => {
+		const groups = metaDiffRowGroups({
+			diffRowGroups: [
+				{ path: "new.ts", rows: [], kind: "added" },
+				{ path: "gone.ts", rows: [], kind: "deleted" },
+				{ path: "moved.ts", rows: [], kind: "renamed", from: "old.ts" },
+				{ path: "plain.ts", rows: [] },
+				// A kind this client does not know is DROPPED, not fatal: the rows
+				// still draw, and one unreadable field must not cost every tab.
+				{ path: "odd.ts", rows: [], kind: "exploded" },
+			],
+		});
+		expect(groups?.map((group) => group.kind)).toStrictEqual([
+			"added",
+			"deleted",
+			"renamed",
+			undefined,
+			undefined,
+		]);
+		expect(groups?.[2]?.from).toBe("old.ts");
+	});
+});

@@ -152,6 +152,12 @@ export interface EffectiveHashlineConfig {
 	 * false opts out.
 	 */
 	editorconfig: boolean;
+	/**
+	 * Whether the `apply_patch` tool and its guidance section are offered
+	 * (`apply_patch.enabled`, map #401). Default ON: the change-set tool is
+	 * part of the surface; an explicit `false` removes the tool AND the section.
+	 */
+	applyPatchEnabled: boolean;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
@@ -171,6 +177,9 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	grepRespectGitignore: true,
 	maxResponseChars: RESPONSE_BUDGET_DEFAULT,
 	writePreview: "diff",
+	// Default ON: the `apply_patch` tool and its guidance section are always
+	// offered; only an explicit `apply_patch.enabled: false` turns them off.
+	applyPatchEnabled: true,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -321,6 +330,15 @@ export function isJsonOutput(): boolean {
  */
 export function writePreviewMode(): WritePreviewMode {
 	return effective.writePreview;
+}
+
+/**
+ * Whether the `apply_patch` tool and its guidance section are offered
+ * (`apply_patch.enabled`, map #401). Default ON; read at install time, the
+ * way every other capability switch is read.
+ */
+export function isApplyPatchEnabled(): boolean {
+	return effective.applyPatchEnabled;
 }
 
 /** A fresh copy of the built-in defaults, for validators that reset absent fields. */

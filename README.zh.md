@@ -37,8 +37,8 @@
 ## 它是什么
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai) 插件：用**哈希锚定**版本替换内置的
-`read` / `edit` / `grep` 工具，并在此基础上提供 `delete`、`rename`、`undo_last_edit`、`ast_grep`、`ast_edit`
-和 `lsp` 工具：
+`read` / `edit` / `grep` 工具，并在此基础上提供 `delete`、`rename`、`undo_last_edit`、`ast_grep`、`ast_edit`、
+`apply_patch` 和 `lsp` 工具：
 
 - **每一行都携带内容锚点** —— 变长 Base62 标记（前 3,844 行只需 2 个字符，随文件规模
   才会增长）。模型按标记编辑，永远不需要回抄要替换的代码。
@@ -232,6 +232,47 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | `format` | 用该文件语言服务器的格式化器格式化——全文，或 `range: {start, end}`（**两端都是本会话 served 锚点**）。文件须已 observed（否则 `[E_NOT_OBSERVED]`）；格式化器无改动即 `noop`；与 `edit` 一样进 undo。手动调用允许冷启动（15s）——因为你点名要它。 |
 | `delete` | 删除普通文件并回收其 hashline 状态：`paths`（1–32 个，重复项合并）逐个删除，再把该路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里清掉。文件不存在也算 `already-absent` 成功并照样回收残留；符号链接、目录与特殊文件拒绝；非本地后端 fail-closed。`workspace-write` 下目标必须在 canonical 可写根内。报告逻辑字节；物理磁盘在存储关闭时 VACUUM 归还。多文件逐路径部分失败，没有 undelete。 |
 | `rename` | 重命名/移动普通文件并迁移其 hashline 状态：`renames`（1–32 个 `{from, to}` 对，完全重复项合并）按请求顺序逐对执行，链式改名成立；每个被移动路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里搬到新路径，改名之前服务过的锚点无需重读即可继续使用。符号链接、目录与特殊文件拒绝；目标已存在时除非是同一 inode 的另一种拼写否则 `[E_EXISTS]`；非本地后端 fail-closed。旧路径记 absent、新路径记 present；不发 write intent。多对逐对部分失败；store 迁移失败只 warning。 |
+| `apply_patch` | 一次调用应用**一个变更集**：跨多个文件的新增、修改、删除与移动，唯一参数是 `patch: string`。补丁是一串文件段（`file` / `new` / `move` / `remove`），段内的 hunk（`replace` / `insert` / `delete`）由本会话 read/grep/diff 行里的锚点寻址 —— 补丁从不重抄文件内容。整包先校验（语法、形状、路径、锚点）：被拒的补丁一次列出所有问题，且不写任何东西。开始落盘后，操作按序执行、遇错即停 —— 不回滚，因此重试前先重读受影响的文件。完成的 add/update/move 会返回改动行的新鲜锚点。 |
+
+### `apply_patch` —— 一次调用一个变更集
+
+`apply_patch` 一次调用应用**一个变更集**：跨多个文件的**新增**、**修改**、**删除**与**移动**。它是
+`edit` 的多文件对应物 —— 单文件锚点手术仍然用 `edit`。
+
+补丁是一串**文件段**；每个内容行都以 `+` 开头，因此只有段头可以不带前缀出现：
+
+```text
+file src/greet.ts
+replace Ab
++  return `hi ${name}`
+replace Ef..Gh
++  if (!name) return "hi"
+insert Cd
++
++// trailing note
+delete Ij
+
+new src/hello.ts
++export function hello(name: string) {
++  return `hi ${name}`
++}
+
+move src/old.ts -> src/new.ts
+
+remove src/dead.ts
+```
+
+段头：`file <path>`（修改）、`new <path>`（新建）、`move <from> -> <to>`、`remove <path>`（删除）。
+段内 hunk 头：`replace <anchor>` / `replace <start>..<end>`、`insert <anchor>`、
+`delete <anchor>` / `delete <start>..<end>`。
+
+锚点负责寻址 —— **补丁从不重抄文件内容**。锚点来自本会话 read/grep/diff 的行（上例中的 `Ab`、
+`Ef`、`Gh`、`Cd`、`Ij`），因此 hunk 只能改模型确实看见过的行。
+
+两个阶段：**整包先校验**（语法、形状、路径、锚点），被拒的补丁什么也不改；随后提交**按序执行、
+遇错即停**，已落盘的部分不回滚 —— 重试前先重读受影响的文件。
+
+**默认打开。** `apply_patch.enabled: false` 会移除该工具与它的指引段。
 
 ### 输出模式
 
@@ -270,14 +311,17 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
       editorconfig: true    # 格式化时读取 .editorconfig 缩进设置（默认开）
     write:
       preview: diff          # 写后回显：full | diff | confirmation（默认 diff）
+    apply_patch:
+      enabled: true          # 提供 apply_patch 工具与它的指引段（默认开）
 ```
 
 从 0.1.6 迁移？旧 `~/.dsh/settings.yaml` 的导入由 **dsh 自己**在升级时完成；本插件不再读取、迁移或写入任何设置文件——本页的条目配置是唯一真相源。旧的 `hashline:` 键若没带过来，在上面的表单里补上即可。
 
 ### 按 preset 配置指引
 
-`tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` 指引段是插件共享目录里
-按 preset id 存放的纯 markdown 覆盖文件 —— 见
+`tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` /
+`tool:rename` / `tool:apply_patch` 指引段是插件共享目录里按 preset id 存放的纯 markdown
+覆盖文件 —— 见
 [`docs/adr/0001`](docs/adr/0001-guidance-override-files.md)。清空文件即重置为编译默认；
 front-matter 围栏损坏会快速失败并告警。
 
@@ -314,6 +358,7 @@ front-matter 围栏损坏会快速失败并告警。
 | `[E_NOT_OBSERVED]` | 本会话未观察过该文件（先读后写策略）。 |
 | `[E_OP_INS]` | 提示：`ins` 已把行插入锚点之后。 |
 | `[E_PASTE_DUP]` | 替换行与相邻文件行相同；原样保留。 |
+| `[E_PATCH_REFUSED]` | 整包在落盘前被拒：预检把所有问题（语法、形状、路径、锚点）收成**一条**拒绝信息，什么也没有写。 |
 | `[E_RANGE_STALE]` / `[E_RANGE_UNVERIFIED]` | served 校验失败；范围已回显为新鲜行。`E_RANGE_STALE` 也是宿主 `FS_STALE_VERSION` 的报码：补救相同（重新 read），成因不同。 |
 | `[E_RESUME_CONFLICT]` | 一次 read 同时带了 resume 令牌与 `offset`/`limit`；令牌已经指明窗口，二者只能给一个。 |
 | `[E_RESUME_GONE]` / `[E_RESUME_BAD]` / `[E_RESUME_TOOL]` | `resume` 令牌的 spill 已消失或过期 / 令牌形状错误、内容损坏或属于别的会话 / 必须由另一个工具消费。 |

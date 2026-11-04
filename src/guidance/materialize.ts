@@ -37,6 +37,7 @@ Each file is one tool section:
 - \`grep.md\` -> \`tool:grep\`
 - \`delete.md\` -> \`tool:delete\`
 - \`rename.md\` -> \`tool:rename\`
+- \`apply_patch.md\` -> \`tool:apply_patch\`
 
 ## Customize
 
@@ -78,6 +79,7 @@ export const GUIDANCE_HOME_README_ZH = `# dsh-hashline-edittool 指引
 - \`grep.md\` -> \`tool:grep\`
 - \`delete.md\` -> \`tool:delete\`
 - \`rename.md\` -> \`tool:rename\`
+- \`apply_patch.md\` -> \`tool:apply_patch\`
 
 ## 自定义
 

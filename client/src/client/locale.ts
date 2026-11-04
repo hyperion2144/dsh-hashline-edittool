@@ -62,6 +62,9 @@ export const EN_CARD_DICTIONARY = {
 	"diff.expandRest": "… {count} more lines",
 	"diff.files.one": "{count} file",
 	"diff.files.other": "{count} files",
+	// #401: a change-set section that changed no lines says what it did.
+	"diff.tab.deleted": "File deleted",
+	"diff.tab.renamed": "Renamed {from} to {to}",
 	// The search card (grep / ast_grep).
 	"search.collapseAria": "Collapse results",
 	"search.expandAria": "Expand {count} more results",
@@ -106,6 +109,10 @@ export const EN_CARD_DICTIONARY = {
 	"row.title.grep": "Grep",
 	"row.title.edit": "Edit",
 	"row.title.write": "Write",
+	"row.title.apply_patch": "Apply patch",
+	"row.title.apply_patch.files": "Apply patch ({files} files)",
+	"row.title.apply_patch.stopped": "Apply patch (stopped)",
+	"row.title.apply_patch.empty": "Apply patch (no operations)",
 	"row.title.ast_grep": "AST grep",
 	"row.title.ast_edit": "AST edit",
 	"row.title.undo": "Undo",
@@ -192,6 +199,7 @@ export const EN_CARD_DICTIONARY = {
 	"settings.label.lineNumbers": "Show line numbers",
 	"settings.label.contextLines": "Context lines",
 	"settings.label.requireLineContent": "Re-state the changed lines",
+	"settings.label.applyPatch": "apply_patch (multi-file change sets)",
 	"settings.label.astMaster": "Master switch",
 	"settings.label.lspAutoDiag": "Auto diagnostics",
 	"settings.label.lspIdle": "Idle reclaim",
@@ -216,6 +224,8 @@ export const EN_CARD_DICTIONARY = {
 		"How many lines to keep above and below in the diff and in error echoes (0–20). Out of range or not a number restores the default.",
 	"settings.hint.requireLineContent":
 		"When on, every anchor must be declared together with the line's content ({tuple}), and a declaration that does not match the disk is refused — it guards against changing a new file with numbers from an old read.",
+	"settings.hint.applyPatch":
+		"When off, the apply_patch tool and its prompt section are removed (the other tools are unaffected). On by default.",
 	"settings.hint.astMaster":
 		"When off, ast_grep / ast_edit refuse to run (read / edit are unaffected).",
 	"settings.hint.astInherit": "Inherit the preset",
@@ -333,6 +343,10 @@ export const WIRE_TEXT_KEYS = {
 	"row.title.lsp.nav.stats": true,
 	"row.title.edit": true,
 	"row.title.write": true,
+	"row.title.apply_patch": true,
+	"row.title.apply_patch.files": true,
+	"row.title.apply_patch.stopped": true,
+	"row.title.apply_patch.empty": true,
 	// #377: the language-server routes' texts. The host names the wording; the
 	// card resolves it in the reader's language.
 	"lsp.status.noSubprocessSeam": true,
@@ -373,6 +387,8 @@ export const ZH_CARD_DICTIONARY = {
 	"diff.expandRest": "… 其余 {count} 行",
 	"diff.files.one": "{count} 个文件",
 	"diff.files.other": "{count} 个文件",
+	"diff.tab.deleted": "文件已删除",
+	"diff.tab.renamed": "从 {from} 重命名为 {to}",
 	"search.collapseAria": "收起结果",
 	"search.expandAria": "展开其余 {count} 行结果",
 	"search.expandRest": "… 其余 {count} 行",
@@ -407,6 +423,10 @@ export const ZH_CARD_DICTIONARY = {
 	"row.title.grep": "搜索文件内容",
 	"row.title.edit": "编辑",
 	"row.title.write": "写入",
+	"row.title.apply_patch": "应用补丁",
+	"row.title.apply_patch.files": "应用补丁（{files} 个文件）",
+	"row.title.apply_patch.stopped": "应用补丁（已中止）",
+	"row.title.apply_patch.empty": "应用补丁（无操作）",
 	"row.title.generic": "工具调用",
 	"row.title.ast_grep": "AST 搜索",
 	"row.title.ast_edit": "AST 编辑",
@@ -477,6 +497,7 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.label.lineNumbers": "显示行号",
 	"settings.label.contextLines": "上下文行数",
 	"settings.label.requireLineContent": "重述被改的行",
+	"settings.label.applyPatch": "apply_patch（多文件变更集）",
 	"settings.label.astMaster": "总开关",
 	"settings.label.lspAutoDiag": "自动诊断回送",
 	"settings.label.lspIdle": "空闲回收",
@@ -499,6 +520,7 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.hint.contextLines": "diff 与错误回显里上下各留几行（0–20）。域外或非数字则恢复默认。",
 	"settings.hint.requireLineContent":
 		"开启后每个锚点必须连同行内容一起声明（{tuple}），声明与磁盘不符就拒绝——防的是“拿着旧读的数去改新文件”。",
+	"settings.hint.applyPatch": "关闭后 apply_patch 工具与它的提示段落一并移除（其他工具不受影响）。默认开。",
 	"settings.hint.astMaster": "关闭时 ast_grep / ast_edit 拒绝运行（read / edit 不受影响）。",
 	"settings.hint.astInherit": "继承预设",
 	"settings.hint.lspAutoDiag": "edit / write / undo 落盘后自动把语言服务器诊断回送模型（默认开）。",

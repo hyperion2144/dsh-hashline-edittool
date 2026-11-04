@@ -187,6 +187,29 @@ const renameToolview = {
 };
 
 /**
+ * Registers the `apply_patch` row — the multi-file change-set card (#401).
+ *
+ * A patch IS an edit of several files, so it borrows `HashlineEditRow`: the
+ * `meta.diffs` / `meta.diffRowGroups` payload is exactly what `edit` sends, and
+ * one implementation of what a diff row looks like means a fix to one is a fix
+ * to both. The per-section outcome (`kind` on a row group, #401) and the tab
+ * note it earns are drawn by the SHARED card, so this key needs no component of
+ * its own. The title comes from the host's `rowTitle` key (`row.title.apply_patch`).
+ */
+const applyPatchToolview = {
+	name: "hashline-apply-patch-toolview",
+	inject: ["slots"],
+	apply(ctx: ClientCtx) {
+		ctx.slots.inject("tool.call.toolview", () =>
+			ctx.slots.register(
+				{ name: "tool.call.toolview", key: "apply_patch", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
+				HashlineEditRow,
+			),
+		);
+	},
+};
+
+/**
  * The AST tools, rendered by the rows that already exist.
  *
  * `ast_grep` returns the SAME `line:anchor:content` rows a `read` does and
@@ -290,6 +313,7 @@ export function apply(ctx: ClientCtx): void {
 	ctx.plugin(writeToolview);
 	ctx.plugin(deleteToolview);
 	ctx.plugin(renameToolview);
+	ctx.plugin(applyPatchToolview);
 	ctx.plugin(astToolviews);
 	ctx.plugin(settingsCard);
 }

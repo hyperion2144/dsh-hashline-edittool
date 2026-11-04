@@ -16,6 +16,7 @@ import {
 	READ_GUIDANCE,
 	readGuidance,
 	UNDO_GUIDANCE,
+	APPLY_PATCH_GUIDANCE,
 	type ToolGuidance,
 } from "../domain/edit/prompts.js";
 import { getEffectiveConfig } from "../infra/settings.js";
@@ -47,7 +48,7 @@ export interface GuidanceSection {
 	renderDefault(): string;
 }
 
-/** The five sections, in default-order sequence. */
+/** The compiled tool sections, in default-order sequence. */
 export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 	{
 		name: "tool:read",
@@ -86,6 +87,12 @@ export const GUIDANCE_SECTIONS: readonly GuidanceSection[] = [
 		file: "rename.md",
 		defaultOrder: 135,
 		renderDefault: () => guidanceText(RENAME_GUIDANCE),
+	},
+	{
+		name: "tool:apply_patch",
+		file: "apply_patch.md",
+		defaultOrder: 136,
+		renderDefault: () => guidanceText(APPLY_PATCH_GUIDANCE),
 	},
 ];
 

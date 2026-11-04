@@ -31,6 +31,15 @@ export interface DiffBlockLabels {
 	collapse: string;
 	expand: (hidden: number) => string;
 	files: (count: number) => string;
+	/**
+	 * The tab body's sentence for a section that changed no lines (#401).
+	 *
+	 * A `remove` has no rows and a rename changes no LINE: without these two
+	 * sentences those tabs would be empty panels — which is exactly how a moved
+	 * file's tab read as "nothing happened".
+	 */
+	deletedNote: string;
+	renamedNote: (from: string, to: string) => string;
 	/** Accessible name of the overflow trigger. */
 	more: string;
 }
@@ -133,6 +142,9 @@ export function diffBlockLabels(t: TBench): DiffCardLabels {
 		expand: (count) => t("diff.expandRest", { count }),
 		files: (count) => t(count === 1 ? "diff.files.one" : "diff.files.other", { count }),
 		more: t("more"),
+		// #401: a section that changed no lines says what it did instead.
+		deletedNote: t("diff.tab.deleted"),
+		renamedNote: (from, to) => t("diff.tab.renamed", { from, to }),
 	};
 }
 

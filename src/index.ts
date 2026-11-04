@@ -37,9 +37,11 @@ import { ctxFsIO } from "./infra/fs-bridge.js";
 import { FsSandboxController } from "./infra/sandbox.js";
 import { registerReadTool } from "./tools/tool-read.js";
 import { registerEditTool } from "./tools/tool-edit.js";
+import { registerApplyPatchTool } from "./tools/tool-apply-patch.js";
 import {
 	HashlineSettingsSchema,
 	installHashlineSettings,
+	isApplyPatchEnabled,
 	lspConfiguredServers,
 	lspIdleTimeoutMs,
 } from "./config.js";
@@ -225,10 +227,19 @@ interface LspPlacement {
 	layer: "agent" | "plugin";
 	/** Whether the plugin-layer registration already happened (one name per layer). */
 	onPluginLayer: boolean;
+	/**
+	 * The plugin-layer registration's disposer, when the tool can be turned off
+	 * at runtime (`apply_patch.enabled`). That registration outlives every
+	 * agent, so its disposer cannot live in an agent's cleanup list.
+	 */
+	dispose?: () => void;
 }
 
 /** The `lsp` placement decided per plugin context. */
 const lspPlacements = new WeakMap<Context, LspPlacement>();
+
+/** The `apply_patch` placement decided per plugin context. */
+const applyPatchPlacements = new WeakMap<Context, LspPlacement>();
 
 /** Every tool definition this plugin registered — a probe must never read one as a built-in. */
 const ownToolDefinitions = new WeakSet<object>();
@@ -291,6 +302,33 @@ function lspPlacement(rootCtx: Context, agent: Agent): LspPlacement {
 	return placement;
 }
 
+/**
+ * Decide — once per plugin context — which layer `apply_patch` belongs on.
+ *
+ * The same rule `lsp` follows, and for the same reason: dsh ships an
+ * `apply_patch` of its own on the PRESET layer (its composition flag is off
+ * in 0.2.2, but the registration exists), and a plugin-layer tool cannot
+ * shadow a preset one. A confirmed foreign registration therefore earns the
+ * agent layer; anything else — absent, our own, or an unanswerable registry —
+ * registers once on the plugin layer, where the tool is in the surface from
+ * the first turn.
+ *
+ * @param rootCtx - the plugin's own context.
+ * @param agent - the agent being installed.
+ * @returns the placement record for this plugin context.
+ */
+function applyPatchPlacement(rootCtx: Context, agent: Agent): LspPlacement {
+	const existing = applyPatchPlacements.get(rootCtx);
+	if (existing !== undefined) return existing;
+	const placement: LspPlacement = {
+		layer:
+			builtInToolPresent(agent.ctx, "apply_patch") === true ? "agent" : "plugin",
+		onPluginLayer: false,
+	};
+	applyPatchPlacements.set(rootCtx, placement);
+	return placement;
+}
+
 
 /**
  * The agent-scoped half: every tool that must win over a same-named
@@ -329,6 +367,48 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 		}
 	};
 
+	// The patch surface follows `apply_patch.enabled` and nothing else: off
+	// removes BOTH the tool and its guidance section, and a hot flip
+	// reinstalls them without restarting the session (map #401).
+	let applyPatchDispose: (() => void) | undefined;
+	let applyPatchSectionDispose: (() => void) | undefined;
+	const installApplyPatch = (): void => {
+		applyPatchDispose?.();
+		applyPatchDispose = undefined;
+		const placementForPatch = applyPatchPlacement(rootCtx, agent);
+		if (!isApplyPatchEnabled()) {
+			// A plugin-layer registration stands for EVERY agent, so its disposer
+			// lives on the placement record: the turn-off has to take it away from
+			// all of them, not from whichever agent happened to rebuild first.
+			placementForPatch.dispose?.();
+			placementForPatch.dispose = undefined;
+			placementForPatch.onPluginLayer = false;
+			return;
+		}
+		if (placementForPatch.layer === "agent") {
+			const tool = registerApplyPatchTool(rootCtx, agent.ctx, io, sandbox);
+			ownToolDefinitions.add(tool.definition);
+			applyPatchDispose = tool.dispose;
+			return;
+		}
+		if (!placementForPatch.onPluginLayer) {
+			const tool = registerApplyPatchTool(rootCtx, rootCtx, io, sandbox);
+			ownToolDefinitions.add(tool.definition);
+			placementForPatch.dispose = tool.dispose;
+			placementForPatch.onPluginLayer = true;
+		}
+	};
+	const installApplyPatchSection = async (): Promise<void> => {
+		applyPatchSectionDispose?.();
+		applyPatchSectionDispose = undefined;
+		if (!isApplyPatchEnabled()) return;
+		const sections = await resolveAgentSections(rootCtx, agent);
+		for (const section of sections) {
+			if (section.name !== "tool:apply_patch") continue;
+			applyPatchSectionDispose = systemPrompt.section(section);
+		}
+	};
+
 	const disposers: Array<() => void> = [];
 	// The READ surface is registered ONCE and never rebuilt.
 	//
@@ -339,6 +419,7 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 	// surfaces do not vary — so there is nothing left for a rebuild to react
 	// to, and machinery for a change that cannot happen is its own kind of lie.
 	installEditTool();
+	installApplyPatch();
 	disposers.push(registerReadTool(rootCtx, agent.ctx, io));
 	disposers.push(registerGrepTool(rootCtx, agent.ctx, io));
 	// The semantic half. omp's rule, and now ours: symbol-aware work goes to a
@@ -378,6 +459,11 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 				editSectionDispose?.();
 				installEditTool();
 				await installEditSection();
+				// The patch surface follows its own switch, so a rebuild for the
+				// edit flag must leave it alone — but a flip of EITHER flag must
+				// reach both, and the registry has one rebuild path.
+				installApplyPatch();
+				await installApplyPatchSection();
 			} catch (error) {
 				rootCtx.logger.warn(
 					`dsh-hashline-edittool: edit surface rebuild failed for agent ${agent.id}: ${error instanceof Error ? error.message : String(error)}`,
@@ -396,10 +482,15 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 			editSectionDispose = systemPrompt.section(section);
 			continue;
 		}
-		disposers.push(systemPrompt.section(section));
+		if (section.name === "tool:apply_patch") continue; // installed with its switch
 	}
+	// The patch section follows `apply_patch.enabled`, so it is installed by the
+	// same routine a hot flip runs — never by the loop above.
+	await installApplyPatchSection();
 
 	return () => {
+		applyPatchDispose?.();
+		applyPatchSectionDispose?.();
 		editDispose?.();
 		editSectionDispose?.();
 		for (const dispose of disposers) dispose();

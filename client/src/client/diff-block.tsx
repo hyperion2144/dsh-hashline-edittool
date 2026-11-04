@@ -115,6 +115,11 @@ const CSS_TEXT = [
 	".dshl-fmt-cluster{margin-top:2px}",
 	".dshl-fmt-loc{font-family:var(--ds-font-family-code);font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:pre}",
 	".dshl-fmt-restored{font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-tertiary);white-space:pre;font-style:italic}",
+	// #401: the tab body's one-line NOTE — a change set's sections that changed
+	// no LINES (a rename) or have no lines left (a removal) say so here instead of
+	// drawing an empty panel. `data-tone=deleted` wears the deletion colour.
+	".dshl-diff-note{padding:0 0 8px;font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}",
+	".dshl-diff-note[data-tone=deleted]{color:var(--dsw-alias-state-error-primary)}",
 ].join("");
 
 const CSS_TAG_ID = "dsh-hashline-edittool-client/diff-block.css";
@@ -160,6 +165,7 @@ const css = {
 	fmtCluster: "dshl-fmt-cluster",
 	fmtLoc: "dshl-fmt-loc",
 	fmtRestored: "dshl-fmt-restored",
+	note: "dshl-diff-note",
 } as const;
 
 /**
@@ -194,7 +200,14 @@ function rowClassOf(kind: DisplayRowKind): string {
 
 /** One tab of the strip: a successful file's rows, or a failed file's error. */
 type DiffTab =
-	| { kind: "diff"; path: string; rows: readonly DiffRowMeta[]; formats: readonly FormatSectionMeta[] }
+	| {
+		kind: "diff";
+		path: string;
+		rows: readonly DiffRowMeta[];
+		formats: readonly FormatSectionMeta[];
+		/** The section behind the tab: its outcome drives the note (#401). */
+		group: DiffRowGroup;
+	}
 	| { kind: "error"; path: string; failure: FileFailureMeta };
 
 /** The rows a failure tab would have had — it draws an error card instead. */
@@ -227,6 +240,27 @@ function sectionsForPath(
 	isFirst: boolean,
 ): readonly FormatSectionMeta[] {
 	return sections.filter((section) => (section.path === undefined ? isFirst : section.path === path));
+}
+
+/**
+ * What a section's tab SAYS when its rows cannot say it (#401).
+ *
+ * A rename changes no LINE and a removal has no rows left, so without a
+ * sentence both tabs drew an empty panel — which is exactly how a moved file's
+ * tab read as "nothing happened". The wording is the delete card's own, and the
+ * removal wears its colour.
+ *
+ * @param group - the section behind the tab.
+ * @param labels - the card's own words.
+ * @returns the note and its tone, or null when the rows speak for themselves.
+ */
+function groupNote(
+	group: DiffRowGroup,
+	labels: DiffRowsLabels,
+): { text: string; tone: "deleted" | undefined } | null {
+	if (group.kind === "deleted") return { text: labels.deletedNote, tone: "deleted" };
+	if (group.kind !== "renamed") return null;
+	return { text: labels.renamedNote(group.from ?? "", group.path), tone: undefined };
 }
 
 /** The bracketed header one format section carries — the host's text contract, mirrored. */
@@ -381,6 +415,7 @@ export function DiffRowsBlock({
 				path: group.path,
 				rows: group.rows,
 				formats: sectionsForPath(formats ?? EMPTY_FORMATS, group.path, index === 0),
+				group,
 			})),
 			...(failures ?? []).map((failure): DiffTab => ({ kind: "error", path: failure.path, failure })),
 		],
@@ -394,6 +429,8 @@ export function DiffRowsBlock({
 	const activeRows = active?.kind === "diff" ? active.rows : EMPTY_ROWS;
 	const baseId = useId();
 	const activeFormats = active?.kind === "diff" ? active.formats : EMPTY_FORMATS;
+	const activeNote =
+		active?.kind === "diff" ? groupNote(active.group, labels) : null;
 	const panelId = `${baseId}-panel`;
 
 	const display = useMemo(() => buildDisplayRows(activeRows), [activeRows]);
@@ -483,6 +520,11 @@ export function DiffRowsBlock({
 				paths: tabs.map((tab) => tab.path),
 				// The failed files' tabs carry the error tone (red dot + red path).
 				errorIndexes: tabs.flatMap((tab, index) => (tab.kind === "error" ? [index] : [])),
+				// A REMOVED file's tab is struck through (#401): the label is the
+				// only place the strip can say the file no longer exists.
+				deletedIndexes: tabs.flatMap((tab, index) =>
+					tab.kind === "diff" && tab.group.kind === "deleted" ? [index] : [],
+				),
 				activeIndex,
 				onSelect,
 				labels: { tablist: tablistLabel, more: labels.more },
@@ -528,7 +570,21 @@ export function DiffRowsBlock({
 						role: "tabpanel",
 						"aria-labelledby": `${baseId}-tab-${activeIndex}`,
 						style: { "--dshl-gutter-w": `${gutterWidth}ch` } as never,
-						children: [
+					children: [
+						// #401: a section that changed no LINES says what it did here —
+						// a rename's two paths, a removal's sentence. Without it those
+						// tabs were empty panels that named nothing.
+						...(activeNote === null
+							? []
+							: [
+								jsx_("div", {
+									key: "note",
+									className: css.note,
+									"data-tone": activeNote.tone,
+									role: "status",
+									children: activeNote.text,
+								}),
+							]),
 							// PER-ROW: one flex container per drawn line — anchor cell + content
 							// cell in DOM order, so a drag is an ordinary continuous text
 							// selection (the rows you drag across, anchors and lines together).

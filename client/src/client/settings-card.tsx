@@ -351,6 +351,7 @@ function readCore(snapshot: ConfigFormSnapshot): {
 	requireLineContent: boolean;
 	lineNumbers: boolean;
 	writePreview: WritePreviewMode;
+	applyPatchEnabled: boolean;
 } {
 	const value = snapshot.value ?? {};
 	return {
@@ -360,7 +361,23 @@ function readCore(snapshot: ConfigFormSnapshot): {
 		requireLineContent: value.require_line_content === true,
 		lineNumbers: value.line_numbers === true,
 		writePreview: readWritePreview(snapshot),
+		// Absent means ON: the change-set tool is part of the surface, and only an
+		// explicit `false` turns it (and its guidance section) off.
+		applyPatchEnabled: readApplyPatchEnabled(snapshot),
 	};
+}
+
+/**
+ * `apply_patch.enabled` (map #401), read without trusting the subtree's shape.
+ *
+ * ABSENT means on, the same absence-means-default rule the AST and
+ * auto-diagnostics switches follow: this feature is opt-out.
+ */
+function readApplyPatchEnabled(snapshot: ConfigFormSnapshot): boolean {
+	const subtree = snapshot.value?.apply_patch;
+	if (typeof subtree !== "object" || subtree === null) return true;
+	const enabled = (subtree as { enabled?: unknown }).enabled;
+	return typeof enabled === "boolean" ? enabled : true;
 }
 
 /**
@@ -1156,6 +1173,16 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 					<p className="dshl-mgr-hint">
 						{t("settings.hint.requireLineContent", { tuple: "{anchor, line}" })}
 					</p>
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">{t("settings.label.applyPatch")}</span>
+						<span className="dshl-mgr-grow" />
+						{renderSwitch(core.applyPatchEnabled, !writable, "applyPatch", (checked) =>
+							void write("applyPatch", () =>
+								writeField(["apply_patch", "enabled"], checked),
+							),
+						)}
+					</div>
+					<p className="dshl-mgr-hint">{t("settings.hint.applyPatch")}</p>
 				</>
 			) : tab === "ast" ? (
 				<>

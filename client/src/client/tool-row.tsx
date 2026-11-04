@@ -61,7 +61,7 @@ function stateStatus(state: string, t: ToolViewProps["t"]): string | null {
 
 interface ToolRowProps {
 	t: ToolViewProps["t"];
-	variant: "read" | "edit" | "write" | "grep";
+	variant: "read" | "edit" | "write" | "grep" | "apply_patch";
 	toolName: string;
 	icon: ReactNode;
 	title: string;
@@ -806,4 +806,5 @@ export function HashlineFormatRow({ toolName, block, ...rest }: ToolViewProps): 
 		},
 	});
 }
+
 
