@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-04
+
 ### Added
 
 - `grep` 管道层重建：一次 `rg` 调用走 path（默认 ignore），20 MB 全场输出帽、2000 字节行预览帽、250 条 inline 命中帽；rg 失败即响亮报错，JS 全树降级删除（#414，ADR-0036）。

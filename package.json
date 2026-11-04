@@ -1,6 +1,6 @@
 {
   "name": "dsh-hashline-edittool",
-  "version": "0.10.7",
+  "version": "0.11.0",
   "type": "module",
   "description": "Hash-anchored read/edit/write/grep/delete/rename/undo_last_edit/ast_grep/ast_edit/lsp/format tools for DeepSeek Harness (dsh). Every line is addressed by a variable-length content anchor (`<anchor>`, optionally `<anchor>:<line>`) so chained edits skip a re-read; stale or ambiguous anchors are rejected and a fresh anchor is served back. Undo persists across restarts. Ships a companion web client half rendering hashline-branded read/edit cards.",
   "main": "lib/index.js",
