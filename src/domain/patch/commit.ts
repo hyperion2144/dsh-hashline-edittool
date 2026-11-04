@@ -17,16 +17,18 @@
  */
 
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
-import type { FileIO, FileProbe } from "../../infra/fs-bridge.js";
+import type { FileIO } from "../../infra/fs-bridge.js";
 import type { FileEditResult } from "../edit/edit-engine.js";
 import type { FsSandboxController } from "../../infra/sandbox.js";
 import { abortIf } from "../../infra/utils.js";
-import { notifyDocumentClosed } from "../../lsp/sync.js";
 import type { SandboxExecutionPolicy } from "@deepseek-ai/dsh-sandbox";
 import { commit } from "../edit/mutation.js";
-import { clearAlignmentNotice } from "../session/anchor-state.js";
 import type { HashStore } from "../session/hash-store.js";
 import { reconcileServed, recordServedAfterEdit } from "../session/session-view.js";
+import { createFile } from "../write/create-file.js";
+import { allocateForRenderedRows } from "../write/rendered-rows.js";
+import { removeFile } from "../delete/remove-file.js";
+import { moveFile } from "../rename/move-file.js";
 import type { PatchOperation, PatchOperationKind } from "./plan.js";
 import type { PreparedOperation } from "./preflight.js";
 
@@ -52,6 +54,12 @@ export interface CommittedOperation {
 	code?: string;
 	message?: string;
 	changes?: PatchChange[];
+	/**
+	 * The new file's per-line anchors (a `new` section): the rows the diff
+	 * renders, minted AND served by the create path (#416). The model can edit
+	 * the file it just created without a re-read.
+	 */
+	servedHashes?: string[];
 	/**
 	 * The resolved edit result behind an update (or a move with hunks): the diff
 	 * blocks and anchors the response is built from. INTERNAL — it never
@@ -105,9 +113,28 @@ function settledCode(error: unknown): string | undefined {
 function messageOf(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	const match = CODE_MARKER.exec(message);
-	return match === null
-		? message
-		: message.slice(match.index + match[0].length).replace(/^ /, "");
+	const body =
+		match === null
+			? message
+			: message.slice(match.index + match[0].length).replace(/^ /, "");
+	// The failure lines are LINE-based (one operation per line), so a message
+	// that spans lines (the sandbox's denial marker plus its escalation hint)
+	// becomes one line.
+	return body.replace(/\s*\n+\s*/g, " ");
+}
+
+/**
+ * Is this the sandbox's own denial?
+ *
+ * A denial is a REFUSAL, not an unknown outcome: nothing was written, so the
+ * operation is `failed` — and the message carries the `[sandbox: …]` marker and
+ * the same-turn escalation hint (`sandbox.mapError`).
+ */
+function isSandboxDenial(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error as { code?: unknown }).code === "FS_SANDBOX_DENIED"
+	);
 }
 
 /** The undo-unavailable message, per the patch's own vocabulary. */
@@ -153,45 +180,6 @@ async function writeFileResult(
 	await reconcileServed(sessionKey, absolutePath, file.result);
 }
 
-/** Move one file through the bridge and migrate its store rows. */
-async function moveFile(
-	input: PatchCommitInput,
-	displayPath: string,
-	destination: string,
-	probe: FileProbe,
-): Promise<{ from: string; to: string }> {
-	const { io, cwd, exec, signal, sandboxPolicy, store, warnings } = input;
-	const outcome = await io.renameFile(
-		displayPath,
-		destination,
-		cwd,
-		probe,
-		signal,
-		sandboxPolicy,
-	);
-	// Host consistency: the old path is gone, the new one exists. Observations
-	// only — a rename never derives a write guard.
-	const absentRecorded = await io.emitAbsent(outcome.from, exec, signal);
-	clearAlignmentNotice(outcome.from);
-	notifyDocumentClosed(outcome.from);
-	await io.emitObserved(outcome.to, exec, signal);
-	if (store !== undefined) {
-		try {
-			store.renamePath(outcome.from, outcome.to);
-		} catch (error) {
-			warnings.push(
-				`store migration failed for ${outcome.from} → ${outcome.to}; the sweep/TTL will reclaim the old rows: ${error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		}
-	}
-	if (!absentRecorded) {
-		warnings.push(
-			`the old path's absence observation was not recorded for ${outcome.from} (no observation policy mounted, or the path was recreated).`,
-		);
-	}
-	return outcome;
-}
 
 /**
  * Apply the prepared operations in order.
@@ -229,57 +217,60 @@ export async function commitPatch(
 		try {
 			abortIf(signal);
 			if (prepared.kind === "add") {
-				await io.writeText(
-					prepared.absolutePath,
-					prepared.content,
+				// #416: the create goes through the ONE create path — the same
+				// method `write` uses (the model's content lands, the automatic format
+				// pass may rewrite it, the language server is told what the file holds).
+				const created = await createFile({
+					io,
+					absolutePath: prepared.absolutePath,
+					content: prepared.content,
 					signal,
 					exec,
 					sandboxPolicy,
-				);
+				});
 				// The path was absent at preflight, but a deleted file's rows can
-				// linger until the sweep. Nothing is served for a `new` file.
+				// linger until the sweep. They go BEFORE the new rows are minted.
 				if (store !== undefined) store.purgePath(prepared.absolutePath);
+				// The new file's rows get the SAME anchors the write path mints:
+				// every row the diff renders, minted AND served in one transaction —
+				// so the model can edit the file it just created without a re-read
+				// (ADR-0009: everything the model sees carries an anchor).
+				const servedHashes = await allocateForRenderedRows(
+					prepared.absolutePath,
+					"",
+					created.after,
+					undefined,
+					{ cwd: input.cwd, sessionKey: input.sessionKey },
+				);
 				operations.push({
 					...base,
 					status: "completed",
-					changes: [
-						{ path: prepared.absolutePath, before: null, after: prepared.content },
-					],
+					servedHashes,
+					changes: [{ path: prepared.absolutePath, before: null, after: created.after }],
 				});
 				continue;
 			}
 
 			if (prepared.kind === "delete") {
-				const outcome = await io.deleteFile(
-					operation.path,
-					input.cwd,
-					prepared.probe,
+				// #416: the remove goes through the ONE remove step — the same
+				// method the `delete` tool uses (the guarded delete, the host
+				// bookkeeping, the store's purge).
+				const removed = await removeFile({
+					io,
+					exec,
+					store,
+					displayPath: operation.path,
+					cwd: input.cwd,
+					probe: prepared.probe,
 					signal,
 					sandboxPolicy,
-				);
-				const absentRecorded = await io.emitAbsent(outcome.path, exec, signal);
-				clearAlignmentNotice(outcome.path);
-				notifyDocumentClosed(outcome.path);
-				if (store !== undefined) {
-					try {
-						store.purgePath(outcome.path);
-					} catch (error) {
-						warnings.push(
-							`store reclaim failed for ${outcome.path}; the sweep/TTL will retry: ${error instanceof Error ? error.message : String(error)
-							}`,
-						);
-					}
-				}
-				if (!absentRecorded) {
-					warnings.push(
-						`the absence observation was not recorded for ${outcome.path} (no observation policy mounted, or the path was recreated).`,
-					);
-				}
+				});
+				if (removed.warning !== undefined) warnings.push(removed.warning);
 				operations.push({
 					...base,
 					status: "completed",
-					absolutePath: outcome.path,
-					changes: [{ path: outcome.path, before: prepared.before, after: "" }],
+					absolutePath: removed.canonicalPath,
+					changes: [{ path: removed.canonicalPath, before: prepared.before, after: "" }],
 				});
 				continue;
 			}
@@ -296,12 +287,18 @@ export async function commitPatch(
 				// report claiming 0 of 1 completed. Renaming first keeps the fence
 				// answering the only question it can answer — did somebody ELSE touch
 				// the file — and lands the hunks where the operation says they belong.
-				const moved = await moveFile(
-					input,
-					operation.path,
-					prepared.operation.section.destination ?? operation.destination ?? "",
-					prepared.probe,
-				);
+				const moved = await moveFile({
+					io,
+					exec,
+					store,
+					from: operation.path,
+					to: prepared.operation.section.destination ?? operation.destination ?? "",
+					cwd: input.cwd,
+					probe: prepared.probe,
+					signal,
+					sandboxPolicy,
+				});
+				if (moved.warning !== undefined) warnings.push(moved.warning);
 				if (prepared.file !== undefined) {
 					// The resolved result belongs to the source's snapshot, which is the
 					// destination's content now; its anchors were served at the source
@@ -356,8 +353,12 @@ export async function commitPatch(
 					: {}),
 			});
 		} catch (error) {
-			const code = settledCode(error);
-			if (code === undefined) {
+			// #416: the sandbox's own vocabulary comes first — a denial is a
+			// REFUSAL (nothing was written), and the model must see the
+			// `[sandbox: …]` marker and the same-turn escalation hint.
+			const mapped = input.sandbox.mapError(error, sandboxPolicy);
+			const code = settledCode(mapped);
+			if (code === undefined && !isSandboxDenial(mapped)) {
 				// The mutation may or may not have landed. Saying `failed` would
 				// invite a duplicate retry, so the state is `unknown` and the message
 				// tells the model how to settle it.
@@ -365,7 +366,7 @@ export async function commitPatch(
 				operations.push({
 					...base,
 					status: "unknown",
-					message: `${messageOf(error)} — re-read the affected files before retrying.`,
+					message: `${messageOf(mapped)} — re-read the affected files before retrying.`,
 				});
 				continue;
 			}
@@ -373,8 +374,8 @@ export async function commitPatch(
 			operations.push({
 				...base,
 				status: "failed",
-				code,
-				message: messageOf(error),
+				...(code !== undefined ? { code } : {}),
+				message: messageOf(mapped),
 			});
 		}
 	}

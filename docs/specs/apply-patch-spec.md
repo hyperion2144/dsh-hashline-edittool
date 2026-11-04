@@ -269,8 +269,8 @@ An empty patch succeeds with `Success. No operations in patch.`
   **changed and inserted lines**.
 - Those ride in per-file diff blocks appended to the model text, rendered by the same diff
   renderer `edit` uses: `+` rows carry the new anchor, `-` rows the old anchor marked stale.
-- A `new` section returns its path only: its lines are not pre-served, so a follow-up edit
-  reads the file.
+- A `new` section returns the new file's own anchors: the create path mints and serves
+  them, so a follow-up edit can address the file without a re-read (#416).
 - Budget: the whole response honours `max_response_chars`; when it overflows, files are served
   in order until the budget runs out and the rest degrade to
   `(truncated; re-read <path> for anchors)`.
@@ -294,8 +294,9 @@ An empty patch succeeds with `Success. No operations in patch.`
   line ± `max(2, context_lines)`, minted and recorded in one transaction by
   `anchorForInWorkspace`. Serving narrower than the rendered diff would leave context rows
   visible but uneditable, breaking the served ⊇ rendered invariant.
-- `new` serves nothing and allocates no anchors: the model wrote the content and already knows
-  it; a follow-up edit reads the file. `remove` serves nothing (the path is gone).
+- `new` mints and serves the new file's rows through the write path's own method
+  (`allocateForRenderedRows`): the model sees the file's lines, so it gets their anchors
+  (ADR-0009). `remove` serves nothing (the path is gone).
 - A pure `move` (no hunks) serves nothing: `renamePath` migrates the served rows, so anchors
   the model already holds stay valid at the destination.
 - Only the calling session's served set is written.
@@ -325,9 +326,12 @@ An empty patch succeeds with `Success. No operations in patch.`
 
 ### `new`
 
-- `new` writes the file, then purges any rows left at that path by a previous incarnation (the
-  path was absent at preflight, but a deleted file's rows can linger until the sweep). No rows
-  are created and nothing is served.
+- `new` goes through the write path's OWN create method (`createFile`): the model's content
+  lands, the automatic format pass may rewrite it, the language server is told what the
+  file holds — then any rows left at that path by a previous incarnation are purged (the
+  path was absent at preflight, but a deleted file's rows can linger until the sweep), and
+  the new file's rows are minted AND served through `allocateForRenderedRows` — the same
+  method the write path's diff uses (#416).
 
 ### Partial results
 
@@ -385,8 +389,8 @@ apply_patch:
     rejected patch lists every problem at once and changes nothing.
   - Once applying starts, operations run in order, stop at the first failure and are not rolled
     back — re-read the affected files before retrying.
-  - A completed add/update/move returns fresh anchors for the changed lines; a new file returns
-    only its path (read it for anchors).
+  - A completed add/update/move returns fresh anchors for the changed lines; a created file
+    returns anchors for its own rows too, so it can be edited right away.
 - Boundary, same section and README: `edit` = one file of anchored surgery; `write` = whole
   file; `delete` / `rename` stay for exactly their one job; `apply_patch` = the multi-file
   change set.

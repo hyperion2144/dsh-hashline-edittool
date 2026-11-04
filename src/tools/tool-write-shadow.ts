@@ -37,15 +37,14 @@ import { formatWindowSummary } from "../domain/session/read-window.js";
 import { readAndServe } from "../read-and-serve.js";
 import { buildReadJson } from "../render/read-card.js";
 import { computeHunkDiffs, diffDictFrom, diffRowsFromBlocks, type EditCardDiffRow } from "../render/edit-card.js";
-import { detectEnding, genDiff, restoreEndings, stripBOM, type DiffBlock } from "../render/edit-diff.js";
+import { genDiff, stripBOM, type DiffBlock } from "../render/edit-diff.js";
 import { anchorsFor } from "../domain/session/anchor-state.js";
 import { rowTitle } from "../render/wire-text.js";
 import { loadServed } from "../domain/session/served.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 import { abortIf, splitLines } from "../infra/utils.js";
-import { autoFormatMode, isJsonOutput, writePreviewMode } from "../config.js";
+import { isJsonOutput, writePreviewMode } from "../config.js";
 import { errorFieldSchema, pathFromArgs, thrownErrorResult, type ErrorMeta } from "../infra/error-result.js";
-import { notifyDocumentWritten } from "../lsp/sync.js";
 import {
 	deliverDiagnosticsAfterWrite,
 	diagnosticsMeta,
@@ -54,10 +53,11 @@ import {
 	prepareWriteDiagnostics,
 	type DiagMetaEntry,
 } from "../lsp/auto-diag.js";
-import { runAutoFormat, type AutoFormatOutcome } from "../domain/format/auto-format.js";
 import { buildWriteFormatSection } from "../domain/format/write-section.js";
 import type { FormatSection } from "../domain/format/types.js";
 import { AUTO_READ_HEADING, buildWriteModelText, writeConfirmationText, type WriteModelBase } from "../domain/write/model-text.js";
+import { createFile } from "../domain/write/create-file.js";
+import { allocateForRenderedRows } from "../domain/write/rendered-rows.js";
 import { renderUnifiedDiff } from "../domain/edit/edit-response.js";
 
 /** Canonical write value: built-in contract plus the card/model extensions. */
@@ -265,42 +265,22 @@ export function buildWriteShadowTool(io: FileIO, sandbox: FsSandboxController) {
 				// The section's eligibility gate is the PRE-CALL served set — capture
 				// it before anything this call might serve (the preview mints later).
 				const preCallServed = await loadServed(sessionKey, absolute);
-				await io.writeText(absolute, content, signal, exec, sandboxPolicy);
-				// map #275 (G3): automatic format — after the model content lands,
-				// BEFORE sync/diagnostics/preview, so every downstream view describes
-				// the final text. The rewrite is a second disk write; if IT fails the
-				// model content stays and the skipped section is the warning (write
-				// never adds top-level warnings — G3).
-				let after = content;
-				let formatOutcome: AutoFormatOutcome | undefined;
-				if (autoFormatMode() !== "off" && content.trim().length > 0) {
-					const shape = stripBOM(content);
-					const outcome = await runAutoFormat({
-						io,
-						absolutePath: absolute,
-						modelContent: shape.text,
-					});
-					if (outcome.status === "formatted") {
-						const finalContent = shape.bom + restoreEndings(outcome.content, detectEnding(content));
-						try {
-							await io.writeText(absolute, finalContent, signal, exec, sandboxPolicy);
-							after = finalContent;
-							formatOutcome = outcome;
-						} catch (rewriteError) {
-							// The disk keeps the model content the first write put there;
-							// the skipped section says why the formatted text is not there.
-							formatOutcome = {
-								...outcome,
-								status: "skipped",
-								content: shape.text,
-								reason: rewriteError instanceof Error ? rewriteError.message : String(rewriteError),
-							};
-						}
-					} else if (outcome.status === "skipped") {
-						formatOutcome = outcome;
-					}
-				}
-				notifyDocumentWritten(absolute, after);
+				// #416: the create goes through the ONE create path — the model content
+				// lands, the automatic format pass (map #275, G3) may rewrite it, and the
+				// language server is told what the file holds (`notifyDocumentWritten` is
+				// the single funnel every write goes through). `apply_patch`'s `new`
+				// section calls the same method, so a created file behaves the same in
+				// both tools.
+				const created = await createFile({
+					io,
+					absolutePath: absolute,
+					content,
+					signal,
+					exec,
+					sandboxPolicy,
+				});
+				const after = created.after;
+				const formatOutcome = created.formatOutcome;
 
 				// #131: inline delivery — at most one inline window (1s), then the bounded
 				// async wait injects at the model's next natural step.
@@ -585,69 +565,6 @@ async function buildDiffRows(
 	return diffRowsFromBlocks(blocks);
 }
 
-/**
- * Anchors for exactly the rows a write's diff renders (#188).
- *
- * Pass 1 runs the text diff against the SPARSE session view (cheap: 43 MB /
- * 112 ms at 800k lines) to learn which new-side lines the diff actually
- * renders; pass 2 allocates anchors for those lines only. The sparse view is
- * also the CORRECT starting point: it pairs surviving content to its new
- * position by contentKey and leaves genuinely new lines unallocated, which is
- * exactly the set pass 2 has to fill. Allocation still goes through the same
- * persisting entry point as before — it just allocates fewer lines.
- *
- * Pass 1's `servedRows` are discarded on purpose: they carry the placeholder
- * markers of an unallocated view, and the caller records pass 2's rows.
- *
- * @param absolutePath - canonical path the write targets.
- * @param before - pre-write content (`""` when the file did not exist).
- * @param after - post-write content, already on disk.
- * @param beforeHashes - the `-` side, when the caller captured it.
- * @param ctx - the session context the mint belongs to. Required because the
- * anchors are now SERVED here, not merely allocated (#223): serving is
- * per-session, so this cannot be a bare path-keyed call.
- * @returns a per-line view whose RENDERED rows carry real anchors.
- */
-export async function allocateForRenderedRows(
-	absolutePath: string,
-	before: string,
-	after: string,
-	beforeHashes: string[] | undefined,
-	ctx: { cwd: string; sessionKey: string },
-): Promise<string[]> {
-	const sparse = anchorsFor(absolutePath, after);
-	const firstPass = genDiff(before, after, contextLinesCfg(), sparse, beforeHashes);
-	// `servedRows` is the signal, not the rendered rows: it lists exactly the
-	// lines genDiff serves, and an EMPTY anchor there is precisely "this line
-	// will be shown but has no anchor yet". The rendered `anchor` field cannot
-	// be used for this — it is a formatted marker (four spaces when the hash is
-	// missing), so it is never the empty string.
-	// EVERY row the diff renders, not just the ones missing an anchor: the mint
-	// REUSES an anchor whose content still matches, so naming them all costs one
-	// lookup each and mints only the ones that need it — while naming only the
-	// empty ones leaves the reused rows UNSERVED, which forced the caller to
-	// record them in a second write of the same fact (the split §3 removes: an
-	// anchor that is live but unserved is an anchor the model cannot write with).
-	const rendered = new Set<number>();
-	for (const row of firstPass.servedRows) rendered.add(row.position + 1);
-	if (rendered.size === 0) return sparse;
-	const lines = [...rendered].sort((a, b) => a - b);
-	// #223: the one entry point mints (what is missing) AND serves (all of it),
-	// in one transaction — so a rendered row is never left in the state where
-	// the model can see its anchor and the edit gate refuses it.
-	const allocated = await anchorForInWorkspace({
-		cwd: ctx.cwd,
-		absolutePath,
-		content: after,
-		lines,
-		sessionKey: ctx.sessionKey,
-	});
-	const filled = [...sparse];
-	for (let i = 0; i < lines.length; i++) {
-		filled[lines[i]! - 1] = allocated[i] ?? "";
-	}
-	return filled;
-}
 
 /**
  * Register the hashline write shadow on the calling agent's scope.

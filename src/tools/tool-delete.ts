@@ -33,8 +33,7 @@ import type { FileIO, FileProbe } from "../infra/fs-bridge.js";
 import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js";
 import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { loadHashStore, type HashStore, type PurgeReport } from "../domain/session/hash-store.js";
-import { clearAlignmentNotice } from "../domain/session/anchor-state.js";
-import { notifyDocumentClosed } from "../lsp/sync.js";
+import { removeFile, type RemoveFileResult } from "../domain/delete/remove-file.js";
 import { DELETE_DESCRIPTION } from "../domain/edit/prompts.js";
 
 /**
@@ -357,41 +356,28 @@ export function buildDeleteTool(io: FileIO, sandbox: FsSandboxController) {
 				for (const path of paths) {
 					const expected = probes.get(path);
 					if (expected === undefined) continue; // already a preflight failure
-					let outcome;
+					let removed: RemoveFileResult;
 					try {
-						outcome = await io.deleteFile(path, cwd, expected, signal, sandboxPolicy);
+						removed = await removeFile({
+							io,
+							exec,
+							store,
+							displayPath: path,
+							cwd,
+							probe: expected,
+							signal,
+							sandboxPolicy,
+						});
 					} catch (error) {
 						failures.push(failureFromError(sandbox.mapError(error, sandboxPolicy), path));
 						continue;
 					}
-
-					// Host consistency: the file is gone, so nothing should keep a
-					// present observation, a stale alignment notice, or an LSP
-					// document for it. Only `fs/observed` absent — never a write intent.
-					const absentRecorded = await io.emitAbsent(outcome.path, exec, signal);
-					clearAlignmentNotice(outcome.path);
-					notifyDocumentClosed(outcome.path);
-
-					let reclaimed: PurgeReport | undefined;
-					let warning: string | undefined;
-					if (store !== undefined) {
-						try {
-							reclaimed = store.purgePath(outcome.path);
-						} catch (error) {
-							warning = `store reclaim failed; the sweep/TTL will retry: ${
-								error instanceof Error ? error.message : String(error)
-							}`;
-						}
-					}
-					if (!absentRecorded) {
-						warning = `${warning === undefined ? "" : `${warning} `}the absence observation was not recorded (no observation policy mounted, or the path was recreated).`;
-					}
 					results.push({
 						path,
-						canonicalPath: outcome.path,
-						status: outcome.kind === "deleted" ? "deleted" : "already-absent",
-						...(reclaimed !== undefined ? { reclaimed } : {}),
-						...(warning !== undefined ? { warning } : {}),
+						canonicalPath: removed.canonicalPath,
+						status: removed.kind === "deleted" ? "deleted" : "already-absent",
+						...(removed.reclaimed !== undefined ? { reclaimed: removed.reclaimed } : {}),
+						...(removed.warning !== undefined ? { warning: removed.warning } : {}),
 					});
 				}
 

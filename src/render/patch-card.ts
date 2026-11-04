@@ -120,9 +120,9 @@ function tabFor(
       change.before ?? "",
       change.after,
       contextLinesCfg(),
-      // A creation was never served: pass empty hash lists so the gutter
-      // stays blank instead of showing markers the store never recorded.
-      [],
+      // #416: the creation's rows carry the anchors the create path minted AND
+      // served — the model can edit the file it just created without a re-read.
+      operation.servedHashes ?? [],
       [],
       lineNumbers,
       { path },
