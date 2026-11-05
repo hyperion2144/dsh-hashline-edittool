@@ -240,3 +240,46 @@ session's first turn.
   `builtInToolPresent` (three-valued: `true` / `false` / `undefined`);
   `test/core/agent-tool-registration.test.ts` covers a confirmed
   built-in, no built-in, and a registry that throws.
+
+## Amendment (2026-11-05) — `lsp` and `apply_patch` register on the agent layer unconditionally (#418)
+
+Supersedes Decision §5 and the 2026-11-03 Amendment above FOR `lsp` AND
+`apply_patch` ONLY; every other ruling here stands (the four shadowing tools
+on the agent layer, the six shadow-nothing tools on the plugin layer, the
+awaiting `agent/created` listener).
+
+Field report [#418](https://github.com/hyperion2144/dsh-hashline-edittool/issues/418):
+after a restart, a RESUMED session's first turn missed `lsp` and `apply_patch`
+entirely — the exact failure this ADR exists to prevent. The probe's
+plugin-layer fallback never ran on that path: the restart-resume path placed
+both tools on the agent layer anyway, and in a deployment whose preset
+declares no same-named built-in, an agent-layer name reaches the first
+turn's schema only when THIS plugin's install puts it there. Two probe
+assumptions do not survive a restart:
+
+- **Ownership (Amendment A) is per-process object identity.** The
+  `ownToolDefinitions` WeakSet holds definition OBJECTS; a tool face restored
+  from the previous process carries fresh objects the WeakSet cannot
+  recognize as ours, so our own tool reads as a foreign built-in.
+- **The first agent decides for every agent.** The decision was cached per
+  plugin context; the first agent a restarted process creates is not
+  necessarily the session the user resumes, so one mis-decision poisoned
+  every later agent.
+
+The maintainer's decision (Q1 of #418): delete the probe. `lsp` and
+`apply_patch` register on the agent's own layer unconditionally, in the same
+synchronous install as the four shadowing tools — the layer this plugin
+controls end to end, filled before the host releases a resumed session's
+queued input. The placement machinery (the two decision caches, the
+three-valued probe, the ownership WeakSet) is deleted with it;
+`apply_patch.enabled = false` now means simply "this agent's install does
+not register the tool."
+
+Measured limitation (field verification 2026-11-05, restart #2): on the
+restart-resume path the resumed session's INSTANT turn — the one released
+with queued input — still misses these two. A fresh agent-layer name enters
+the schema only from the per-step re-assembly (the preset declares no
+same-name placeholder to replace); the four shadowing tools cover that
+turn only because the preset declares their built-ins. The maintainer
+accepts this as the best plugin-side placement: the tools are present
+from the first step the agent actually drives, and every later turn.

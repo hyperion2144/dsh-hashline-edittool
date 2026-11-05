@@ -1283,3 +1283,32 @@ store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先�
 - `README.md` / `README.zh.md` / `CHANGELOG.md` / `src/domain/edit/prompts.ts`
 - 测试：`test/core/issue-416-patch-reuse.test.ts`（新，3 例：新建文件的锚点当场可用、混合补丁两边的锚点、
   沙箱拒绝判 `failed`）
+
+---
+
+## 2026-11-05 — 弃探针式动态定层：`lsp` / `apply_patch` 恒注册 agent 层（#418，ADR-0032 修正案）
+
+**Type:** contract（ADR-0032 修正案，取代 §5 + 2026-11-03 Amendment 对这两个工具的裁决）+ 缺陷修复（重启后恢复会话第一轮两工具缺席）
+**Confidence:** High（回归单 #418 一手机理 + 维护者拍板；根 + client typecheck/test 全绿；agent-tool-registration 套件改写 10 例）
+**Evidence:** [#418](https://github.com/hyperion2144/dsh-hashline-edittool/issues/418)（报告 + 诊断 + 拍板）；[KannaKuron/dsh-gitbash-shell#38](https://github.com/KannaKuron/dsh-gitbash-shell/issues/38)（同型宿主行为与「同步占位」参考方案）；`src/index.ts`、`test/core/agent-tool-registration.test.ts`
+
+### Why
+
+探针式动态定层（首个 agent 用三值探针问注册表，有同名外来内置 → agent 层，否则 → 插件层）在「重启 + 恢复旧会话」路径上判错：实测两工具仍被放到 agent 层，而内置未开启的部署里 preset 无同名占位，agent 层新名字进不了第一轮 schema → 第一轮缺席，下一轮按步重组才回来。主嫌：`ownToolDefinitions` WeakSet 归属判定是进程内对象身份判定，跨重启对恢复回来的同名声明必然失效；首个 agent 的决策又被按插件上下文缓存的层决策记录放大到全进程。新会话探针判「无内置」→ 插件层 → 第一轮在场，所以只有恢复会话复现。
+
+### What was decided
+
+- **删探针机构**：`builtInToolPresent`（三值探针）、`lspPlacements` / `applyPatchPlacements`（按插件上下文缓存的层决策）、`ownToolDefinitions`（归属 WeakSet）、`LspPlacement` 记录（含插件层 disposer 记账）全部删除；`scopeOf` 导入随之移除。
+- **恒注册 agent 层**：`lsp` / `apply_patch` 与 `read`/`write`/`edit`/`grep` 同一路径——agent 安装同步前缀里无条件注册到 agent 自己的层（该层是本插件端到端可控、且在宿主释放恢复会话排队输入之前同步填满的唯一层）。
+- **`apply_patch.enabled = false` 简化**：语义不变（该次安装不注册工具、不装 `tool:apply_patch` 段），跨 agent 的插件层 disposer 记账删除。
+- **ADR-0032 补记取代关系**：§5 + Amendment（2026-11-03）对这两个工具的动态定层被本票取代；其余裁决（四遮挡工具 agent 层、六非遮挡工具插件层、监听器 await）不变。
+- 若隔离实例实测「内置不存在的部署」第一轮仍缺席（宿主第一轮 schema 的占位语义与假设不符），兜底方案 B（换名 + global 层）另行拍板，不在本票内自动执行。
+
+### Path / Affected typed relationships
+
+- `src/index.ts`：探针机构整体删除；`installApplyPatch` / lsp 安装分支简化为无条件 agent 层注册 + 开关判断
+- `test/core/agent-tool-registration.test.ts`：探针三值/归属用例删除，改写为「无内置时 lsp/apply_patch 仍注册 agent 层」「开关关断不注册」「监听器 await 不回退（含 apply_patch）」等 10 例
+- `docs/adr/0032-tool-registration-layers.md`：Amendment（2026-11-05）
+- `docs/specs/apply-patch-spec.md`：注册段改写（不再探针，恒 agent 层）
+- `AGENTS.md`（l0 decisions：apply_patch 注册层描述更正）
+- `CHANGELOG.md` `[Unreleased]` Fixed 一行（#418）
