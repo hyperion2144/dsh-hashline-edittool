@@ -354,12 +354,12 @@ An empty patch succeeds with `Success. No operations in patch.`
 - The tool is ALWAYS offered while `apply_patch.enabled` is true (the default). The official
   `@deepseek-ai/dsh-tool-fs` tool may exist beside it (its `applyPatch` composition flag); the
   name is the same, so exactly one wins:
-  - Probe the registry once per plugin context (the `lsp` pattern, `builtInToolPresent`): a
-    FOREIGN `apply_patch` already registered farther out → register on the **agent layer**,
-    which is nearer and therefore shadows it; remember the definition in `ownToolDefinitions`
-    so a later probe never mistakes ours for a built-in.
-  - No foreign same-name tool, or the registry cannot answer → register ONCE on the **plugin
-    layer**, so every agent has it from its first turn (ADR 0032).
+  - Register on the **agent layer** unconditionally (#418, amending ADR 0032): the agent's
+    layer is nearer, so it shadows the preset's registration when one exists, and it is the
+    layer this install fills synchronously before the host releases a resumed session's
+    queued input. The runtime probe (#398's `builtInToolPresent` placement) is deleted: its
+    per-process ownership check cannot survive a restart, and the restart-resume path placed
+    the tool on the agent layer anyway — leaving it out of that first turn.
 - Registration follows the flag: disabled disposes the tool and the guidance section together;
   the settings `document-updated` event re-installs (hot), the seam the edit surface already
   uses.

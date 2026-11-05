@@ -3,14 +3,21 @@
  * DeepSeek Harness — a dsh port of the hashline editor.
  *
  * Cordis host-plane plugin (mounted by the bundle's cordis.patch.yml). The
- * tools sit on TWO layers, and ONE question decides which: does the tool have
- * to shadow a built-in of the same name?
+ * tools sit on TWO layers: the agent's own scope layer and the plugin's.
  *
- * - The tools that MUST shadow a preset built-in (`read`, `write`, `edit`,
- *   `grep`, `lsp`) go on the AGENT's own scope layer — the agent's nearer
- *   layer wins over the preset's (nearest layer wins in dsh's tool
- *   registry), and it is the only layer that can shadow a built-in at all.
- *   They unwind automatically when the agent is disposed.
+ * - The tools that shadow a same-named built-in (`read`, `write`, `edit`,
+ *   `grep`) go on the AGENT's own scope layer — the agent's nearer layer
+ *   wins over the preset's (nearest layer wins in dsh's tool registry),
+ *   and it is the only layer that can shadow a built-in at all. They
+ *   unwind automatically when the agent is disposed.
+ * - `lsp` and `apply_patch` join them on the agent's layer UNCONDITIONALLY
+ *   (#418): the probe-decided placement (#398 / ADR-0032) relied on a
+ *   per-process ownership check that cannot survive a restart, and the
+ *   restart-resume path put both tools on the agent layer anyway — a
+ *   layer whose fresh names do not reach the first turn's schema in a
+ *   deployment whose preset declares no same-named built-in. The agent's
+ *   own layer is the layer this install fills synchronously, so it is
+ *   the layer these two live on, shadowing or not.
  * - The tools that shadow NOTHING (`ast_grep`, `ast_edit`, `undo_last_edit`,
  *   `format`, `delete`, `rename`) are registered ONCE on the plugin's own
  *   layer at plugin load, the way every other dsh plugin registers its
@@ -32,7 +39,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import type { FileSystem } from "@deepseek-ai/dsh-fs";
-import { scopeOf } from "@deepseek-ai/dsh-scope";
 import { ctxFsIO } from "./infra/fs-bridge.js";
 import { FsSandboxController } from "./infra/sandbox.js";
 import { registerReadTool } from "./tools/tool-read.js";
@@ -213,126 +219,9 @@ function installAgentTools(rootCtx: Context, agent: Agent): Promise<void> {
 }
 
 /**
- * Where this plugin's `lsp` tool is registered, per plugin context.
- *
- * The official `lsp` plugin is OPT-IN: with it off there is no same-named
- * built-in at the preset layer, and an agent-layer registration then has
- * nothing to shadow — the tool is simply missing from a resumed session's
- * first turn. The FIRST agent asks the registry what is already there, and
- * the answer decides the layer for every later agent: a built-in is a
- * deployment fact, not a per-agent one.
- */
-interface LspPlacement {
-	/** The layer the tool belongs on: the agent's (to shadow) or the plugin's. */
-	layer: "agent" | "plugin";
-	/** Whether the plugin-layer registration already happened (one name per layer). */
-	onPluginLayer: boolean;
-	/**
-	 * The plugin-layer registration's disposer, when the tool can be turned off
-	 * at runtime (`apply_patch.enabled`). That registration outlives every
-	 * agent, so its disposer cannot live in an agent's cleanup list.
-	 */
-	dispose?: () => void;
-}
-
-/** The `lsp` placement decided per plugin context. */
-const lspPlacements = new WeakMap<Context, LspPlacement>();
-
-/** The `apply_patch` placement decided per plugin context. */
-const applyPatchPlacements = new WeakMap<Context, LspPlacement>();
-
-/** Every tool definition this plugin registered — a probe must never read one as a built-in. */
-const ownToolDefinitions = new WeakSet<object>();
-
-/** What the registry said about a same-named built-in: yes, no, or "cannot tell". */
-type BuiltInProbe = true | false | undefined;
-
-/**
- * Is a same-named built-in ALREADY registered in a farther layer — one this
- * plugin's own registration would shadow?
- *
- * `tools.get(name, scope)` is the view the agent sees: the global layer, then
- * the scope chain (the preset), then the agent's own layer last. Before this
- * plugin registers its tool, that view holds exactly the OTHER people's tools.
- *
- * Two things make the answer untrustworthy, and both fall through to
- * `undefined` so the caller registers on the safe (plugin) layer:
- *
- * - the hit may be THIS plugin's own tool (an earlier agent already put it on
- *   the plugin layer) — that is not a built-in to shadow;
- * - the registry may refuse to answer at all (an older host, a scope-less
- *   context, a throwing getter) — then nothing is known.
- *
- * @param agentCtx - the agent's scoped context.
- * @param name - the tool name to look for.
- * @returns `true` only for a farther-layer tool that is not ours.
- */
-function builtInToolPresent(agentCtx: Context, name: string): BuiltInProbe {
-	try {
-		const scope = scopeOf(agentCtx);
-		if (scope === undefined) return undefined;
-		const found = agentCtx.tools.get(name, scope);
-		if (found === undefined) return false;
-		// Our own tool is not a built-in: it shadows nothing, so the safe layer wins.
-		return ownToolDefinitions.has(found) ? false : true;
-	} catch {
-		// The registry could not answer — register where the tool is always there.
-		return undefined;
-	}
-}
-
-/**
- * Decide — once per plugin context — which layer the `lsp` tool belongs on.
- *
- * @param rootCtx - the plugin's own context.
- * @param agent - the agent being installed.
- * @returns the placement record for this plugin context.
- */
-function lspPlacement(rootCtx: Context, agent: Agent): LspPlacement {
-	const existing = lspPlacements.get(rootCtx);
-	if (existing !== undefined) return existing;
-	const placement: LspPlacement = {
-		// ONLY a confirmed, foreign built-in earns the agent layer. Anything else
-		// — absent, our own, or an unanswerable registry — registers on the plugin
-		// layer, where the tool is in the surface from the first turn.
-		layer: builtInToolPresent(agent.ctx, "lsp") === true ? "agent" : "plugin",
-		onPluginLayer: false,
-	};
-	lspPlacements.set(rootCtx, placement);
-	return placement;
-}
-
-/**
- * Decide — once per plugin context — which layer `apply_patch` belongs on.
- *
- * The same rule `lsp` follows, and for the same reason: dsh ships an
- * `apply_patch` of its own on the PRESET layer (its composition flag is off
- * in 0.2.2, but the registration exists), and a plugin-layer tool cannot
- * shadow a preset one. A confirmed foreign registration therefore earns the
- * agent layer; anything else — absent, our own, or an unanswerable registry —
- * registers once on the plugin layer, where the tool is in the surface from
- * the first turn.
- *
- * @param rootCtx - the plugin's own context.
- * @param agent - the agent being installed.
- * @returns the placement record for this plugin context.
- */
-function applyPatchPlacement(rootCtx: Context, agent: Agent): LspPlacement {
-	const existing = applyPatchPlacements.get(rootCtx);
-	if (existing !== undefined) return existing;
-	const placement: LspPlacement = {
-		layer:
-			builtInToolPresent(agent.ctx, "apply_patch") === true ? "agent" : "plugin",
-		onPluginLayer: false,
-	};
-	applyPatchPlacements.set(rootCtx, placement);
-	return placement;
-}
-
-
-/**
- * The agent-scoped half: every tool that must win over a same-named
- * built-in, plus the per-preset guidance sections.
+ * The agent-scoped half: every tool that lives on the agent's own layer —
+ * the four shadowing tools, plus `lsp` / `apply_patch` (#418) — plus the
+ * per-preset guidance sections.
  *
  * The tool registrations happen BEFORE the first await (the guidance
  * override read), so the tool surface is complete the moment the agent
@@ -375,28 +264,18 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 	const installApplyPatch = (): void => {
 		applyPatchDispose?.();
 		applyPatchDispose = undefined;
-		const placementForPatch = applyPatchPlacement(rootCtx, agent);
-		if (!isApplyPatchEnabled()) {
-			// A plugin-layer registration stands for EVERY agent, so its disposer
-			// lives on the placement record: the turn-off has to take it away from
-			// all of them, not from whichever agent happened to rebuild first.
-			placementForPatch.dispose?.();
-			placementForPatch.dispose = undefined;
-			placementForPatch.onPluginLayer = false;
-			return;
-		}
-		if (placementForPatch.layer === "agent") {
-			const tool = registerApplyPatchTool(rootCtx, agent.ctx, io, sandbox);
-			ownToolDefinitions.add(tool.definition);
-			applyPatchDispose = tool.dispose;
-			return;
-		}
-		if (!placementForPatch.onPluginLayer) {
-			const tool = registerApplyPatchTool(rootCtx, rootCtx, io, sandbox);
-			ownToolDefinitions.add(tool.definition);
-			placementForPatch.dispose = tool.dispose;
-			placementForPatch.onPluginLayer = true;
-		}
+		// The agent's own layer, unconditionally (#418): the probe-decided
+		// placement fell back to the plugin layer exactly when no preset
+		// built-in existed — and the restart-resume path then placed the tool
+		// on the agent layer anyway, whose fresh names miss a first turn that
+		// no preset declaration occupies. The agent's own layer is the layer
+		// THIS install fills synchronously before the host releases the
+		// queued input, so it is the only placement this plugin controls
+		// end to end. Off means OFF for this agent: no tool, no guidance
+		// section. The cross-agent plugin-layer disposer bookkeeping is gone
+		// with the probe.
+		if (!isApplyPatchEnabled()) return;
+		applyPatchDispose = registerApplyPatchTool(rootCtx, agent.ctx, io, sandbox).dispose;
 	};
 	const installApplyPatchSection = async (): Promise<void> => {
 		applyPatchSectionDispose?.();
@@ -425,28 +304,13 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 	// The semantic half. omp's rule, and now ours: symbol-aware work goes to a
 	// language server whenever one can be had, because it follows shadowing and
 	// cross-file usage that a syntax tree cannot.
-	// `lsp` shadows a built-in ONLY when one is actually there. The official
-	// `lsp` plugin is opt-in: with it off there is nothing at the preset
-	// layer, and an agent-layer registration then leaves the tool out of a
-	// resumed session's first turn. Ask the registry what is already there,
-	// and register where the tool can actually take effect.
-	const placement = lspPlacement(rootCtx, agent);
-	if (placement.layer === "agent") {
-		// A built-in is there to shadow: the agent's layer is nearer, so it wins.
-		const lsp = registerLspTool(rootCtx, agent.ctx, io);
-		// Remember it, so a later probe cannot mistake OUR tool for the built-in.
-		ownToolDefinitions.add(lsp.definition);
-		disposers.push(lsp.dispose);
-	} else if (!placement.onPluginLayer) {
-		// Nothing to shadow: the plugin layer carries the tool for every agent,
-		// and it is there from the first turn. One name per layer, so the
-		// registration happens once — and its disposer belongs to the PLUGIN
-		// context (it must outlive every agent, so it is deliberately NOT in
-		// `disposers`, which the agent's own teardown runs).
-		const lsp = registerLspTool(rootCtx, rootCtx, io);
-		ownToolDefinitions.add(lsp.definition);
-		placement.onPluginLayer = true;
-	}
+	// `lsp` registers on the agent's own layer UNCONDITIONALLY (#418): the
+	// probe's plugin-layer fallback was reached exactly when no preset
+	// built-in existed, and the restart-resume path overrode it to the agent
+	// layer anyway — leaving the tool out of that first turn. The agent's
+	// layer is what this install fills synchronously, so it is where the
+	// name lives from the first turn, shadowing a built-in or not.
+	disposers.push(registerLspTool(rootCtx, agent.ctx, io).dispose);
 	// #53: the write tool is fully shadowed — it owns the auto-read preview
 	// (formerly a post-execute hook) AND the write card's structured rows.
 	disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
