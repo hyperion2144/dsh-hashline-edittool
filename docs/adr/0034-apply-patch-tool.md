@@ -5,6 +5,13 @@ Map: [#401](https://github.com/hyperion2144/dsh-hashline-edittool/issues/401)
 Prototype: [#409](https://github.com/hyperion2144/dsh-hashline-edittool/issues/409)
 Spec: [`docs/specs/apply-patch-spec.md`](../specs/apply-patch-spec.md)
 
+> **Amendment** (2026-11-04, [#416](https://github.com/hyperion2144/dsh-hashline-edittool/issues/416)):
+> every section REUSES the single-function tool's own method — the patch owns only the change
+> set (the whole-patch preflight, the operations in order, the stop at the first failure). A
+> `new` section goes through `write`'s create path (the automatic format pass, the language-
+> server notification, and the new file's anchors), a `remove` through `delete`'s, a `move` through
+> `rename`'s. The spec's "`new` serves nothing and allocates no anchors" is withdrawn: the model
+> sees the new file's rows, and ADR-0009 says everything the model sees carries an anchor.
 ## Context
 
 `edit` already takes several files (each entry carries its own `path`), but it

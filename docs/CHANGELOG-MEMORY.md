@@ -1242,3 +1242,44 @@ contract, expressed in this repository's anchor vocabulary.
 - `client/src/client/{types,models,diff-block,tab-strip,labels}.ts(x)`（`DiffRowGroup.kind` / `from`、`deletedIndexes`、tab 句子与删除线）
 - `README.md` / `README.zh.md` / `CONTEXT.md` / `CHANGELOG.md`
 - `AGENTS.md`（l0_domains：ADRs 0001–0034）
+
+---
+
+## 2026-11-04 — `apply_patch` 的每一段都复用单功能工具自己的方法（#416）
+
+**Type:** contract（ADR-0034 修正案）+ 缺陷修复（新建文件的行没有锚点）
+**Confidence:** High（双 typecheck 干净；根 2023 例 + 2 skipped 全绿；client 321 例 + build 全绿；#416 的三例实测）
+**Evidence:** #416（首报 + 排查评论）、`src/domain/patch/commit.ts`、
+`src/domain/write/{create-file,rendered-rows}.ts`、`src/domain/delete/remove-file.ts`、
+`src/domain/rename/move-file.ts`、`docs/adr/0034-apply-patch-tool.md`（修正案）
+
+### Why
+
+`new` 段自己写了一套创建逻辑：写盘、清 store、用**空 hash 列表**渲染 diff —— 于是模型看到的新
+文件内容**一个锚点都没有**（既不是带锚点的行，也不是 ADR-0017 规定的 `[line N] content` 形状），而
+store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先重读一遍。这违反 ADR-0009 的
+「everything the model sees」硬规则，而根因是**同一个动作有两套实现**：`write` 的创建路径是好的。
+
+### What was decided
+
+- **每一段复用对应单功能工具自己的方法**：补丁只负责变更集本身（全量预检、按序执行、遇错即停、
+  不回滚已成功的）。`new` 走 `write` 的创建路径（自动格式化 → 写盘 → 通知语言服务器 →
+  用 `allocateForRenderedRows` 为新文件各行铸造并 serve 锚点），`remove` 走 `delete` 的删除步，
+  `move` 走 `rename` 的迁移步。三步各自成为 `src/domain/` 下的一个共享模块，两边都调它。
+- **沙箱拒绝是 `failed` 不是 `unknown`**：拒绝意味着「什么都没写」，而 `unknown` 的措辞是「可能写了」。
+  patch 的错误分类补上 `sandbox.mapError`，模型因此拿到共享的 `[sandbox: …]` 标记与同轮升级提示。
+- **规格随之改写**：`apply-patch-spec.md` 里「`new` serves nothing and allocates no anchors」撤回，
+  ADR-0034 加修正案；发给模型的指引与工具描述从「只返回路径」改成「返回自己各行的锚点」。
+
+### Path / Affected typed relationships
+
+- `src/domain/write/create-file.ts`、`src/domain/write/rendered-rows.ts`（新；`allocateForRenderedRows` 从
+  `tools/tool-write-shadow.ts` 下沉到 domain，两个工具共用）
+- `src/domain/delete/remove-file.ts`、`src/domain/rename/move-file.ts`（新）
+- `src/domain/patch/commit.ts`（三段改调共享方法；`CommittedOperation.servedHashes`；错误分类）、
+  `src/render/patch-card.ts`（新建文件的 diff 用真锚点）
+- `src/tools/tool-{write-shadow,delete,rename}.ts`、`src/infra/sandbox.ts`（`mapError` 容忍缺策略）
+- `docs/specs/apply-patch-spec.md`、`docs/adr/0034-apply-patch-tool.md`（修正案）
+- `README.md` / `README.zh.md` / `CHANGELOG.md` / `src/domain/edit/prompts.ts`
+- 测试：`test/core/issue-416-patch-reuse.test.ts`（新，3 例：新建文件的锚点当场可用、混合补丁两边的锚点、
+  沙箱拒绝判 `failed`）

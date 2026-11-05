@@ -233,7 +233,7 @@ export const APPLY_PATCH_GUIDANCE: ToolGuidance = {
 		"Every hunk is addressed by an anchor from this session's read/grep/diff rows — the patch never repeats file content.",
 		"The whole patch is checked before anything is written (syntax, shape, paths, anchors); a rejected patch lists every problem at once and changes nothing.",
 		"Once applying starts, operations run in order, stop at the first failure and are not rolled back — re-read the affected files before retrying.",
-		"A completed add/update/move returns fresh anchors for the changed lines; a new file returns only its path (read it for anchors).",
+		"A completed add/update/move returns fresh anchors for the changed lines; a created file returns anchors for its own rows too, so it can be edited right away.",
 	],
 };
 
@@ -255,7 +255,7 @@ export function applyPatchDescription(cfg: EffectiveHashlineConfig): string {
 	return (
 		"Apply one change set across several files in a single call. The patch is text: a sequence of file sections, each with anchor-addressed hunks. Section headers (un-prefixed, keyword at column 0): `file <path>` (update an existing file), `new <path>` (create it; the `+` lines are its whole content), `move <from> -> <to>` (optionally with hunks), `remove <path>` (delete it). Hunk headers inside `file`/`move`: `replace <anchor>` (replace that line with the `+` lines), `replace <start>..<end>` (replace the range), `insert <anchor>` (put the `+` lines after that line), `delete <anchor>` / `delete <start>..<end>` (delete; no content lines follow). Every content line starts with `+` at column 0; a bare `+` is an empty line; content may contain any word because it is always behind `+`. Anchors come from this session's read/grep/diff rows - the patch NEVER repeats the old file content, and a `line:anchor` hint is accepted. Hunks in one section apply against the file's pre-patch snapshot; overlapping ranges are refused. " +
 		"The WHOLE patch is checked before anything is written (syntax, shape, paths, anchors): every problem is reported at once and a refused patch changes nothing. Once applying starts, operations run in patch order, stop at the first failure and are NOT rolled back - the completed work is reported truthfully. " +
-		"A completed update/move returns fresh anchors for the changed lines; a `new` file returns only its path, so read it before editing. " +
+		"A completed update/move returns fresh anchors for the changed lines; a `new` file returns anchors for its own rows, so it can be edited right away. " +
 		"Paths resolve against the session cwd." +
 		disabled
 	);

@@ -232,7 +232,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | `format` | 用该文件语言服务器的格式化器格式化——全文，或 `range: {start, end}`（**两端都是本会话 served 锚点**）。文件须已 observed（否则 `[E_NOT_OBSERVED]`）；格式化器无改动即 `noop`；与 `edit` 一样进 undo。手动调用允许冷启动（15s）——因为你点名要它。 |
 | `delete` | 删除普通文件并回收其 hashline 状态：`paths`（1–32 个，重复项合并）逐个删除，再把该路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里清掉。文件不存在也算 `already-absent` 成功并照样回收残留；符号链接、目录与特殊文件拒绝；非本地后端 fail-closed。`workspace-write` 下目标必须在 canonical 可写根内。报告逻辑字节；物理磁盘在存储关闭时 VACUUM 归还。多文件逐路径部分失败，没有 undelete。 |
 | `rename` | 重命名/移动普通文件并迁移其 hashline 状态：`renames`（1–32 个 `{from, to}` 对，完全重复项合并）按请求顺序逐对执行，链式改名成立；每个被移动路径的 `anchor_meta` / `anchor_lines` / `served`（所有会话）/ `undo`（所有深度）在一个事务里搬到新路径，改名之前服务过的锚点无需重读即可继续使用。符号链接、目录与特殊文件拒绝；目标已存在时除非是同一 inode 的另一种拼写否则 `[E_EXISTS]`；非本地后端 fail-closed。旧路径记 absent、新路径记 present；不发 write intent。多对逐对部分失败；store 迁移失败只 warning。 |
-| `apply_patch` | 一次调用应用**一个变更集**：跨多个文件的新增、修改、删除与移动，唯一参数是 `patch: string`。补丁是一串文件段（`file` / `new` / `move` / `remove`），段内的 hunk（`replace` / `insert` / `delete`）由本会话 read/grep/diff 行里的锚点寻址 —— 补丁从不重抄文件内容。整包先校验（语法、形状、路径、锚点）：被拒的补丁一次列出所有问题，且不写任何东西。开始落盘后，操作按序执行、遇错即停 —— 不回滚，因此重试前先重读受影响的文件。完成的 add/update/move 会返回改动行的新鲜锚点。 |
+| `apply_patch` | 一次调用应用**一个变更集**：跨多个文件的新增、修改、删除与移动，唯一参数是 `patch: string`。补丁是一串文件段（`file` / `new` / `move` / `remove`），段内的 hunk（`replace` / `insert` / `delete`）由本会话 read/grep/diff 行里的锚点寻址 —— 补丁从不重抄文件内容。整包先校验（语法、形状、路径、锚点）：被拒的补丁一次列出所有问题，且不写任何东西。开始落盘后，操作按序执行、遇错即停 —— 不回滚，因此重试前先重读受影响的文件。每一段都复用对应单功能工具自己的方法 —— `new` 走 `write` 的创建路径、`remove` 走 `delete`、`move` 走 `rename` —— 完成的 add/update/move 会返回改动行的新鲜锚点（新建文件也会返回它自己各行的锚点，可直接接着改）。 |
 
 ### `apply_patch` —— 一次调用一个变更集
 
@@ -271,6 +271,10 @@ remove src/dead.ts
 
 两个阶段：**整包先校验**（语法、形状、路径、锚点），被拒的补丁什么也不改；随后提交**按序执行、
 遇错即停**，已落盘的部分不回滚 —— 重试前先重读受影响的文件。
+
+**每一段都复用对应单功能工具自己的方法。** `new` 段走 `write` 的创建路径（自动格式化、语言服务器通知、
+以及新文件各行的锚点），`remove` 段走 `delete`，`move` 段走 `rename`。补丁自己只负责变更集：整包预检、
+按序执行、遇错即停。
 
 **默认打开。** `apply_patch.enabled: false` 会移除该工具与它的指引段。
 

@@ -37,8 +37,7 @@ import {
 	type HashStore,
 	type MigrateReport,
 } from "../domain/session/hash-store.js";
-import { clearAlignmentNotice } from "../domain/session/anchor-state.js";
-import { notifyDocumentClosed } from "../lsp/sync.js";
+import { moveFile, type MoveFileResult } from "../domain/rename/move-file.js";
 import { RENAME_DESCRIPTION } from "../domain/edit/prompts.js";
 
 /**
@@ -433,47 +432,27 @@ export function buildRenameTool(io: FileIO, sandbox: FsSandboxController) {
 						// the bridge still gets a version to compare against.
 						const expectedProbe =
 							expected ?? (await io.probeFile(pair.from, cwd, signal));
-						const outcome = await io.renameFile(
-							pair.from,
-							pair.to,
+						const moved: MoveFileResult = await moveFile({
+							io,
+							exec,
+							store,
+							from: pair.from,
+							to: pair.to,
 							cwd,
-							expectedProbe,
+							probe: expectedProbe,
 							signal,
 							sandboxPolicy,
-						);
-						// Host consistency: the old path is gone, the new one exists.
-						// Only observed events — never a write intent (nothing derives
-						// a write guard from a rename).
-						const absentRecorded = await io.emitAbsent(outcome.from, exec, signal);
-						clearAlignmentNotice(outcome.from);
-						notifyDocumentClosed(outcome.from);
-						await io.emitObserved(outcome.to, exec, signal);
-						const version = await io.statVersion(outcome.to, signal);
-
-						let migrated: MigrateReport | undefined;
-						let warning: string | undefined;
-						if (store !== undefined) {
-							try {
-								migrated = store.renamePath(outcome.from, outcome.to);
-							} catch (error) {
-								warning = `store migration failed; the sweep/TTL will reclaim the old path's rows: ${
-									error instanceof Error ? error.message : String(error)
-								}`;
-							}
-						}
-						if (!absentRecorded) {
-							warning = `${warning === undefined ? "" : `${warning} `}the old path's absence observation was not recorded (no observation policy mounted, or the path was recreated).`;
-						}
+						});
 						results.push({
-							from: { path: pair.from, canonicalPath: outcome.from },
+							from: { path: pair.from, canonicalPath: moved.from },
 							to: {
 								path: pair.to,
-								canonicalPath: outcome.to,
-								...(version !== undefined ? { version } : {}),
+								canonicalPath: moved.to,
+								...(moved.version !== undefined ? { version: moved.version } : {}),
 							},
 							status: "renamed",
-							...(migrated !== undefined ? { migrated } : {}),
-							...(warning !== undefined ? { warning } : {}),
+							...(moved.migrated !== undefined ? { migrated: moved.migrated } : {}),
+							...(moved.warning !== undefined ? { warning: moved.warning } : {}),
 						});
 					} catch (error) {
 						failures.push(

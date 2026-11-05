@@ -153,9 +153,13 @@ export class FsSandboxController {
 	): unknown {
 		if (!(error instanceof FsError) || error.code !== "FS_SANDBOX_DENIED")
 			return error;
-		const mode = (policy as SandboxExecutionPolicy).mode;
+		// The policy may be missing (an unsandboxed backend) — the denial still
+		// speaks the shared vocabulary, just without the mode in it.
+		const mode = policy?.mode;
+		const head =
+			mode === undefined ? "[sandbox: file access denied]" : sandboxDenialMarker(mode);
 		return new FsError(
-			`${sandboxDenialMarker(mode)}\n${escalationHintMarker("operation")}`,
+			`${head}\n${escalationHintMarker("operation")}`,
 			"FS_SANDBOX_DENIED",
 			{ cause: error },
 		);

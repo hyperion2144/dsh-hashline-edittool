@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getWritableTempRoot, setupIntegrationTest, getText } from "../support/fixtures.js";
 import { hashStorePath } from "../../src/infra/paths.js";
-import { allocateForRenderedRows } from "../../src/tools/tool-write-shadow.js";
+import { allocateForRenderedRows } from "../../src/domain/write/rendered-rows.js";
 import { genDiff } from "../../src/render/edit-diff.js";
 import { anchorsFor } from "../../src/domain/session/anchor-state.js";
 import { serveLines } from "../support/anchor-serve.js";
