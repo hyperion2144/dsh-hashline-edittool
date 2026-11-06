@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ServedRejectionError } from "../../src/hashline/anchor-pipeline.js";
 import { finalizeToolResult } from "../../src/domain/edit/edit-response.js";
 import { applyEdit, lineHashesPure, type HEdit } from "../../src/hashline/index.js";
+import { canon, contentChecksum, truncateServedKey } from "../../src/hashline/hash-assign.js";
 import { loadServed, recordEchoServes } from "../../src/domain/session/session-view.js";
 import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { getWritableTempRoot } from "../support/fixtures.js";
@@ -19,12 +20,12 @@ describe("recordEchoServes — serve-record policy", () => {
 				"sessionA",
 				path,
 				[
-					{ position: 0, anchor: "h00", contentKey: "k0" },
-					{ position: 1, anchor: "X01", contentKey: "k1" },
+					{ position: 0, anchor: "h00", contentKey: "aa00bb00" },
+					{ position: 1, anchor: "X01", contentKey: "cc11dd22" },
 				],
 				"live",
 			);
-			expect(await loadServed("sessionA", path)).toEqual(new Set(["h00", "X01"]));
+			expect(await loadServed("sessionA", path)).toEqual(new Map([["h00", "aa00bb00"], ["X01", "cc11dd22"]]));
 		});
 	});
 
@@ -32,7 +33,7 @@ describe("recordEchoServes — serve-record policy", () => {
 		await withTempHome(async () => {
 			const path = "/a.ts";
 			await recordEchoServes("sessionA", path, [{ position: 0, anchor: "h00", contentKey: "k0" }], "preview");
-			expect(await loadServed("sessionA", path)).toEqual(new Set());
+			expect(await loadServed("sessionA", path)).toEqual(new Map());
 		});
 	});
 });
@@ -41,7 +42,11 @@ describe("applyEdit — stale range beats would-empty", () => {
 	it("rejects E_RANGE_STALE before E_WOULD_EMPTY when both apply", () => {
 		const content = "aaa\nbbb\nccc";
 		const hashes = lineHashesPure(content);
-		const served = new Set([hashes[0]!, "S1", hashes[2]!]);
+		const served = new Map([
+			[hashes[0]!, truncateServedKey(contentChecksum(canon("aaa")))],
+			["S1", ""],
+			[hashes[2]!, truncateServedKey(contentChecksum(canon("ccc")))],
+		]);
 		let error: unknown;
 		try {
 			applyEdit(

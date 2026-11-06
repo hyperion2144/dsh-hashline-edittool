@@ -36,6 +36,7 @@ import { withWorkspace, workspaceCwd } from "../../infra/workspace.js";
 import { hashRe, canon, contentChecksum } from "../../hashline/hash-assign.js";
 import { anchorsFor } from "./anchor-state.js";
 import { loadHashStore, withStore } from "./hash-store.js";
+import { truncateServedKey } from "../../hashline/hash-assign.js";
 import { SERVED_ECHO_CAP } from "../../infra/constants.js";
 // The row shape and the row renderer both come from the resolve engine.
 // Reaching them through the `hashline/served` shim — which re-exports that
@@ -90,9 +91,14 @@ export async function recordServedAfterEdit(
     withStore(() => {
       const current = store.getServed(sessionKey, path);
       for (const entry of diffServedRows) {
-        if (entry.anchor !== null) current.add(entry.anchor);
+        if (entry.anchor === null) continue;
+        const key = truncateServedKey(entry.key);
+        // A keyless row records MEMBERSHIP only — it must not wipe the
+        // fingerprint the minting write already recorded (#420).
+        if (key === "" && current.has(entry.anchor)) continue;
+        current.set(entry.anchor, key);
       }
-      store.upsertServed(sessionKey, path, [...current]);
+      store.upsertServed(sessionKey, path, current);
     });
   } catch (error) {
     console.error("Failed to record served rows after edit:", error);
@@ -113,9 +119,14 @@ export async function recordServed(sessionKey: string, path: string, rows: Serve
   withStore(() => {
     const current = store.getServed(sessionKey, path);
     for (const entry of rows) {
-      if (entry.anchor !== null) current.add(entry.anchor);
+      if (entry.anchor === null) continue;
+      const key = truncateServedKey(entry.key);
+      // A keyless row records MEMBERSHIP only — it must not wipe the
+      // fingerprint the minting write already recorded (#420).
+      if (key === "" && current.has(entry.anchor)) continue;
+      current.set(entry.anchor, key);
     }
-    store.upsertServed(sessionKey, path, [...current]);
+    store.upsertServed(sessionKey, path, current);
   });
 }
 
@@ -152,7 +163,7 @@ export async function recordEchoServes(
   lineCount?: number,
 ): Promise<void> {
   if (policy !== "live") return;
-  await recordServed(sessionKey, path, rows.map((r) => ({ position: r.position, anchor: r.anchor, key: r.contentKey ?? null })), lineCount);
+  await recordServed(sessionKey, path, rows.map((r) => ({ position: r.position, anchor: r.anchor, key: truncateServedKey(r.contentKey) })), lineCount);
 }
 
 /**
@@ -344,14 +355,14 @@ export async function reconcileServed(
   withStore(() => {
     const current = store.getServed(sessionKey, path);
     let removed = false;
-    for (const anchor of [...current]) {
+    for (const anchor of current.keys()) {
       if (!live.has(anchor)) {
         current.delete(anchor);
         dropped.push(anchor);
         removed = true;
       }
     }
-    if (removed) store.upsertServed(sessionKey, path, [...current]);
+    if (removed) store.upsertServed(sessionKey, path, current);
   });
   // Every anchor this reconcile just dropped is one the edit RELEASED (it is
   // no longer live for the file). Put them in this call's release pool — the
@@ -369,9 +380,14 @@ export async function recordServedTruncated(sessionKey: string, path: string, ro
   withStore(() => {
     const current = store.getServed(sessionKey, path);
     for (const entry of rows) {
-      if (entry.anchor !== null) current.add(entry.anchor);
+      if (entry.anchor === null) continue;
+      const key = truncateServedKey(entry.key);
+      // A keyless row records MEMBERSHIP only — it must not wipe the
+      // fingerprint the minting write already recorded (#420).
+      if (key === "" && current.has(entry.anchor)) continue;
+      current.set(entry.anchor, key);
     }
-    store.upsertServed(sessionKey, path, [...current]);
+    store.upsertServed(sessionKey, path, current);
   });
 }
 
@@ -489,7 +505,7 @@ export function computeDrift(input: ComputeDriftInput): DriftNoticeResult | unde
   };
 }
 
-export async function scanDrift(input: { sessionKey: string; served: Set<string>; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; originalHashes: string[]; path: string; io?: FileIO; exec?: ToolExecution }): Promise<string | undefined> {
+export async function scanDrift(input: { sessionKey: string; served: ReadonlyMap<string, string>; resultHashes: string[]; resultLines: string[]; range: ResolvedRange; originalHashes: string[]; path: string; io?: FileIO; exec?: ToolExecution }): Promise<string | undefined> {
   const reported = await driftReported(input.sessionKey, input.path);
   // Narrowing `served` is THIS layer's job, not `computeDrift`'s: what the
   // model was served is a session fact, and the session is what accumulates it
@@ -507,7 +523,7 @@ export async function scanDrift(input: { sessionKey: string; served: Set<string>
   // something whenever it appears.
   const liveBefore = new Set(input.originalHashes);
   const served = new Set<string>();
-  for (const anchor of input.served) if (liveBefore.has(anchor)) served.add(anchor);
+  for (const anchor of input.served.keys()) if (liveBefore.has(anchor)) served.add(anchor);
   const result = computeDrift({ ...input, served, reported });
   if (!result || result.allAlreadyReported) return result?.text;
   let servedNote = "";

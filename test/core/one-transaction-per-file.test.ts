@@ -52,7 +52,8 @@ describe("one transaction per file (§7)", () => {
 
 			await withWorkspace(dir, async () => {
 				await openWorkspaceStore(dir);
-				const before = [...(await loadServed("test-session", path))].sort();
+				const servedBefore = await loadServed("test-session", path);
+				const before = [...servedBefore.keys()].sort();
 				expect(before.length).toBe(3);
 
 				await expect(
@@ -71,8 +72,8 @@ describe("one transaction per file (§7)", () => {
 				).rejects.toThrow("boom");
 
 				// The allocation from the FIRST mutation must be gone with it.
-				await expect(loadServed("other-session", path)).resolves.toEqual(new Set());
-				await expect(loadServed("test-session", path)).resolves.toEqual(new Set(before));
+				await expect(loadServed("other-session", path)).resolves.toEqual(new Map());
+				await expect(loadServed("test-session", path)).resolves.toEqual(servedBefore);
 			});
 		});
 	});

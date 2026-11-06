@@ -407,7 +407,7 @@ describe("scanDrift — the notice is about THIS edit", () => {
 				sessionKey: "s-history",
 				// `hDead` was served once and is no longer live: it is NOT in
 				// originalHashes, so this edit cannot have invalidated it.
-				served: new Set(["hDead", "h01", "h02"]),
+				served: new Map([["hDead", ""], ["h01", ""], ["h02", ""]]),
 				originalHashes: ["h00", "h01", "h02"],
 				resultHashes: ["h00", "X01", "h02"],
 				resultLines: ["a", "changed", "c"],
@@ -424,7 +424,7 @@ describe("scanDrift — the notice is about THIS edit", () => {
 			// this edit, the edit did not touch its line, and it is gone afterwards.
 			const notice = await scanDrift({
 				sessionKey: "s-real",
-				served: new Set(["h00", "h01", "h02"]),
+				served: new Map([["h00", ""], ["h01", ""], ["h02", ""]]),
 				originalHashes: ["h00", "h01", "h02"],
 				resultHashes: ["h00", "h01", "RELEASED"],
 				resultLines: ["a", "b", "changed"],

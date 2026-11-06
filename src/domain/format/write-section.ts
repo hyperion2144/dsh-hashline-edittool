@@ -34,7 +34,7 @@ export interface WriteSectionInput {
 	modelContent: string;
 	sessionKey: string;
 	/** The pre-call served anchors, captured BEFORE the preview's mint. */
-	preCallServed: ReadonlySet<string>;
+	preCallServed: ReadonlyMap<string, string>;
 	/** Create vs update — a create's rows cannot be "also in the main diff". */
 	created: boolean;
 	/**

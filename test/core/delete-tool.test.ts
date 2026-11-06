@@ -64,7 +64,7 @@ async function seed(cwd: string, path: string): Promise<ReturnType<typeof setupI
 		hashes: ["AAA"],
 		resultContent: "after\n",
 	});
-	store.upsertServed("other-session", path, ["ZZZ"]);
+	store.upsertServed("other-session", path, [["ZZZ", ""]]);
 	return harness;
 }
 

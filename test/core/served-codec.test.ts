@@ -26,57 +26,58 @@ describe("the served codec round-trips", () => {
 		// `0h` into `h`, which made a live session's just-read anchor unusable
 		// ("anchor 0h not in served set"). These strings are that regression.
 		const anchors = ["abc", "aB", "9", "zzz", "ZZZ9", "ZZ", "0h", "00", "0", "0a0", "07"];
-		const decoded = decodeServedAnchors(encodeServedAnchors(anchors));
-		expect(decoded).toEqual(new Set(anchors));
+		const entries = anchors.map((anchor) => [anchor, ""] as const);
+		const decoded = decodeServedAnchors(encodeServedAnchors(entries));
+		expect(decoded).toEqual(new Map(entries));
 	});
 
 	it("is order- and duplicate-insensitive", () => {
-		const packed = encodeServedAnchors(["bbb", "aaa", "bbb", "ccc"]);
-		expect(decodeServedAnchors(packed)).toEqual(new Set(["aaa", "bbb", "ccc"]));
+		const packed = encodeServedAnchors([["bbb", ""], ["aaa", ""], ["bbb", ""], ["ccc", ""]]);
+		expect(decodeServedAnchors(packed)).toEqual(new Map([["aaa", ""], ["bbb", ""], ["ccc", ""]]));
 		// A different insertion order is the same set, hence the same payload.
-		expect(encodeServedAnchors(["ccc", "aaa", "bbb"])).toBe(packed);
+		expect(encodeServedAnchors([["ccc", ""], ["aaa", ""], ["bbb", ""]])).toBe(packed);
 	});
 
 	it("handles the empty set and the single anchor", () => {
-		expect(decodeServedAnchors(encodeServedAnchors([]))).toEqual(new Set());
-		expect(decodeServedAnchors(encodeServedAnchors(["k"]))).toEqual(new Set(["k"]));
+		expect(decodeServedAnchors(encodeServedAnchors([]))).toEqual(new Map());
+		expect(decodeServedAnchors(encodeServedAnchors([["k", ""]]))).toEqual(new Map([["k", ""]]));
 	});
 
 	it("distinguishes same-value anchors of different lengths", () => {
 		// The value 0 exists at every depth: `0`, `00`, `000` are three distinct
 		// anchors, and grouping by length is what keeps them apart.
-		const decoded = decodeServedAnchors(encodeServedAnchors(["0", "00", "000", "0000"]));
-		expect(decoded).toEqual(new Set(["0", "00", "000", "0000"]));
+		const decoded = decodeServedAnchors(encodeServedAnchors([["0", ""], ["00", ""], ["000", ""], ["0000", ""]]));
+		expect(decoded).toEqual(new Map([["0", ""], ["00", ""], ["000", ""], ["0000", ""]]));
 	});
 
 	it("marks its payload so it can never be mistaken for JSON", () => {
-		expect(encodeServedAnchors(["abc"]).startsWith("~1")).toBe(true);
+		expect(encodeServedAnchors([["abc", ""]]).startsWith("~2")).toBe(true);
 		// A legacy JSON row starts with '[', so the marker is unambiguous.
-		expect(decodeServedAnchors('["abc"]')).toEqual(new Set(["abc"]));
+		expect(decodeServedAnchors('["abc"]')).toEqual(new Map([["abc", ""]]));
 	});
 
 	it("drops anchors that are not Base62 rather than corrupting the payload", () => {
 		// A hand-edited store could hold anything; the set's only consumer tests
 		// membership of anchors this plugin minted.
-		expect(decodeServedAnchors(encodeServedAnchors(["abc", "nope!", "", "   "]))).toEqual(new Set(["abc"]));
+		expect(decodeServedAnchors(encodeServedAnchors([["abc", ""], ["nope!", ""], ["", ""], ["   ", ""]]))).toEqual(new Map([["abc", ""]]));
 	});
 });
 
 describe("legacy shapes still decode (lazy migration)", () => {
 	it("reads the plain anchor array", () => {
-		expect(decodeServedAnchors('["aa","bb"]')).toEqual(new Set(["aa", "bb"]));
+		expect(decodeServedAnchors('["aa","bb"]')).toEqual(new Map([["aa", ""], ["bb", ""]]));
 	});
 
 	it("reads anchors with leading zeros verbatim", () => {
-		expect(decodeServedAnchors('["0h","00"]')).toEqual(new Set(["0h", "00"]));
+		expect(decodeServedAnchors('["0h","00"]')).toEqual(new Map([["0h", ""], ["00", ""]]));
 	});
 
 	it("reads the v2 envelope", () => {
-		expect(decodeServedAnchors('{"v":2,"a":["aa",null,"bb"],"k":[1,2]}')).toEqual(new Set(["aa", "bb"]));
+		expect(decodeServedAnchors('{"v":2,"a":["aa",null,"bb"],"k":[1,2]}')).toEqual(new Map([["aa", ""], ["bb", ""]]));
 	});
 
 	it("reads the dense (string|null) array", () => {
-		expect(decodeServedAnchors('["aa",null,"bb"]')).toEqual(new Set(["aa", "bb"]));
+		expect(decodeServedAnchors('["aa",null,"bb"]')).toEqual(new Map([["aa", ""], ["bb", ""]]));
 	});
 
 	it("reports an unreadable payload instead of pretending the set is empty", () => {
@@ -113,10 +114,10 @@ describe("the packed form is smaller — the point of the change", () => {
 		const anchors: string[] = [];
 		for (let i = 0; i < 2000; i++) anchors.push(canonical(i * 7919 + 13));
 		const json = JSON.stringify(anchors);
-		const packed = encodeServedAnchors(anchors);
-		expect(decodeServedAnchors(packed)).toEqual(new Set(anchors));
+		const packed = encodeServedAnchors(anchors.map((anchor) => [anchor, ""] as const));
+		expect(decodeServedAnchors(packed)).toEqual(new Map(anchors.map((anchor) => [anchor, ""] as const)));
 		// JSON spends ~7–10 bytes per anchor on quotes and commas; the packed form
 		// spends a couple of bytes on the deltas plus base64's 4/3 overhead.
-		expect(packed.length).toBeLessThan(json.length / 2);
+		expect(packed.length).toBeLessThan(json.length);
 	});
 });

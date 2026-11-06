@@ -139,7 +139,7 @@ describe("hash-store — the maintained anchor_lines row count (#305)", () => {
 				const store = await loadHashStore();
 				// The write path runs the budget check on every served anchor —
 				// the higher-frequency half of the same defect.
-				store.upsertServed("s1", "/a.ts", ["AAA"]);
+				store.upsertServed("s1", "/a.ts", [["AAA", ""]]);
 
 				// The recorder has to be LIVE, or the assertion below would pass
 				// for the wrong reason.

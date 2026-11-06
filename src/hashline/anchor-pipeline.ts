@@ -37,6 +37,7 @@ import { lineNumbersEnabled } from "../infra/settings.js";
 import {
 	canon,
 	contentChecksum,
+	truncateServedKey,
 	hashSep,
 	hashlineHeader,
 	fmtHashlineRow,
@@ -843,7 +844,7 @@ export function findNewEdge(
 function resolveLineReferences(
 	edit: HEdit,
 	fileAnchors: string[],
-	served: Set<string> | undefined,
+	served: ReadonlyMap<string, string> | undefined,
 	warnings: string[],
 ): HEdit {
 	if (served === undefined || served.size === 0) return edit;
@@ -1085,14 +1086,15 @@ export interface ServedVerdict {
 	badLines: number[];
 	/**
 	 * Which condition failed, when `!ok`: `line-changed` | `line-moved` |
-	 * `never-seen` | `not-live`. Free-form here because the four reasons are the
-	 * session layer's vocabulary; the pipeline only relays it into the message.
+	 * `never-seen` | `rebound` | `not-live`. Free-form here because the five
+	 * reasons are the session layer's vocabulary; the pipeline only relays it
+	 * into the message.
 	 */
 	reason?: string;
 }
 
 export function verifyServedRange(args: {
-	served: Set<string>;
+	served: ReadonlyMap<string, string>;
 	startAnchor: string;
 	endAnchor: string;
 	startLine: number;
@@ -1168,12 +1170,11 @@ export function verifyServedRange(args: {
 	if (args.verdict) {
 		unservedPositions = args.verdict.badLines.map((line) => line - 1);
 	} else {
-		// Set-based verification: the anchor IS the content identity. If it's in
-		// the served set, the line was served and (because anchors are
-		// deterministic + stable across edits/inherit) the content hasn't changed.
-		// No position-indexed lookup, no content-key mirror — the anchor alone is
-		// the proof. A mismatch means the anchor was never served (or the line's
-		// content changed, producing a new anchor not in the set).
+		// Set-based verification for callers with no session (unit tests, the
+		// write shadow): the mirror carries each anchor's binding fingerprint
+		// (#420), so this fallback is fingerprint-aware exactly like the
+		// session verdict is. An anchor absent from the mirror — or bound to
+		// content that differs from what the mirror recorded — is unserved.
 		const currentLen = endLine - startLine + 1;
 		// #212: collect EVERY unserved position, not just the first — the
 		// rejection names all of them and the re-read window they define.
@@ -1188,7 +1189,13 @@ export function verifyServedRange(args: {
 						: k === currentLen - 1
 							? endAnchor
 							: fileAnchors[position];
-			if (!served.has(expectedAnchor)) unservedPositions.push(position);
+			const servedKey = served.get(expectedAnchor);
+			if (
+				servedKey === undefined ||
+				servedKey !== truncateServedKey(contentChecksum(canon(fileLines[position] ?? "")))
+			) {
+				unservedPositions.push(position);
+			}
 		}
 	}
 	const firstMismatch: number | undefined = unservedPositions[0];
@@ -1258,7 +1265,7 @@ export function verifyServedRange(args: {
 		// The anchor the file's state holds for this position now. `""` means the
 		// position has none (never served, or released).
 		const liveAnchor = fileAnchors[firstMismatch] ?? "";
-		// §2.4: four causes, one code — the wording (and the recovery) differ.
+		// §2.4: five causes, two codes — the wording (and the recovery) differ.
 		//
 		// Prefer the PRIMITIVE's reason when the session layer supplied a verdict:
 		// it saw the conditions in the order the contract defines them, and it is
@@ -1274,9 +1281,10 @@ export function verifyServedRange(args: {
 		const verdictReason = args.verdict?.reason;
 		const failReason: ServedFailReason =
 			verdictReason === "line-changed" ||
-			verdictReason === "line-moved" ||
-			verdictReason === "never-seen" ||
-			verdictReason === "not-live"
+				verdictReason === "line-moved" ||
+				verdictReason === "never-seen" ||
+				verdictReason === "rebound" ||
+				verdictReason === "not-live"
 				? verdictReason
 				: localReason;
 		const currentAnchor = liveAnchor;
@@ -1317,11 +1325,13 @@ export function verifyServedRange(args: {
 				`the anchor you gave for line ${mismatchLine} is still live but no longer on that line${nowOn}. Take the current marker and resubmit.`,
 			"never-seen":
 				`your range covers ${runsText} of lines ${startLine}-${endLine} that were never shown in this session — a session restart clears the served record (the anchors themselves persist), or those lines were never read. Re-read them first: read {file_path: "${target}", offset: ${readFrom}, limit: ${readLimit}}${cappedNote}, then retry the same edit.`,
+			"rebound":
+				`the binding you saw for line ${mismatchLine} has been re-minted to different content — another session released and re-created this anchor${nowOn}. The content under it now is NOT something you have read. Re-read it first: read {file_path: "${target}", offset: ${readFrom}, limit: ${readLimit}}${cappedNote}, then retry the same edit.`,
 			"not-live":
 				`the anchor you gave for line ${mismatchLine} is gone from this file's anchor state (the line was removed or rewritten). Call read() to get the current markers.`,
 		};
 		throw new ServedRejectionError({
-			code: "E_RANGE_UNVERIFIED",
+			code: failReason === "rebound" ? "E_RANGE_STALE" : "E_RANGE_UNVERIFIED",
 			message:
 				`[E_RANGE_UNVERIFIED]${where ? ` ${where.trim()}` : ""} — ${reasonMsg[failReason]}` +
 				`Echo of the first unserved line (read-style, ±${contextLinesCfg()} context):\n${ctxEcho}\n\n` +
@@ -1335,10 +1345,11 @@ export function verifyServedRange(args: {
 
 
 /**
- * WHY a line failed the served check — four causes, one error code (§2.4).
+ * WHY a line failed the served check — five causes, two codes (§2.4).
  *
- * The code stays `E_RANGE_UNVERIFIED`; only the wording and the suggested
- * recovery differ, because the four cases need different actions:
+ * The code stays `E_RANGE_UNVERIFIED` except for `rebound` (#420), which is
+ * `E_RANGE_STALE`; only the wording and the suggested recovery differ, because
+ * the cases need different actions:
  *
  * - `line-changed` — that line's CONTENT changed after you read it. Take the
  *   marker the echo shows for it and resubmit.
@@ -1346,6 +1357,9 @@ export function verifyServedRange(args: {
  *   named; take the current marker and resubmit.
  * - `never-seen` — this session was never shown the line. Go READ it;
  *   retrying the same input cannot help.
+ * - `rebound` — the session saw this anchor under a DIFFERENT binding;
+ *   another session released and re-minted it, and the content now under it
+ *   was never read. Go READ it (#420).
  * - `not-live` — the anchor the CALLER gave is gone from the file's state
  *   entirely. A sparse-projection empty slot (`""`) is not a caller anchor —
  *   a line covered as `""` was never allocated, which is `never-seen` (#282).
@@ -1353,7 +1367,7 @@ export function verifyServedRange(args: {
  * The old wording blamed a session restart for all four, which is true for only
  * one of them and actively misleads for the others.
  */
-type ServedFailReason = "line-changed" | "line-moved" | "never-seen" | "not-live";
+type ServedFailReason = "line-changed" | "line-moved" | "never-seen" | "rebound" | "not-live";
 
 /**
  * Classify the first failing line. Pure: everything it needs is already in hand.
@@ -1560,7 +1574,7 @@ export function applyEdit(
 	signal?: AbortSignal,
 	precomputedAnchors?: string[],
 	filePath?: string,
-	served?: Set<string>,
+	served?: ReadonlyMap<string, string>,
 	expected?: ExpectedLines,
 	opts?: {
 		/**

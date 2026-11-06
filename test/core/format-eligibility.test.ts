@@ -23,7 +23,7 @@ describe("computeRowEligibility", () => {
 			provenance: new Map(),
 			modelTouched: new Set([2]),
 			preCallHashes: [],
-			served: new Set(),
+			served: new Map(),
 		});
 		expect(eligibility.get(2)).toBe(true);
 	});
@@ -37,7 +37,7 @@ describe("computeRowEligibility", () => {
 			]),
 			modelTouched: new Set(),
 			preCallHashes: ["AAA", "BBB"],
-			served: new Set(["AAA"]), // pre-call line 1 was shown this session
+			served: new Map([["AAA", ""]]), // pre-call line 1 was shown this session
 		});
 		expect(eligibility.get(1)).toBe(true);
 		expect(eligibility.get(2)).toBe(false);
@@ -49,7 +49,7 @@ describe("computeRowEligibility", () => {
 			provenance: new Map([[1, new Set([1, 2])]]),
 			modelTouched: new Set(),
 			preCallHashes: ["AAA", "BBB"],
-			served: new Set(["BBB"]),
+			served: new Map([["BBB", ""]]),
 		});
 		expect(eligibility.get(1)).toBe(true);
 	});
@@ -60,7 +60,7 @@ describe("computeRowEligibility", () => {
 			provenance: new Map(),
 			modelTouched: new Set(),
 			preCallHashes: ["AAA"],
-			served: new Set(["AAA"]),
+			served: new Map([["AAA", ""]]),
 		});
 		expect(eligibility.get(1)).toBe(false);
 	});

@@ -392,7 +392,7 @@ describe("hash-store — schema versioning", () => {
 		await withStoreHome(async (home) => {
 			const store = await loadHashStore();
 			put(home, "/p.ts", "x\n", ["XYZ"]);
-			store.upsertServed("session-1", "/p.ts", ["XYZ"]);
+			store.upsertServed("session-1", "/p.ts", [["XYZ", ""]]);
 			store.pushUndo("/u.ts", {
 				content: "old",
 				bom: "",
@@ -410,7 +410,7 @@ describe("hash-store — schema versioning", () => {
 
 			const reloaded = await loadHashStore();
 			expect(snapshotOf(home, "/p.ts", "x\n")).toBeUndefined();
-			expect(reloaded.getServed("session-1", "/p.ts")).toEqual(new Set());
+			expect(reloaded.getServed("session-1", "/p.ts")).toEqual(new Map());
 			expect(reloaded.getUndo("/u.ts")).toBeUndefined();
 			expect(countRows(home, "anchor_lines")).toBe(0);
 			expect(countRows(home, "served")).toBe(0);

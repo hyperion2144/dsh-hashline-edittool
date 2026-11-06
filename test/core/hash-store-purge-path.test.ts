@@ -61,9 +61,9 @@ describe("HashStore.purgePath", () => {
 			}
 			store.pushUndo(path, undoLayer("x".repeat(512 * 1024)));
 			store.pushUndo(other, undoLayer("keep\n"));
-			store.upsertServed("s1", path, ["AAA"]);
-			store.upsertServed("s2", path, ["BBB"]);
-			store.upsertServed("s1", other, ["CCC"]);
+			store.upsertServed("s1", path, [["AAA", ""]]);
+			store.upsertServed("s2", path, [["BBB", ""]]);
+			store.upsertServed("s1", other, [["CCC", ""]]);
 			const before = store.stats().rows;
 
 			const report = store.purgePath(path);
@@ -84,7 +84,7 @@ describe("HashStore.purgePath", () => {
 
 			// The other path owns its own four families, untouched.
 			expect(store.getUndo(other)).toBeDefined();
-			expect(store.getServed("s1", other)).toEqual(new Set(["CCC"]));
+			expect(store.getServed("s1", other)).toEqual(new Map([["CCC", ""]]));
 			expect(store.allKnownPaths().some((row) => row.path === other)).toBe(true);
 
 			// Idempotent: a second purge of the same path reports zeros.

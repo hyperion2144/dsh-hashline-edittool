@@ -4,6 +4,7 @@ import {
 	lineHashesPure,
 	parseText,
 } from "../../src/hashline/index.js";
+import { canon, contentChecksum, truncateServedKey } from "../../src/hashline/hash-assign.js";
 import { servedAnchors } from "../support/anchor-serve.js";
 import { splitLines } from "../../src/infra/utils.js";
 import { useNumberedRows, useTestHome } from "../support/fixtures.js";
@@ -81,7 +82,7 @@ describe("bare line numbers as references", () => {
 			undefined,
 			anchors,
 			"probe.txt",
-			new Set(anchors),
+			new Map(anchors.map((anchor, index) => [anchor, truncateServedKey(contentChecksum(canon(splitLines(content)[index]!)))] as const)),
 		);
 		expect(result.content).toBe("alpha\nBETA\ngamma\n");
 		expect(result.warnings?.some((w) => w.includes("[E_LINE_REF]"))).toBe(true);
@@ -91,7 +92,7 @@ describe("bare line numbers as references", () => {
 		const content = "alpha\nbeta\ngamma\n";
 		const edit = { content_lines: ["X"], hash_bounds: [{ anchor: "3" }, { anchor: "3" }] } as never;
 		expect(() =>
-			applyEdit(content, edit, undefined, lineHashesPure(content), "probe.txt", new Set()),
+			applyEdit(content, edit, undefined, lineHashesPure(content), "probe.txt", new Map()),
 		).toThrow(/Bare-digit anchors are forbidden/);
 	});
 
@@ -102,7 +103,7 @@ describe("bare line numbers as references", () => {
 		const drifted = "alpha\nbeta\nGAMMA-CHANGED\n";
 		const edit = { content_lines: ["X"], hash_bounds: [{ anchor: "3" }, { anchor: "3" }] } as never;
 		expect(() =>
-			applyEdit(drifted, edit, undefined, lineHashesPure(drifted), "probe.txt", new Set(served)),
+			applyEdit(drifted, edit, undefined, lineHashesPure(drifted), "probe.txt", new Map(served.map((h) => [h, ""] as const))),
 		).toThrow(/Bare-digit anchors are forbidden/);
 	});
 });

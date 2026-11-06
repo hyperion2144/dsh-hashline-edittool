@@ -39,17 +39,25 @@
  * store that is never written again keeps working as-is.
  * @module dsh-hashline-edittool/domain/session/served-codec
  */
+import { truncateServedKey } from "../../hashline/hash-assign.js";
 
 /**
  * Marks a packed payload and names its version.
  *
- * `~1` is the length-grouped form. A bare `~` was the first attempt, which
- * dropped leading zeros; it is deliberately NOT decodable — a wrong served set
- * is worse than a missing one, because it makes anchors the model legitimately
- * holds unusable and the rejection blames the model. Treating it as unreadable
- * lets the caller heal the row, and the next read re-serves correctly.
+ * `~2` is the length-grouped form plus a per-anchor fingerprint (#420): the
+ * served verdict compares fingerprints, so the wire carries them.
+ *
+ * `~1` is the length-grouped form without fingerprints. A bare `~` was the
+ * first attempt, which dropped leading zeros; it is deliberately NOT decodable
+ * — a wrong served set is worse than a missing one, because it makes anchors
+ * the model legitimately holds unusable and the rejection blames the model.
+ * Treating it as unreadable lets the caller heal the row, and the next read
+ * re-serves correctly.
  */
 const PACKED_PREFIX = "~1";
+
+/** `~2` — the length-grouped form WITH a per-anchor fingerprint (#420). */
+const PACKED_PREFIX_V2 = "~2";
 
 /** A payload written by the first, leading-zero-dropping version. */
 const DEFECTIVE_PREFIX = "~";
@@ -122,54 +130,66 @@ function readVarint(
 }
 
 /**
- * Encode a served set for storage.
+ * Encode a served mirror for storage (#420).
  *
- * Anchors that are not Base62 (never produced by this plugin, but a hand-edited
- * store could hold them) are dropped rather than corrupting the payload: the
- * set's only consumer tests membership of anchors this plugin minted.
+ * Each entry is an anchor plus the truncated fingerprint of the binding the
+ * session saw. Anchors that are not Base62 (never produced by this plugin,
+ * but a hand-edited store could hold them) are dropped rather than corrupting
+ * the payload: the mirror's only consumer probes anchors this plugin minted.
  *
- * @param anchors - the anchors served for one session+path; order and
- *   duplicates do not matter.
+ * @param entries - `(anchor, fingerprint)` pairs for one session+path; order
+ *   does not matter, and a duplicate anchor's last pair wins.
  * @returns the string to store in `served.hashes`.
  */
-export function encodeServedAnchors(anchors: Iterable<string>): string {
+export function encodeServedAnchors(entries: Iterable<readonly [string, string]>): string {
 	// Group by length first: within a group every anchor has the same character
 	// count, so the length is written once and the values carry only their rank.
-	const byLength = new Map<number, Set<number>>();
-	for (const anchor of anchors) {
+	const byLength = new Map<number, Map<number, string>>();
+	for (const [anchor, key] of entries) {
 		const value = anchorValue(anchor);
 		if (value === undefined) continue;
+		const fingerprint = truncateServedKey(key);
 		const group = byLength.get(anchor.length);
-		if (group === undefined) byLength.set(anchor.length, new Set([value]));
-		else group.add(value);
+		if (group === undefined) byLength.set(anchor.length, new Map([[value, fingerprint]]));
+		else group.set(value, fingerprint);
 	}
 	const lengths = [...byLength.keys()].sort((a, b) => a - b);
 	const bytes: number[] = [];
 	writeVarint(bytes, lengths.length);
 	for (const length of lengths) {
-		const values = [...byLength.get(length)!].sort((a, b) => a - b);
+		const values = [...byLength.get(length)!].sort((a, b) => a[0] - b[0]);
 		writeVarint(bytes, length);
 		writeVarint(bytes, values.length);
 		let previous = 0;
-		for (const value of values) {
+		for (const [value, fingerprint] of values) {
 			writeVarint(bytes, value - previous);
 			previous = value;
+			const keyBytes = Buffer.from(fingerprint, "hex");
+			writeVarint(bytes, keyBytes.length);
+			for (const byte of keyBytes) bytes.push(byte);
 		}
 	}
-	return PACKED_PREFIX + Buffer.from(bytes).toString("base64");
+	return PACKED_PREFIX_V2 + Buffer.from(bytes).toString("base64");
 }
 
 /**
- * Decode a stored served set — packed by this build, or any legacy shape.
+ * Decode a stored served mirror — packed by this build, or any legacy shape.
+ *
+ * A payload from before #420 carries no fingerprints; its anchors decode with
+ * the empty fingerprint — seen, binding unknown. The verdict REFUSES such a
+ * row (a stale-binding rejection) until its echo re-fingerprints it, which is
+ * the same one-round-trip self-heal a session restart pays; nothing is
+ * silently revoked.
  *
  * @param raw - the stored `served.hashes` value.
- * @returns the anchors, or undefined when the payload is unreadable (the caller
- *   treats that as a corrupt row, exactly as it did for malformed JSON).
+ * @returns `(anchor → fingerprint)` pairs, or undefined when the payload is
+ *   unreadable (the caller treats that as a corrupt row, exactly as it did for
+ *   malformed JSON).
  */
-export function decodeServedAnchors(raw: string): Set<string> | undefined {
-	if (raw.startsWith(PACKED_PREFIX)) {
-		const bytes = Buffer.from(raw.slice(PACKED_PREFIX.length), "base64");
-		const out = new Set<string>();
+export function decodeServedAnchors(raw: string): Map<string, string> | undefined {
+	if (raw.startsWith(PACKED_PREFIX_V2)) {
+		const bytes = Buffer.from(raw.slice(PACKED_PREFIX_V2.length), "base64");
+		const out = new Map<string, string>();
 		let at = 0;
 		const groups = readVarint(bytes, at);
 		if (groups === undefined) return undefined;
@@ -187,7 +207,40 @@ export function decodeServedAnchors(raw: string): Set<string> | undefined {
 				if (delta === undefined) return undefined;
 				previous += delta.value;
 				at = delta.next;
-				out.add(anchorOfLength(previous, length.value));
+				const keyLength = readVarint(bytes, at);
+				if (keyLength === undefined) return undefined;
+				at = keyLength.next;
+				if (at + keyLength.value > bytes.length) return undefined;
+				const fingerprint = keyLength.value === 0 ? "" : Buffer.from(bytes.subarray(at, at + keyLength.value)).toString("hex");
+				at += keyLength.value;
+				out.set(anchorOfLength(previous, length.value), fingerprint);
+			}
+		}
+		return out;
+	}
+	// The length-grouped form before #420: anchors only, no fingerprints.
+	// Every anchor decodes with the empty fingerprint — seen, binding unknown;
+	if (raw.startsWith(PACKED_PREFIX)) {
+		const bytes = Buffer.from(raw.slice(PACKED_PREFIX.length), "base64");
+		const out = new Map<string, string>();
+		let at = 0;
+		const groups = readVarint(bytes, at);
+		if (groups === undefined) return undefined;
+		at = groups.next;
+		for (let group = 0; group < groups.value; group++) {
+			const length = readVarint(bytes, at);
+			if (length === undefined) return undefined;
+			at = length.next;
+			const count = readVarint(bytes, at);
+			if (count === undefined) return undefined;
+			at = count.next;
+			let previous = 0;
+			for (let i = 0; i < count.value; i++) {
+				const delta = readVarint(bytes, at);
+				if (delta === undefined) return undefined;
+				previous += delta.value;
+				at = delta.next;
+				out.set(anchorOfLength(previous, length.value), "");
 			}
 		}
 		return out;
@@ -203,12 +256,12 @@ export function decodeServedAnchors(raw: string): Set<string> | undefined {
 	// plugin could have minted means the ROW is corrupt, not that the entry
 	// should be quietly dropped. Returning undefined lets the caller heal it,
 	// which is the behaviour the corrupt-row tests pin.
-	const anchorsOf = (entries: unknown[]): Set<string> | undefined => {
-		const out = new Set<string>();
+	const anchorsOf = (entries: unknown[]): Map<string, string> | undefined => {
+		const out = new Map<string, string>();
 		for (const entry of entries) {
 			if (entry === null) continue;
 			if (typeof entry !== "string" || !anchorRe.test(entry)) return undefined;
-			out.add(entry);
+			out.set(entry, "");
 		}
 		return out;
 	};

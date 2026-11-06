@@ -39,7 +39,7 @@ export function computeRowEligibility(params: {
 	provenance: ReadonlyMap<number, ReadonlySet<number>>;
 	modelTouched: ReadonlySet<number>;
 	preCallHashes: readonly string[];
-	served: ReadonlySet<string>;
+	served: ReadonlyMap<string, string>;
 }): Map<number, boolean> {
 	const { finalLineCount, provenance, modelTouched, preCallHashes, served } = params;
 	const eligibility = new Map<number, boolean>();

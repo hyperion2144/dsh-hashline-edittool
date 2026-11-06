@@ -167,7 +167,7 @@ describe("hash-store — the maintained path count (#311)", () => {
 				const store = await loadHashStore();
 				// The write path runs the budget check on every served anchor —
 				// the higher-frequency half of the same defect.
-				store.upsertServed("s1", "/a.ts", ["AAA"]);
+				store.upsertServed("s1", "/a.ts", [["AAA", ""]]);
 
 				// The recorder has to be LIVE, or the assertion below would pass
 				// for the wrong reason.
@@ -230,7 +230,7 @@ describe("hash-store — the maintained path count (#311)", () => {
 			expect(maintainedValue(home, PATHS_KEY)).toBe(String(realPathCount(home)));
 
 			// 4. The store's own write paths.
-			store.upsertServed("s2", "/b.ts", ["AAA"]);
+			store.upsertServed("s2", "/b.ts", [["AAA", ""]]);
 			expect(maintainedValue(home, PATHS_KEY)).toBe("2");
 			store.pushUndo("/c.ts", {
 				content: "content",
