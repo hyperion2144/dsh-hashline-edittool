@@ -51,7 +51,7 @@ describe("serve loop round-trip (DIAG)", () => {
 
       const served = await loadServed(key, path);
       expect(served.size).toBe(anchors.length);
-      expect(served).toEqual(new Set(anchors));
+      expect(served).toEqual(new Map(anchors.map((anchor) => [anchor, ""] as const)));
     });
   });
 

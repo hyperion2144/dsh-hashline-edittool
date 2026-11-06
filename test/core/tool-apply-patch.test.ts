@@ -148,7 +148,7 @@ async function seedResidue(path: string, cwd: string): Promise<void> {
 		hashes: ["AAA"],
 		resultContent: "after\n",
 	});
-	store.upsertServed("other-session", path, ["ZZZ"]);
+	store.upsertServed("other-session", path, [["ZZZ", ""]]);
 }
 
 /** The three files the success fixtures share. */

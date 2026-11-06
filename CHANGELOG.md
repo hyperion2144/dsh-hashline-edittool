@@ -8,6 +8,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 - `apply_patch` 新增文件返回给模型的内容没有锚点：改为复用 `write` 的创建路径（`new` 走 create、`remove` 走 delete、`move` 走 rename），新文件各行的锚点当场铸造并可编辑；沙箱拒绝判为 `failed` 而不是 `unknown`（#416，ADR-0034）。
 - 重启后恢复会话的第一轮 `apply_patch` / `lsp` 缺席：弃探针式动态定层，两工具恒注册 agent 层；恢复瞬间的排队输入轮仍会缺席（按步重组起恢复），为已知限制（#418，修正 ADR-0032）。
+- edit 跨会话锚点重绑定静默错行（另一会话释放并重铸锚点后，本会话的陈旧锚点仍过 served 校验）：served 镜像改为带绑定指纹（新 `~2` packed 编码，legacy 行惰性兼容），判决比对指纹不一致按 `E_RANGE_STALE` 拒并回显即 serve（#420）。
 
 ## [0.11.0] - 2026-11-04
 

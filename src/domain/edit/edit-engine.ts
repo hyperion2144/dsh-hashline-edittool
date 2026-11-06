@@ -412,7 +412,7 @@ if (isNoop) return { totalAddedLines: 0, totalRemovedLines: 0 };
 export interface ApplyOneInput {
 	content: string;
 	hashes: string[];
-	served: Set<string>;
+	served: ReadonlyMap<string, string>;
 	removeFrom: string;
 	removeTo: string;
 	replacementText: string;

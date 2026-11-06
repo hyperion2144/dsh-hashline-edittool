@@ -38,7 +38,7 @@
  */
 
 import { contentKey } from "../../hashline/alloc.js";
-import { contentChecksum } from "../../hashline/hash-assign.js";
+import { canon, contentChecksum, truncateServedKey } from "../../hashline/hash-assign.js";
 import { splitLines } from "../../infra/utils.js";
 import { allocateIntoRows, type SparseState } from "../../hashline/alloc.js";
 import { ensureAnchorState, ensureAnchorStateByIdentity, normalizeContent, persistAnchorState, persistedAnchorChecksum, persistedAnchorLines, persistedAnchorsFor, type AnchorIdentity } from "./anchor-state.js";
@@ -145,7 +145,7 @@ export async function anchorForContent(input: {
 }
 
 /** Why {@link probeLines} refused, which picks the model-facing wording (§2.4). */
-export type ProbeReason = "never-seen" | "line-changed" | "line-moved" | "not-live";
+export type ProbeReason = "never-seen" | "rebound" | "line-changed" | "line-moved" | "not-live";
 
 /** One line that failed validation, as the echo needs it. */
 export interface InvalidRow {
@@ -446,11 +446,23 @@ async function anchorForInTransaction(input: AnchorForInput): Promise<AnchorForR
 		}
 	}
 
-	await persist(path, state, checksum, lineCount, sessionKey, anchors);
+	// #420: the served mirror records WHICH binding the model saw — anchor →
+	// truncated fingerprint of the line as served. The verdict compares it, so
+	// a cross-session re-mint expires the old claim instead of silently
+	// landing on a line the session never saw.
+	const servedEntries = new Map<string, string>();
+	for (let i = 0; i < lines.length; i++) {
+		const anchor = anchors[i]!;
+		if (anchor === "") continue;
+		const text = textByLine.get(lines[i]!);
+		if (text === undefined) continue;
+		servedEntries.set(anchor, truncateServedKey(contentChecksum(canon(text))));
+	}
+	await persist(path, state, checksum, lineCount, sessionKey, servedEntries);
 	return { anchors, minted };
 }
 /**
- * Write the state back and record the served anchors, in ONE transaction.
+ * Write the state back and record the served mirror, in ONE transaction.
  *
  * Two writes that must not be separable: an anchor that exists but was never
  * recorded as served is rejected on the next edit ("never seen"), and a served
@@ -458,12 +470,17 @@ async function anchorForInTransaction(input: AnchorForInput): Promise<AnchorForR
  * serving without allocating — is how the "never served" rows were born, so
  * they commit together or not at all.
  *
+ * Since #420 the mirror carries each anchor's binding fingerprint, written
+ * fresh on every serve (the latest serve wins): the claim a session holds is
+ * "I saw THIS content under THIS anchor", not merely "I have heard of it".
+ *
  * @param path - the file's absolute path.
  * @param state - the sparse state after allocation.
  * @param checksum - the content checksum that state corresponds to.
  * @param lineCount - the file's current line count.
- * @param sessionKey - whose served set to extend.
- * @param anchors - the anchors that will be visible to the model.
+ * @param sessionKey - whose served mirror to extend.
+ * @param servedEntries - anchor → truncated fingerprint for every anchor the
+ *   response will show.
  */
 async function persist(
 	path: string,
@@ -471,18 +488,17 @@ async function persist(
 	checksum: string,
 	lineCount: number,
 	sessionKey: string,
-	anchors: readonly string[],
+	servedEntries: ReadonlyMap<string, string>,
 ): Promise<void> {
 	state.checksum = checksum;
 	state.lineCount = lineCount;
 	const store = await loadHashStore();
 	withStore(() => {
 		persistAnchorState(path, state);
-		const visible = anchors.filter((anchor) => anchor !== "");
-		if (visible.length === 0) return;
+		if (servedEntries.size === 0) return;
 		const current = store.getServed(sessionKey, path);
-		for (const anchor of visible) current.add(anchor);
-		store.upsertServed(sessionKey, path, [...current]);
+		for (const [anchor, key] of servedEntries) current.set(anchor, key);
+		store.upsertServed(sessionKey, path, current);
 	});
 }
 
@@ -635,8 +651,8 @@ export async function probeLines(input: ProbeInput): Promise<ProbeOk | ProbeFail
 	let snapshot: {
 		persistedChecksum: string | undefined;
 		anchorRows: PersistedAnchorLine[];
-		served: Set<string>;
-	} = { persistedChecksum: undefined, anchorRows: [], served: new Set<string>() };
+		served: Map<string, string>;
+	} = { persistedChecksum: undefined, anchorRows: [], served: new Map<string, string>() };
 	await withStoreAsync(async () => {
 		snapshot = {
 			// Captured BEFORE anything realigns the rows: a realign moves the checksum
@@ -686,6 +702,11 @@ export async function probeLines(input: ProbeInput): Promise<ProbeOk | ProbeFail
 	/** Anchors that failed CONDITION 2 (not in this session's served set). */
 	const notServed = new Set<string>();
 
+	/** Anchors that failed CONDITION 2 with a FINGERPRINT mismatch (#420):
+	 * the session has seen this anchor, but as a DIFFERENT binding — another
+	 * session released and re-minted it, and the content now under it was
+	 * never shown here. */
+	const rebound = new Set<string>();
 	for (const ref of refs) {
 		if (ref.anchor === "") {
 			// #282: a sparse-projection empty slot (`anchorsFor` fills unallocated
@@ -732,11 +753,22 @@ export async function probeLines(input: ProbeInput): Promise<ProbeOk | ProbeFail
 			rows.push({ line, current: row!.anchor, given: ref.anchor, contentKey: key });
 			continue;
 		}
-		if (!served.has(ref.anchor)) {
-			// Condition 2 failed: the anchor is live and its content still matches —
-			// this session was simply never shown it, so the recovery is "go read
-			// it", not "take the new marker".
+		const servedKey = served.get(ref.anchor);
+		if (servedKey === undefined) {
+			// Condition 2 failed (membership): the anchor is live and its content
+			// still matches — this session was simply never shown it, so the
+			// recovery is "go read it", not "take the new marker".
 			notServed.add(ref.anchor);
+			rows.push({ line, current: row!.anchor, given: ref.anchor, contentKey: key });
+			continue;
+		}
+		if (servedKey !== truncateServedKey(contentChecksum(canon(currentLines[line - 1]!)))) {
+			// Condition 2 failed (fingerprint, #420): the session HAS seen this
+			// anchor — as a different binding. Rejecting keeps the edit from
+			// silently landing on a line the model has never seen; the echo
+			// re-serves the new binding, and the next attempt with the CURRENT
+			// marker is legitimate.
+			rebound.add(ref.anchor);
 			rows.push({ line, current: row!.anchor, given: ref.anchor, contentKey: key });
 			continue;
 		}
@@ -748,10 +780,11 @@ export async function probeLines(input: ProbeInput): Promise<ProbeOk | ProbeFail
 	if (rows.length > 0) {
 		rows.sort((a, b) => a.line - b.line);
 		const first = rows[0]!;
-		// The reason is the CONDITION that failed, asked directly. The four
+		// The reason is the CONDITION that failed, asked directly. The five
 		// outcomes need different recovery wording (§2.4):
 		//
 		//   not-live    → the anchor is gone; take the current marker and re-submit
+		//   rebound     → the binding you saw has been re-minted; go read the line
 		//   never-seen  → this session was never shown it; go read it
 		//   line-changed→ the file changed after you read it; take the new marker
 		//   line-moved  → it points elsewhere now; take the current marker
@@ -760,13 +793,15 @@ export async function probeLines(input: ProbeInput): Promise<ProbeOk | ProbeFail
 		// changed after you read it" — it is never itself a rejection (§5).
 		const reason: ProbeReason = notLive.has(first.given)
 			? "not-live"
-			: notServed.has(first.given)
-				? checksumChanged
-					? "line-changed"
-					: "never-seen"
-				: checksumChanged
-					? "line-changed"
-					: "line-moved";
+			: rebound.has(first.given)
+				? "rebound"
+				: notServed.has(first.given)
+					? checksumChanged
+						? "line-changed"
+						: "never-seen"
+					: checksumChanged
+						? "line-changed"
+						: "line-moved";
 		return { ok: false, rows, reason };
 	}
 

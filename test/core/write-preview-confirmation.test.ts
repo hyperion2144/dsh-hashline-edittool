@@ -158,7 +158,7 @@ describe("write.preview: confirmation", () => {
 				{ file_path: "c.txt", content: "one\ntwo\n" },
 				exec({}),
 			)) as WriteOut;
-			expect(await loadServed(sessionKey, join(dir, "c.txt"))).toEqual(new Set());
+			expect(await loadServed(sessionKey, join(dir, "c.txt"))).toEqual(new Map());
 			const rows = out.diffRows ?? [];
 			expect(rows.length).toBeGreaterThan(0);
 			for (const row of rows) {
@@ -176,7 +176,7 @@ describe("write.preview: confirmation", () => {
 				exec({}),
 			)) as WriteOut;
 			expect(out.operation).toBe("update");
-			expect(await loadServed(sessionKey, join(dir, "d.txt"))).toEqual(new Set());
+			expect(await loadServed(sessionKey, join(dir, "d.txt"))).toEqual(new Map());
 		});
 	});
 

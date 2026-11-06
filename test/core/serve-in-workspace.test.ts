@@ -93,7 +93,7 @@ describe("observeServedRows", () => {
 			// a later `edit` does, and it is what failed before.
 			const served = await withWorkspace(cwd, () => loadServed("serve-scope-session", path));
 			// A Set: compare as one, not element-wise (order is not part of the claim).
-			expect(served).toEqual(new Set(anchors));
+			expect(new Set(served.keys())).toEqual(new Set(anchors));
 		} finally {
 			shutdownHashStore();
 		}
@@ -126,7 +126,7 @@ describe("observeServedRows", () => {
 			// `recordServed` is the bare call the two tools used to make; if the
 			// primitive had written there, this read would find the rows.
 			const outside = await loadServed("serve-scope-session", path);
-			expect(outside).toEqual(new Set());
+			expect(outside).toEqual(new Map());
 		} finally {
 			shutdownHashStore();
 		}
@@ -142,7 +142,7 @@ describe("observeServedRows", () => {
 			await recordServed("serve-scope-session", path, rowsFor(["aa", "bb"]), 2);
 
 			const served = await withWorkspace(cwd, () => loadServed("serve-scope-session", path));
-			expect(served).toEqual(new Set());
+			expect(served).toEqual(new Map());
 		} finally {
 			shutdownHashStore();
 		}

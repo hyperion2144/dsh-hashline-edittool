@@ -71,7 +71,7 @@ describe("rename tool", () => {
 			const served = store.getServed(harness.sessionKey, path);
 			expect(served.size).toBeGreaterThan(0);
 			store.pushUndo(path, undoLayer("before\n"));
-			store.upsertServed("other-session", path, ["ZZZ"]);
+			store.upsertServed("other-session", path, [["ZZZ", ""]]);
 			const target = join(cwd, "b.ts");
 
 			const text = getText(
@@ -90,12 +90,12 @@ describe("rename tool", () => {
 				served: 0,
 			});
 			expect(store.getServed(harness.sessionKey, target)).toEqual(served);
-			expect(store.getServed("other-session", target)).toEqual(new Set(["ZZZ"]));
+			expect(store.getServed("other-session", target)).toEqual(new Map([["ZZZ", ""]]));
 			expect(store.getUndo(target)).toBeDefined();
 
 			// The SAME anchor served before the rename edits the file after it —
 			// no re-read, no second batch.
-			const anchor = [...served][0]!;
+			const anchor = [...served.keys()][0]!;
 			const edited = getText(
 				await harness.editTool.execute("edit", {
 					path: target,

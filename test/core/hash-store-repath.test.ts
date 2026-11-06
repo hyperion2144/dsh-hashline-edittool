@@ -101,10 +101,10 @@ describe("HashStore.renamePath", () => {
 			store.pushUndo(from, undoLayer("before\n"));
 			store.pushUndo(to, undoLayer("dead-before\n"));
 			store.pushUndo(other, undoLayer("keep-undo\n"));
-			store.upsertServed("s1", from, ["AAA", "BBB"]);
-			store.upsertServed("s2", from, ["AAA"]);
-			store.upsertServed("s1", to, ["ZZZ"]);
-			store.upsertServed("s1", other, ["CCC"]);
+			store.upsertServed("s1", from, [["AAA", ""], ["BBB", ""]]);
+			store.upsertServed("s2", from, [["AAA", ""]]);
+			store.upsertServed("s1", to, [["ZZZ", ""]]);
+			store.upsertServed("s1", other, [["CCC", ""]]);
 
 			const report = store.renamePath(from, to);
 
@@ -124,14 +124,14 @@ describe("HashStore.renamePath", () => {
 			// The moved rows are the source's, not the destination's.
 			expect(store.getUndo(from)).toBeUndefined();
 			expect(store.getUndo(to)).toMatchObject({ content: "before\n" });
-			expect(store.getServed("s1", to)).toEqual(new Set(["AAA", "BBB"]));
-			expect(store.getServed("s2", to)).toEqual(new Set(["AAA"]));
+			expect(store.getServed("s1", to)).toEqual(new Map([["AAA", ""], ["BBB", ""]]));
+			expect(store.getServed("s2", to)).toEqual(new Map([["AAA", ""]]));
 			expect(store.getServed("s1", from).size).toBe(0);
 			expect(store.allKnownPaths().map((row) => row.path).sort()).toEqual([other, to].sort());
 
 			// The other path keeps its own four families.
 			expect(store.getUndo(other)).toBeDefined();
-			expect(store.getServed("s1", other)).toEqual(new Set(["CCC"]));
+			expect(store.getServed("s1", other)).toEqual(new Map([["CCC", ""]]));
 		});
 	});
 
@@ -194,8 +194,8 @@ describe("HashStore.renamePath", () => {
 			], older);
 			seedAnchors(home, to, contentChecksum("dead\n"), 1, [[1, "Zz", 9]], older);
 			seedAnchors(home, other, contentChecksum("keep\n"), 1, [[1, "Kk", 0]], older);
-			store.upsertServed("s1", from, ["Aa"]);
-			store.upsertServed("s1", other, ["Kk"]);
+			store.upsertServed("s1", from, [["Aa", ""]]);
+			store.upsertServed("s1", other, [["Kk", ""]]);
 
 			store.renamePath(from, to);
 
@@ -212,7 +212,7 @@ describe("HashStore.renamePath", () => {
 			const from = "/tmp/repath-noop.ts";
 			const to = "/tmp/repath-noop-target.ts";
 			seedAnchors(home, from, contentChecksum("x\n"), 1, [[1, "Xx", 0]], Date.now());
-			store.upsertServed("s1", from, ["Xx"]);
+			store.upsertServed("s1", from, [["Xx", ""]]);
 
 			expect(store.renamePath("/tmp/repath-missing.ts", to)).toMatchObject({
 				anchorMeta: 0,
@@ -228,7 +228,7 @@ describe("HashStore.renamePath", () => {
 				undoLayers: 0,
 			});
 			// Same-path must NOT purge the rows it was asked to keep.
-			expect(store.getServed("s1", from)).toEqual(new Set(["Xx"]));
+			expect(store.getServed("s1", from)).toEqual(new Map([["Xx", ""]]));
 		});
 	});
 });

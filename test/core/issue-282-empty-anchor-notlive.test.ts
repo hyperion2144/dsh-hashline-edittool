@@ -35,6 +35,7 @@ import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { probeLines } from "../../src/domain/session/anchor-entry.js";
 import { withWorkspace } from "../../src/infra/workspace.js";
 import { applyEdit, type HEdit } from "../../src/hashline/anchor-pipeline.js";
+import { canon, contentChecksum, truncateServedKey } from "../../src/hashline/hash-assign.js";
 
 let tmpHome: string;
 beforeAll(async () => {
@@ -159,7 +160,10 @@ describe("#282 — an unread interior line is never-seen, not not-live", () => {
 		// Sparse view: endpoints allocated, interiors are "" slots (never minted).
 		const hashes = ["AA", "", "", "", "", "BB"];
 		// Endpoints ARE served; only the "" interiors can fail the membership walk.
-		const served = new Set(["AA", "BB"]);
+		const served = new Map([
+			["AA", truncateServedKey(contentChecksum(canon("line-1")))],
+			["BB", truncateServedKey(contentChecksum(canon("line-6")))],
+		]);
 		const edit: HEdit = {
 			content_lines: ["merged"],
 			hash_bounds: [

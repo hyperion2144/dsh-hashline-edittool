@@ -254,6 +254,22 @@ const CANON_RE = /[ \t\r\n]+/g;
 export function canon(line: string): string {
 	return line.replace(CANON_RE, "");
 }
+/**
+ * The served mirror's fingerprint width (#420): the first 8 hex of the line's
+ * `contentChecksum`, stored BINARY (4 bytes) in the packed payload. The
+ * verdict compares ONE anchor's old vs current binding, so the relevant
+ * collision odds are per-check — 2^-32 — not birthday-cumulative over the
+ * whole mirror. The binary form costs 5 bytes per anchor on the wire (length
+ * byte + 4), so a fingerprinted payload grows past the JSON it replaced — the
+ * price of #420's binding check, bounded by the served TTL and the store
+ * budget sweep; a hex-text fingerprint would have cost 13 bytes instead.
+ */
+export const SERVED_KEY_HEX = 8;
+
+/** The truncated fingerprint the served mirror records for one served row. */
+export function truncateServedKey(key: string | null | undefined): string {
+	return key ? key.slice(0, SERVED_KEY_HEX) : "";
+}
 
 /**
  * Deterministic per-line anchors for whole content via the v2.0 allocator

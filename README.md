@@ -45,7 +45,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai) plugin that replaces the bu
   edits by marker, so it never echoes the code it is replacing.
 - **Edits are verified against what the model actually saw.** Each referenced anchor is
   checked line by line: it must still be live, its line must still hold the content it
-  was minted for, and it must be in *this session's* served set. A line that changed
+  was minted for, and it must be in *this session's* served set **as the binding the session saw** — an anchor another session released and re-minted onto different content carries a different fingerprint and fails here. A line that changed
   under the agent is refused — and the refusal echoes the failing lines **with real,
   immediately usable anchors** (reject-and-serve). A changed file checksum is a *remap*
   signal, not a refusal, so another session touching another line never invalidates yours.
@@ -205,7 +205,7 @@ of which must hold:
 
 1. the anchor is **live** — it is in the file's anchor state and the line it is bound to
    still carries the content the anchor was minted for;
-2. the anchor is in **this session's** served set;
+2. the anchor is in **this session's** served set *as the binding this session saw* — a fingerprint mismatch (another session released and re-minted the anchor) fails here as `[E_RANGE_STALE]`;
 3. the line number the caller reported is **information only** — a mismatch is reported
    as drift, never a refusal.
 
@@ -224,9 +224,9 @@ wrong-line window: an anchor that resolves, verifies and points somewhere new.
 Failure is **all-or-nothing** and the code is unchanged:
 
 - anchor unknown → `[E_STALE]`; a range row never served in this session → `[E_RANGE_UNVERIFIED]`;
-- a changed file checksum → `[E_RANGE_STALE]`, a remap signal rather than a refusal. The host's
+- `[E_RANGE_STALE]` for a changed file checksum (a remap signal, not a refusal) and for a **rebound** binding (#420): the session saw this anchor under different content — another session released and re-minted it — so the content now under it has never been read. The host's
   own `FS_STALE_VERSION` (the write was refused by the file-version guard) maps onto the same code
-  because the remedy is the same — re-read for fresh anchors — and only the first case is a remap signal;
+  because the remedy is the same — re-read for fresh anchors;
 - every rejection **echoes the failing lines with a little context, as served rows with
   real anchors**, so the fix is: take the marker from the echo and resubmit. Served rows
   are also emitted as `fs/observed`, so they can be written with immediately.

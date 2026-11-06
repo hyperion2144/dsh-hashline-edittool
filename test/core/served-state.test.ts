@@ -25,13 +25,13 @@ describe("served-state — record semantics", () => {
 				{ position: 1, anchor: "def" },
 				{ position: 2, anchor: "ghi" },
 			]);
-			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set(["abc", "def", "ghi"]));
+			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Map([["abc", ""], ["def", ""], ["ghi", ""]]));
 		});
 	});
 
 	it("returns an empty record for a path with no served entries", async () => {
 		await withTempHome(async () => {
-			expect(await loadServed("sessionA", "/missing.ts")).toEqual(new Set());
+			expect(await loadServed("sessionA", "/missing.ts")).toEqual(new Map());
 		});
 	});
 
@@ -41,7 +41,7 @@ describe("served-state — record semantics", () => {
 				{ position: 0, anchor: "abc" },
 				{ position: 2, anchor: "def" },
 			]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc", "def"]));
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Map([["abc", ""], ["def", ""]]));
 		});
 	});
 
@@ -49,7 +49,7 @@ describe("served-state — record semantics", () => {
 		await withTempHome(async () => {
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "def" }]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc", "def"]));
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Map([["abc", ""], ["def", ""]]));
 		});
 	});
 
@@ -61,7 +61,7 @@ describe("served-state — record semantics", () => {
 				{ position: 2, anchor: "ghi" },
 			]);
 		await recordServed("sessionA", "/p.ts", [{ position: 1, anchor: null }]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc", "def", "ghi"]));
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Map([["abc", ""], ["def", ""], ["ghi", ""]]));
 		});
 	});
 
@@ -72,8 +72,8 @@ describe("served-state — record semantics", () => {
 				{ position: 0, anchor: "def" },
 				{ position: 1, anchor: "ghi" },
 			]);
-			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set(["abc"]));
-			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Set(["def", "ghi"]));
+			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Map([["abc", ""]]));
+			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Map([["def", ""], ["ghi", ""]]));
 		});
 	});
 });
@@ -82,8 +82,8 @@ describe("served-state — session isolation", () => {
 	it("keeps one session's rows invisible to another session", async () => {
 		await withTempHome(async () => {
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set(["abc"]));
-			expect(await loadServed("sessionB", "/p.ts")).toEqual(new Set());
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Map([["abc", ""]]));
+			expect(await loadServed("sessionB", "/p.ts")).toEqual(new Map());
 		});
 	});
 
@@ -92,8 +92,8 @@ describe("served-state — session isolation", () => {
 		await recordServed("sessionA", "/p.ts", [{ position: 0, anchor: "abc" }]);
 		await recordServed("sessionB", "/p.ts", [{ position: 0, anchor: "def" }]);
 			await wipeServedState("sessionA");
-			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Set());
-			expect(await loadServed("sessionB", "/p.ts")).toEqual(new Set(["def"]));
+			expect(await loadServed("sessionA", "/p.ts")).toEqual(new Map());
+			expect(await loadServed("sessionB", "/p.ts")).toEqual(new Map([["def", ""]]));
 		});
 	});
 
@@ -145,8 +145,8 @@ describe("served-state — session wipe", () => {
 		await recordServed("sessionA", "/b.ts", [{ position: 1, anchor: "def" }]);
 			await markDriftReported("sessionA", "/a.ts", ["abc"]);
 			await wipeServedState("sessionA");
-			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Set());
-			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Set());
+			expect(await loadServed("sessionA", "/a.ts")).toEqual(new Map());
+			expect(await loadServed("sessionA", "/b.ts")).toEqual(new Map());
 			expect(await driftReported("sessionA", "/a.ts")).toEqual(new Set());
 		});
 	});
