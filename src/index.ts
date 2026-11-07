@@ -60,6 +60,17 @@ import { registerWriteShadow } from "./tools/tool-write-shadow.js";
 import { registerFormatTool } from "./tools/tool-format.js";
 import { registerDeleteTool } from "./tools/tool-delete.js";
 import { registerRenameTool } from "./tools/tool-rename.js";
+import { buildDiscoverTool } from "./tools/tool-discover.js";
+import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
+import { buildAstGrepTool } from "./tools/tool-ast-grep.js";
+import { buildAstEditTool } from "./tools/tool-ast-edit.js";
+import { buildFormatTool } from "./tools/tool-format.js";
+import { buildLspTool } from "./tools/tool-lsp.js";
+import {
+	isColdToolsDiscovered,
+	unlockColdTools,
+	COLD_TOOLS,
+} from "./domain/session/discovered-tools.js";
 import { onEditSurfaceRebuild } from "./domain/edit/edit-rebuild.js";
 import { LspManager, setLspManager } from "./lsp/manager.js";
 import { subprocessTransport } from "./lsp/transport.js";
@@ -304,16 +315,46 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 	// The semantic half. omp's rule, and now ours: symbol-aware work goes to a
 	// language server whenever one can be had, because it follows shadowing and
 	// cross-file usage that a syntax tree cannot.
-	// `lsp` registers on the agent's own layer UNCONDITIONALLY (#418): the
-	// probe's plugin-layer fallback was reached exactly when no preset
-	// built-in existed, and the restart-resume path overrode it to the agent
-	// layer anyway — leaving the tool out of that first turn. The agent's
-	// layer is what this install fills synchronously, so it is where the
-	// name lives from the first turn, shadowing a built-in or not.
-	disposers.push(registerLspTool(rootCtx, agent.ctx, io).dispose);
+	// `lsp` is one of the COLD TOOLS since #421 ②: registered here, then
+	// disposed unless the session has discovered it through `hashline_tools`
+	// (the gate below is fail-open; #418's first-turn guarantee is the #398
+	// listener contract — this install completes before queued input is
+	// released — NOT a probe).
 	// #53: the write tool is fully shadowed — it owns the auto-read preview
 	// (formerly a post-execute hook) AND the write card's structured rows.
 	disposers.push(registerWriteShadow(rootCtx, agent.ctx, io, sandbox));
+	// #421 ②: the four cold tools (ast_grep / ast_edit / format / lsp) register
+	// ONCE per agent, admission-gated by a host-level `when` predicate that the
+	// step resolver evaluates EVERY step (the dsh-ops pattern, register(def,
+	// { when })): undiscovered → the tool stays out of that step's wire schema;
+	// unlocked through the resident `hashline_tools` entry → admitted from the
+	// next step, and the unlock persists across restarts. `when` NEVER throws:
+	// a throwing condition fails the whole step's preparation, so every state-
+	// read failure fails open (#418's lesson — a token saving must never
+	// produce a missing tool). Admission is per session, so the cold tools
+	// live on the agent layer, not the plugin layer.
+	const sessionKey = agent.id;
+	const coldWhen = (): boolean => {
+		try {
+			return isColdToolsDiscovered(sessionKey);
+		} catch {
+			return true;
+		}
+	};
+	const unlockColdToolsForSession = (): readonly string[] => {
+		unlockColdTools(sessionKey);
+		return [...COLD_TOOLS];
+	};
+	const registerGated = (definition: ToolDefinition): void => {
+		agent.ctx.tools.register(definition, { when: coldWhen });
+	};
+	registerGated(buildAstGrepTool(io));
+	registerGated(buildAstEditTool(io, sandbox));
+	registerGated(buildFormatTool(io, sandbox));
+	registerGated(buildLspTool(io));
+	agent.ctx.tools.register(
+		buildDiscoverTool({ onUnlock: unlockColdToolsForSession }),
+	);
 
 	const offRebuild = onEditSurfaceRebuild(() => {
 		// Serialize rebuilds; a failure must not unwind the agent install.
@@ -374,10 +415,7 @@ function installPluginTools(rootCtx: Context): void {
 	// Each register function takes the context whose tool layer receives the
 	// registration — the plugin's own context puts them on the plugin layer,
 	// which every agent inherits.
-	registerAstGrepTool(rootCtx, rootCtx, io);
-	registerAstEditTool(rootCtx, rootCtx, io, sandbox);
 	registerUndoTool(rootCtx, rootCtx, io, sandbox);
-	registerFormatTool(rootCtx, rootCtx, io, sandbox);
 	registerDeleteTool(rootCtx, rootCtx, io, sandbox);
 	registerRenameTool(rootCtx, rootCtx, io, sandbox);
 }

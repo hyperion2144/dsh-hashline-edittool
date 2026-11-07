@@ -157,3 +157,34 @@ The token headline over `str_replace` belongs to the *pattern*, not to any one i
 
 Run with a different corpus or edit script to see how the numbers scale — the script is a plain
 ~505-line `.mjs` with no build step.
+
+## Schema token budget (#421 ①)
+
+`schema-tokens.mjs` counts the resident tool surface the way the wire carries it —
+`{ name, description, parameters }` per tool, pinned tokenizer (`js-tiktoken@1.0.21`,
+`cl100k_base`) — and gates it in CI: over budget exits non-zero.
+
+- First census (this build): **5,138 tokens / 22,069 bytes** across 12 tools —
+  `edit` 1,414, `lsp` 743, `apply_patch` 529, `ast_grep` 392, `format` 385, `read` 361,
+  `grep` 360, `rename` 285, `delete` 194, `undo_last_edit` 75, `write` 73.
+- The four cold tools (`ast_grep`, `ast_edit`, `format`, `lsp`) hold 1,847 of those
+  tokens (36%) — exactly what the discovery gate (#421 ②) takes off a fresh session.
+- Gate budget: **6,166** (census × 1.2 headroom), pinned in
+  `schema-tokens.baseline.json`. Record an approved bump with
+  `SCHEMA_RECORD_BASELINE=1 SCHEMA_TOKEN_BUDGET=<n> node benchmark/schema-tokens.mjs`.
+  Reference point: dsh-ops' resident surface measures 241 tokens, gated at ≤400 (BM-03).
+
+## Read anchor tax (#421 ③)
+
+`run.mjs` (§7) prices the READ-side anchor prefixes against a 6-wide numbered plain read
+(`anchor:content` vs `␉6 rows`, same rows, same tokenizer, three file sizes):
+
+| lines | plain tok | hashline tok | tax |
+|------:|----------:|-------------:|----:|
+| 100   | 1,729     | 1,651        | −5% |
+| 1,000 | 17,288    | 16,762       | −3% |
+| 5,000 | 98,432    | 93,760       | −5% |
+
+The "tax" is negative at every size: a 2–3 char anchor + `:` is SHORTER than the common
+6-wide right-aligned line number + tab. The read-side markers pay for themselves before
+the edit-side savings even start (those are measured above).
