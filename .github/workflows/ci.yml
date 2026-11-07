@@ -37,6 +37,10 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      # #421 ①: the resident tool-schema token census — a CI gate, not a
+      # target. Exits non-zero when a tool description grows the surface
+      # past the budget pinned in benchmark/schema-tokens.baseline.json.
+      - run: node benchmark/schema-tokens.mjs
   verify-windows:
     # The suite is the point: the plugin's Windows-only launch path (cmd.exe
     # wrapping) and every path/home assumption in the test tree are exercised

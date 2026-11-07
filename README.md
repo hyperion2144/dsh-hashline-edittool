@@ -121,8 +121,33 @@ switch with the biggest blast radius is handled too: flipping `require_line_cont
 disposes and re-registers the `edit` tool's schema, so the model's very next step sees the
 new `{ anchor, line }` parameter set — no restart anywhere.
 
-## Quick Start
+### Compared with dsh-ops
 
+[T-Auto/dsh-ops](https://github.com/T-Auto/dsh-ops) optimizes the same token budget from
+the schema side — fewer resident tools, a discovery gate for cold ones. A rejection
+review there once listed four risks of the hashline approach; this is how the shipped
+plugin answers each:
+
+- **Anchor collisions** — anchors are content-derived but probed against the file's
+  live used-set, and all-numeric encodings are skipped, so a collision is resolved at
+  allocation time instead of corrupting an edit.
+- **Duplicate lines** — anchors bind to LINES, not contents: identical lines receive
+  distinct anchors (the v2.0 allocator), so editing one line never hijacks another
+  line's handle.
+- **Stale identity** — the served mirror carries per-line binding fingerprints
+  (#420): an anchor another session released and re-minted onto different content is
+  refused (`E_RANGE_STALE`) with the current line echoed, instead of silently editing
+  a line the model never saw.
+- **Normalization** — line keys fold whitespace (`canon`) and file reads normalize
+  BOM/CRLF up front, so formatting-only churn does not produce phantom drift.
+
+The two approaches compose rather than compete: this plugin borrows the schema-side
+savings for its own cold tools (gated behind a discovery entry, following dsh-ops'
+pattern), measured with the same tokenizer (`benchmark/schema-tokens.mjs`). The
+mechanism survey behind the borrow lives in
+`docs/research/issue-421-dsh-ops-reference.md`.
+
+## Quick Start
 ```sh
 npx @deepseek-ai/dsh plugin --profile web add github:hyperion2144/dsh-hashline-edittool   # from github
 npx @deepseek-ai/dsh plugin --profile web add dsh-hashline-edittool                       # from npm
