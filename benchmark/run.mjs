@@ -568,4 +568,66 @@ function render(r) {
 	return out.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// 7. Read "anchor tax" (#421 ③) — what the anchor prefixes cost on the READ
+//    side, vs a plain-numbered read. Three file sizes; the anchor allocator
+//    mirrors src/hashline/alloc.ts (shortest-first, distinct per line). Rows
+//    only: both arms render one row per line and neither adds a header to the
+//    body, so the comparison is symmetric. Default user shape (line_numbers
+//    off): `<anchor>:<content>`; the plain baseline is the common 6-wide
+//    right-aligned line number + tab.
+// ---------------------------------------------------------------------------
+function readAnchorTax() {
+	const sizes = [100, 1000, 5000];
+	const takenTax = new Set();
+	const nextAnchor = (() => {
+		let n = 0;
+		return () => {
+			for (; ;) {
+				const len = anchorLen(n + 1);
+				const a = encode62(n, len);
+				n++;
+				if (!takenTax.has(a)) {
+					takenTax.add(a);
+					return a;
+				}
+			}
+		};
+	})();
+	const rows = sizes.map((n) => {
+		const lines = Array.from({ length: n }, (_, i) => `export const item_${i + 1} = computeValue(${i + 1}); // ${i % 7 === 0 ? "section " + Math.floor(i / 40) : "row"}`);
+		const hashline = lines.map((l, i) => `${nextAnchor()}:${l}`).join("\n");
+		const plain = lines.map((l, i) => `${String(i + 1).padStart(6)}\t${l}`).join("\n");
+		return {
+			lines: n,
+			hashlineTok: tokens(hashline),
+			plainTok: tokens(plain),
+			hashlineBytes: Buffer.byteLength(hashline, "utf8"),
+			plainBytes: Buffer.byteLength(plain, "utf8"),
+		};
+	});
+	const out2 = [];
+	out2.push("");
+	const cell = (v, w) => String(v).padStart(w);
+	out2.push("read anchor tax (#421 ③) — the read-side cost of anchor markers, per full-file read");
+	out2.push(`tokenizer: ${TOKENIZER_NAME}`);
+	out2.push("");
+	out2.push(
+		`${"lines".padEnd(8)} | ${cell("plain tok", 10)} | ${cell("hashline tok", 13)} | ${cell("tax", 8)} | ${cell("plain bytes", 12)} | ${cell("hashline bytes", 14)} |`,
+	);
+	out2.push([8, 10, 13, 8, 12, 14].map((n) => "-".repeat(n)).join("|"));
+	for (const r of rows) {
+		const tax = Math.round(((r.hashlineTok - r.plainTok) / r.plainTok) * 100);
+		out2.push(
+			`${cell(r.lines, 8)} | ${cell(r.plainTok, 10)} | ${cell(r.hashlineTok, 13)} | ${cell(tax + "%", 8)} | ${cell(r.plainBytes, 12)} | ${cell(r.hashlineBytes, 14)} |`,
+		);
+	}
+	out2.push("");
+	out2.push(
+		"the tax buys: stable per-line edit handles (no old_string echo on the edit side), drift detection (#420 binding fingerprints), and per-line partial reads; the edit-side savings above are measured against the same corpus.",
+	);
+	return out2.join("\n");
+}
+console.log(readAnchorTax());
+
 console.log(render(run()));

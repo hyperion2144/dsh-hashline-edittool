@@ -4,6 +4,14 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- 新增 `hashline_tools` 发现入口与冷工具按需注册：`ast_grep` / `ast_edit` / `format` / `lsp` 默认不进工具 schema（常驻面约省 36%），调用发现入口一次解锁并跨重启持久，读取失败时 fail-open 保持工具在场（#421，ADR-0037）。
+- 新增工具 schema token 普查与 CI 门禁：实测 12 工具常驻面 5,138 tokens、上限落库，超限即红（#421）。
+- 新增 read 锚点税基准：同文件下锚点行标记比常见行号读式还省 3–5%，数字入 `benchmark/README.md`（#421）。
+- 新增重复读去重：全文件重复 `read` 在「served 指纹全匹配 ∧ 上下文代数未变」双条件下改回一句「未变化」，压缩后自动失效回正常回显（#421）。
+- README 双语增补与 dsh-ops 的对比段：hashline 路线的四条既有风险逐条对照（#421）。
+
 ### Fixed
 
 - `apply_patch` 新增文件返回给模型的内容没有锚点：改为复用 `write` 的创建路径（`new` 走 create、`remove` 走 delete、`move` 走 rename），新文件各行的锚点当场铸造并可编辑；沙箱拒绝判为 `failed` 而不是 `unknown`（#416，ADR-0034）。

@@ -14,6 +14,8 @@ import { clearDriftReported, withWorkspace } from "./domain/session/session-view
 import { probeLines } from "./domain/session/anchor-entry.js";
 import type { FileIO } from "./infra/fs-bridge.js";
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
+import { contentChecksum } from "./hashline/hash-assign.js";
+import { evaluateReadDedup, recordServeEvidence, surfaceGenerationOf } from "./domain/session/read-dedup.js";
 import type { ServedRow } from "./hashline/anchor-pipeline.js";
 
 /**
@@ -67,6 +69,12 @@ export interface ReadAndServeResult {
 	nextOffset?: number;
 	/** #212: absolute line of the last served row — the tool layer's render bound. */
 	shownEnd?: number;
+	/**
+	 * #421 ④: this read was answered with the "unchanged" one-liner — the
+	 * served mirror matched the file and the context generation had not
+	 * moved, so re-emitting the lines would have been pure token waste.
+	 */
+	readonly deduped?: true;
 }
 
 /**
@@ -98,6 +106,47 @@ export async function readAndServe(
 		sessionKey,
 		signal,
 	});
+
+	// #421 ④: a repeated FULL-file read may answer "unchanged" when the
+	// served mirror matches the file line-for-line AND the context
+	// generation has not moved since that serve (a compaction voids the
+	// mirror's testimony — the model's context was rewritten). Deliberately
+	// conservative: anything unprovable — a partial window, a lossy view, no
+	// live session, a char-budget cut — reads normally.
+	const currentGeneration = surfaceGenerationOf(options.exec);
+	// A FULL-file serve can vouch for the whole file; a partial window, a
+	// lossy view, or a budget cut cannot.
+	const fullFileServe =
+		!view.lossy &&
+		options.offset === undefined &&
+		options.limit === undefined &&
+		view.nextOffset === undefined &&
+		view.hashes !== undefined &&
+		view.served.length === view.hashes.length;
+	const currentChecksum = view.normalized !== undefined ? contentChecksum(view.normalized) : undefined;
+	if (fullFileServe && currentGeneration !== undefined && currentChecksum !== undefined) {
+		const verdict = await evaluateReadDedup({
+			sessionKey,
+			absolutePath: view.absolutePath,
+			cwd,
+			totalLines: view.hashes.length,
+			servedRows: view.served,
+			currentChecksum,
+			currentGeneration,
+		});
+		if (verdict.dedup) {
+			return {
+				text: verdict.message,
+				served: view.served,
+				hadUtf8DecodeErrors: view.hadUtf8DecodeErrors,
+				lossy: view.lossy,
+				absolutePath: view.absolutePath,
+				hashes: view.hashes,
+				normalized: view.normalized,
+				deduped: true,
+			};
+		}
+	}
 	// #273: a lossy view serves no rows, but the model HAS seen the file — the
 	// observation is what lets `write` replace it (`edit` still refuses it via
 	// [E_LOSSY_BYTES]). Gating this block on served rows alone left a lossy file
@@ -150,6 +199,18 @@ export async function readAndServe(
 	}
 	await clearDriftReported(sessionKey, view.absolutePath);
 	const text = view.lossy ? `${view.text}\n\n${LOSSY_BYTES_NOTE}` : view.text;
+	// #421 ④: record the serve evidence (context generation + file checksum)
+	// after a FULL-file serve — the dedup gate on the NEXT read compares
+	// against exactly these. A partial window records nothing: its lines
+	// cannot vouch for the whole file.
+	recordServeEvidence(
+		sessionKey,
+		view.absolutePath,
+		fullFileServe && currentChecksum !== undefined && currentGeneration !== undefined
+			? { generation: currentGeneration, checksum: currentChecksum }
+			: undefined,
+		cwd,
+	);
 	return {
 		text,
 		served: view.served,

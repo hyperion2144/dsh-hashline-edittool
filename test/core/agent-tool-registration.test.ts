@@ -102,19 +102,17 @@ function makeDisposedAgent() {
 }
 
 describe("#398/#418 — a resumed session's first turn sees the whole tool surface", () => {
-	it("registers the tools that shadow nothing at plugin load, before any agent exists", () => {
+	it("registers the still-resident tools at plugin load, before any agent exists (#421 ② moved the cold four)", () => {
 		const { rootCtx, pluginTools } = makeRootCtx();
 		apply(rootCtx);
 		expect(pluginTools).toEqual(
-			expect.arrayContaining([
-				"ast_grep",
-				"ast_edit",
-				"undo_last_edit",
-				"format",
-				"delete",
-				"rename",
-			]),
+			expect.arrayContaining(["undo_last_edit", "delete", "rename"]),
 		);
+		// #421 ②: the cold four (ast_grep / ast_edit / format / lsp) moved to
+		// the agent layer behind the discovery gate — they are NOT here anymore.
+		expect(pluginTools).not.toContain("ast_grep");
+		expect(pluginTools).not.toContain("ast_edit");
+		expect(pluginTools).not.toContain("format");
 	});
 
 	it("has every agent-layer tool registered by the time the agent/created listener resolves", async () => {
@@ -130,15 +128,18 @@ describe("#398/#418 — a resumed session's first turn sees the whole tool surfa
 		);
 	});
 
-	it("keeps the non-shadowing tools off the agent's own layer", async () => {
+	it("registers the cold tools on the agent layer, gated by the discovery flag (#421 ②)", async () => {
 		const { rootCtx, calls } = makeRootCtx();
 		apply(rootCtx);
 		const created = calls.find((c) => c.event === "agent/created")!;
 		const { agent, agentTools } = makeAgent();
 		await created.handler({ agent });
-		for (const name of ["ast_grep", "ast_edit", "undo_last_edit", "format", "delete", "rename"]) {
-			expect(agentTools).not.toContain(name);
-		}
+			// The registration happens (the mock records it); whether a tool is
+			// ACTIVE afterwards is cold-tool-gate.test's subject — there the mock
+			// tracks disposals, here only the layer placement matters.
+			for (const name of ["ast_grep", "ast_edit", "format", "lsp"]) {
+				expect(agentTools).toContain(name);
+			}
 	});
 
 	it("registers the non-shadowing tools once, not once per agent", async () => {
@@ -149,7 +150,7 @@ describe("#398/#418 — a resumed session's first turn sees the whole tool surfa
 			const { agent } = makeAgent();
 			await created.handler({ agent });
 		}
-		for (const name of ["ast_grep", "ast_edit", "undo_last_edit", "format", "delete", "rename"]) {
+		for (const name of ["undo_last_edit", "delete", "rename"]) {
 			expect(pluginTools.filter((registered) => registered === name)).toHaveLength(1);
 		}
 	});

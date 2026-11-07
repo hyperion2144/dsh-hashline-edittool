@@ -389,6 +389,19 @@ export function buildReadTool(io: FileIO) {
 				// The present observation is emitted by `readAndServe` itself: serving
 				// rows IS observing the file, and one choke point beats a call per
 				// caller (the duplicate here made every read observe twice).
+				// #421 ④: the dedup answered "unchanged" — emit the one-liner
+				// without building the full rows payload (that IS the token
+				// saving; the structured fields stay empty).
+				if (result.deduped === true) {
+					return {
+						path: canonical.path,
+						offset: 1,
+						totalLines: splitLines(result.normalized ?? "").length,
+						lines: [],
+						hashlines: [],
+						modelText: result.text,
+					} as ReadValue & { modelText: string };
+				}
 
 				if (result.hashes === undefined || result.normalized === undefined) {
 					// Defensive fallback: if the file didn't normalize cleanly, fall
