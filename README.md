@@ -122,7 +122,6 @@ disposes and re-registers the `edit` tool's schema, so the model's very next ste
 new `{ anchor, line }` parameter set — no restart anywhere.
 
 ## Quick Start
-
 ```sh
 npx @deepseek-ai/dsh plugin --profile web add github:hyperion2144/dsh-hashline-edittool   # from github
 npx @deepseek-ai/dsh plugin --profile web add dsh-hashline-edittool                       # from npm

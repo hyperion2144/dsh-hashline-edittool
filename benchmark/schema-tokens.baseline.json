@@ -1,0 +1,20 @@
+{
+	"budget": 6166,
+	"census": 5138,
+	"perTool": {
+		"read": 361,
+		"edit": 1414,
+		"write": 73,
+		"grep": 360,
+		"delete": 194,
+		"rename": 285,
+		"undo_last_edit": 75,
+		"ast_grep": 392,
+		"ast_edit": 327,
+		"lsp": 743,
+		"format": 385,
+		"apply_patch": 529
+	},
+	"tokenizer": "js-tiktoken cl100k_base",
+	"recordedAt": "2026-11-06T13:37:05.935Z"
+}
