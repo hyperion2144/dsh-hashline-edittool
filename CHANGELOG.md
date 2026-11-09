@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-09
+
 ### Added
 
 - 新增 `hashline_tools` 发现入口与冷工具按需注册：`ast_grep` / `ast_edit` / `format` / `lsp` 默认不进工具 schema（常驻面约省 36%），调用发现入口一次解锁并跨重启持久，读取失败时 fail-open 保持工具在场（#421，ADR-0037）。
