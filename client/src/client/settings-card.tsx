@@ -131,7 +131,25 @@ function useUpdates(): readonly UpdateRow[] {
 	return rows;
 }
 
+/**
+ * Read the named FORMATTING servers (`format.servers`), keyed by language.
+ * Same intent-only rule as the LspRow reader below (ADR-0038): whether the
+ * command exists is a fact the STATUS route reports — naming only WRITES.
+ */
+function readFormatServers(snapshot: ConfigFormSnapshot): Record<string, string> {
+	const format = snapshot.value?.format;
+	if (typeof format !== "object" || format === null) return {};
+	const servers = (format as { servers?: unknown }).servers;
+	if (typeof servers !== "object" || servers === null) return {};
+	const out: Record<string, string> = {};
+	for (const [id, command] of Object.entries(servers as Record<string, unknown>)) {
+		if (typeof command === "string" && command !== "") out[id] = command;
+	}
+	return out;
+}
+
 /** One language's server state, as `/api/hashline/lsp` reports it. */
+
 interface LspRow {
 	readonly languageId: string;
 	readonly server?: {
@@ -141,6 +159,13 @@ interface LspRow {
 		readonly origin: string;
 	};
 	readonly ready: boolean;
+	readonly formatServer?: {
+		readonly displayName: string;
+		readonly command: string;
+		readonly executable: string;
+		readonly origin: string;
+	};
+	readonly formatCanInstall?: boolean;
 	readonly reason?: string | WireText;
 	readonly message?: string | WireText;
 	/** Whether the plugin can install this one itself (npm-form servers only). */
@@ -777,6 +802,7 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 	const { state: catalog, reload } = useCatalog();
 	const lsp = useLspStatus();
 	const namedServers = readLspServers(snapshot);
+		const namedFormatServers = readFormatServers(snapshot);
 	const autoDiag = readAutoDiagnostics(snapshot);
 	const lspIdleMs = readLspIdleMs(snapshot);
 	const formatFlags = readFormatFlags(snapshot);
@@ -785,6 +811,8 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 	const updates = useUpdates();
 	const [serverLang, setServerLang] = useState("");
 	const [serverCommand, setServerCommand] = useState("");
+		const [fmtServerLang, setFmtServerLang] = useState("");
+		const [fmtServerCommand, setFmtServerCommand] = useState("");
 	/**
 	 * The separator is a DRAFT, committed on blur.
 	 *
@@ -833,7 +861,7 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 	 * nineteen-row list — which is the same as not showing it. The row the user
 	 * clicked is the only place it gets read.
 	 */
-	const [failedInstall, setFailedInstall] = useState<{ languageId: string; message: string | WireText } | undefined>(
+	const [failedInstall, setFailedInstall] = useState<{ key: string; message: string | WireText } | undefined>(
 		undefined,
 	);
 
@@ -846,19 +874,19 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 	 * be reporting a stale fact as a current one.
 	 */
 	const installServer = useCallback(
-		async (languageId: string) => {
-			setInstalling(languageId);
+		async (languageId: string, role?: "format") => {
+			setInstalling(role === "format" ? `${languageId}:format` : languageId);
 			setFailedInstall(undefined);
 			// `go install` builds a toolchain and `npm install` resolves a tree; the
 			// message does not name either one, because the catalog decides which runs
 			// and naming the wrong one is a small lie the user then reasons from.
-			setNotice(t("settings.notice.installing", { languageId }));
+			setNotice(role === "format" ? t("settings.notice.formatInstalling") : t("settings.notice.installing", { languageId }));
 			setError(undefined);
 			try {
 				const response = await fetch(`${LSP_ROUTE}/install`, {
 					method: "POST",
 					headers: { "content-type": "application/json", accept: "application/json" },
-					body: JSON.stringify({ languageId }),
+					body: JSON.stringify({ languageId, ...(role === "format" ? { role } : {}) }),
 				});
 				const body = (await response.json()) as { ok?: boolean; message?: string | WireText };
 				if (body.ok !== true) {
@@ -866,17 +894,17 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 					// sentence from an older host. It keeps its shape until the row
 					// draws it, so the card can resolve the key in the reader's language.
 					setNotice(undefined);
-					setFailedInstall({ languageId, message: body.message ?? t("settings.error.installIncomplete") });
+					setFailedInstall({ key: `${languageId}${role === "format" ? ":format" : ""}`, message: body.message ?? t("settings.error.installIncomplete") });
 					return;
 				}
-				setNotice(t("settings.notice.installed", { languageId }));
+				setNotice(role === "format" ? t("settings.notice.formatInstalled") : t("settings.notice.installed", { languageId }));
 				lsp.reload();
 			} catch (cause) {
 				setNotice(undefined);
 				// ON THE ROW, not at the bottom of the card. This is the failure the user
 				// reported as "变回安装，全程没有任何错误提示": the message existed, it was
 				// rendered below a nineteen-row list, and nobody scrolls there.
-				setFailedInstall({ languageId, message: cause instanceof Error ? cause.message : String(cause) });
+				setFailedInstall({ key: `${languageId}${role === "format" ? ":format" : ""}`, message: cause instanceof Error ? cause.message : String(cause) });
 			} finally {
 				setInstalling(undefined);
 			}
@@ -1348,7 +1376,7 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 							 */}
 							{installing === entry.languageId ? (
 								<span className="dshl-mgr-hint">{t("settings.status.installing")}</span>
-							) : failedInstall?.languageId === entry.languageId ? null : entry.ready ? null : (
+							) : failedInstall?.key === entry.languageId ? null : entry.ready ? null : (
 								<span className="dshl-mgr-hint">
 									{resolveHostText(t, entry.message) ?? resolveHostText(t, entry.reason)}
 								</span>
@@ -1359,17 +1387,83 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 								// failed once — the action is available either way, and saying so
 								// is the difference between "it broke" and "it is broken".
 								<Button size="sm" disabled={installing !== undefined} onClick={() => void installServer(entry.languageId)}>
-									{failedInstall?.languageId === entry.languageId ? t("settings.action.retry") : t("settings.action.install")}
+									{failedInstall?.key === entry.languageId ? t("settings.action.retry") : t("settings.action.install")}
 								</Button>
 							) : null}
 							{/* LAST in DOM order, so its `flex:1 0 100%` wraps BELOW the button
 							 * instead of shoving the button onto a second line. */}
-							{failedInstall?.languageId === entry.languageId ? (
+							{failedInstall?.key === entry.languageId ? (
 								<span className="dshl-mgr-error">
 									{t("settings.error.installFailed", {
 										message: resolveHostText(t, failedInstall.message) ?? t("settings.error.installIncomplete"),
 									})}
 								</span>
+							) : null}
+							{entry.formatServer !== undefined ||
+							entry.formatCanInstall === true ||
+							namedFormatServers[entry.languageId] !== undefined ? (
+								<div style={{ flex: "1 0 100%", display: "flex", alignItems: "center", gap: "0.5em" }}>
+									<span className="dshl-mgr-ext">
+										{t("settings.label.formatServer")}
+										{t("settings.list.separator")}
+										{/* #427 review: ENABLED is the row's headline fact — the discovery
+											origin ("on PATH") is secondary to "this secondary is ACTIVE". */}
+										{namedFormatServers[entry.languageId] !== undefined
+											? `${t("settings.format.enabled")} · ${namedFormatServers[entry.languageId]}`
+											: entry.formatServer === undefined
+												? t("settings.status.notFound")
+												: `${entry.formatServer.displayName} · ${originText(t, entry.formatServer.origin)}`}
+									</span>
+									<span className="dshl-mgr-grow" />
+									{namedFormatServers[entry.languageId] !== undefined ? (
+										<Button
+											size="sm"
+											disabled={!writable}
+											onClick={() => {
+												const servers = { ...namedFormatServers };
+												delete servers[entry.languageId];
+												void write(`format:${entry.languageId}`, () => writeField(["format", "servers"], servers));
+											}}
+										>
+											{t("settings.action.disable")}
+										</Button>
+									) : entry.formatServer !== undefined ? (
+										// One click writes the row's OWN fact (the resolved executable,
+										// absolute — `format.servers` resolves named commands strictly),
+										// so the reader never retypes what the row already knows.
+										<Button
+											size="sm"
+											variant="primary"
+											disabled={!writable}
+											onClick={() => {
+												const servers = {
+													...namedFormatServers,
+													[entry.languageId]: entry.formatServer!.executable,
+												};
+												void write(`format:${entry.languageId}`, () => writeField(["format", "servers"], servers));
+											}}
+										>
+											{t("settings.action.enable")}
+										</Button>
+									) : entry.formatCanInstall === true ? (
+										<Button
+											size="sm"
+											disabled={installing !== undefined}
+											onClick={() => void installServer(entry.languageId, "format")}
+										>
+											{failedInstall?.key === `${entry.languageId}:format`
+												? t("settings.action.retry")
+												: t("settings.action.install")}
+										</Button>
+									) : null}
+									{failedInstall?.key === `${entry.languageId}:format` ? (
+										<span className="dshl-mgr-error" style={{ flex: "1 0 100%" }}>
+											{t("settings.error.installFailed", {
+												message: resolveHostText(t, failedInstall.message) ?? t("settings.error.installIncomplete"),
+											})}
+										</span>
+									) : null}
+								</div>
 							) : null}
 						</li>
 					))}
@@ -1446,7 +1540,7 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 						disabled={!writable}
 						onClick={() =>
 							void write(`formatAuto:${mode}`, () =>
-								writeField("format", { auto: mode, editorconfig: formatFlags.editorconfig, fallback_full_file: formatFlags.fallback }),
+								writeField(["format", "auto"], mode),
 							)
 						}
 					>
@@ -1464,7 +1558,7 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 					"formatFallback",
 					(checked) =>
 						void write("formatFallback", () =>
-							writeField("format", { auto: formatFlags.auto, editorconfig: formatFlags.editorconfig, fallback_full_file: checked }),
+							writeField(["format", "fallback_full_file"], checked),
 						),
 				)}
 			</div>
@@ -1478,9 +1572,81 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 					"formatEditorconfig",
 					(checked) =>
 						void write("formatEditorconfig", () =>
-							writeField("format", { auto: formatFlags.auto, editorconfig: checked, fallback_full_file: formatFlags.fallback }),
+							writeField(["format", "editorconfig"], checked),
 						),
 				)}
+			</div>
+			{/* ADR-0038: naming a FORMATTING secondary lives in the format group —
+				same intent-vs-fact split as the primary servers below: the status
+				list reports whether the command exists, this only WRITES. */}
+			<div className="dshl-mgr-master">
+				<span className="dshl-mgr-label">{t("settings.label.formatServers")}</span>
+				<span className="dshl-mgr-hint">{t("settings.hint.formatServers")}</span>
+				<span className="dshl-mgr-grow" />
+			</div>
+			{Object.keys(namedFormatServers).length === 0 ? (
+				<p className="dshl-mgr-hint">{t("settings.hint.formatServersNone")}</p>
+			) : (
+				<ul className="dshl-mgr-list">
+					{Object.entries(namedFormatServers).map(([id, command]) => (
+						<li key={id} className="dshl-mgr-row">
+							<span className="dshl-mgr-display-name">{id}</span>
+							<span className="dshl-mgr-ext" title={command}>{command}</span>
+							<span className="dshl-mgr-grow" />
+							<Button
+								size="sm"
+								disabled={!writable}
+								onClick={() => {
+									const servers = { ...namedFormatServers };
+									delete servers[id];
+									void write(`format:${id}`, () => writeField(["format", "servers"], servers));
+								}}
+							>
+								{t("settings.action.remove")}
+							</Button>
+						</li>
+					))}
+				</ul>
+			)}
+			<div className="dshl-mgr-master">
+				<select
+					className="dshl-mgr-search"
+					style={{ maxWidth: "12ch" }}
+					value={fmtServerLang}
+					disabled={!writable}
+					onChange={(event) => setFmtServerLang(event.target.value)}
+				>
+					<option value="">{t("settings.placeholder.serverLang")}</option>
+					{/* The FALLBACK serves catalog languages (the row's Enable button covers
+						the common case); the dropdown keeps a typo'd language out of the
+						setting, which would otherwise enable nothing, silently. */}
+					{lsp.rows.map((row) => (
+						<option key={row.languageId} value={row.languageId}>
+							{row.languageId}
+						</option>
+					))}
+				</select>
+				<input
+					className="dshl-mgr-search"
+					placeholder={t("settings.placeholder.serverCommand")}
+					value={fmtServerCommand}
+					disabled={!writable}
+					onChange={(event) => setFmtServerCommand(event.target.value)}
+				/>
+				<span className="dshl-mgr-grow" />
+				<Button
+					size="sm"
+					variant="primary"
+					disabled={!writable || fmtServerLang.trim() === "" || fmtServerCommand.trim() === ""}
+					onClick={() => {
+						const servers = { ...namedFormatServers, [fmtServerLang.trim()]: fmtServerCommand.trim() };
+						setFmtServerLang("");
+						setFmtServerCommand("");
+						void write(`format:${fmtServerLang.trim()}`, () => writeField(["format", "servers"], servers));
+					}}
+				>
+					{t("settings.action.assign")}
+				</Button>
 			</div>
 			{/*
 			 * Naming a server is INTENT and lives here; whether that command exists

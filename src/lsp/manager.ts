@@ -29,7 +29,7 @@
  */
 import { DEFAULT_LSP_IDLE_TIMEOUT_MS } from "../infra/constants.js";
 import { LspSession, type LspTransport } from "./session.js";
-import { canInstallServer, serverEntryFor } from "./install-server.js";
+import { canInstallFormatServer, canInstallServer, serverEntryFor } from "./install-server.js";
 import {
 	discoverServers,
 	serverArgv,
@@ -103,6 +103,20 @@ export interface LspLanguageStatus {
 	 * a button that fails.
 	 */
 	readonly canInstall?: boolean;
+	/**
+	 * The FORMAT slot's server, as discovery found it (ADR-0038) — present even
+	 * when no secondary is named: the card's format-server line reads this to
+	 * show what a named secondary would resolve to, and the format install
+	 * offer rides on it.
+	 */
+	readonly formatServer?: {
+		readonly displayName: string;
+		readonly command: string;
+		readonly executable: string;
+		readonly origin: ServerOrigin;
+	};
+	/** Whether this language's format server can be installed HERE. */
+	readonly formatCanInstall?: boolean;
 }
 
 /** How the manager talks to the outside world; all injected for tests. */
@@ -128,6 +142,16 @@ export interface LspManagerOptions extends DiscoveryOptions {
 	 * uses the default.
 	 */
 	retryBaseDelayMs?: number;
+	/**
+	 * The user's named FORMATTING secondary servers (ADR-0038), in the same
+	 * `{ command, languages }` shape discovery wants. A FUNCTION, read at each
+	 * format-slot start: a settings change reaches the next start without a
+	 * restart.
+	 */
+	readonly formatConfigured?: () => readonly {
+		readonly command: string;
+		readonly languages: readonly string[];
+	}[];
 }
 
 /** The transport shape the manager needs (the session's, plus diagnostics). */
@@ -162,6 +186,21 @@ interface Launched {
 	readonly session: LspSession;
 }
 
+/**
+ * Which job a slot serves (ADR-0038). Every language has at most one PRIMARY
+ * slot — diagnostics, completion, navigation, the `lsp.servers.<id>` world —
+ * and a FORMAT slot exists only when `format.servers.<id>` names a secondary.
+ * Only formatting resolves the format role; every other caller keeps the
+ * primary slot whether or not a secondary exists.
+ */
+export type LspSlotRole = "primary" | "format";
+
+/** The slot table's key for one language+role: primary keys stay bare ids. */
+const FORMAT_KEY_PREFIX = "format:";
+function slotKey(languageId: string, role: LspSlotRole): string {
+	return role === "primary" ? languageId : `${FORMAT_KEY_PREFIX}${languageId}`;
+}
+
 /** Default document ceiling, matching the platform LSP provider's. */
 const DEFAULT_MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
 /**
@@ -188,8 +227,9 @@ export class LspManager {
 	#slots = new Map<string, Slot>();
 	#launched: Launched[] = [];
 	#disposed = false;
-	#discovered: DiscoveredServer[] | undefined;
-	#discovering: Promise<DiscoveredServer[]> | undefined;
+	/** Discovery results per role — the format role resolves its OWN named list. */
+	#discovered = new Map<LspSlotRole, DiscoveredServer[]>();
+	#discovering = new Map<LspSlotRole, Promise<DiscoveredServer[]>>();
 	/** In-flight idle reclamations, so `dispose` can wait for them. */
 	#reaping = new Set<Promise<void>>();
 	/** Failed starts per language — the retry backoff's attempt count (#318). */
@@ -204,21 +244,41 @@ export class LspManager {
 		return this.#options.maxDocumentBytes ?? DEFAULT_MAX_DOCUMENT_BYTES;
 	}
 
-	/** Discover servers once per manager; concurrent callers share the search. */
-	#servers(): Promise<DiscoveredServer[]> {
-		if (this.#discovered !== undefined) return Promise.resolve(this.#discovered);
-		this.#discovering ??= discoverServers({
+	/**
+	 * Discover servers for one role; concurrent callers share the search.
+	 *
+	 * The PRIMARY role keeps the constructor-captured `configured` list, and
+	 * discovery is memoised for the manager's lifetime as before. The FORMAT
+	 * role (ADR-0038) resolves the user's named SECONDARY servers instead —
+	 * read at call time, so a settings change reaches the next format start
+	 * without a restart — and keeps its own cache.
+	 */
+	#servers(role: LspSlotRole): Promise<DiscoveredServer[]> {
+		const cached = this.#discovered.get(role);
+		if (cached !== undefined) return Promise.resolve(cached);
+		const pending = this.#discovering.get(role);
+		if (pending !== undefined) return pending;
+		const configured =
+			role === "format"
+				? (this.#options.formatConfigured?.() ?? [])
+				: this.#options.configured;
+		const run = discoverServers({
 			...(this.#options.projectRoot === undefined ? {} : { projectRoot: this.#options.projectRoot }),
 			...(this.#options.pathDirs === undefined ? {} : { pathDirs: this.#options.pathDirs }),
-			...(this.#options.configured === undefined ? {} : { configured: this.#options.configured }),
+			...(configured === undefined ? {} : { configured }),
 			...(this.#options.isExecutable === undefined ? {} : { isExecutable: this.#options.isExecutable }),
 			...(this.#options.executableSuffixes === undefined ? {} : { executableSuffixes: this.#options.executableSuffixes }),
+			// The format role's catalog scan must SEE the formatter-only entries
+			// (ADR-0038); the primary scan must not — a formatter can never be a
+			// language's primary server.
+			...(role === "format" ? { includeFormatterOnly: true } : {}),
 		}).then((servers) => {
-			this.#discovered = servers;
-			this.#discovering = undefined;
+			this.#discovered.set(role, servers);
+			this.#discovering.delete(role);
 			return servers;
 		});
-		return this.#discovering;
+		this.#discovering.set(role, run);
+		return run;
 	}
 
 	// ── idle reclamation (#306) ───────────────────────────────────────────────
@@ -249,12 +309,12 @@ export class LspManager {
 	 * our writes. The timestamp is the idle clock's zero; the timer is only a
 	 * wake-up, because the window may change while it runs.
 	 */
-	#touchIdle(languageId: string): void {
-		const slot = this.#slots.get(languageId);
+	#touchIdle(key: string): void {
+		const slot = this.#slots.get(key);
 		if (slot?.state !== "ready") return;
 		slot.lastUsedAt = Date.now();
 		const window = this.#idleTimeout();
-		this.#armIdle(languageId, window > 0 ? window : IDLE_PROBE_MS);
+		this.#armIdle(key, window > 0 ? window : IDLE_PROBE_MS);
 	}
 
 	/**
@@ -263,14 +323,14 @@ export class LspManager {
 	 * The timer is unref'd: a language server that is being reclaimed must
 	 * never be the reason the process stays alive.
 	 */
-	#armIdle(languageId: string, delayMs: number): void {
-		const slot = this.#slots.get(languageId);
+	#armIdle(key: string, delayMs: number): void {
+		const slot = this.#slots.get(key);
 		if (slot?.state !== "ready" || this.#disposed) return;
 		if (slot.idleTimer !== undefined) clearTimeout(slot.idleTimer);
 		slot.idleTimer = undefined;
 		const timer = setTimeout(() => {
 			slot.idleTimer = undefined;
-			void this.#reapIdle(languageId);
+			void this.#reapIdle(key);
 		}, delayMs);
 		timer.unref?.();
 		slot.idleTimer = timer;
@@ -283,30 +343,30 @@ export class LspManager {
 	 * language while the old server is still shutting down must be told "cold"
 	 * (and warm a fresh one), not handed a session that is about to die.
 	 */
-	async #reapIdle(languageId: string): Promise<void> {
+	async #reapIdle(key: string): Promise<void> {
 		if (this.#disposed) return;
-		const slot = this.#slots.get(languageId);
+		const slot = this.#slots.get(key);
 		if (slot?.state !== "ready") return;
 		const window = this.#idleTimeout();
 		if (window <= 0) {
 			// Reclaim is off. Keep a probe armed so turning it back on is noticed
 			// even for a session nobody touches again.
-			this.#armIdle(languageId, IDLE_PROBE_MS);
+			this.#armIdle(key, IDLE_PROBE_MS);
 			return;
 		}
 		const elapsed = Date.now() - slot.lastUsedAt;
 		if (elapsed < window) {
 			// The window grew while the timer ran: wait out the rest of it.
-			this.#armIdle(languageId, window - elapsed);
+			this.#armIdle(key, window - elapsed);
 			return;
 		}
 		if (slot.session.hasPendingRequests) {
 			// A server that is mid-answer is WORKING, not idle: killing it now
 			// would break a request that is already in flight.
-			this.#armIdle(languageId, window);
+			this.#armIdle(key, window);
 			return;
 		}
-		this.#slots.delete(languageId);
+		this.#slots.delete(key);
 		this.#forget(slot.session);
 		const task = this.#terminate(slot.session, slot.transport);
 		this.#reaping.add(task);
@@ -354,18 +414,18 @@ export class LspManager {
 	 * @param languageId - registry id.
 	 * @param workspaceRoot - the root to advertise.
 	 */
-	warm(languageId: string, workspaceRoot: string): void {
+	warm(languageId: string, workspaceRoot: string, role: LspSlotRole = "primary"): void {
 		if (this.#disposed) return;
-		const existing = this.#slots.get(languageId);
+		const existing = this.#slots.get(slotKey(languageId, role));
 		if (existing?.state === "failed") {
 			// Retry only when the backoff window has passed (#318); until
 			// then the failed refusal stands.
-			if (!this.#retryDue(languageId, existing)) return;
+			if (!this.#retryDue(slotKey(languageId, role), existing)) return;
 		} else if (existing !== undefined) {
 			return; // already starting or ready
 		}
-		this.#slots.set(languageId, { state: "starting" });
-		void this.#start(languageId, workspaceRoot);
+		this.#slots.set(slotKey(languageId, role), { state: "starting" });
+		void this.#start(slotKey(languageId, role), languageId, workspaceRoot, role);
 	}
 
 	/**
@@ -375,24 +435,32 @@ export class LspManager {
 	 * that keeps crashing never spins — and a cold start that merely needed
 	 * longer than the handshake deadline recovers on its own.
 	 */
-	#retryDue(languageId: string, slot: Extract<Slot, { state: "failed" }>): boolean {
-		const attempts = this.#failures.get(languageId) ?? 1;
+	#retryDue(key: string, slot: Extract<Slot, { state: "failed" }>): boolean {
+		const attempts = this.#failures.get(key) ?? 1;
 		const base = this.#options.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
 		const delay = Math.min(base * 2 ** (attempts - 1), RETRY_MAX_DELAY_MS);
 		return Date.now() - slot.attemptedAt >= delay;
 	}
 
-	async #start(languageId: string, workspaceRoot: string): Promise<void> {
+	async #start(
+		key: string,
+		languageId: string,
+		workspaceRoot: string,
+		role: LspSlotRole,
+	): Promise<void> {
 		let session: LspSession | undefined;
 		let transport: ServerTransportLike | undefined;
 		try {
-			const servers = await this.#servers();
+			const servers = await this.#servers(role);
 			const server = serverForLanguage(servers, languageId);
 			if (server === undefined) {
 				this.#markFailed(
-					languageId,
+					key,
 					"server-missing",
-					`No language server for ${languageId} was found on PATH or in the project's bin directory.`,
+					role === "format"
+						? `No FORMATTING server for ${languageId} was found on PATH or in the project's bin directory. ` +
+						`Name one under hashline.format.servers.`
+						: `No language server for ${languageId} was found on PATH or in the project's bin directory.`,
 				);
 				return;
 			}
@@ -407,7 +475,7 @@ export class LspManager {
 				await session.shutdown();
 				return;
 			}
-			this.#slots.set(languageId, {
+			this.#slots.set(key, {
 				state: "ready",
 				session,
 				transport,
@@ -415,10 +483,10 @@ export class LspManager {
 			});
 			// A start that made it all the way up resets the retry backoff:
 			// the next failure counts as the FIRST failure again (#318).
-			this.#failures.delete(languageId);
+			this.#failures.delete(key);
 			// The idle clock starts now: a server nobody asks for must not hold
 			// its index for the rest of the session.
-			this.#touchIdle(languageId);
+			this.#touchIdle(key);
 		} catch (error) {
 			const baseMessage = error instanceof Error ? error.message : String(error);
 			// "exit 1" alone has sent people chasing the wrong thing: when the
@@ -442,7 +510,7 @@ export class LspManager {
 					/* already gone */
 				}
 			}
-			this.#markFailed(languageId, reasonFor(error), message);
+			this.#markFailed(key, reasonFor(error), message);
 		}
 	}
 
@@ -453,11 +521,14 @@ export class LspManager {
 	 * found but the handshake failed" — the slot shape, the counter, and
 	 * the onFailure notification must not drift between them.
 	 */
-	#markFailed(languageId: string, reason: BackendReason, message: string): void {
-		const attempts = (this.#failures.get(languageId) ?? 0) + 1;
-		this.#failures.set(languageId, attempts);
-		this.#slots.set(languageId, { state: "failed", reason, message, attemptedAt: Date.now() });
-		this.#options.onFailure?.(languageId, message);
+	#markFailed(key: string, reason: BackendReason, message: string): void {
+		const attempts = (this.#failures.get(key) ?? 0) + 1;
+		this.#failures.set(key, attempts);
+		this.#slots.set(key, { state: "failed", reason, message, attemptedAt: Date.now() });
+		this.#options.onFailure?.(
+			key.startsWith(FORMAT_KEY_PREFIX) ? key.slice(FORMAT_KEY_PREFIX.length) : key,
+			message,
+		);
 	}
 
 	/**
@@ -504,18 +575,18 @@ export class LspManager {
 	 * @param languageId - registry id.
 	 * @param uri - the document's `file://` URI.
 	 */
-	openDocumentFor(languageId: string, uri: string): ((text: string) => void) | undefined {
-		const slot = this.#slots.get(languageId);
+	openDocumentFor(languageId: string, uri: string, role: LspSlotRole = "primary"): ((text: string) => void) | undefined {
+		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot?.state !== "ready") return undefined;
 		// Keeping a server in step with our writes is a use too: a server that
 		// is being written to is not idle.
-		this.#touchIdle(languageId);
+		this.#touchIdle(slotKey(languageId, role));
 		return (text: string) => {
-			this.#touchIdle(languageId);
+			this.#touchIdle(slotKey(languageId, role));
 			// The session this closure was made for may have been reclaimed since:
 			// the CURRENT one is the server that must learn about the document, and
 			// a dead server must not be written to.
-			const current = this.#slots.get(languageId);
+			const current = this.#slots.get(slotKey(languageId, role));
 			if (current?.state !== "ready") return;
 			const session = current.session;
 			// Open-or-change: a document the server has never seen must be opened
@@ -536,10 +607,10 @@ export class LspManager {
 	 * @param uri - the document's `file://` URI.
 	 * @returns true when a document was actually closed on a live session.
 	 */
-	closeDocumentFor(languageId: string, uri: string): boolean {
-		const slot = this.#slots.get(languageId);
+	closeDocumentFor(languageId: string, uri: string, role: LspSlotRole = "primary"): boolean {
+		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot?.state !== "ready") return false;
-		this.#touchIdle(languageId);
+		this.#touchIdle(slotKey(languageId, role));
 		return slot.session.didClose(uri);
 	}
 
@@ -550,10 +621,10 @@ export class LspManager {
 	 * must not start a server by asking. Use `waitForSession` when the caller's
 	 * job is the protocol itself.
 	 */
-	readySessionFor(languageId: string): LspSession | undefined {
-		const slot = this.#slots.get(languageId);
+	readySessionFor(languageId: string, role: LspSlotRole = "primary"): LspSession | undefined {
+		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot?.state !== "ready") return undefined;
-		this.#touchIdle(languageId);
+		this.#touchIdle(slotKey(languageId, role));
 		return slot.session;
 	}
 	/** How long `waitForSession` holds a caller while the server boots. */
@@ -570,26 +641,28 @@ export class LspManager {
 	 * @param languageId - the registry id to warm and wait on.
 	 * @param workspaceRoot - passed to the warm-up.
 	 * @param timeoutMs - how long to hold before giving up (default 15s).
+	 * @param role - which slot to resolve (default primary; the format role is ADR-0038).
 	 * @returns the session, or `undefined` when it failed or timed out.
 	 */
 	async waitForSession(
 		languageId: string,
 		workspaceRoot: string,
 		timeoutMs: number = LspManager.START_TIMEOUT_MS,
+		role: LspSlotRole = "primary",
 	): Promise<LspSession | undefined> {
-		const slot = this.#slots.get(languageId);
+		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot?.state === "ready") {
-			this.#touchIdle(languageId);
+			this.#touchIdle(slotKey(languageId, role));
 			return slot.session;
 		}
 		if (this.#disposed) return undefined;
-		this.warm(languageId, workspaceRoot);
+		this.warm(languageId, workspaceRoot, role);
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const current = this.#slots.get(languageId);
+			const current = this.#slots.get(slotKey(languageId, role));
 			if (current?.state === "ready") {
-				this.#touchIdle(languageId);
+				this.#touchIdle(slotKey(languageId, role));
 				return current.session;
 			}
 			if (current?.state === "failed") return undefined;
@@ -614,27 +687,28 @@ export class LspManager {
 		languageId: string,
 		workspaceRoot: string,
 		timeoutMs: number = LspManager.START_TIMEOUT_MS,
+		role: LspSlotRole = "primary",
 	): Promise<LspSession | undefined> {
 		if (this.#disposed) return undefined;
-		if (this.#slots.get(languageId)?.state === "failed") this.#slots.delete(languageId);
-		return this.waitForSession(languageId, workspaceRoot, timeoutMs);
+		if (this.#slots.get(slotKey(languageId, role))?.state === "failed") this.#slots.delete(slotKey(languageId, role));
+		return this.waitForSession(languageId, workspaceRoot, timeoutMs, role);
 	}
 
 	/** The live session for a language, warming it if this is the first ask. */
-	async sessionFor(languageId: string, workspaceRoot: string): Promise<LspSession | undefined> {
-		const slot = this.#slots.get(languageId);
+	async sessionFor(languageId: string, workspaceRoot: string, role: LspSlotRole = "primary"): Promise<LspSession | undefined> {
+		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot?.state === "ready") {
-			this.#touchIdle(languageId);
+			this.#touchIdle(slotKey(languageId, role));
 			return slot.session;
 		}
-		this.warm(languageId, workspaceRoot);
+		this.warm(languageId, workspaceRoot, role);
 		return undefined;
 	}
 
 
 	/** Why a language has no session, for diagnostics and the settings card. */
-	unavailability(languageId: string): { reason: BackendReason; message: string | LocalizedText } | undefined {
-		const slot = this.#slots.get(languageId);
+	unavailability(languageId: string, role: LspSlotRole = "primary"): { reason: BackendReason; message: string | LocalizedText } | undefined {
+		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot === undefined) return { reason: "lsp-unavailable", message: LSP_SERVER_NOT_STARTED };
 		if (slot.state === "failed") return { reason: slot.reason, message: slot.message };
 		if (slot.state === "starting") return { reason: "lsp-unavailable", message: LSP_SERVER_STARTING };
@@ -675,24 +749,28 @@ export class LspManager {
 	 * @returns the languages whose failed state was cleared.
 	 */
 	rescan(): string[] {
-		this.#discovered = undefined;
-		this.#discovering = undefined;
+		this.#discovered.clear();
+		this.#discovering.clear();
 		this.#failures.clear(); // the retry backoffs go with the slots
 		const cleared: string[] = [];
 		for (const [languageId, slot] of [...this.#slots]) {
 			if (slot.state === "failed") {
 				this.#slots.delete(languageId);
-				cleared.push(languageId);
+				cleared.push(languageId.startsWith(FORMAT_KEY_PREFIX) ? languageId.slice(FORMAT_KEY_PREFIX.length) : languageId);
 			}
 		}
 		return cleared;
 	}
 
-	async status(languageIds: readonly string[]): Promise<LspLanguageStatus[]> {
-		const servers = await this.#servers();
+	async status(languageIds: readonly string[], role: LspSlotRole = "primary"): Promise<LspLanguageStatus[]> {
+		const servers = await this.#servers(role);
+		// The FORMAT role's discovery facts ride along (ADR-0038): the card's
+		// format-server line and its install offer read these.
+		const formatServers = await this.#servers("format");
 		return languageIds.map((languageId) => {
 			const server = servers.find((candidate) => candidate.languages.includes(languageId));
-			const ready = this.#slots.get(languageId)?.state === "ready";
+			const formatServer = formatServers.find((candidate) => candidate.languages.includes(languageId));
+			const ready = this.#slots.get(slotKey(languageId, role))?.state === "ready";
 			const found =
 				server === undefined
 					? undefined
@@ -737,20 +815,33 @@ export class LspManager {
 							: lspSelfInstall(entryFor.command),
 				};
 			}
-			const unavailable = this.unavailability(languageId);
+			const unavailable = this.unavailability(languageId, role);
 			return {
 				languageId,
 				ready,
 				...(found === undefined ? {} : { server: found }),
 				...(unavailable === undefined ? {} : { reason: unavailable.reason, message: unavailable.message }),
 				canInstall: canInstallServer(languageId),
+				...(canInstallFormatServer(languageId) ? { formatCanInstall: true as const } : {}),
+				...(formatServer === undefined
+					? {}
+					: {
+						formatServer: {
+							displayName: formatServer.displayName,
+							command: formatServer.command,
+							executable: formatServer.executable,
+							origin: formatServer.origin,
+						},
+					}),
 			};
 		});
 	}
 
 	/** The languages with a live session. */
 	get readyLanguages(): string[] {
-		return [...this.#slots.entries()].filter(([, slot]) => slot.state === "ready").map(([id]) => id);
+		return [...this.#slots.entries()]
+			.filter(([key, slot]) => slot.state === "ready" && !key.startsWith(FORMAT_KEY_PREFIX))
+			.map(([id]) => id);
 	}
 
 	/**
@@ -770,7 +861,9 @@ export class LspManager {
 		/** Failed starts so far — absent when the slot has never failed. */
 		attempts?: number;
 	}> {
-		return [...this.#slots.entries()].map(([languageId, slot]) => {
+		return [...this.#slots.entries()]
+			.filter(([key]) => !key.startsWith(FORMAT_KEY_PREFIX))
+			.map(([languageId, slot]) => {
 			if (slot.state === "failed") {
 				return {
 					languageId,
@@ -782,6 +875,16 @@ export class LspManager {
 			}
 			return { languageId, state: slot.state };
 		});
+	}
+
+	/**
+	 * Whether `dispose()` has run. #427 review: the tool surface checks this
+	 * BEFORE composing a no-server refusal — "the client was shut down (the
+	 * plugin re-mounted)" is a different sentence with a different remedy
+	 * (restart the session) than "no server for this language".
+	 */
+	get disposed(): boolean {
+		return this.#disposed;
 	}
 
 	/** Shut every server down and release the processes. */
@@ -834,7 +937,40 @@ export function getLspManager(): LspManager | undefined {
 	return singleton;
 }
 
-/** Install (or clear) the process-wide manager. */
+/**
+ * One readable sentence about why no server is usable — the message the
+ * no-server refusals embed. `unavailability()` may hand back a host-composed
+ * key+params object (ADR-0024), and a bare `${}` of that printed
+ * `[object Object]` into every refusal (measured, PR #427 review); a string
+ * travels as-is, anything else falls back to the honest neutral sentence.
+ */
+export function describeUnavailable(
+	why: { message?: string | LocalizedText } | undefined,
+): string {
+	const message = why?.message;
+	if (typeof message === "string" && message !== "") return message;
+	if (message !== undefined && typeof message === "object" && "key" in message) {
+		return String((message as { key: unknown }).key);
+	}
+	return "it did not start in time";
+}
+
+/**
+ * Install (or clear) the process-wide manager.
+ *
+ * #427 review: a plugin re-mount can run `apply()` more than once, and the
+ * naive `singleton = manager` left the OLD instance un-owned while the NEW
+ * scope's teardown disposed whichever instance the singleton pointed at —
+ * every LSP call then failed until the session restarted. Two rules fix it:
+ * the same instance is a no-op, and a different one takes the role only
+ * after the previous owner's processes are shut down.
+ */
 export function setLspManager(manager: LspManager | undefined): void {
+	if (singleton === manager) return;
+	const previous = singleton;
+	// The NEW instance owns the role IMMEDIATELY; the previous one's processes
+	// are torn down in the background. `?.()` — a manager-shaped value without
+	// a shutdown (a stub in a test) still installs cleanly.
 	singleton = manager;
+	void previous?.dispose?.();
 }

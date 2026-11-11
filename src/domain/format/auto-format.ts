@@ -34,6 +34,7 @@ import {
 import { composeProvenance, lineMapFromTextEdits } from "./provenance.js";
 import {
 	autoFormatMode,
+	formatConfiguredServers,
 	formatFallbackFullFile,
 	isEditorconfigEnabled,
 } from "../../infra/settings.js";
@@ -140,8 +141,11 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 	const manager = getLspManager();
 	// Ready-only (G3): `readySessionFor` is synchronous and never warms. No
 	// running server means "not my problem" — the next semantic call opens the
-	// document with the final text anyway.
-	const session = manager?.readySessionFor(language.id);
+	// document with the final text anyway. A language with a NAMED formatting
+	// secondary (`format.servers.<id>`, ADR-0038) formats through THAT slot;
+	// without one the primary path is byte-for-byte today's.
+	const role = formatConfiguredServers().has(language.id) ? ("format" as const) : ("primary" as const);
+	const session = manager?.readySessionFor(language.id, role);
 	if (manager === undefined || session === undefined) {
 		return { ...SILENT, content: input.modelContent };
 	}
@@ -160,7 +164,7 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 
 	let server = language.id;
 	try {
-		const row = (await manager.status([language.id]))[0];
+		const row = (await manager.status([language.id], role))[0];
 		if (row?.server?.displayName !== undefined) server = row.server.displayName;
 	} catch {
 		// The header's name is cosmetic; the language id reads fine.
@@ -174,11 +178,17 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 		isEditorconfigEnabled(),
 	);
 	const uri = pathToFileURL(input.absolutePath).href;
+	// The pre-write sync reaches the PRIMARY slot; a run routed through the
+	// formatting secondary brings THAT server in step as well (ADR-0038).
+	const syncForRun = (content: string): void => {
+		syncDocumentContent(input.absolutePath, content);
+		if (role === "format") manager.openDocumentFor(language.id, uri, "format")?.(content);
+	};
 
 	// The server's view is stale by one edit: bring it to the MODEL content
 	// BEFORE asking (pre-write sync, ready servers only — G2's single-write
 	// rule keeps the DISK at one write; the server's document is not the disk).
-	syncDocumentContent(input.absolutePath, input.modelContent);
+	syncForRun(input.modelContent);
 
 	// applyTextEdits restores the file's BOM/ending shape — which is exactly
 	// what this pass must NOT do per round: the working text stays in the
@@ -235,7 +245,7 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 						// The next request must be answered from the text this one
 						// produced, or its coordinates describe a version the
 						// server never saw.
-						if (k < merged.length - 1) syncDocumentContent(input.absolutePath, content);
+						if (k < merged.length - 1) syncForRun(content);
 					}
 					return finish(input, content, lineage ?? new Map(), "range", merged.length, applied, server);
 				} catch (error) {

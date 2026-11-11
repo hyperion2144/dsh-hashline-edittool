@@ -322,6 +322,18 @@ export function toolRowModel(
 	cwd: string | undefined,
 	home: string | undefined,
 ): ToolRowModel {
+	// #427 review: a tool that WEARS another row's card (`format` borrows the
+	// edit card, `lsp` the read card, `ast_grep` / `ast_edit` / `undo_last_edit`
+	// their own) must never have its TITLE fall back to 读取 just because its
+	// variant is not one of the five primitives. The variant keeps driving the
+	// CARD shape and the summary; the TITLE resolves from the tool's own name.
+	const TOOL_TITLE_KEYS: Record<string, string> = {
+		format: "row.title.format",
+		lsp: "row.title.lsp",
+		ast_grep: "row.title.ast_grep",
+		ast_edit: "row.title.ast_edit",
+		undo_last_edit: "row.title.undo",
+	};
 	const variant =
 		toolName === "edit"
 			? "edit"
@@ -371,7 +383,7 @@ export function toolRowModel(
 	const errorSummary = state === "error" && output !== null ? firstLine(output) : null;
 	return {
 		variant,
-		titleKey: VARIANT_TITLE_KEYS[variant] ?? "row.title.generic",
+		titleKey: VARIANT_TITLE_KEYS[variant] ?? TOOL_TITLE_KEYS[toolName] ?? "row.title.generic",
 		summary: base,
 		filePath: deriveFilePath(variant, argsRaw),
 		bodyRaw: argsRaw === "" ? null : argsRaw,

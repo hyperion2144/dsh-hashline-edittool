@@ -782,13 +782,22 @@ export function HashlineLspRow({ toolName, block, cwd, home, openFile, inspect, 
  * row unchanged, which renders the platform default for it.
  */
 export function HashlineFormatRow({ toolName, block, ...rest }: ToolViewProps): ReactNode {
-	if (!("kind" in block)) return HashlineEditRow({ toolName, block, ...rest });
+	if (!("kind" in block)) {
+		// #427 review: the fallback wears the format NAME too — a failure or a
+		// running call must not announce itself as 读取 when the caller asked
+		// the format tool.
+		return HashlineEditRow({ toolName, block, titleOverride: rest.t("row.title.format"), ...rest });
+	}
 	const meta: Record<string, unknown> =
 		typeof block.meta === "object" && block.meta !== null && !Array.isArray(block.meta)
 			? (block.meta as Record<string, unknown>)
 			: {};
 	const sections = metaFormatSections(meta);
-	if (sections.length === 0) return HashlineEditRow({ toolName, block, ...rest });
+	if (sections.length === 0) {
+		// #427 review: same rule as the running fallback above — a settled call
+		// whose meta carried no format sections is still the format TOOL.
+		return HashlineEditRow({ toolName, block, titleOverride: rest.t("row.title.format"), ...rest });
+	}
 	const path = typeof meta.path === "string" ? meta.path : toolName;
 	return HashlineEditRow({
 		toolName,

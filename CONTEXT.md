@@ -222,6 +222,16 @@ _Avoid_: editable row (all served rows are), resolved row
 A row kept for a location that could not be anchored — the file is past `MAX_ANCHORED_FILES` (32), unreadable, or not a local path. It shows `line:character` instead of an anchor. Losing the anchor costs a `read`; dropping the row would lose the answer.
 _Avoid_: fallback row, degraded row (say what was lost)
 
+## LSP server slots
+
+**Primary slot**:
+The one server a language runs for every semantic ask — diagnostics, completion, hover, navigation, document sync. Chosen by discovery or named under `lsp.servers.<id>`; keyed by `languageId` alone. The format slot's existence changes nothing about it (ADR-0038).
+_Avoid_: the server (say which slot), default server
+
+**Format slot**:
+The opt-in SECOND server a language runs for formatting requests only, named under `format.servers.<id>` (ADR-0038). Exists only when named; the manual `format` tool may cold-start it, the automatic pass uses it only READY (G3). It never serves diagnostics or navigation.
+_Avoid_: secondary server (say slot), formatter server (formatting is the role; the slot is the noun)
+
 ## Patch application
 
 **`apply_patch`**:

@@ -21,7 +21,7 @@
  *
  * @module dsh-hashline-edittool/lsp/install-server
  */
-import { mkdir, access, constants } from "node:fs/promises";
+import { mkdir, access, writeFile, constants } from "node:fs/promises";
 import { join } from "node:path";
 import { KNOWN_SERVERS, type KnownServer } from "./discovery.js";
 import { lspServersDir } from "../infra/paths.js";
@@ -64,6 +64,37 @@ export interface LspInstallOutcome {
 /** The catalog entry that serves a language, if the catalog has one. */
 export function serverEntryFor(languageId: string): KnownServer | undefined {
 	return KNOWN_SERVERS.find((server) => server.languages.includes(languageId));
+}
+
+/**
+ * The catalog entry that drives a language's FORMAT slot, if one exists
+ * (ADR-0038). Formatter-only entries carry `formats: true` and are invisible
+ * to `serverEntryFor` — a formatter must never become a language's primary.
+ */
+export function formatServerEntryFor(languageId: string): KnownServer | undefined {
+	return KNOWN_SERVERS.find((server) => server.formats === true && server.languages.includes(languageId));
+}
+
+/** Whether the FORMAT slot's server can be installed here (ADR-0038). */
+export function canInstallFormatServer(
+	languageId: string,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	return formatInstallCommand(languageId, platform) !== undefined;
+}
+
+/** The argv that installs the FORMAT slot's server, or `undefined` (ADR-0038). */
+export function formatInstallCommand(
+	languageId: string,
+	platform: NodeJS.Platform = process.platform,
+): readonly string[] | undefined {
+	const plan = formatServerEntryFor(languageId)?.install;
+	if (plan === undefined) return undefined;
+	if (plan.via === "argv") return plan.argv;
+	if (plan.via === "platform") return plan.by[platform];
+	// An npm-shaped plan needs the plugin's prefix, so it is built later —
+	// the same rule `installCommandFor` follows.
+	return ["npm"];
 }
 
 /**
@@ -110,8 +141,9 @@ export async function installLspServer(
 	languageId: string,
 	spawn: SpawnLike,
 	onOutput?: (chunk: string) => void,
+	role: "primary" | "format" = "primary",
 ): Promise<LspInstallOutcome> {
-	const entry = serverEntryFor(languageId);
+	const entry = role === "format" ? formatServerEntryFor(languageId) : serverEntryFor(languageId);
 	if (entry === undefined) {
 		return {
 			ok: false,
@@ -147,6 +179,16 @@ export async function installLspServer(
 	// THREE SHAPES, one pipeline. `npm` resolves a dependency tree into the plugin's
 	// own prefix; the other two run a command the language's community publishes.
 	// All of them are just a command, a cwd and an exit code.
+	//
+	// A `requirements` entry (ADR-0038) is written into the prefix as a file and
+	// replaces the `{requirements}` placeholder in the argv: a requirements FILE
+	// travels as one token, while an INLINE `--pip-args "a==1 b==2"` value dies
+	// in the Windows cmd escaping (`=` → `^=` inside quotes). The failure this
+	// prevents was measured, not imagined (PR #427 review, Windows 11).
+	const requirementsPath = join(prefix, `${entry.command}-requirements.txt`);
+	if (entry.requirements !== undefined) {
+		await writeFile(requirementsPath, `${entry.requirements}\n`, "utf8");
+	}
 	const argv =
 		plan.via === "npm"
 			? [
@@ -161,7 +203,9 @@ export async function installLspServer(
 					"--loglevel=error",
 					plan.package,
 				]
-				: [...(plan.via === "argv" ? plan.argv : (platformArgv ?? []))];
+			: [...(plan.via === "argv" ? plan.argv : (platformArgv ?? []))].map((token) =>
+					token.replace("{requirements}", requirementsPath),
+				);
 	// Windows: `npm` is `npm.cmd`, and a `.cmd` shim is not executable — it needs
 	// the command interpreter. The SAME translation the server launch uses, so
 	// both paths work or fail together instead of one being the odd one out.

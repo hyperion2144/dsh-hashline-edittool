@@ -104,6 +104,7 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			astEnabled: false,
 			astLanguages: new Set<string>(),
 			lspServers: new Map<string, string>(),
+			formatServers: new Map<string, string>(),
 			autoDiagnostics: true,
 			lspIdleTimeoutMs: 300000,
 			grepRespectGitignore: true,

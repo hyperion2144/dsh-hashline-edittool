@@ -118,6 +118,13 @@ export interface EffectiveHashlineConfig {
 	 */
 	lspServers: ReadonlyMap<string, string>;
 	/**
+	 * Language -> command for FORMATTING SECONDARY servers the user named,
+	 * from `format.servers.<id>` (ADR-0038). Same discipline as `lspServers`:
+	 * intent only — a named command is not a running one, and an entry may
+	 * point at a command that does not exist.
+	 */
+	formatServers: ReadonlyMap<string, string>;
+	/**
 	 * Whether a write delivers the language server's diagnostics back to the
 	 * model (issue #131). Default ON — the feature is opt-out.
 	 */
@@ -169,6 +176,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	astEnabled: false,
 	astLanguages: new Set<string>(),
 	lspServers: new Map<string, string>(),
+	formatServers: new Map<string, string>(),
 	autoDiagnostics: true,
 	lspIdleTimeoutMs: DEFAULT_LSP_IDLE_TIMEOUT_MS,
 	autoFormatMode: "off",
@@ -233,6 +241,21 @@ export function astDisabledLanguages(): string[] {
  */
 export function lspConfiguredServers(): ReadonlyMap<string, string> {
 	return new Map(effective.lspServers);
+}
+
+/**
+ * The formatting SECONDARY servers the user named, by language
+ * (`format.servers.<id>`; ADR-0038).
+ *
+ * Intent only, exactly like {@linkcode lspConfiguredServers}: whether the
+ * command exists and whether a server is running are facts for the status
+ * surface — this answers "which server formats this language", which is
+ * what the format slot's discovery needs to honor `configured`.
+ *
+ * @returns a copy; mutating it does not change the effective config.
+ */
+export function formatConfiguredServers(): ReadonlyMap<string, string> {
+	return new Map(effective.formatServers);
 }
 
 /**

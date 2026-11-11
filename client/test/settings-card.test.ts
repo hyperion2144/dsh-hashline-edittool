@@ -437,22 +437,20 @@ describe("the card's 格式化 group (#315) — wiring pinned against the source
 		"utf8",
 	);
 
-	it("renders the tri-state mode control, the fallback switch, and writes the format subtree wholesale", () => {
+	it("renders the tri-state mode control and the fallback switch; every write is a segmented leaf path", () => {
 		// #375: the labels live in the vocabulary now, so the card asks the
 		// host for them — the wiring is pinned by the KEY, not by a Chinese word.
 		expect(cardSource).toContain('t("settings.label.formatAuto")');
 		expect(cardSource).toContain('t("settings.label.formatFallback")');
 		expect(cardSource).toContain('t("settings.label.formatEditorconfig")');
-		// Every write carries ALL THREE keys: a partial write would clear a sibling.
-		expect(cardSource).toContain(
-			'writeField("format", { auto: mode, editorconfig: formatFlags.editorconfig, fallback_full_file: formatFlags.fallback })',
-		);
-		expect(cardSource).toContain(
-			'writeField("format", { auto: formatFlags.auto, editorconfig: formatFlags.editorconfig, fallback_full_file: checked })',
-		);
-		expect(cardSource).toContain(
-			'writeField("format", { auto: formatFlags.auto, editorconfig: checked, fallback_full_file: formatFlags.fallback })',
-		);
+		// #427 rework (ADR-0038): writes are LEAF paths, never the whole
+		// `format` subtree — a wholesale write would clear a sibling the card
+		// does not know about (`format.servers`).
+		expect(cardSource).toContain('writeField(["format", "auto"], mode)');
+		expect(cardSource).toContain('writeField(["format", "fallback_full_file"], checked)');
+		expect(cardSource).toContain('writeField(["format", "editorconfig"], checked)');
+		expect(cardSource).not.toContain('writeField("format", {');
+		expect(cardSource).toContain('writeField(["format", "servers"], servers)');
 	});
 });
 
