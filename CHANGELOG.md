@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-11
+
 ### Added
 
 - 新增 LSP 格式化副 slot：`format.servers.<语言>` 点名一个 formatter-only 第二 server，只有格式化请求路由到它（手动允许冷启动、自动保持 ready-only），诊断/导航仍走主 slot，无设置时行为不变（#424，ADR-0038）。
