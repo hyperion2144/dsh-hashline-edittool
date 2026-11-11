@@ -1312,3 +1312,29 @@ store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先�
 - `docs/specs/apply-patch-spec.md`：注册段改写（不再探针，恒 agent 层）
 - `AGENTS.md`（l0 decisions：apply_patch 注册层描述更正）
 - `CHANGELOG.md` `[Unreleased]` Fixed 一行（#418）
+
+---
+
+## 2026-11-11 — LSP 一语言双 server 定案：格式化副 slot（#290 → ADR-0038）
+
+**Type:** decision（新 ADR-0038；manager slot 模型的方向拍板，未改产品代码）
+**Confidence:** High（票主在 #290 拍板「优先 C 案，其次 A 案」；前置 PR #288 已于 2026-10-19 合入）
+**Evidence:** [#290](https://github.com/hyperion2144/dsh-hashline-edittool/issues/290)（决策评论）；[#276](https://github.com/hyperion2144/dsh-hashline-edittool/issues/276)（R1 能力事实）；`src/lsp/manager.ts`（`#slots` 单 slot 现状）；`src/domain/format/manual-format.ts` / `auto-format.ts`（两条格式化路由点）；`src/lsp/install-server.ts`（KNOWN_SERVERS）
+
+### Why
+
+#290 的领域事实：类型/诊断与格式化在 LSP 里是两个独立能力（pyright 无 formatter、rust-analyzer 显式 `false`、bash-language-server / csharp-ls 同样没有），而 manager 一语言一 slot——装 pyright 的 python 用户开 `format.auto` 只能静默跳过，想格式化就得换掉类型 server 丢诊断。票主在 A（多 slot 能力路由）/ B（文档化逃生门）/ C（目录内预配对）中拍板 C 优先、A 回退。
+
+### What was decided
+
+- 新 **ADR-0038**：per-language 格式化副 slot。新设置 `format.servers.<id>`（与 `lsp.servers.<id>` 同形同纪律）；slot 键加 role 轴（默认 primary），现有调用方零改动；只有格式化路由到副 slot（manual 允许冷启动、auto 保持 ready-only）；无设置 = 行为逐字节同今天。
+- A 案（全量多 slot 能力路由）记录为回退方向；B 案否决（其逃生门正是 C 要消除的能力损失）。
+- 实施拆票：[#424](https://github.com/hyperion2144/dsh-hashline-edittool/issues/424)（双 slot + 设置 + 路由）、[#425](https://github.com/hyperion2144/dsh-hashline-edittool/issues/425)（KNOWN_SERVERS formatter-only 条目 + 文档）、[#426](https://github.com/hyperion2144/dsh-hashline-edittool/issues/426)（python 双 server 真机冒烟）。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0038-format-secondary-server-slot.md`（新）
+- `CONTEXT.md`（新词汇区 LSP server slots：Primary slot / Format slot）
+- `AGENTS.md`（l0 decisions 行：范围号更正 0001–0036 → 0001–0038（0037 落地时未更），补 0038 一句）
+- 拆票 #424 / #425 / #426（wayfinder:task，未排队）
+- `docs/CHANGELOG-MEMORY.md`（本条）

@@ -50,6 +50,21 @@ export interface KnownServer {
 	 */
 	readonly args?: readonly string[];
 	/**
+	 * A FORMATTER, not a full language server (ADR-0038): primary discovery
+	 * never picks it — a formatter cannot carry diagnostics — and the format
+	 * slot's discovery opts in with `includeFormatterOnly`.
+	 */
+	readonly formats?: true;
+	/**
+	 * Pinned requirements written next to the install prefix as a file and
+	 * handed to the installer as `-r {requirements}` (ADR-0038). A FORMATTER
+	 * entry pins its whole working dependency pair this way: an INLINE
+	 * `--pip-args "a==1 b==2"` value carries spaces and `=`, and the Windows
+	 * cmd escaping turns the `=` into `^=` inside quotes — the installer then
+	 * fails to parse its own pin. A file is one token, safe everywhere.
+	 */
+	readonly requirements?: string;
+	/**
 	 * How to install it, when there is a way to.
 	 *
 	 * THE EARLIER VERSION OF THIS FIELD WAS `package?: string` AND IT WAS TOO
@@ -133,6 +148,24 @@ export const KNOWN_SERVERS: readonly KnownServer[] = [
 		args: ["--stdio"],
 		// The package is NOT the command: `npm i pyright-langserver` finds nothing.
 		install: { via: "npm", package: "pyright" },
+	},
+	{
+		// A FORMATTER, not a full language server: it drives the FORMAT slot only
+		// (ADR-0038), and primary discovery never picks it. pipx places `ruff-lsp`
+		// on PATH; pip users already have it.
+		command: "ruff-lsp",
+		languages: ["python"],
+		displayName: "ruff-lsp",
+		formats: true,
+		// pipx builds the venv with the NEWEST lsprotocol, which removed symbols
+		// ruff-lsp 0.0.62 imports (it is unmaintained) — the working pair
+		// (pygls 1.3.1 + lsprotocol 2023.0.1) is pinned through a REQUIREMENTS
+		// file the installer writes (`{requirements}` → `-r <path>`), because an
+		// inline `--pip-args "pygls==… lsprotocol==…"` value carries spaces and
+		// `=` and dies in the Windows cmd escaping. The installer writes the
+		// file into the plugin prefix before spawning.
+		install: { via: "argv", argv: ["pipx", "install", "ruff-lsp", "--pip-args", "-r {requirements}"] },
+		requirements: "pygls==1.3.1\nlsprotocol==2023.0.1",
 	},
 	// FROM HERE DOWN, the non-npm installers. Each is one command against a toolchain
 	// the user either has or does not — and if they do not, the command SAYS so, which
@@ -267,6 +300,14 @@ export interface DiscoveryOptions {
 	/** Windows needs `.cmd`/`.exe` suffixes; injected for the same reason. */
 	readonly executableSuffixes?: readonly string[];
 	/**
+	 * Which catalog slice the scan sees (ADR-0038): the default primary scan
+	 * never sees the formatter-only entries (`formats: true`) — a formatter
+	 * cannot carry diagnostics — and when true, the scan is the FORMAT role's
+	 * and sees ONLY those. User-named `configured` entries bypass the catalog
+	 * in both roles.
+	 */
+	readonly includeFormatterOnly?: boolean;
+	/**
 	 * The platform whose rules decide what counts as executable; defaults to the
 	 * running one. Injected because the Windows rule (an extension CreateProcessW
 	 * can launch, and a FILE at that) is exactly the kind of thing that is only
@@ -395,6 +436,10 @@ export async function discoverServers(options: DiscoveryOptions = {}): Promise<D
 		options.projectRoot === undefined ? [] : [join(options.projectRoot, "node_modules", ".bin")];
 
 	for (const server of KNOWN_SERVERS) {
+		// A formatter-only entry (ADR-0038) is invisible to the primary scan: it
+		// cannot carry diagnostics, so it must never become a primary server.
+		// The FORMAT slot's discovery opts in with `includeFormatterOnly`.
+		if (options.includeFormatterOnly === true ? server.formats !== true : server.formats === true) continue;
 		if (server.languages.some((language) => coveredByConfig.has(language))) continue;
 		const locations: Array<{ dir: string; origin: ServerOrigin }> = [
 			...projectBins.map((dir) => ({ dir, origin: "project" as const })),

@@ -4,6 +4,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- 新增 LSP 格式化副 slot：`format.servers.<语言>` 点名一个 formatter-only 第二 server，只有格式化请求路由到它（手动允许冷启动、自动保持 ready-only），诊断/导航仍走主 slot，无设置时行为不变（#424，ADR-0038）。
+- LSP 目录新增 python 的 `ruff-lsp`（formatter-only）条目；设置卡语言服务器列表按语言显示格式化副 server 的可安装/已安装状态并可一键安装（pipx）；README 双语增补 `format.servers` 说明（#425）。
+
 ## [0.11.1] - 2026-11-09
 
 ### Added

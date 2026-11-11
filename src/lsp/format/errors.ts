@@ -34,12 +34,13 @@ export const E_FORMAT_UNSUPPORTED = "[E_FORMAT_UNSUPPORTED]";
  * NORMAL case, not a failure).
  */
 export class FormatUnsupportedError extends Error {
-	constructor(languageDisplay: string) {
-		super(
-			`${E_FORMAT_UNSUPPORTED} The language server for ${languageDisplay} has no document formatting provider.`,
-		);
-		this.name = "FormatUnsupportedError";
-	}
+  constructor(languageDisplay: string, hint?: string) {
+    super(
+      `${E_FORMAT_UNSUPPORTED} The language server for ${languageDisplay} has no document formatting provider.` +
+      (hint === undefined ? "" : ` ${hint}`),
+    );
+    this.name = "FormatUnsupportedError";
+  }
 }
 
 /**

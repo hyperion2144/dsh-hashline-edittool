@@ -120,6 +120,13 @@ lsp?: {
 		auto?: boolean | "off" | "full" | "range";
 		fallback_full_file?: boolean;
 		editorconfig?: boolean;
+		/**
+		 * The FORMATTING SECONDARY servers the user named, keyed by language
+		 * (`format.servers.<id>`; ADR-0038). Same contract as `lsp.servers`:
+		 * an unresolvable command is reported by the status surface, never
+		 * refused here.
+		 */
+		servers?: Record<string, string | undefined>;
 	};
 	/**
 	 * The `write` capability's namespace entry (map #354).
@@ -209,6 +216,9 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 			auto: z.union([z.boolean(), "off", "full", "range"]),
 			fallback_full_file: z.boolean(),
 			editorconfig: z.boolean(),
+			// Named formatting SECONDARY servers, by language (ADR-0038) — the
+			// same dict discipline as `lsp.servers`.
+			servers: z.dict(z.string()),
 		})
 		.volatile(),
 	// `write.preview` (map #354). A namespace rather than a top-level scalar:
@@ -376,6 +386,7 @@ export {
 	isAstLanguageEnabled,
 	astDisabledLanguages,
 	lspConfiguredServers,
+	formatConfiguredServers,
 	lspIdleTimeoutMs,
 	isAutoDiagnosticsEnabled,
 	autoFormatMode,
@@ -500,6 +511,13 @@ const sep =
 	for (const [id, command] of Object.entries(settings?.lsp?.servers ?? {})) {
 		if (typeof command === "string" && command.trim() !== "") lspServers.set(id, command.trim());
 	}
+	// Named FORMATTING secondary servers (ADR-0038): the primary map's
+	// discipline again — trim, skip empties, never checked against the
+	// filesystem here (the status surface reports, it does not refuse).
+	const formatServers = new Map<string, string>();
+	for (const [id, command] of Object.entries(settings?.format?.servers ?? {})) {
+		if (typeof command === "string" && command.trim() !== "") formatServers.set(id, command.trim());
+	}
 	// Default ON: an absent entry means the automatic delivery runs. Only an
 	// explicit `false` turns it off, mirroring how `ast.enabled` treats absence.
 	const autoDiag =
@@ -555,6 +573,7 @@ const sep =
 		astEnabled: astOn,
 		astLanguages: astLangs,
 		lspServers: lspServers,
+		formatServers: formatServers,
 		autoDiagnostics: autoDiag,
 		lspIdleTimeoutMs: lspIdleTimeout,
 		autoFormatMode,

@@ -48,6 +48,7 @@ import {
 	HashlineSettingsSchema,
 	installHashlineSettings,
 	isApplyPatchEnabled,
+	formatConfiguredServers,
 	lspConfiguredServers,
 	lspIdleTimeoutMs,
 } from "./config.js";
@@ -545,7 +546,18 @@ function installGrammarRoutes(rootCtx: Context): void {
 	setTimeout(attempt, 100);
 }
 
+/**
+ * #427 review: `apply()` is NOT idempotent by itself — a settings write can
+ * re-run it. A second run that built a fresh manager and re-registered the
+ * teardown effect left the singleton pointing at an instance a LATER scope
+ * teardown would dispose, and every LSP call then failed until the session
+ * restarted. So the second and every later run REUSES the live singleton:
+ * one manager, one teardown effect, registered exactly once.
+ */
+let lspIntegrationInstalled = false;
+
 function installLspIntegration(rootCtx: Context): void {
+	if (lspIntegrationInstalled) return;
 	const get = (name: string): unknown => (rootCtx as unknown as { get(key: string): unknown }).get(name);
 
 	const manager = new LspManager({
@@ -586,6 +598,10 @@ function installLspIntegration(rootCtx: Context): void {
 		// a fact the status surface reports, and refusing it here would make a typo
 		// invisible at exactly the place that could show it.
 		configured: configuredServers(),
+		// The FORMATTING secondary servers (ADR-0038): a FUNCTION, read at each
+		// format-slot start, so a settings change reaches the next start without
+		// a restart.
+		formatConfigured: formatServerEntries,
 		// Read at CALL time, like `configured`: the window comes from a setting
 		// the user can change while the plugin is loaded, and the change must take
 		// effect without a restart.
@@ -608,6 +624,7 @@ function installLspIntegration(rootCtx: Context): void {
 	} catch {
 		// No effect scope (older host): the sessions still shut down at exit.
 	}
+	lspIntegrationInstalled = true;
 }
 
 export type { AgentTools };
@@ -623,6 +640,23 @@ export type { AgentTools };
 function configuredServers(): Array<{ command: string; languages: string[] }> {
 	const byCommand = new Map<string, string[]>();
 	for (const [language, command] of lspConfiguredServers()) {
+		const bucket = byCommand.get(command);
+		if (bucket === undefined) byCommand.set(command, [language]);
+		else bucket.push(language);
+	}
+	return [...byCommand].map(([command, languages]) => ({ command, languages }));
+}
+
+/**
+ * The user's named FORMATTING secondary servers (ADR-0038), in the shape
+ * discovery wants — grouped by command like `configuredServers`, because two
+ * languages served by one formatter binary are one entry, not two processes.
+ *
+ * @returns configured entries, or an empty array when none are named.
+ */
+function formatServerEntries(): Array<{ command: string; languages: string[] }> {
+	const byCommand = new Map<string, string[]>();
+	for (const [language, command] of formatConfiguredServers()) {
 		const bucket = byCommand.get(command);
 		if (bucket === undefined) byCommand.set(command, [language]);
 		else bucket.push(language);

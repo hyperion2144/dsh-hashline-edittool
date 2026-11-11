@@ -74,6 +74,8 @@
 
 **语言服务器格式化。** `format` 工具把活交给服务器的格式化器——缩进优先取项目 `.editorconfig`（`format.editorconfig` 默认为开），否则按文件自身的缩进**步长**推断（4 空格的深层文件仍是 4 空格，见 #336）。`format.auto` 是三态开关（#315）：**off**（默认）绝不背着工具悄悄格式化；**full** 在每次真正改了内容的 `write`/`edit`/`ast_edit` 后格式化整个文件；**range** 只格式化本次调用改到的行——仅当服务器不支持局部格式化**且** `format.fallback_full_file` 开启时才回退整文件（否则该次自动格式化静默跳过，而显式带 range 调用 `format` 工具会以 `E_FORMAT_UNSUPPORTED` 明确拒绝、绝不擅自猜测）。只用已就绪的服务器（绝不为此冷启动）、每文件 2s 预算、请求失败记一条 warning + skipped 段。卡片在主 diff 之下渲染格式化自己的段——header 打头（`[auto-format: server · mode · requested → applied · n lines changed · k in main diff · r restored · u unserved]`）——并且不重复主 diff 已展示的内容：主 diff 已有的行只计入 header 计数、不再画第二遍（#312）；被格式化器改回编辑前原文的行**只定位、不引用**——每段连续行折叠成一条 `@@ ~start,count @@ scope` 定位行加一句 restored 摘要（#315）；本会话从未 serve 过的行**不带锚点**：格式化器的改动只展示一次，但只有 serve 过的行才能按锚点再编辑。
 
+**仅格式化的第二 server。** 主 server 不能格式化的语言——`pyright` 只做类型与诊断，bash/csharp-ls 干脆没有格式化器——在 `format.servers.<语言>` 下点名一个仅格式化的副 server（如 `{"format": {"servers": {"python": "ruff-lsp"}}}`）：手动与自动格式化路由到它，诊断仍来自主 server；不设置则一切不变。目录已带 python 的 `ruff-lsp`（可在设置卡经 pipx 安装），设置卡按语言显示格式化副 server 及其安装入口。
+
 **写后回显。** `write` 写后回显多少是用户的决定（`write.preview`，#354）。**diff**（默认）把覆盖渲染成与所有编辑工具同一套统一 diff——`--- path` / `+++ path`、`@@ … @@ scope()` 段头、`context_lines` 上下文行，`+` 行与上下文行的锚点立即可用；新建没有 before 侧，仍走回读式全文。**full** 保留整文件自动回读预览。**confirmation** 只回一行（`Wrote <path> (update).`）且不 serve 任何东西：没有文件窗口、没有 resume 令牌、没有锚点——卡片仍画 diff，但 gutter 只有行号。JSON 输出同构：`diff` 回与 `edit` 相同的 marker-keyed diff 字典，`confirmation` 回 `{path, operation}`。
 
 **插件自渲染的设置面板。** 随包的 `HashlineSettingsCard` 是 web 端完整设置 UI：分隔符、输出格式、上下文行数、行号（模型侧标记形态，默认关）、require_line_content、AST 总开关与按语言开关、命名 LSP 服务器、自动诊断、语言服务器空闲回收窗口。改完提交即生效——不用碰 YAML。
@@ -312,6 +314,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
       auto: off              # write/edit/ast_edit 后的格式化模式：off | full | range（存量 true→full、false→off）
       fallback_full_file: false # range 模式：服务器不支持局部格式化时回退整文件
       editorconfig: true    # 格式化时读取 .editorconfig 缩进设置（默认开）
+      servers: {}            # 按语言的仅格式化副 server（ADR-0038），如 { python: ruff-lsp }
     write:
       preview: diff          # 写后回显：full | diff | confirmation（默认 diff）
     apply_patch:

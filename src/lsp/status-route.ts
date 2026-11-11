@@ -72,12 +72,15 @@ export async function handleLspInstall(
 		return;
 	}
 	const languageId = typeof body.languageId === "string" ? body.languageId : undefined;
+	// ADR-0038: `role: "format"` installs the language's formatter-only entry
+	// instead of its primary server; anything else installs the primary.
+	const role = body.role === "format" ? "format" : "primary";
 	if (languageId === undefined) {
 		sendJson(res, 400, { ok: false, message: "languageId is required." });
 		return;
 	}
 	try {
-		const outcome = await installLspServer(languageId, spawn);
+		const outcome = await installLspServer(languageId, spawn, undefined, role);
 		if (outcome.ok) {
 			// THE HALF THAT MADE THE FIRST VERSION LOOK BROKEN.
 			//

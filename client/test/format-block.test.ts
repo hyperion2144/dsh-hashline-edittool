@@ -22,6 +22,33 @@ const blockSource = readFileSync(join(clientRoot, "src", "client", "diff-block.t
 const toolRowSource = readFileSync(join(clientRoot, "src", "client", "tool-row.tsx"), "utf8");
 const bundleSource = readFileSync(join(clientRoot, "lib", "client.js"), "utf8");
 const indexSource = readFileSync(join(clientRoot, "src", "client", "index.ts"), "utf8");
+const settingsCardSource = readFileSync(join(clientRoot, "src", "client", "settings-card.tsx"), "utf8");
+
+describe("the format.servers naming block (#425/#427 rework)", () => {
+	it("names format servers through a segmented [\"format\", \"servers\"] write", () => {
+		expect(settingsCardSource).toContain('writeField(["format", "servers"], servers)');
+	});
+
+	it("the three format switches write segmented leaf paths, never the whole subtree", () => {
+		expect(settingsCardSource).toContain('writeField(["format", "auto"], mode)');
+		expect(settingsCardSource).toContain('writeField(["format", "fallback_full_file"], checked)');
+		expect(settingsCardSource).toContain('writeField(["format", "editorconfig"], checked)');
+		expect(settingsCardSource).not.toContain('writeField("format", {');
+	});
+});
+
+describe("a borrowed-card tool keeps its own TITLE (#427 review)", () => {
+	it("the format row's fallbacks announce the format tool, not the card it borrows", () => {
+		expect(toolRowSource.match(/titleOverride: rest\.t\("row\.title\.format"\)/g)?.length).toBe(3);
+	});
+
+	it("the row model resolves a borrowed tool's title from its OWN name, never the read title", () => {
+		const modelsSource = readFileSync(join(clientRoot, "src", "client", "models.ts"), "utf8");
+		expect(modelsSource).toContain('TOOL_TITLE_KEYS[toolName] ?? "row.title.generic"');
+		expect(modelsSource).toContain('format: "row.title.format"');
+		expect(modelsSource).toContain('lsp: "row.title.lsp"');
+	});
+});
 
 describe("the auto-format section in the diff card (#275)", () => {
 	it("draws the gray no-anchor hint on unserved formatter rows", () => {

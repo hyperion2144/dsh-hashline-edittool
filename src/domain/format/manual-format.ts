@@ -22,7 +22,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { languageForPath } from "../../ast/language.js";
-import { getLspManager, LspManager } from "../../lsp/manager.js";
+import { describeUnavailable, getLspManager, LspManager } from "../../lsp/manager.js";
 import { E_LSP_NO_SERVER } from "../../lsp/provider.js";
 import {
 	applyTextEdits,
@@ -38,7 +38,7 @@ import { restoreEndings } from "../../render/edit-diff.js";
 import { anchorRefOf } from "../../hashline/declaration.js";
 import { lineHashesPure } from "../../hashline/hash-assign.js";
 import { splitLines } from "../../infra/utils.js";
-import { formatFallbackFullFile, isEditorconfigEnabled } from "../../infra/settings.js";
+import { formatConfiguredServers, formatFallbackFullFile, isEditorconfigEnabled } from "../../infra/settings.js";
 import { normFromText } from "../session/file-view.js";
 import { loadServed } from "../session/served.js";
 import { recordServedTruncated } from "../session/session-view.js";
@@ -52,6 +52,12 @@ import type { FileIO } from "../../infra/fs-bridge.js";
 
 /** The manual request budget (G1): ten seconds, distinct from the auto 2 s. */
 export const MANUAL_FORMAT_TIMEOUT_MS = 10_000;
+
+/**
+ * The secondary-slot hint (ADR-0038): appended to formatting refusals when the
+ * run is routed through `format.servers.<id>` — the model can act on it.
+ */
+const FORMAT_SERVER_HINT = "Name a formatting-capable secondary under hashline.format.servers.";
 
 export interface ManualFormatInput {
 	io: FileIO;
@@ -168,18 +174,30 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 		range = { startLine: start.line, endLine: end.line };
 	}
 
-	// G1: a manual call may cold-start the server.
-	const session = await manager.waitForSession(language.id, input.cwd, LspManager.START_TIMEOUT_MS);
+	// G1: a manual call may cold-start the server. A language with a NAMED
+	// formatting secondary (`format.servers.<id>`, ADR-0038) formats through
+	// THAT slot; without one the primary path is byte-for-byte today's.
+	const role = formatConfiguredServers().has(language.id) ? ("format" as const) : ("primary" as const);
+	const session = await manager.waitForSession(language.id, input.cwd, LspManager.START_TIMEOUT_MS, role);
 	if (session === undefined) {
-		const why = manager.unavailability(language.id);
+		if (manager.disposed) {
+			throw new Error(
+				`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
+			);
+		}
+		const why = manager.unavailability(language.id, role);
+		const where = role === "format" ? "hashline.format.servers" : "hashline.lsp.servers";
 		throw new Error(
-			`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${why?.message ?? "it did not start in time"}. ` +
-				`Install one, or name it under hashline.lsp.servers.`,
+			`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${describeUnavailable(why)}. ` +
+			`Install one, or name it under ${where}.`,
 		);
 	}
 	const capability = detectFormattingCapability(session.serverCapabilities);
 	if (!capability.full) {
-		throw new FormatUnsupportedError(language.id);
+		throw new FormatUnsupportedError(
+			language.id,
+			role === "format" ? FORMAT_SERVER_HINT : undefined,
+		);
 	}
 	// #315: an explicit range call is a CONTRACT — if the server cannot serve
 	// it, the fallback switch decides between whole-file and a refusal. There
@@ -187,12 +205,13 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 	if (range !== undefined && !capability.range && !formatFallbackFullFile()) {
 		throw new Error(
 			`${E_FORMAT_UNSUPPORTED} ${language.id} advertises no range formatting provider, and format.fallback_full_file is false. ` +
-			`Enable it to fall back to whole-file formatting, or call format without the range bounds.`,
+			`Enable it to fall back to whole-file formatting, or call format without the range bounds.` +
+			(role === "format" ? ` ${FORMAT_SERVER_HINT}` : ""),
 		);
 	}
 	let server = language.id;
 	try {
-		const row = (await manager.status([language.id]))[0];
+		const row = (await manager.status([language.id], role))[0];
 		if (row?.server?.displayName !== undefined) server = row.server.displayName;
 	} catch {
 		// The header's name is cosmetic; the language id reads fine.
@@ -208,6 +227,9 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 	// The server's document may lag the disk — sync before asking, exactly as
 	// the auto pass does.
 	syncDocumentContent(input.absolutePath, normalized);
+	// The pre-write sync above reaches the PRIMARY slot only; a run routed to
+	// the formatting secondary must bring THAT server in step too (ADR-0038).
+	if (role === "format") manager.openDocumentFor(language.id, uri, "format")?.(normalized);
 
 	// The pass works in the read line space (LF, BOM-less); the disk form is
 	// restored once, at the write.
@@ -247,7 +269,8 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 						if (!formatFallbackFullFile()) {
 							throw new Error(
 								`${E_FORMAT_UNSUPPORTED} ${language.id} refused the range formatting request (-32601), and format.fallback_full_file is false. ` +
-								`Enable it to fall back to whole-file formatting, or call format without the range bounds.`,
+								`Enable it to fall back to whole-file formatting, or call format without the range bounds.` +
+								(role === "format" ? ` ${FORMAT_SERVER_HINT}` : ""),
 							);
 						}
 						return false;

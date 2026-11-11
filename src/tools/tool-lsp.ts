@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { LANGUAGES, languageForPath } from "../ast/language.js";
-import { getLspManager, type LspManager } from "../lsp/manager.js";
+import { describeUnavailable, getLspManager, type LspManager } from "../lsp/manager.js";
 import { latestWriteFor } from "../lsp/write-tracker.js";
 import { E_LSP_NO_SERVER } from "../lsp/provider.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
@@ -454,10 +454,15 @@ export function buildLspTool(io: FileIO) {
 				// An explicit warm-up is the caller asking for a start, so the
 				// retry backoff does not apply: forceWarm restarts a failed slot
 				// right now, and the outcome — either way — is reported.
+				if (manager.disposed) {
+					throw new Error(
+						`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
+					);
+				}
 				const session = await manager.forceWarm(languageId, process.cwd());
 				if (session === undefined) {
 					const why = manager.unavailability(languageId);
-					throw new Error(`${E_LSP_NO_SERVER} ${languageId} did not start: ${why?.message ?? "it did not start in time"}.`);
+					throw new Error(`${E_LSP_NO_SERVER} ${languageId} did not start: ${describeUnavailable(why)}.`);
 				}
 				const displayName = entry?.displayName ?? languageId;
 				return { operation: "warm", server: displayName, symbols: [], hashlines: [], totalLines: 0, slots: [{ languageId, state: "ready" }], raw: `${displayName} is ready.` };
@@ -481,9 +486,14 @@ export function buildLspTool(io: FileIO) {
 			// honest "did not start in time".
 			const session = await manager.waitForSession(language.id, process.cwd());
 			if (session === undefined) {
+				if (manager.disposed) {
+					throw new Error(
+						`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
+					);
+				}
 				const why = manager.unavailability(language.id);
 				throw new Error(
-					`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${why?.message ?? "it did not start in time"}. ` +
+					`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${describeUnavailable(why)}. ` +
 					(why?.reason === "server-missing"
 						? `Install one, or name it under hashline.lsp.servers. `
 						: `Failed starts retry on their own once the backoff passes; \`lsp { operation: "warm", language: "${language.id}" }\` forces one now. `) +

@@ -117,6 +117,7 @@ export const EN_CARD_DICTIONARY = {
 	"row.title.ast_edit": "AST edit",
 	"row.title.undo": "Undo",
 	"row.title.format": "Format",
+	"row.title.lsp": "LSP",
 	"row.title.generic": "Tool call",
 	// The READ row's trailing suffix (#374): what the call served — the window
 	// it cut, the file's length, or the resume hint a budget-cut window carries.
@@ -206,6 +207,7 @@ export const EN_CARD_DICTIONARY = {
 	"settings.label.formatAuto": "Auto-format (after write / edit / ast_edit)",
 	"settings.label.formatFallback": "Fall back to the whole file",
 	"settings.label.formatEditorconfig": "Read .editorconfig",
+	"settings.label.formatServers": "Custom formatting command (fallback)",
 	"settings.label.lspServers": "Named servers",
 	"settings.label.storeBytes": "Whole-store byte budget",
 	"settings.label.storePaths": "Path count limit",
@@ -240,6 +242,9 @@ export const EN_CARD_DICTIONARY = {
 	"settings.hint.formatEditorconfig":
 		"Indentation style and width come from .editorconfig first; without one, the file's own heuristics apply (on by default).",
 	"settings.hint.lspServers": "Name a command per language; leave it empty to use the detected one.",
+	"settings.hint.formatServers":
+		"For a language with no catalog formatter, an uninstallable one, or a command you prefer — the language is picked from the catalog list. The status rows' Enable button covers the common case.",
+	"settings.hint.formatServersNone": "No formatting secondary named — formatting uses the primary server (which may have no formatter).",
 	"settings.hint.lspServersNone": "No server named — every language uses the detected one.",
 	"settings.hint.storeIntro":
 		"The three limits stop different runaway shapes: bytes stop big files, the path count stops whole-tree scans, the row count stops a few big files being read again and again.",
@@ -259,10 +264,16 @@ export const EN_CARD_DICTIONARY = {
 	"settings.action.cancelInstall": "Cancel the install",
 	"settings.action.install": "Install",
 	"settings.action.retry": "Retry",
+	"settings.action.enable": "Enable",
+	"settings.action.disable": "Disable",
 	"settings.action.assign": "Assign",
 	"settings.status.overridden": "Overridden",
 	"settings.status.notFound": "Not found",
+	"settings.format.enabled": "Enabled",
 	"settings.status.installing": "Installing, please wait",
+	"settings.label.formatServer": "Format server",
+	"settings.notice.formatInstalling": "Installing the formatter, please wait",
+	"settings.notice.formatInstalled": "Formatter installed",
 	"settings.fact.builtin": "Built-in · {version}",
 	"settings.fact.installed": "Installed · {version}",
 	"settings.fact.available": "{version} · {size}",
@@ -432,6 +443,7 @@ export const ZH_CARD_DICTIONARY = {
 	"row.title.ast_edit": "AST 编辑",
 	"row.title.undo": "撤销",
 	"row.title.format": "格式化",
+	"row.title.lsp": "LSP",
 	// #374: the read row's trailing suffix — the window it served, the file's
 	// length, and the resume hint a budget-cut window carries.
 	"row.title.read.window": "L{start}–{end} · 共 {total} 行",
@@ -505,6 +517,7 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.label.formatFallback": "范围不可用时回退全文",
 	"settings.label.formatEditorconfig": "读取 .editorconfig",
 	"settings.label.lspServers": "指定服务器",
+	"settings.label.formatServers": "自定义格式化命令（兜底）",
 	"settings.label.storeBytes": "整库字节预算",
 	"settings.label.storePaths": "路径数上限",
 	"settings.label.storeLines": "anchor_lines 行数上限",
@@ -532,6 +545,8 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.hint.formatEditorconfig": "缩进风格与宽度优先取 .editorconfig，缺省用文件内启发式（默认开）。",
 	"settings.hint.lspServers": "按语言指定命令；留空则用探测到的。",
 	"settings.hint.lspServersNone": "没有指定任何服务器，全部使用探测结果。",
+	"settings.hint.formatServers": "目录里没有、装不了或想换命令时用；语言从目录列表选择。状态行的「启用」按钮覆盖常见场景。",
+	"settings.hint.formatServersNone": "尚未点名格式化副 server——格式化走主 server（它可能没有格式化器）。",
 	"settings.hint.storeIntro":
 		"三个上限分别挡不同的失控形状：字节挡大文件，路径数挡整树扫描，行数挡“几个大文件被多次读取”。",
 	"settings.hint.storeDefaults":
@@ -548,10 +563,16 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.action.cancelInstall": "取消安装",
 	"settings.action.install": "安装",
 	"settings.action.retry": "重试",
+	"settings.action.enable": "启用",
+	"settings.action.disable": "停用",
 	"settings.action.assign": "指定",
 	"settings.status.overridden": "已覆盖",
 	"settings.status.notFound": "未找到",
+	"settings.format.enabled": "已启用",
 	"settings.status.installing": "安装中，请稍候",
+	"settings.label.formatServer": "格式化副 server",
+	"settings.notice.formatInstalling": "正在安装格式化 server，请稍候",
+	"settings.notice.formatInstalled": "格式化 server 已安装",
 	"settings.fact.builtin": "内置 · {version}",
 	"settings.fact.installed": "已装 · {version}",
 	"settings.fact.available": "{version} · {size}",

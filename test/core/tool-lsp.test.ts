@@ -85,6 +85,10 @@ function install(fake: Fake) {
 				revision += 1;
 			}
 		},
+		// #427 review: swapping the singleton now disposes the previous owner —
+		// the stub pays the same toll a real manager does.
+		disposed: false,
+		dispose: async () => undefined,
 	} as never);
 }
 
@@ -388,6 +392,8 @@ describe("lsp — status and warm (#318)", () => {
 				if (opts.forceWarm === "throws") throw new Error("spawn ENOENT");
 				return opts.forceWarm === "ready" ? ({ marker: "fake" } as never) : undefined;
 			},
+			disposed: false,
+			dispose: async () => undefined,
 		} as never);
 		return calls;
 	}
