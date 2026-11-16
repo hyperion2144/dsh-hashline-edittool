@@ -118,6 +118,10 @@ export const EN_CARD_DICTIONARY = {
 	"row.title.undo": "Undo",
 	"row.title.format": "Format",
 	"row.title.lsp": "LSP",
+	"diag.capsule.error": "{count} error(s)",
+	"diag.capsule.warning": "{count} warning(s)",
+	"diag.capsule.diagnostic": "{count} diagnostic(s)",
+	"diag.capsule.unchanged": "{count} unchanged",
 	"row.title.generic": "Tool call",
 	// The READ row's trailing suffix (#374): what the call served — the window
 	// it cut, the file's length, or the resume hint a budget-cut window carries.
@@ -444,6 +448,10 @@ export const ZH_CARD_DICTIONARY = {
 	"row.title.undo": "撤销",
 	"row.title.format": "格式化",
 	"row.title.lsp": "LSP",
+	"diag.capsule.error": "{count} 条错误",
+	"diag.capsule.warning": "{count} 条警告",
+	"diag.capsule.diagnostic": "{count} 条诊断",
+	"diag.capsule.unchanged": "{count} 条未变",
 	// #374: the read row's trailing suffix — the window it served, the file's
 	// length, and the resume hint a budget-cut window carries.
 	"row.title.read.window": "L{start}–{end} · 共 {total} 行",

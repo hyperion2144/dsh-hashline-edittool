@@ -443,7 +443,8 @@ describe("the model-facing section", () => {
 		await withTempDir("auto-diag-section-", async (cwd) => {
 			const report = await deliverDiagnosticsAfterWrite(makeInput({ cwd }));
 			const section = formatDiagnosticsSection([report!]);
-			expect(section).toContain("LSP diagnostics — a.ts (1 error(s), 1 warning(s))");
+			// #429 review: the head states TOTALS and marks the fresh count.
+			expect(section).toContain("LSP diagnostics — a.ts (1 error(s), 1 warning(s); 2 new)");
 			// `<anchor>:<line>: <source>` rows and one ↳ per diagnostic.
 			expect(section).toMatch(/:1: export const alpha = 1;/);
 			expect(section).toMatch(/^\s*↳ error: Cannot find name 'gamma'\.$/m);
@@ -480,10 +481,14 @@ describe("the JSON projection — marker-keyed, diff-aligned (#131 field feedbac
 			);
 			const first = Object.values(rows)[0]!;
 			expect(first).toEqual({
+			// #429: the server's handles ride beside the message, ALIGNED with
+			// messages/severities — absent ones as "", never missing keys.
 				text: report!.rows[0]!.text,
 				messages: report!.rows[0]!.messages,
 				// Severity as WORDS: `1` means nothing to a reader.
 				severities: ["error"],
+				sources: [report!.rows[0]!.sources[0] ?? ""],
+				codes: [report!.rows[0]!.codes[0] ?? ""],
 			});
 		});
 	});
@@ -495,7 +500,7 @@ describe("the JSON projection — marker-keyed, diff-aligned (#131 field feedbac
 			toolName: "edit",
 			totalSeen: 1,
 			truncated: false,
-			rows: [{ number: 7, hash: "", text: "x", messages: ["error: boom"], severities: [1] }],
+			rows: [{ number: 7, hash: "", text: "x", messages: ["error: boom"], severities: [1], sources: [], codes: [] }],
 		} as FileDiagnostics;
 		const json = diagnosticsJson([synthetic]);
 		expect(Object.keys(json[0]!.rows)).toEqual(["7"]);

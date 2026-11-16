@@ -232,6 +232,18 @@ _Avoid_: the server (say which slot), default server
 The opt-in SECOND server a language runs for formatting requests only, named under `format.servers.<id>` (ADR-0038). Exists only when named; the manual `format` tool may cold-start it, the automatic pass uses it only READY (G3). It never serves diagnostics or navigation.
 _Avoid_: secondary server (say slot), formatter server (formatting is the role; the slot is the noun)
 
+**Diagnostic identity**:
+What makes one pushed diagnostic THE SAME as another (#429, ADR-0039): `severity + source + code + normalized message`, with the LINE NUMBER excluded — a context edit that shifts lines must not re-report the same sentence. Missing `source` / `code` compare as "". A pure function (`diagnostics/identity.ts`), shared by the ledger and the projection.
+_Avoid_: fingerprint (no such protocol field), dedup key (it is a multiset, not a set)
+
+**Suppression ledger**:
+The in-process, per-(session, file) record of the identities the LAST DELIVERED push carried. Delivery-time bookkeeping only; absent identities are forgotten (their return is new); bounded at 200 files × 200 identities, LRU; never persisted — a restart re-baselines. The manual `lsp diagnostics` query never touches it.
+_Avoid_: dedup cache (implies set semantics), seen-set (it counts repetitions)
+
+**New diagnostics**:
+The entries of one write's push whose identity the ledger has never delivered for that file — the ONLY entries the automatic report lists; everything else is one summary line. The manual query reports the file's FULL diagnostics and stays outside this accounting.
+_Avoid_: new errors (warnings count too), deltas (no diff is computed)
+
 ## Patch application
 
 **`apply_patch`**:

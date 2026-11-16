@@ -286,6 +286,10 @@ export interface LspRowMeta {
 	readonly messages: readonly string[];
 	/** LSP severity codes (1 error, 2 warning, 3 info, 4 hint), same order as messages. */
 	readonly severities: readonly number[];
+	/** #429: the server's `source` per diagnostic ("" when absent), aligned with messages. */
+	readonly sources?: readonly string[];
+	/** #429: the server's rule handle per diagnostic ("" when absent), aligned with messages. */
+	readonly codes?: readonly string[];
 }
 
 /** The `lsp` diagnostics card: one row per line, its messages attached. */
@@ -353,6 +357,8 @@ export interface LspStatusModel {
 export interface DiagCapsuleMeta {
 	readonly path: string;
 	readonly rows: readonly LspRowMeta[];
+	/** #429: entries whose identity the last delivered push already carried — the「N 未变」suffix. */
+	readonly suppressedCount?: number;
 }
 
 /**

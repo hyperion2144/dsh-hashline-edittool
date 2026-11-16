@@ -1250,10 +1250,21 @@ export function diagCapsulesFromMeta(meta: unknown): DiagCapsuleMeta[] {
 			const severities = Array.isArray(r.severities)
 				? r.severities.filter((c): c is number => typeof c === "number")
 				: [];
-			rows.push({ number: r.number, hash: r.hash, text: r.text, messages, severities });
+			const sources = Array.isArray(r.sources)
+				? r.sources.filter((s): s is string => typeof s === "string")
+				: [];
+			const codes = Array.isArray(r.codes)
+				? r.codes.filter((c): c is string => typeof c === "string")
+				: [];
+			rows.push({ number: r.number, hash: r.hash, text: r.text, messages, severities, sources, codes });
 		}
-		if (rows.length === 0) return [];
-		capsules.push({ path: capsule.path, rows });
+		// #429: PURE SUPPRESSION keeps its capsule — a summary of "N unchanged"
+		// with no row block is still the file's standing diagnostic indicator.
+		// A row-less entry WITHOUT that count is the old clean-absent shape and
+		// stays dropped.
+		const suppressedCount = typeof capsule.suppressedCount === "number" ? capsule.suppressedCount : undefined;
+		if (rows.length === 0 && suppressedCount === undefined) return [];
+		capsules.push({ path: capsule.path, rows, ...(suppressedCount !== undefined ? { suppressedCount } : {}) });
 	}
 	return capsules;
 }

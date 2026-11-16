@@ -506,7 +506,7 @@ describe("#259 no row site escapes the switch", () => {
 			truncated: false,
 			rows: [
 				{ number: 1, hash: "ab", text: "const a = 1;", messages: ["error: boom"], severities: [1] },
-				{ number: 2, hash: "cd", text: "const b = 2;", messages: [], severities: [] },
+				{ number: 2, hash: "cd", text: "const b = 2;", messages: [], severities: [], sources: [], codes: [] },
 			],
 		} as FileDiagnostics;
 
@@ -520,7 +520,7 @@ describe("#259 no row site escapes the switch", () => {
 		// only handle there is, in EITHER state (the deliberate exception).
 		const orphan = {
 			...report,
-			rows: [{ number: 7, hash: "", text: "x", messages: [], severities: [] }],
+			rows: [{ number: 7, hash: "", text: "x", messages: [], severities: [], sources: [], codes: [] }],
 		} as FileDiagnostics;
 		applyEffective(undefined);
 		expect(Object.keys(diagnosticsJson([orphan])[0]!.rows)).toEqual(["7"]);

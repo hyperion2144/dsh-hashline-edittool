@@ -19,6 +19,7 @@ import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { LANGUAGES, languageForPath } from "../ast/language.js";
 import { describeUnavailable, getLspManager, type LspManager } from "../lsp/manager.js";
+import { diagnosticLabel } from "../lsp/diagnostics/identity.js";
 import { latestWriteFor } from "../lsp/write-tracker.js";
 import { E_LSP_NO_SERVER } from "../lsp/provider.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
@@ -327,6 +328,11 @@ export function buildLspTool(io: FileIO) {
 								text: { type: "string", required: true },
 								messages: { type: "array", items: { type: "string" } },
 								severities: { type: "array", items: { type: "integer" } },
+								// #429: the server's own handles ride beside each message — the
+								// schema MUST declare them, or the DSL rejects the whole return
+								// (`value.hashlines[0].sources is not a declared property`).
+								sources: { type: "array", items: { type: "string" } },
+								codes: { type: "array", items: { type: "string" } },
 							},
 						},
 					},
@@ -585,12 +591,24 @@ export function buildLspTool(io: FileIO) {
 				// model prints the messages indented under their line, and the card gives
 				// them a style of their own.
 				const byLine = new Map<number, string[]>();
+				const bySource = new Map<number, string[]>();
+				const byCode = new Map<number, string[]>();
 				const bySeverity = new Map<number, number[]>();
 				// Collected in the SAME pass as the rows: deriving `raw` from the rendered
 				// row text afterwards would mean parsing a string this function just built.
 				const diagMessages: string[] = [];
 				for (const entry of pushed) {
-					const d = entry as { message?: unknown; severity?: unknown; range?: { start?: { line?: unknown } } };
+					const d = entry as {
+						message?: unknown;
+						severity?: unknown;
+						source?: unknown;
+						code?: unknown;
+						range?: { start?: { line?: unknown } };
+					};
+					// #429: the server's own handles ride beside the message — no
+					// classification, just the raw facts the protocol carries.
+					const source = typeof d.source === "string" ? d.source : "";
+					const ruleCode = typeof d.code === "string" || typeof d.code === "number" ? String(d.code) : "";
 					const at = d.range?.start?.line;
 					if (typeof at !== "number" || at < 0) continue;
 					// The severity the protocol sent, as a word: a warning that reads like an
@@ -598,7 +616,7 @@ export function buildLspTool(io: FileIO) {
 					const code = typeof d.severity === "number" ? d.severity : 0;
 					const severity = DIAGNOSTIC_SEVERITY[code] ?? "diagnostic";
 					const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
-					const labelled = `${severity}: ${message}`;
+					const labelled = diagnosticLabel(code, source, ruleCode, message);
 					diagMessages.push(`L${at + 1} ${labelled}`);
 					const line = at + 1;
 					byLine.set(line, [...(byLine.get(line) ?? []), labelled]);
@@ -606,6 +624,8 @@ export function buildLspTool(io: FileIO) {
 					// for its title suffix, and counting them out of an "error: …" prefix
 					// would be the card parsing a string this same function just built.
 					bySeverity.set(line, [...(bySeverity.get(line) ?? []), code]);
+					bySource.set(line, [...(bySource.get(line) ?? []), source]);
+					byCode.set(line, [...(byCode.get(line) ?? []), ruleCode]);
 				}
 				// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
 				const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
@@ -627,6 +647,8 @@ export function buildLspTool(io: FileIO) {
 						text: diagLines[line - 1] ?? "",
 						messages,
 						severities: bySeverity.get(line) ?? [],
+						sources: bySource.get(line) ?? [],
+						codes: byCode.get(line) ?? [],
 					}));
 				// Served and observed like a read's rows, with the VERBATIM line as the
 				// content: the anchors are content-derived, so serving the row TEXT (which

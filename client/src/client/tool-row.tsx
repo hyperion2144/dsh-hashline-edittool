@@ -34,7 +34,7 @@ import { LspAnswerBlock } from "./lsp-answer-block.js";
 import { lspAnswerModel } from "./lsp-answer.js";
 import { ErrorCard } from "./error-card.js";
 import { DiffRowsBlock } from "./diff-block.js";
-import { errorCardLabels, grepCardLabels, lspBlockLabels } from "./labels.js";
+import { diagCapsuleLabels, errorCardLabels, grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 import { diagCapsulesFromMeta } from "./models.js";
 import type { DiagCapsuleMeta } from "./types.js";
@@ -171,10 +171,15 @@ function DiagCapsule({ capsule, t }: { capsule: DiagCapsuleMeta; t: ToolViewProp
 		}
 	}
 	const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+	// #429: the capsule's words come from the vocabulary, and the unchanged
+	// count — the standing old diagnostics — rides as its own segment.
+	const capsuleLabels = useMemo(() => diagCapsuleLabels(t), [t]);
+	const unchanged = capsule.suppressedCount ?? 0;
 	const text = [
-		errors > 0 ? plural(errors, "error", "errors") : "",
-		warnings > 0 ? plural(warnings, "warning", "warnings") : "",
-		other > 0 ? plural(other, "diagnostic", "diagnostics") : "",
+		errors > 0 ? capsuleLabels.error(errors) : "",
+		warnings > 0 ? capsuleLabels.warning(warnings) : "",
+		other > 0 ? capsuleLabels.diagnostic(other) : "",
+		unchanged > 0 ? capsuleLabels.unchanged(unchanged) : "",
 	]
 		.filter((part) => part !== "")
 		.join(" · ");
