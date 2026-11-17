@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-11-17
+
 ### Added
 
 - 自动诊断改为回归信号：只报本次写入新增的诊断，其余以一行汇总收口；`source` / `code` 原样透传到模型文本、JSON、卡片与主动查询四面（#429，ADR-0039）。
