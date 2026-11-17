@@ -46,6 +46,8 @@ import {
 import { anchorForInWorkspace, execSessionKey, workspaceCwd } from "../domain/session/session-view.js";
 import type { FileIO } from "../infra/fs-bridge.js";
 import { getLspManager } from "./manager.js";
+import { diagnosticIdentity, diagnosticLabel } from "./diagnostics/identity.js";
+import { partitionPush, recordDelivered, suppressionBucketKey } from "./diagnostics/ledger.js";
 import type { LspSession } from "./session.js";
 import { latestWriteFor, markAsyncInjection } from "./write-tracker.js";
 
@@ -83,10 +85,14 @@ export type DiagRow = {
 	hash: string;
 	/** The line's verbatim text. */
 	text: string;
-	/** Labelled messages, one per diagnostic (`error: …` / `warning: …`). */
+	/** Labelled messages, one per diagnostic (`error(pyright/2322): …`). */
 	messages: string[];
 	/** The raw LSP severity codes beside the labels, so a card can count. */
 	severities: number[];
+	/** The server's `source` per diagnostic ("" when absent), aligned with `messages`. */
+	sources: string[];
+	/** The server's rule handle per diagnostic ("" when absent), aligned with `messages`. */
+	codes: string[];
 };
 
 /** One written file's report: error + warning only, capped, clean files absent. */
@@ -107,6 +113,21 @@ export interface FileDiagnostics {
 	 * queues without waking), so the newer report says which one wins.
 	 */
 	readonly note?: string;
+	/**
+	 * #429: entries whose identity the LAST delivered push already carried —
+	 * summarized in one line, never repeated. Independent of `truncated`:
+	 * "cut by the cap" and "suppressed" are different facts.
+	 */
+	readonly suppressedCount?: number;
+	/** #429: the UNCHANGED entries' severities, aligned 1:1 with the count — the head states the file's TOTAL standing counts. */
+	readonly suppressedSeverities?: number[];
+	/** #429: every row-block field is empty and this story is the summary line alone. */
+	readonly suppressedOnly?: boolean;
+	/**
+	 * #429: the identities of THIS push, handed back so the caller can run
+	 * delivery-time bookkeeping. Internal — never projected to meta or JSON.
+	 */
+	readonly deliveredIdentities?: string[];
 }
 
 /**
@@ -231,6 +252,15 @@ export async function deliverDiagnosticsAfterWrite(
 		// #223: `collectReport` minted the anchors AND served them; the
 		// observation is the only thing left, and it is not a store write.
 		await observeReport(input);
+		// #429: delivery-time bookkeeping — the ledger now holds EXACTLY this
+		// push's identities, so the next write splits fresh from unchanged
+		// against what was actually DELIVERED, never against a phantom.
+		if (report.deliveredIdentities !== undefined) {
+			recordDelivered(
+				suppressionBucketKey(execSessionKey(input.exec), input.absolutePath),
+				report.deliveredIdentities,
+			);
+		}
 		// #388: an earlier write's delayed diagnostics may still be on their way
 		// (the platform queues without waking) — the fresh report says which one
 		// wins, and clears the flag.
@@ -462,36 +492,80 @@ async function collectReport(
 ): Promise<FileDiagnostics | undefined> {
 	const pushed = pushedArg ?? input.session?.getDiagnostics(input.uri);
 	if (pushed === undefined || pushed.length === 0) return undefined;
+	const ledgerKey = suppressionBucketKey(execSessionKey(input.exec), input.absolutePath);
+	// Severity filter FIRST (error + warning only, per #130 Q5): an
+	// `information` or `hint` never consumes the cap, never enters the ledger,
+	// and never counts toward the unchanged summary.
+	const reported: Array<{ severity: number; source: string; code: string; message: string; line: number }> = [];
+	for (const entry of pushed) {
+		const d = entry as {
+			message?: unknown;
+			severity?: unknown;
+			source?: unknown;
+			code?: unknown;
+			range?: { start?: { line?: unknown } };
+		};
+		const severity = typeof d.severity === "number" ? d.severity : 0;
+		if (severity !== 1 && severity !== 2) continue;
+		const at = d.range?.start?.line;
+		if (typeof at !== "number" || at < 0) continue;
+		reported.push({
+			severity,
+			source: typeof d.source === "string" ? d.source : "",
+			code: typeof d.code === "string" || typeof d.code === "number" ? String(d.code) : "",
+			message: typeof d.message === "string" ? d.message : JSON.stringify(entry),
+			line: at + 1,
+		});
+	}
+	if (reported.length === 0) return undefined;
+	// #429: split against the suppression LEDGER — a pure view, no writes.
+	// The projection order the spec fixes: the identity filter runs FIRST, the
+	// cap second; "cut by the cap" and "suppressed" are different facts and
+	// each is stated in its own line.
+	const { fresh, unchanged } = partitionPush(ledgerKey, reported);
+	// can state the file's TOTAL standing error/warning counts (not just the
+	// fresh ones) and the summary line can carry the honest total.
+	if (fresh.length === 0) {
+		// PURE SUPPRESSION: every entry was delivered before. No head, no row
+		// block, no anchor mint — one summary line carries the whole story
+		// (the capsule still renders, as the file's standing diagnostic
+		// indicator), and the caller still re-baselines the ledger once this
+		// is actually delivered.
+		if (unchanged.length === 0) return undefined;
+		return {
+			path: input.displayPath,
+			absolutePath: input.absolutePath,
+			toolName: input.toolName,
+			rows: [],
+			totalSeen: 0,
+			truncated: false,
+			suppressedOnly: true,
+			suppressedCount: unchanged.length,
+			suppressedSeverities: unchanged.map((entry) => entry.severity),
+			deliveredIdentities: reported.map(diagnosticIdentity),
+		};
+	}
 	const lines = splitLines(text);
 	// NO dense read: every entry ever READ below belongs to a line in
 	// `diagLineNos`, and the mint fills exactly those in. Paying for a query
 	// over the file's whole anchor table to fill an array the next statement
 	// overwrites is the kind of cost nobody sees and nobody questions.
 	const anchors: string[] = new Array(lines.length).fill("");
-	const byLine = new Map<number, { messages: string[]; severities: number[] }>();
+	const byLine = new Map<number, { messages: string[]; severities: number[]; sources: string[]; codes: string[] }>();
 	let totalSeen = 0;
 	let truncated = false;
-	for (const entry of pushed) {
+	for (const entry of fresh) {
 		if (totalSeen >= MAX_REPORTED_DIAGNOSTICS) {
 			truncated = true;
 			break;
 		}
-		const d = entry as {
-			message?: unknown;
-			severity?: unknown;
-			range?: { start?: { line?: unknown } };
-		};
-		const code = typeof d.severity === "number" ? d.severity : 0;
-		if (code !== 1 && code !== 2) continue;
-		const at = d.range?.start?.line;
-		if (typeof at !== "number" || at < 0) continue;
-		const label = code === 1 ? "error" : "warning";
-		const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
-		const line = at + 1;
-		const bucket = byLine.get(line) ?? { messages: [], severities: [] };
-		bucket.messages.push(`${label}: ${message}`);
-		bucket.severities.push(code);
-		byLine.set(line, bucket);
+		const label = diagnosticLabel(entry.severity, entry.source, entry.code, entry.message);
+		const bucket = byLine.get(entry.line) ?? { messages: [], severities: [], sources: [], codes: [] };
+		bucket.messages.push(label);
+		bucket.severities.push(entry.severity);
+		bucket.sources.push(entry.source);
+		bucket.codes.push(entry.code);
+		byLine.set(entry.line, bucket);
 		totalSeen += 1;
 	}
 	if (byLine.size === 0) return undefined;
@@ -519,6 +593,8 @@ async function collectReport(
 			text: lines[number - 1] ?? "",
 			messages: bucket.messages,
 			severities: bucket.severities,
+			sources: bucket.sources,
+			codes: bucket.codes,
 		}));
 	return {
 		path: input.displayPath,
@@ -527,6 +603,9 @@ async function collectReport(
 		rows,
 		totalSeen,
 		truncated,
+		suppressedCount: unchanged.length,
+		suppressedSeverities: unchanged.map((entry) => entry.severity),
+		deliveredIdentities: reported.map(diagnosticIdentity),
 	};
 }
 
@@ -607,6 +686,13 @@ function startAsyncWait(
 			if (!stillCurrent(input.uri, generation)) return;
 			await observeReport(input);
 			agent.inject(buildInjectedMessage(input, report, writeNumber));
+			// #429: delivery-time bookkeeping rides the successful injection.
+			if (report.deliveredIdentities !== undefined) {
+				recordDelivered(
+					suppressionBucketKey(execSessionKey(input.exec), input.absolutePath),
+					report.deliveredIdentities,
+				);
+			}
 			// #388: the platform queues this message without waking the model, so it
 			// can still be delivered after a newer write. The plugin cannot withdraw
 			// it — the next inline report says which one wins.
@@ -667,7 +753,10 @@ function formatInjectedText(
 		`[LSP diagnostics arrived late for ${report.path}]`,
 		...supersedePreamble(report.path, writeNumber),
 		`written by ${report.toolName} (call ${String(input.exec.callId)}):`,
-		renderRows(report),
+		// #429: the async channel speaks the SAME report the inline one does —
+		// head totals, row block, unchanged summary — through the one renderer
+		// both share. A pure suppression arrives as its single summary line.
+		formatDiagnosticsSection([report]),
 	].join("\n");
 }
 
@@ -684,22 +773,49 @@ export function formatDiagnosticsSection(reports: readonly FileDiagnostics[]): s
 	const parts: string[] = [];
 	let errors = 0;
 	let warnings = 0;
+	let freshTotal = 0;
 	for (const report of reports) {
 		for (const row of report.rows) {
 			for (const code of row.severities) {
 				if (code === 1) errors += 1;
 				else if (code === 2) warnings += 1;
+				// The NEW entries are the headline number (#429 review).
+				freshTotal += 1;
 			}
 		}
+		// The UNCHANGED entries count toward the file's TOTAL standing numbers.
+		for (const code of report.suppressedSeverities ?? []) {
+			if (code === 1) errors += 1;
+			else if (code === 2) warnings += 1;
+		}
 	}
+	const freshNote = freshTotal > 0 ? `; ${freshTotal} new` : "";
 	const head =
 		reports.length === 1
-			? `LSP diagnostics — ${reports[0]!.path} (${errors} error(s), ${warnings} warning(s))`
-			: `LSP diagnostics across ${reports.length} file(s) (${errors} error(s), ${warnings} warning(s))`;
-	parts.push(head);
+			? `LSP diagnostics — ${reports[0]!.path} (${errors} error(s), ${warnings} warning(s)${freshNote})`
+			: `LSP diagnostics across ${reports.length} file(s) (${errors} error(s), ${warnings} warning(s)${freshNote})`;
+	// #429 (D6): a PURE-SUPPRESSION-ONLY section has no head — the summary
+	// line itself carries the total counts. Mixed sections keep the head.
+	if (reports.some((report) => report.suppressedOnly !== true)) parts.push(head);
+	// #429: the unchanged entries are summarized, never repeated — pure
+	// suppression is one line, mixed reports carry the summary after rows.
+	const suppressedSummary = (report: FileDiagnostics): string | null =>
+		(report.suppressedCount ?? 0) > 0
+			? `… ${report.suppressedCount} more unchanged since the last report, not repeated (call \`lsp diagnostics\` for the full list).`
+			: null;
 	for (const report of reports) {
+		// #429: pure suppression is ONE line — no head, no row block. The
+		// unchanged story is still told (the model must not think the file went
+		// clean), just never repeated entry by entry.
+		if (report.suppressedOnly === true) {
+			parts.push(`LSP diagnostics — ${report.path} (${errors} error(s), ${warnings} warning(s)): ${report.suppressedCount ?? 0} unchanged since the last report, not repeated (call \`lsp diagnostics\` for the full list).`);
+			if (report.note !== undefined) parts.push(report.note);
+			continue;
+		}
 		if (reports.length > 1) parts.push(`--- ${report.path} ---`);
 		parts.push(renderRows(report));
+		const suppressed = suppressedSummary(report);
+		if (suppressed !== null) parts.push(suppressed);
 		if (report.truncated) {
 			parts.push(
 				`… further diagnostics omitted (report capped at ${MAX_REPORTED_DIAGNOSTICS}); call \`lsp diagnostics\` for the full list.`,
@@ -727,10 +843,16 @@ function renderRows(report: FileDiagnostics): string {
  * per written file, carrying the same rows the model text rendered. The
  * capsule renders from THIS, never from parsing the `↳` prose (ADR-0005).
  */
-export type DiagMetaEntry = { path: string; rows: DiagRow[] };
+export type DiagMetaEntry = { path: string; rows: DiagRow[]; suppressedCount?: number };
 
 export function diagnosticsMeta(reports: readonly FileDiagnostics[]): DiagMetaEntry[] {
-	return reports.map(({ path, rows }) => ({ path, rows }));
+	return reports.map(({ path, rows, suppressedCount }) => ({
+		path,
+		rows,
+		// #429: the unchanged summary rides only when there IS one — a zero
+		// would make every clean write carry a field that says nothing.
+		...(suppressedCount ? { suppressedCount } : {}),
+	}));
 }
 
 /**
@@ -741,6 +863,10 @@ export type DiagJsonRow = {
 	text: string;
 	messages: string[];
 	severities: string[];
+	/** The server's `source` per diagnostic ("" when absent), aligned with `messages`. */
+	sources: string[];
+	/** The server's rule handle per diagnostic ("" when absent), aligned with `messages`. */
+	codes: string[];
 };
 
 /**
@@ -754,6 +880,8 @@ export type DiagJsonRow = {
 export type DiagJsonEntry = {
 	path: string;
 	rows: Record<string, DiagJsonRow>;
+	/** #429: unchanged entries the JSON face summarizes. */
+	suppressedCount?: number;
 	/**
 	 * The same line the text section appends (#388): which report wins when an
 	 * earlier write's delayed diagnostics are still on their way.
@@ -771,15 +899,19 @@ export function diagRowsToJson(rows: readonly DiagRow[]): Record<string, DiagJso
 				text: row.text,
 				messages: row.messages,
 				severities: row.severities.map((code) => (code === 1 ? "error" : code === 2 ? "warning" : "diagnostic")),
+				sources: row.sources,
+				codes: row.codes,
 			},
 		]),
 	);
 }
 
 export function diagnosticsJson(reports: readonly FileDiagnostics[]): DiagJsonEntry[] {
-	return reports.map(({ path, rows, note }) => ({
+	return reports.map(({ path, rows, suppressedCount, note }) => ({
 		path,
 		rows: diagRowsToJson(rows),
 		...(note !== undefined ? { note } : {}),
+		// #429: the unchanged summary rides only when there IS one.
+		...(suppressedCount ? { suppressedCount } : {}),
 	}));
 }

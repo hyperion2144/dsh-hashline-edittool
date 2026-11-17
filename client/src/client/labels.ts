@@ -173,6 +173,28 @@ export function lspBlockLabels(t: TBench): LspBlockLabels {
 	};
 }
 
+/**
+ * The inline diagnostics capsule's own words (#429/#131): the severity words
+ * were hardcoded English, and the unchanged count is new — all four come from
+ * the vocabulary now.
+ */
+export interface DiagCapsuleLabels {
+	error: (count: number) => string;
+	warning: (count: number) => string;
+	diagnostic: (count: number) => string;
+	unchanged: (count: number) => string;
+}
+
+/** Build the inline diagnostics capsule's labels. */
+export function diagCapsuleLabels(t: TBench): DiagCapsuleLabels {
+	return {
+		error: (count) => t("diag.capsule.error", { count }),
+		warning: (count) => t("diag.capsule.warning", { count }),
+		diagnostic: (count) => t("diag.capsule.diagnostic", { count }),
+		unchanged: (count) => t("diag.capsule.unchanged", { count }),
+	};
+}
+
 /** Grep-card chrome labels (reuses the shipped search-card keys). */
 export interface GrepCardLabels extends WrapLabels {
 	copy: string;
