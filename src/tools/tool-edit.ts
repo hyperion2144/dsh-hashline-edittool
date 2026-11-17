@@ -49,22 +49,15 @@ import {
 } from "../infra/error-result.js";
 // Marker parsing, not symbol reading: `lineHintOf` moved beside the other
 // `<line>:<anchor>` handling when the block-op path was removed.
-import { lineHintOf } from "../hashline/declaration.js";
-import type { AnchorRef } from "../hashline/declaration.js";
-import { encodeText, salvageAnchorRef } from "../hashline/anchor-pipeline.js";
+import { encodeText } from "../hashline/anchor-pipeline.js";
+import { buildPreparedItem } from "../domain/edit/anchor-fold.js";
+export { buildPreparedItem };
 import { abortIf, isRec, visLines } from "../infra/utils.js";
 import { contextLinesCfg } from "../hashline/hash-assign.js";
 
-import { enforceNoopLoop } from "../domain/edit/mutation.js";
-import { replacedOriginalRanges, runFileEdits, type PreparedItem, type FileEditResult } from "../domain/edit/edit-engine.js";
+import { replacedOriginalRanges, runFileEdits, resolveMissingPath, type PreparedItem, type FileEditResult } from "../domain/edit/edit-engine.js";
 import type { FormatSection } from "../domain/format/types.js";
-import {
-	clearNoopLoop,
-	noopPayloadKey,
-	trackNoopPayload,
-} from "../domain/edit/noop-guard.js";
-import { commit, resolveMissingPath, snapshotIdFor } from "../domain/edit/mutation.js";
-import { recordServedAfterEdit, reconcileServed } from "../domain/session/session-view.js";
+import { commit } from "../domain/edit/mutation.js";
 import { editDescription } from "../domain/edit/prompts.js";
 import type { JsonValue } from "@deepseek-ai/dsh-util-values";
 import {
@@ -121,103 +114,6 @@ type EditCanonicalValue = {
 	diffRows?: EditCardDiffRow[];
 	modelText: string;
 } & { [key: string]: unknown };
-/**
- * Build a `PreparedItem` from one `edits[i]`. Resolves the per-item
- * `path` against the top-level fallback, defaults `anchor_end` to `anchor_start` when
- * omitted, and maps `op: "del"` to `replacement_text: ""`. The `op:
- * "ins" case is left to `applyOne`/`resolveIns` — the `replacement_text`
- * is still the raw `lines.join("\n")` here because the anchor's own
- * content needs to be read first. Anchor REFS, though, are salvaged HERE
- * (#261 normalize-once): pasted rows reduce to reference forms once, so
- * `resolveIns` and `resEdit` can no longer disagree about one token.
- */
-/** The raw reference string of an anchor field (declaration form → its anchor). */
-function rawAnchor(field: AnchorRef): string {
-	return typeof field === "string" ? field : String((field as { anchor?: unknown }).anchor ?? "");
-}
-
-//
-// Exported so `ast_edit` builds its items the SAME way rather than re-deriving
-// the anchor folding: a second implementation would drift, and the drift would
-// show up as edits that land on the wrong lines only for one of the two tools.
-export function buildPreparedItem(
-	index: number,
-	topLevelPath: string,
-	item: {
-		op?: EditOp;
-		// Both optional here: which one is REQUIRED depends on `op`, and the
-		// contract has already enforced that. `ins` arrives with `anchor_after`
-		// and no `anchor_start`; the other two, the reverse.
-		anchor_start?: AnchorRef;
-		anchor_after?: AnchorRef;
-		anchor_end?: AnchorRef;
-		lines?: string[];
-		pattern?: string;
-		replacement?: string;
-		flags?: string;
-		path?: string;
-	},
-	absolutePath: string,
-): PreparedItem {
-	const itemPath = item.path ?? topLevelPath;
-	// v2.0.3: anchor_end optional — omitted defaults to the anchor_start line
-	// (single-line replace/delete). A multi-line replace without anchor_end was
-	// already rejected by assertEditItem (the host runner may pass frozen args,
-	// so the fold happens here by CONSTRUCTING the PreparedItem, not mutating).
-	// require_line_content: the `{ anchor, line }` declaration form folds to
-	// the anchor string here, with the declared text carried as expected*
-	// fields for the pipeline gate (declaration.ts). An OMITTED anchor_end
-	// declares nothing for the end boundary (contract #76: only start).
-	const startAnchor = item.op === "ins" ? item.anchor_after : item.anchor_start;
-	if (startAnchor === undefined) {
-		throw new Error(
-			`[E_BAD_SHAPE] edits[${index}] has no anchor: op:"ins" takes "anchor_after", the other ops take "anchor_start".`,
-		);
-	}
-	// #261 normalize-once: salvage pasted-row refs (`<anchor>:<content>`, diff
-	// markers, multi-line blocks) HERE, once — the same salvage `resEdit`
-	// applies — so `resolveIns`'s strict parse and the pipeline's forgiving
-	// strip can no longer disagree about one token (that disagreement let an
-	// un-expanded ins REPLACE its anchor line). Ins's folded end reuses the
-	// start's salvage, so one pasted anchor warns exactly once.
-	const refWarnings: string[] = [];
-	const startLabel = item.op === "ins" ? "anchor_after" : "anchor_start";
-	const startRef = salvageAnchorRef(rawAnchor(startAnchor), refWarnings, startLabel);
-	const endRef =
-		item.anchor_end !== undefined
-			? salvageAnchorRef(rawAnchor(item.anchor_end), refWarnings, "anchor_end")
-			: startRef;
-	const replacementText =
-		item.op === "del"
-			? ""
-			: encodeText(item.lines ?? []);
-	return {
-		index,
-		path: itemPath,
-		absolutePath,
-		remove_from: startRef,
-		remove_to: endRef,
-		replacement_text: replacementText,
-		op: item.op ?? "replace",
-		// `op: "sed"` carries its substitution through untouched: the regex runs
-		// in the engine, over the resolved range's own lines.
-		...(item.pattern !== undefined ? { pattern: item.pattern } : {}),
-		...(item.replacement !== undefined ? { replacement: item.replacement } : {}),
-		...(item.flags !== undefined ? { flags: item.flags } : {}),
-		anchorEndAsserted: item.anchor_end !== undefined,
-		// The numeric hints, when the caller wrote a line number into the ref —
-		// read off the SALVAGED refs so a pasted row keeps its hint too.
-		...(lineHintOf(startRef) === undefined ? {} : { lineStart: lineHintOf(startRef) }),
-		...(item.anchor_end !== undefined && lineHintOf(endRef) !== undefined
-			? { lineEnd: lineHintOf(endRef) }
-			: {}),
-		expectedStart: declaredLineOf(startAnchor),
-		...(item.anchor_end !== undefined
-			? { expectedEnd: declaredLineOf(item.anchor_end) }
-			: {}),
-		...(refWarnings.length > 0 ? { refWarnings } : {}),
-	};
-}
 
 /**
  * The FIRST bracketed `[E_*]` marker of a text, brackets included, or undefined.
@@ -331,7 +227,7 @@ async function applyFileGroup(
 		const absolutePath = await io.resolve(displayPath, cwd, signal);
 		// #131: captured BEFORE anything is written, so the diagnostics wait
 		// measures pushes against a pre-write baseline. undefined = skip.
-		const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
+		const diagCtx = prepareWriteDiagnostics(absolutePath);
 		const items = group.map(({ index, edit }) =>
 			buildPreparedItem(index, displayPath, edit as never, absolutePath),
 		);
@@ -781,12 +677,15 @@ export async function commitFileResult(
 		sandbox: FsSandboxController;
 		sandboxPolicy: Awaited<ReturnType<FsSandboxController["resolvePolicy"]>>;
 		signal: AbortSignal | undefined;
+		/** The session whose served mirror the landing settles. */
+		sessionKey: string;
 	},
 ): Promise<void> {
-	await commit({
+	const [outcome] = await commit({
 		io: ctx.io,
-		files: file.appliedCount > 0
-			? [
+		files:
+			file.appliedCount > 0
+				? [
 					{
 						absolutePath: file.absolutePath,
 						displayPath: file.displayPath,
@@ -795,9 +694,10 @@ export async function commitFileResult(
 						originalEnding: file.originalEnding,
 						originalHashes: file.originalHashes,
 						result: file.result,
+						servedRows: file.servedRows,
 					},
 				]
-			: [],
+				: [],
 		exec: ctx.exec,
 		sandbox: ctx.sandbox,
 		sandboxPolicy: ctx.sandboxPolicy,
@@ -805,12 +705,17 @@ export async function commitFileResult(
 		undoUnavailableMessage: (displayPath) =>
 			`[E_UNDO_UNAVAILABLE] Cannot persist undo history to the hash store; the edit was NOT applied and ${displayPath} is unchanged. Retry the edit, or use write if the store cannot be recovered.`,
 		restoreUnwrittenUndos: true,
+		sessionKey: ctx.sessionKey,
 	});
+	if (outcome?.servedWarning !== undefined) {
+		// issue #136: the write landed; a lost served mirror is a warning the
+		// model reads, never a reversal of the success.
+		file.warnings.push(outcome.servedWarning);
+	}
 }
 
 /**
- * Apply the file's post-edit state through the undo-persist → write →
- * restore-on-failure transaction, and record the served rows. Side
+ * Apply the file's post-edit state through the landing transaction. Side
  * effects only — the returned value is the canonical projection (built
  * by `buildCanonicalFromFileResult`).
  */
@@ -830,109 +735,23 @@ async function applyFileResultTo(
 		sessionKey: string;
 	},
 ): Promise<void> {
-	// ONE implementation, shared with `ast_edit` — see `commitFileResult`. Two
-	// copies of "what committing means" drift, and the copy nobody updates is
-	// the one that writes the file.
+	// ONE implementation, shared with `ast_edit` — see `commitFileResult`. The
+	// served settlement and its failure policy live INSIDE the commit: a lost
+	// mirror is a warning there, never a reversal here.
 	await commitFileResult(file, {
 		io: ctx.io,
 		exec: ctx.exec,
 		sandbox: ctx.sandbox,
 		sandboxPolicy: ctx.sandboxPolicy,
 		signal: ctx.signal,
+		sessionKey: ctx.sessionKey,
 	});
-
-	// No-op loop guard: keyed off the first edit's payload. A noop check
-	// against the batch-as-a-whole would be lossy (one noop item plus one
-	// applied item shouldn't trigger); the first item is a representative
-	// proxy that covers the common "model sent the same edit twice" pattern.
-	if (file.appliedCount > 0) {
-		const first = file.appliedCount > 0 ? file : null;
-		if (first) {
-			const head = ctx.canonical.edits[0] as
-				| { anchor_start: string; anchor_end?: string; lines?: string[]; op?: string }
-				| undefined;
-			if (head) {
-				const payload = noopPayloadKey(
-					ctx.absolutePath,
-					head.anchor_start,
-					head.anchor_end ?? head.anchor_start,
-					encodeText(head.lines ?? []),
-				);
-				const count = trackNoopPayload(ctx.absolutePath, payload);
-				if (count >= 2) {
-					const notice = enforceNoopLoopSync({
-						absolutePath: ctx.absolutePath,
-						removeFrom: head.anchor_start,
-						removeTo: head.anchor_end ?? head.anchor_start,
-						replacementText: encodeText(head.lines ?? []),
-						displayPath: ctx.displayPath,
-						count,
-					});
-					if (notice) file.warnings.push(notice);
-				}
-				clearNoopLoop(ctx.absolutePath);
-			}
-		}
-	}
 	if (ctx.resolutionWarning) {
 		file.warnings.unshift(ctx.resolutionWarning);
 	}
 	if (ctx.extraWarnings && ctx.extraWarnings.length > 0) {
 		file.warnings.push(...ctx.extraWarnings);
 	}
-	if (file.servedRows && file.servedRows.length > 0) {
-		// Awaited so the next edit in the same batch (or the model's next
-		// tool call) sees the migrated served mirror — otherwise the
-		// post-edit follow-up would race and hit [E_RANGE_UNVERIFIED] on
-		// the unchanged lines below the diff region.
-		try {
-			await recordServedAfterEdit(
-				ctx.sessionKey,
-				ctx.absolutePath,
-				file.servedRows,
-			);
-			// The edit RELEASED the anchors of the lines it replaced; drop them from
-			// the served mirror so served == anchor_lines, not served ⊃ live (#171).
-			await reconcileServed(ctx.sessionKey, ctx.absolutePath, file.result);
-		} catch (error) {
-			// issue #136: the write itself succeeded; a lost served mirror must
-			// still reach the model, or the next edit rejects with "never served"
-			// out of nowhere.
-			file.warnings.push(
-				`[E_SERVED_RECORD] served state could not be recorded for ${ctx.displayPath} (${
-					error instanceof Error ? error.message : String(error)
-				}); re-read before the next edit.`,
-			);
-		}
-	}
-}
-
-/** Local noop-loop wrapper: throws or warns based on count. */
-function enforceNoopLoopSync(opts: {
-	absolutePath: string;
-	removeFrom: string;
-	removeTo: string;
-	replacementText: string;
-	displayPath: string;
-	count: number;
-}): string | undefined {
-	// We use the async `enforceNoopLoop` to share the upstream terse messages,
-	// but here we need a synchronous result (the tool layer is async too,
-	// so we `await` through Promise via void-cast is fine).
-	void opts;
-	// Implemented synchronously by running the noop counter logic:
-	// 3 → throw (caller's edit-engine takes care of the throw); 2 → warn.
-	// We delegate to the async API by enqueuing the throw via the call's
-	// onReject path; for the warning case we return the message now.
-	if (opts.count >= 3) {
-		throw new Error(
-			`[E_NOOP_LOOP] identical edit (${opts.removeFrom} → ${opts.removeTo} in ${opts.displayPath}) submitted ${opts.count}×, no changes each time. Range already has this text; resend will reject.`,
-		);
-	}
-	if (opts.count === 2) {
-		return `[E_NOOP_LOOP] Notice: identical edit (${opts.removeFrom} → ${opts.removeTo} in ${opts.displayPath}) no-op'd twice — your replacement is BYTE-IDENTICAL to the range's current text, so there is nothing to write. If you meant to change the INDENTATION, include the exact leading whitespace inside \`lines\`; this tool never adds, strips or normalises it. Resend will reject.`;
-	}
-	return undefined;
 }
 
 export function buildCanonicalFromFileResult(

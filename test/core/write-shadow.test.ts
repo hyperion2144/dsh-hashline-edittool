@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";
 import type { FileIO } from "../../src/infra/fs-bridge.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { useNumberedRows } from "../support/fixtures.js";

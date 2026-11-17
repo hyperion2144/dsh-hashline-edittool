@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { buildRenameTool } from "../../src/tools/tool-rename.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
 import type { FsSandboxController } from "../../src/infra/sandbox.js";

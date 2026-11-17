@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 import { applyEffective } from "../../src/config.js";
 import { buildReadTool, readPresentationMeta } from "../../src/tools/tool-read.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { getWritableTempRoot, makeExec } from "../support/fixtures.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 

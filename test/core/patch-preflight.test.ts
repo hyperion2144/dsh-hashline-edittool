@@ -25,7 +25,7 @@ import {
 	successText,
 } from "../../src/domain/patch/text.js";
 import type { CommittedOperation } from "../../src/domain/patch/commit.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { makeExec, servedRows, setupIntegrationTest, withTempDir } from "../support/fixtures.js";
 import { openWorkspaceStore } from "../../src/domain/session/session-view.js";
 import { withWorkspace } from "../../src/infra/workspace.js";

@@ -469,7 +469,7 @@ describe("an insert above a blank does not steal the blank's anchor (#125)", () 
     const { buildEditTool } = await import("../../src/tools/tool-edit.js");
     const { buildReadTool } = await import("../../src/tools/tool-read.js");
     const { FsSandboxController } = await import("../../src/infra/sandbox.js");
-    const { localIO } = await import("../../src/infra/fs-bridge.js");
+    const { localIO } = await import("../support/local-io.js");
 
     const dir = await mkdtemp(join(tmpdir(), "anchor-ins-"));
     await writeFile(join(dir, "a.txt"), ["L1", "L2", "L3", "L4", "", "L6", "L7"].join("\n"), "utf-8");

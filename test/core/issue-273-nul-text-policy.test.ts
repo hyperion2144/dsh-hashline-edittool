@@ -28,11 +28,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@deepseek-ai/cordis";
 import type { FileSystem } from "@deepseek-ai/dsh-fs";
-import {
-	ctxFsIO,
-	localIO,
-	type FileIO,
-} from "../../src/infra/fs-bridge.js";
+import { ctxFsIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import {

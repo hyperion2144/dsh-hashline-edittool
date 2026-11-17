@@ -340,44 +340,11 @@ export type CardDictionary = Record<CardLocaleKey, string>;
  * meta validator refuses every key outside it, so the keys that travel the wire
  * and the keys the client accepts can never drift apart.
  */
-export const WIRE_TEXT_KEYS = {
-	"read.lossy": true,
-	"row.title.read": true,
-	"row.title.read.window": true,
-	"row.title.read.window.truncated": true,
-	"row.title.read.total": true,
-	// #386: the host's grep row now carries the COUNTS, not the row's own
-	// word — so `row.title.grep` is no longer a WIRE key. It stays in the
-	// vocabulary (the grep card's tab list names itself with it), but a
-	// meta that still carries it is REFUSED, and the row keeps its own
-	// label instead of drawing the word twice.
-	"row.title.grep.stats": true,
-	"row.title.grep.stats.limit": true,
-	"row.title.grep.stats.budget": true,
-	"row.title.grep.stats.limit_budget": true,
-	"row.title.lsp.nav.stats": true,
-	"row.title.edit": true,
-	"row.title.write": true,
-	"row.title.apply_patch": true,
-	"row.title.apply_patch.files": true,
-	"row.title.apply_patch.stopped": true,
-	"row.title.apply_patch.empty": true,
-	// #377: the language-server routes' texts. The host names the wording; the
-	// card resolves it in the reader's language.
-	"lsp.status.noSubprocessSeam": true,
-	"lsp.status.noClient": true,
-	"lsp.status.serverNotStarted": true,
-	"lsp.status.serverStarting": true,
-	"lsp.row.canInstall": true,
-	"lsp.row.noBuiltinCommand": true,
-	"lsp.row.selfInstall": true,
-	"lsp.install.noCommand": true,
-	"lsp.install.noCommandForPlatform": true,
-	"lsp.install.exitCode": true,
-	"lsp.install.npmOkButMissing": true,
-	"lsp.install.doneBuiltinDir": true,
-	"lsp.install.doneOwnToolchain": true,
-} as const satisfies Partial<Record<CardLocaleKey, boolean>>;
+// The gate IS the host's list, projected at build time from src/wire/keys.ts
+// (ADR-0040): the client hand-maintains no second copy. The satisfies lock
+// still applies — every wire key must have a template in this vocabulary.
+import { WIRE_TEXT_KEYS as HOST_WIRE_KEYS } from "../wire/keys.generated.js";
+export const WIRE_TEXT_KEYS = HOST_WIRE_KEYS satisfies Partial<Record<CardLocaleKey, boolean>>;
 
 /**
  * The Chinese card vocabulary — checked against the English key set.

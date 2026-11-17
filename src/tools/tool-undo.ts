@@ -228,7 +228,7 @@ export function buildUndoTool(io: FileIO, sandbox: FsSandboxController) {
 			const restoredRange = changedRange(currentNormalized, undo.content);
 			// #131: baseline BEFORE the revert, so the wait measures pushes
 			// against a pre-write baseline.
-				const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
+				const diagCtx = prepareWriteDiagnostics(absolutePath);
 			try {
 				await io.writeText(
 					absolutePath,

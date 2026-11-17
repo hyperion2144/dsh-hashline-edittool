@@ -47,6 +47,10 @@ supersedes: ""
 - 旧会话持久化 meta 缺 `sources` / `codes` / `suppressedCount` 时客户端按缺省容错，不报错。
 - 不新增设置项；既有「延迟报告只谈最新写入」契约不变，本机制叠加其上。
 
+## 补充（2026-11-17，ADR-0040）
+
+**两条路共用一份投影，差异是声明。** 「推送 → 行」的投影现在只有一份实现（`lsp/diagnostics/projection.ts`）；写路径与主动查询各自**声明**一份策略（diagnostic policy）：写路径 = error+warning、上限 50、写入账本；主动查询 = 全部 severity、不限、不写账本（它是**完整视图**，见 D1）。先前的两份实现让 severity 过滤与上限悄悄分叉，同一文件在写后内联报告与主动查询里得到不同的行集合；声明化之后，差异是读者看得见的参数，而不是两处代码。
+
 ## 相关
 
 - 规格：#429（Problem / Solution / 24 stories / Testing decisions 的完整原文）

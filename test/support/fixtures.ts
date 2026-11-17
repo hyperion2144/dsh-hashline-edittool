@@ -14,7 +14,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 import { applyEffective } from "../../src/config.js";
 import type { ToolExecution, ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
-import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { type FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "./local-io.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildUndoTool } from "../../src/tools/tool-undo.js";
@@ -295,7 +296,7 @@ function wrapTool(
  * A sandbox controller for tests: no confining backend, so no escalation
  * fields are advertised and `resolvePolicy` returns undefined (unconfined).
  */
-function makeTestSandbox() {
+export function makeTestSandbox() {
 	return new FsSandboxController({
 		fs: { sandboxMode: undefined },
 		get: () => undefined,
@@ -337,6 +338,29 @@ export function setupIntegrationTest(cwd: string, fileIO?: FileIO) {
 
 /** The integration harness type, so helpers can name it without re-deriving it. */
 export type Harness = ReturnType<typeof setupIntegrationTest>;
+
+/**
+ * A TEST WORLD: everything a test needs to drive a tool, prepared in ONE
+ * call — the local filesystem IO, the unconfined sandbox, a stable session
+ * key, and the execution factory.
+ *
+ * The support module USED to know this and not let anyone else use it: 28
+ * suites each hand-assembled a sandbox controller of their own (the same
+ * three-line `new FsSandboxController({...})`), so a change to the tool
+ * context's shape landed in 28 places. The knowledge is here; this entry
+ * is what makes it reachable (ADR-0040).
+ */
+export function makeTestWorld(cwd: string, opts: { sessionKey?: string; io?: FileIO } = {}) {
+	const sessionKey = opts.sessionKey ?? "test-session";
+	const io: FileIO = opts.io ?? localIO();
+	return {
+		io,
+		sessionKey,
+		sandbox: makeTestSandbox(),
+		makeExecFor: makeExec(cwd, sessionKey),
+		ctx: { cwd } as unknown,
+	};
+}
 
 /** Read-only harness: just the hashline `read` tool. */
 export function setupReadTest(cwd: string) {

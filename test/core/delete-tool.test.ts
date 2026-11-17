@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { buildDeleteTool } from "../../src/tools/tool-delete.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { loadHashStore, shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { noteAlignmentDegraded, takeAlignmentNotice } from "../../src/domain/session/anchor-state.js";
 import type { FsSandboxController } from "../../src/infra/sandbox.js";

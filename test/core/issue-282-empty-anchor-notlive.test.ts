@@ -30,7 +30,8 @@ import {
 useNumberedRows();
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
-import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { type FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { probeLines } from "../../src/domain/session/anchor-entry.js";
 import { withWorkspace } from "../../src/infra/workspace.js";

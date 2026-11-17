@@ -18,11 +18,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve as nodeResolve } from "node:path";
-import {
-	ctxFsIO,
-	localIO,
-	type FileIO,
-} from "../../src/infra/fs-bridge.js";
+import { ctxFsIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { TOLERANT_READ_MAX_BYTES } from "../../src/infra/constants.js";
 import { applyEffective } from "../../src/config.js";
 import {

@@ -200,7 +200,7 @@ async function untilQuiet(
 			// The OLD content: "gamma" is the marker for it.
 			const text1 = "const alpha = 1;\nconst gamma = 2;\n";
 			await writeFile(absolutePath, text1, "utf-8");
-			const ctx1 = prepareWriteDiagnostics(absolutePath, cwd);
+				const ctx1 = prepareWriteDiagnostics(absolutePath);
 			expect(ctx1).toBeDefined();
 			notifyDocumentWritten(absolutePath, text1);
 			const first = deliverDiagnosticsAfterWrite(
@@ -217,11 +217,11 @@ async function untilQuiet(
 			const text2 = "const alpha = 1;\nconst delta = 3;\n";
 			await writeFile(absolutePath, text2, "utf-8");
 			notifyDocumentWritten(absolutePath, text2);
-			const ctx2 = prepareWriteDiagnostics(absolutePath, cwd);
+				const ctx2 = prepareWriteDiagnostics(absolutePath);
 			const second = deliverDiagnosticsAfterWrite(
 				makeInput(ctx2!, text2, absolutePath, cwd, (m) => injected.push(JSON.stringify(m))),
 			);
-			prepareWriteDiagnostics(absolutePath, cwd);
+				prepareWriteDiagnostics(absolutePath);
 			await vi.advanceTimersByTimeAsync(200);
 
 			// ---- the first edit's late diagnostics land --------------------
@@ -265,7 +265,7 @@ async function untilQuiet(
 				// ---- write #1: the server is slow, so the delivery goes async ---
 				const text1 = "const alpha = 1;\nconst gamma = 2;\n";
 				await writeFile(absolutePath, text1, "utf-8");
-				const ctx1 = prepareWriteDiagnostics(absolutePath, cwd);
+				const ctx1 = prepareWriteDiagnostics(absolutePath);
 				notifyDocumentWritten(absolutePath, text1);
 				const first = deliverDiagnosticsAfterWrite(
 					makeInput(ctx1!, text1, absolutePath, cwd, (m) => queued.push(JSON.stringify(m))),
@@ -283,7 +283,7 @@ async function untilQuiet(
 				const text2 = "const alpha = 1;\nconst delta = 3;\n";
 				await writeFile(absolutePath, text2, "utf-8");
 				notifyDocumentWritten(absolutePath, text2);
-				const ctx2 = prepareWriteDiagnostics(absolutePath, cwd);
+				const ctx2 = prepareWriteDiagnostics(absolutePath);
 				const second = deliverDiagnosticsAfterWrite(
 					makeInput(ctx2!, text2, absolutePath, cwd, (m) => queued.push(JSON.stringify(m))),
 				);

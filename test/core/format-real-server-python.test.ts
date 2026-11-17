@@ -85,8 +85,8 @@ describe.skipIf(!PYRIGHT_READY || RUFF_COMMAND === undefined)(
 					console.error(`[smoke] server for ${languageId} failed to start: ${message}`);
 				},
 			});
-			primary = await manager.waitForSession("python", root, 30_000);
-			format = await manager.waitForSession("python", root, 30_000, "format");
+			primary = await manager.waitForSession("python", 30_000);
+			format = await manager.waitForSession("python", 30_000, "format");
 			pyUri = pathToFileURL(join(root, "smoke.py")).href;
 			primary?.didOpen(pyUri, "python", UGLY);
 			format?.didOpen(pyUri, "python", UGLY);
@@ -144,7 +144,7 @@ describe.skipIf(!PYRIGHT_READY || RUFF_COMMAND === undefined)(
 				formatConfigured: () => [{ command: join(root, "no-such-ruff"), languages: ["python"] }],
 			});
 			try {
-				const session = await dangling.waitForSession("python", root, 30_000, "format");
+				const session = await dangling.waitForSession("python", 30_000, "format");
 				if (session === undefined) {
 					expect(dangling.unavailability("python", "format")?.reason).toBe("server-missing");
 					return;

@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { readAndServe } from "../../src/read-and-serve.js";
 import { withTempDir, withHome } from "../support/fixtures.js";
 import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 
 const CONTENT = Array.from({ length: 6 }, (_, i) => `line ${i + 1} alpha beta gamma`).join("\n") + "\n";
 

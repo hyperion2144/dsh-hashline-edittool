@@ -9,7 +9,7 @@
  * @module
  */
 import { describe, expect, it } from "vitest";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { buildAstEditTool } from "../../src/tools/tool-ast-edit.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";

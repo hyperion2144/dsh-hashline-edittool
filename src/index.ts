@@ -73,10 +73,11 @@ import {
 	COLD_TOOLS,
 } from "./domain/session/discovered-tools.js";
 import { onEditSurfaceRebuild } from "./domain/edit/edit-rebuild.js";
-import { LspManager, setLspManager } from "./lsp/manager.js";
+import { LspManager, getLspManager, setLspManager } from "./lsp/manager.js";
 import { subprocessTransport } from "./lsp/transport.js";
 import { registerLspProvider } from "./lsp/provider.js";
 import { serverArgv } from "./lsp/discovery.js";
+import { agentCwd } from "./domain/session/live-cwd.js";
 import { registerGrammarRoutes } from "./ast/install-route.js";
 import { registerLspRoutes } from "./lsp/status-route.js";
 
@@ -467,6 +468,9 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	const onAgentStart = async ({ agent }: { agent: Agent }): Promise<void> => {
 		if (registered.has(agent)) return;
 		registered.add(agent);
+		// The slot root follows the LIVE session (ADR-0031): the manager
+		// resolves it itself at each start, from this agent's working directory.
+		getLspManager()?.setRootResolver(async () => agentCwd(agent));
 		try {
 			await installAgentTools(rootCtx, agent);
 		} catch (error) {

@@ -120,6 +120,10 @@ directory, asked of the HOST — never inferred from the disk.**
   directory change (a host that cannot move a session's directory has nothing
   to follow).
 
+## 补充（2026-11-17，ADR-0040）
+
+**server slot 的 root 也是 live cwd。** 语言服务器的 slot 在首次 warm 时固定一个 workspace root；该 root 现在由 `LspManager` 自己从会话 live working directory 解析（`rootResolver`，插件在 agent 创建时装上），**不再是调用方传的参数**。理由与本 ADR 相同：调用方传 root 就会有一个调用方漏传或传错——先前手动 `lsp` 传的是 `process.cwd()`，而 slot 按 languageId 唯一，于是「root 是哪个」取决于谁先 warm。root 归 manager 所有后，这个顺序依赖消失。
+
 ## Evidence
 
 - Field report: [#394](https://github.com/hyperion2144/dsh-hashline-edittool/issues/394)

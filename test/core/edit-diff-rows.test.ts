@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { genDiff } from "../../src/render/edit-diff.js";
 import { lineHashesPure } from "../../src/hashline/index.js";
 import { withTempFile, makeExec } from "../support/fixtures.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 
 const BEFORE = [
 	"# Hashline web card demo (round 2)",

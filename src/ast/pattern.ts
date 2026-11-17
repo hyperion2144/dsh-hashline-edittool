@@ -91,6 +91,38 @@ function roleOf(node: Node): Role {
 }
 
 /**
+ * The LIST role of a sentinel the grammar FLATTENED into a single slot.
+ *
+ * `$$$ARGS` inside a function's parameter list parses as
+ * `required_parameter(SENTINEL)`: the grammar could only hold ONE parameter
+ * item, so the list was flattened into it — and the list then matched that
+ * single node, capturing only the first parameter of a two-parameter
+ * signature while the rest was absorbed by the prefix rule.
+ *
+ * A flattened sentinel stands for the WHOLE level it sits in, so the match
+ * belongs to that level, not to the wrapper's insides.
+ *
+ * The judgement is the wrapper's OWN TEXT: a wrapper that adds nothing of its
+ * own (`required_parameter(SENTINEL)`, `expression_statement(SENTINEL)` —
+ * the node's text IS the sentinel) is a grammar slot, while a real container
+ * (`arguments(SENTINEL)` — the node's text keeps its parens) holds the items
+ * directly and takes the ordinary list path below.
+ *
+ * @param child - the pattern child that may hold the flattened sentinel.
+ */
+function flattenedListRole(child: Node): { readonly kind: "list"; readonly name: string | undefined } | undefined {
+	if (child.namedChildCount !== 1) return undefined;
+	const leaf = child.namedChildren[0]!;
+	if (leaf.namedChildCount > 0) return undefined;
+	// The wrapper must add NO text of its own — its whole text is the sentinel.
+	if (child.text !== leaf.text) return undefined;
+	const many = MANY.exec(leaf.text);
+	if (many === null) return undefined;
+	const name = many[1] === undefined || many[1] === "_" ? undefined : many[1];
+	return { kind: "list", name };
+}
+
+/**
  * Parse a pattern for a language.
  *
  * @param pattern - source for the target language, with metavariables.
@@ -167,13 +199,20 @@ function matchNode(
 	while (p < patternChildren.length) {
 		const child = patternChildren[p]!;
 		const role = roleOf(child);
-		if (role.kind === "list") {
+		// TWO list shapes share this branch: the plain sentinel leaf
+		// (`f($$$A)` — the sentinel is one of the container's items), and the
+		// `$$$` the grammar FLATTENED into one slot (`required_parameter(SENT)`
+		// — the slot is the whole level). Both span as many target children as
+		// the REST allows, which is why the capture has to look ahead rather
+		// than consume greedily.
+		const listRole = role.kind === "list" ? role : flattenedListRole(child);
+		if (listRole !== undefined) {
 			// `$$$NAME` spans as many as it takes for the REST to match, which is
 			// why it has to look ahead rather than consume greedily.
 			const rest = patternChildren.slice(p + 1);
 			for (let take = targetChildren.length - t; take >= 0; take--) {
 				const candidate = new Map(captures);
-				if (role.name !== undefined) candidate.set(role.name, targetChildren.slice(t, t + take));
+				if (listRole.name !== undefined) candidate.set(listRole.name, targetChildren.slice(t, t + take));
 				if (matchesRest(rest, targetChildren, t + take, candidate)) {
 					for (const [k, v] of candidate) captures.set(k, v);
 					return true;
@@ -248,10 +287,14 @@ function matchesRest(
 	if (rest.length === 0) return from === targetChildren.length;
 	const [head, ...tail] = rest;
 	const role = roleOf(head!);
-	if (role.kind === "list") {
+	// The same two list shapes as `matchNode`: the plain sentinel leaf, and
+	// the `$$$` the grammar flattened into one slot — both span this level's
+	// remaining children.
+	const listRole = role.kind === "list" ? role : flattenedListRole(head!);
+	if (listRole !== undefined) {
 		for (let take = targetChildren.length - from; take >= 0; take--) {
 			const candidate = new Map(captures);
-			if (role.name !== undefined) candidate.set(role.name, targetChildren.slice(from, from + take));
+			if (listRole.name !== undefined) candidate.set(listRole.name, targetChildren.slice(from, from + take));
 			if (matchesRest(tail, targetChildren, from + take, candidate)) {
 				for (const [k, v] of candidate) captures.set(k, v);
 				return true;

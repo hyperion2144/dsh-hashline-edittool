@@ -13,7 +13,8 @@
  * @module dsh-hashline-edittool/test/observation-on-serve
  */
 import { describe, expect, it } from "vitest";
-import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { type FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { withTempBytes, withTempFile, makeExec } from "../support/fixtures.js";

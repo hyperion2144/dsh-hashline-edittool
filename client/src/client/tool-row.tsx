@@ -27,7 +27,7 @@ import type { DiffBlockProps } from "@deepseek-ai/dsh-client-ui-primitives";
 import { css, ensureToolRowStyles } from "./css.js";
 import { diffBlockLabels, readCardLabels } from "./labels.js";
 import { GrepCard } from "./grep-card.js";
-import { diffCardModel, errorCardModel, grepCardModel, lspCardModel, lspStatusCardModel, metaFormatSections, readCardModel, rowTitleFromMeta, toolRowModel, writeCardModel } from "./models.js";
+import { diffCardModel, errorCardModel, formatRowGroups, grepCardModel, lspCardModel, lspStatusCardModel, readCardModel, rowTitleFromMeta, toolRowModel, writeCardModel } from "./models.js";
 import { ReadCard } from "./read-card.js";
 import { LspDiagBlock, LspStatusBlock } from "./lsp-block.js";
 import { LspAnswerBlock } from "./lsp-answer-block.js";
@@ -37,7 +37,7 @@ import { DiffRowsBlock } from "./diff-block.js";
 import { diagCapsuleLabels, errorCardLabels, grepCardLabels, lspBlockLabels } from "./labels.js";
 import type { ToolCallBlock, ToolViewProps } from "./types.js";
 import { diagCapsulesFromMeta } from "./models.js";
-import type { DiagCapsuleMeta } from "./types.js";
+import type { DiagCapsuleMeta, DiffRowGroup } from "./types.js";
 
 /** Join class names (tiny clsx stand-in; `clsx` is not a module-table word). */
 function cx(...parts: Array<string | false | null | undefined>): string {
@@ -797,13 +797,18 @@ export function HashlineFormatRow({ toolName, block, ...rest }: ToolViewProps): 
 		typeof block.meta === "object" && block.meta !== null && !Array.isArray(block.meta)
 			? (block.meta as Record<string, unknown>)
 			: {};
-	const sections = metaFormatSections(meta);
-	if (sections.length === 0) {
+	const path = typeof meta.path === "string" ? meta.path : toolName;
+	// ADR-0040: the HOST carries the row-group shape itself now. The synthesis
+	// below is the LEGACY replay path — a meta persisted before the host sent
+	// `diffRowGroups` still renders (ADR-0026 decision 6: logged history never
+	// stops drawing), but the client no longer invents wire shapes for new
+	// calls.
+	const projectedGroups = formatRowGroups(meta, path);
+	if (projectedGroups.length === 0) {
 		// #427 review: same rule as the running fallback above — a settled call
 		// whose meta carried no format sections is still the format TOOL.
 		return HashlineEditRow({ toolName, block, titleOverride: rest.t("row.title.format"), ...rest });
 	}
-	const path = typeof meta.path === "string" ? meta.path : toolName;
 	return HashlineEditRow({
 		toolName,
 		...rest,
@@ -815,7 +820,7 @@ export function HashlineFormatRow({ toolName, block, ...rest }: ToolViewProps): 
 				// One EMPTY group per section: the tab strip shows the path, the
 				// section renders under its tab, and no main-diff rows exist —
 				// a manual format's section IS the diff.
-				diffRowGroups: sections.map((section) => ({ path: section.path ?? path, rows: [] })),
+				diffRowGroups: projectedGroups,
 			},
 		},
 	});

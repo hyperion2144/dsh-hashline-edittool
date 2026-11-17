@@ -210,7 +210,7 @@ describe("grep tool card projection (end to end)", () => {
 		await withTempFile(fileName, content, async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
 			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (inner: unknown) =>
 				({
@@ -280,7 +280,7 @@ describe("grep tool card projection (end to end)", () => {
 
 	it("presentResult lists only the match rows in the built-in search view", async () => {
 		const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-		const { localIO } = await import("../../src/infra/fs-bridge.js");
+		const { localIO } = await import("../support/local-io.js");
 		const tool = buildGrepTool(localIO());
 		const meta = {
 			files: [
@@ -312,7 +312,7 @@ describe("grep tool card projection (end to end)", () => {
 
 	it("presentResult declines errors and the pre-0.4.4 meta shape", async () => {
 		const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-		const { localIO } = await import("../../src/infra/fs-bridge.js");
+		const { localIO } = await import("../support/local-io.js");
 		const tool = buildGrepTool(localIO());
 		const args = { path: "a.txt", pattern: "alpha" };
 		expect(tool.presentResult!(args, { isError: true } as never)).toBeUndefined();

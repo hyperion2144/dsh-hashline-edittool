@@ -21,7 +21,8 @@ import { AstError, getAstClient } from "../ast/client.js";
 import { runFileEdits, type PreparedItem } from "../domain/edit/edit-engine.js";
 import { execSessionKey, anchorForInWorkspace } from "../domain/session/session-view.js";
 import { withLiveWorkspace } from "../domain/session/live-cwd.js";
-import { buildCanonicalFromFileResult, buildEditJson, buildPreparedItem, commitFileResult } from "./tool-edit.js";
+import { buildCanonicalFromFileResult, buildEditJson, commitFileResult } from "./tool-edit.js";
+import { buildPreparedItem } from "../domain/edit/anchor-fold.js";
 import { computeHunkDiffs, diffsFromMeta, type FileDiff } from "../render/edit-card.js";
 import { recordEchoServes } from "../domain/session/session-view.js";
 import { canon, contentChecksum } from "../hashline/hash-assign.js";
@@ -52,6 +53,10 @@ type AstEditValue = {
 interface GrepMatchLike {
 	readonly startLine: number;
 	readonly endLine: number;
+	/** 0-based UTF-16 column where the matched node STARTS (after any indent). */
+	readonly startColumn: number;
+	/** 0-based UTF-16 column just past the matched node's last character. */
+	readonly endColumn: number;
 	readonly captures: Record<string, readonly string[]>;
 }
 
@@ -341,20 +346,28 @@ async function runAstEdit(
 			throw new Error(`[E_AST_PATTERN] match ${index} spans lines the file does not have; re-read and retry.`);
 		}
 		const replacement = fillTemplate(args.out, match.captures);
-		// PUT THE INDENTATION BACK.
+		// REPLACE THE NODE'S SPAN, not the whole line (PR #436 review, defect A).
 		//
-		// A match covers the NODE, and a node does not include the whitespace its
-		// line begins with — the pattern `return `hello ${name}`;` starts at
-		// `return`, while the line is `\treturn …`. The hunk replaces whole LINES,
-		// so replacing with the bare replacement dropped that tab: every structural
-		// edit silently de-indented the code it touched.
+		// A match covers a NODE — the worker reports where it starts and ends in
+		// columns — and the text around it on the same lines belongs to the
+		// caller: `const r = ` before a call, ` + 2` after it, `export ` before
+		// a declaration. Replacing whole LINES and re-applying only the indent
+		// silently dropped all of that (the indentation back-fill was this rule's
+		// column-0 special case).
 		//
-		// The fix re-applies the start line's own leading whitespace, and applies
-		// the SAME indent delta to the replacement's later lines so a multi-line
-		// `out` stays structurally clear instead of losing its interior shape.
+		// The prefix is the start line's text before the node (the indent is its
+		// column-0 case); the suffix is the end line's text after the node. Both
+		// are pinned onto the replacement, so only the matched span changes.
 		const originalStart = sourceLines[match.startLine - 1] ?? "";
-		// The leading whitespace the NODE does not own.
-		const indent = /^[ \t]*/.exec(originalStart)?.[0] ?? "";
+		const originalEnd = sourceLines[match.endLine - 1] ?? "";
+		const prefix = originalStart.slice(0, Math.min(match.startColumn, originalStart.length));
+		const suffix =
+			match.endLine === match.startLine
+				? originalStart.slice(Math.min(match.endColumn, originalStart.length))
+				: originalEnd.slice(Math.min(match.endColumn, originalEnd.length));
+		const replacementLines = replacement === "" ? [] : splitLines(replacement);
+		const lines = replacementLines.map((line, lineIndex) => (lineIndex === 0 ? prefix + line : line));
+		if (lines.length > 0) lines[lines.length - 1] += suffix;
 		return buildPreparedItem(
 			index,
 			args.path,
@@ -362,16 +375,7 @@ async function runAstEdit(
 				op: replacement === "" ? "del" : "replace",
 				anchor_start: start,
 				anchor_end: end,
-				...(replacement === ""
-					? {}
-					: {
-							lines: splitLines(replacement).map((line, index_) =>
-								// Only the FIRST line gets the recovered indent: the rest of a
-								// multi-line `out` carries the indentation its author wrote, and
-								// adding more would double it.
-								index_ === 0 ? indent + line : line,
-							),
-						}),
+				...(replacement === "" ? {} : { lines }),
 			},
 			absolutePath,
 		);
@@ -410,13 +414,14 @@ async function runAstEdit(
 	}
 	// #131: captured BEFORE the write, so the wait measures pushes against a
 	// pre-write baseline. undefined = disabled / no manager / no ready server.
-	const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
+	const diagCtx = prepareWriteDiagnostics(absolutePath);
 	await commitFileResult(result, {
 		io,
 		exec: exec as never,
 		sandbox,
 		sandboxPolicy,
 		signal: (exec as { signal?: AbortSignal }).signal,
+		sessionKey,
 	});
 	// #131: same delivery `edit` runs — inline inside the inline window (1s), else
 	// the bounded async wait. The syntax gate above already ran, so a report

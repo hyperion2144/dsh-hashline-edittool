@@ -38,6 +38,7 @@ import {
 	type MigrateReport,
 } from "../domain/session/hash-store.js";
 import { moveFile, type MoveFileResult } from "../domain/rename/move-file.js";
+import { probeVerdict } from "../infra/probe-verdict.js";
 import { RENAME_DESCRIPTION } from "../domain/edit/prompts.js";
 
 /**
@@ -181,21 +182,11 @@ function requestPairs(args: unknown): RenamePair[] {
 
 /** A pre-approval rejection that is already a per-pair failure. */
 function typeFailure(path: string, probe: FileProbe): FileFailureMeta | undefined {
-	if (probe.kind === "symlink") {
-		return {
-			path,
-			code: "E_SYMLINK",
-			message: `Refusing to rename a symbolic link: ${path}. The rename tool handles regular files only; use bash if you mean to move the link itself.`,
-		};
-	}
-	if (probe.kind === "directory" || probe.kind === "other") {
-		return {
-			path,
-			code: "E_NOT_FILE",
-			message: `Path is not a regular file: ${path}. Directories and special files are not renamable here; use bash for directories.`,
-		};
-	}
-	return undefined;
+	if (probe.kind === "absent") return undefined; // the backend decides: already-absent is success
+	// ONE probe verdict (infra/probe-verdict.ts): the rename verb in, the
+	// domain's code + skeleton out.
+	const verdict = probeVerdict({ probe, expect: "file", verb: "rename", path });
+	return verdict === undefined ? undefined : { path, ...verdict };
 }
 
 /** The model-facing text mode. */

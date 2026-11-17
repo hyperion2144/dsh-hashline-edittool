@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { applyEffective } from "../../src/config.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { buildGrepTool } from "../../src/tools/tool-grep.js";
 import type { GrepFileRows } from "../../src/render/grep-card.js";
 import { withTempDir } from "../support/fixtures.js";

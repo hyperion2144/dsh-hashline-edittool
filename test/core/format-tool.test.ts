@@ -12,7 +12,7 @@ import { renderFormatSection } from "../../src/domain/edit/edit-response.js";
 import { contentChecksum } from "../../src/hashline/hash-assign.js";
 import { applyEffective } from "../../src/config.js";
 import { FormatUnsupportedError } from "../../src/lsp/format/index.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { getUndo } from "../../src/domain/edit/undo-edit.js";
 import { withWorkspace } from "../../src/domain/session/session-view.js";

@@ -43,6 +43,7 @@ import { HashlineSettingsCard } from "./settings-card.js";
 import { formFace } from "./settings-model.js";
 import { CARD_DICTIONARIES, CARD_NS } from "./locale.js";
 import type { ClientCtx } from "./types.js";
+import type { ComponentType } from "react";
 
 /**
  * The takeover priority for every `tool.call.toolview` key this package owns.
@@ -79,171 +80,54 @@ export const inject = ["slots", "locale"];
  * It is `BUNDLE_PACKAGE_NAME` below — one constant, used as the slot key,
  * the `configForms.get` argument, and the `whileServed` namespace.
  */
-/** Registers the hashline read conversation row (priority -2 takeover). */
-const readToolview = {
-	name: "hashline-read-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "read", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineReadRow,
-			),
-		);
-	},
-};
-
-/** Registers the hashline edit conversation row (priority -2 takeover). */
-const editToolview = {
-	name: "hashline-edit-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "edit", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineEditRow,
-			),
-		);
-	},
-};
-
 /**
- * Registers the hashline UNDO row.
+ * Every tool row this package renders: the wire tool name and the component
+ * that draws it. ONE table (ADR-0040's single-source discipline applied to
+ * registration): the eight per-tool plugins this file used to hand-copy were
+ * byte-identical ten-line blocks, and a new tool needed a copy-paste that
+ * could silently forget a row. Adding a tool is one row here.
  *
- * `undo_last_edit` already answers with the diff of the revert — the host hands
- * over `{card: "diff", diffs}` — but nothing registered the row, so the web drew
- * the default view and an undo looked like raw input/output. It borrows the edit
- * row for the same reason `ast_edit` does: a revert IS a diff, and one
- * implementation of what a diff row looks like means a fix to one is a fix to
- * all of them.
+ * Notes that used to live on the deleted consts:
+ * - `undo_last_edit` borrows the edit row: a revert IS a diff, one
+ *   implementation of what a diff row looks like means a fix to one is a fix
+ *   to all of them.
+ * - `apply_patch` borrows the edit row too (#401): the `meta.diffs` /
+ *   `meta.diffRowGroups` payload is exactly what `edit` sends, and the
+ *   per-section outcome and tab note are drawn by the SHARED card.
+ * - `ast_grep` returns the same rows a `read` does; `ast_edit` IS an edit.
+ * - `lsp` had NO row at all once, so its calls fell through to raw I/O.
+ * - `format` draws its formats section through the edit row's DiffRowsBlock
+ *   (#275 follow-up): without its key the manual format rendered as raw I/O.
  */
-const undoToolview = {
-	name: "hashline-undo-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "undo_last_edit", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineUndoRow,
-			),
-		);
-	},
-};
+const TOOL_ROWS: ReadonlyArray<readonly [key: string, row: ComponentType<never>]> = [
+  ["read", HashlineReadRow],
+  ["edit", HashlineEditRow],
+  ["undo_last_edit", HashlineUndoRow],
+  ["grep", HashlineGrepRow],
+  ["write", HashlineWriteRow],
+  ["delete", HashlineDeleteRow],
+  ["rename", HashlineRenameRow],
+  ["apply_patch", HashlineEditRow],
+  ["ast_grep", HashlineAstGrepRow],
+  ["ast_edit", HashlineAstEditRow],
+  ["lsp", HashlineLspRow],
+  ["format", HashlineFormatRow],
+];
 
-/** Registers the hashline grep conversation row (priority -2 takeover). */
-const grepToolview = {
-	name: "hashline-grep-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "grep", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineGrepRow,
-			),
-		);
-	},
-};
-
-/** Registers the hashline write conversation row (priority -2 takeover). */
-const writeToolview = {
-	name: "hashline-write-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "write", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineWriteRow,
-			),
-		);
-	},
-};
-
-/** Registers the hashline delete conversation row (priority -2 takeover). */
-const deleteToolview = {
-	name: "hashline-delete-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "delete", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineDeleteRow,
-			),
-		);
-	},
-};
-
-/** Registers the hashline rename conversation row (priority -2 takeover). */
-const renameToolview = {
-	name: "hashline-rename-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "rename", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineRenameRow,
-			),
-		);
-	},
-};
-
-/**
- * Registers the `apply_patch` row — the multi-file change-set card (#401).
- *
- * A patch IS an edit of several files, so it borrows `HashlineEditRow`: the
- * `meta.diffs` / `meta.diffRowGroups` payload is exactly what `edit` sends, and
- * one implementation of what a diff row looks like means a fix to one is a fix
- * to both. The per-section outcome (`kind` on a row group, #401) and the tab
- * note it earns are drawn by the SHARED card, so this key needs no component of
- * its own. The title comes from the host's `rowTitle` key (`row.title.apply_patch`).
- */
-const applyPatchToolview = {
-	name: "hashline-apply-patch-toolview",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		ctx.slots.inject("tool.call.toolview", () =>
-			ctx.slots.register(
-				{ name: "tool.call.toolview", key: "apply_patch", locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-				HashlineEditRow,
-			),
-		);
-	},
-};
-
-/**
- * The AST tools, rendered by the rows that already exist.
- *
- * `ast_grep` returns the SAME `line:anchor:content` rows a `read` does and
- * `ast_edit` IS an edit, so both are the existing components registered under a
- * second key — no new component, no second stylesheet, no second channel.
- * That is what "reuse the rendering" buys: one implementation of what a row
- * looks like, and one place to fix it when it is wrong.
- *
- * `lsp` and `format` are listed too, each with its own row component
- * (`HashlineLspRow`, `HashlineFormatRow`) — see the per-key notes below for
- * what each renders.
- */
-const astToolviews = {
-	name: "hashline-ast-toolviews",
-	inject: ["slots"],
-	apply(ctx: ClientCtx) {
-		for (const [key, Row] of [
-			["ast_grep", HashlineAstGrepRow],
-			["ast_edit", HashlineAstEditRow],
-			// `lsp` had NO row at all, so its calls fell through to raw input/output.
-			["lsp", HashlineLspRow],
-			// `format` draws its formats section through the edit row's DiffRowsBlock
-			// (one empty tab per file; the section IS the diff) — #275 follow-up:
-			// without this key the manual format call rendered as raw I/O.
-			["format", HashlineFormatRow],
-		] as const) {
-			ctx.slots.inject("tool.call.toolview", () =>
-				ctx.slots.register(
-					{ name: "tool.call.toolview", key, locale: CARD_NS, priority: TAKEOVER_PRIORITY },
-					Row,
-				),
-			);
-		}
-	},
+/** Registers every row in {@link TOOL_ROWS} under the takeover priority. */
+const toolviews = {
+  name: "hashline-toolviews",
+  inject: ["slots"],
+  apply(ctx: ClientCtx) {
+    for (const [key, Row] of TOOL_ROWS) {
+      ctx.slots.inject("tool.call.toolview", () =>
+        ctx.slots.register(
+          { name: "tool.call.toolview", key, locale: CARD_NS, priority: TAKEOVER_PRIORITY },
+          Row,
+        ),
+      );
+    }
+  },
 };
 
 /**
@@ -306,14 +190,6 @@ export function apply(ctx: ClientCtx): void {
 	// dictionaries. The effect owns the disposer, so unloading the plugin takes
 	// the words with it.
 	ctx.effect(() => ctx.locale.register(CARD_NS, CARD_DICTIONARIES));
-	ctx.plugin(readToolview);
-	ctx.plugin(editToolview);
-	ctx.plugin(undoToolview);
-	ctx.plugin(grepToolview);
-	ctx.plugin(writeToolview);
-	ctx.plugin(deleteToolview);
-	ctx.plugin(renameToolview);
-	ctx.plugin(applyPatchToolview);
-	ctx.plugin(astToolviews);
-	ctx.plugin(settingsCard);
+  ctx.plugin(toolviews);
+  ctx.plugin(settingsCard);
 }

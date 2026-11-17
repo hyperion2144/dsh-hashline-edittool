@@ -123,6 +123,13 @@ export interface LspLanguageStatus {
 export interface LspManagerOptions extends DiscoveryOptions {
 	/** Spawn a discovered server into a transport. */
 	readonly spawn: (server: DiscoveredServer, cwd: string) => { readonly transport: ServerTransportLike };
+	/**
+	 * Where the SLOT ROOT comes from (ADR-0031): the workspace root a slot
+	 * advertises when it starts, resolved by the manager itself. Defaults to
+	 * the process cwd; the plugin installs the session's live working
+	 * directory at agent creation.
+	 */
+	readonly rootResolver?: () => Promise<string>;
 	/** Deadline for the handshake alone. */
 	readonly initializeTimeoutMs?: number;
 	/** A file above this uses the heuristic backend (the server's own limit). */
@@ -234,9 +241,26 @@ export class LspManager {
 	#reaping = new Set<Promise<void>>();
 	/** Failed starts per language — the retry backoff's attempt count (#318). */
 	#failures = new Map<string, number>();
+	/** The slot-root resolver (ADR-0031): the process cwd until an agent replaces it. */
+	#rootResolver: () => Promise<string>;
 
 	constructor(options: LspManagerOptions) {
 		this.#options = options;
+		this.#rootResolver = options.rootResolver ?? (async () => process.cwd());
+	}
+
+	/**
+	 * Install the slot-root resolver (ADR-0031). The plugin calls this at agent
+	 * creation with the session's live working directory: the root is the
+	 * manager's own fact, never a per-call argument, so it cannot depend on
+	 * which caller warmed first.
+	 */
+	setRootResolver(resolve: () => Promise<string>): void {
+		this.#rootResolver = resolve;
+	}
+
+	async #workspaceRoot(): Promise<string> {
+		return this.#rootResolver();
 	}
 
 	/** The per-call deadline for requests. */
@@ -412,9 +436,8 @@ export class LspManager {
 	 * not be respawned in a tight loop by every read that comes by.
 	 *
 	 * @param languageId - registry id.
-	 * @param workspaceRoot - the root to advertise.
 	 */
-	warm(languageId: string, workspaceRoot: string, role: LspSlotRole = "primary"): void {
+	warm(languageId: string, role: LspSlotRole = "primary"): void {
 		if (this.#disposed) return;
 		const existing = this.#slots.get(slotKey(languageId, role));
 		if (existing?.state === "failed") {
@@ -425,7 +448,7 @@ export class LspManager {
 			return; // already starting or ready
 		}
 		this.#slots.set(slotKey(languageId, role), { state: "starting" });
-		void this.#start(slotKey(languageId, role), languageId, workspaceRoot, role);
+		void this.#start(slotKey(languageId, role), languageId, role);
 	}
 
 	/**
@@ -445,9 +468,12 @@ export class LspManager {
 	async #start(
 		key: string,
 		languageId: string,
-		workspaceRoot: string,
 		role: LspSlotRole,
 	): Promise<void> {
+		// The slot root is the manager's OWN fact (ADR-0031): resolved from the
+		// session's live working directory at each start — never a per-call
+		// argument, so the root cannot depend on which caller warmed first.
+		const workspaceRoot = await this.#workspaceRoot();
 		let session: LspSession | undefined;
 		let transport: ServerTransportLike | undefined;
 		try {
@@ -538,10 +564,9 @@ export class LspManager {
 	 * an answer now, and the answer improves on the next call.
 	 *
 	 * @param languageId - registry id.
-	 * @param workspaceRoot - the root to advertise when warming.
 	 * @param byteLength - the document's size, for the per-backend limit.
 	 */
-	decide(languageId: string, workspaceRoot: string, byteLength: number): BackendDecision {
+	decide(languageId: string, byteLength: number): BackendDecision {
 		if (this.#disposed) return { backend: "heuristic", reason: "lsp-unavailable" };
 		if (byteLength > this.maxDocumentBytes) {
 			// The server's own limit, not ours: sending it anyway would have the
@@ -550,7 +575,7 @@ export class LspManager {
 		}
 		const slot = this.#slots.get(languageId);
 		if (slot === undefined || slot.state === "failed") {
-			this.warm(languageId, workspaceRoot);
+			this.warm(languageId);
 			return {
 				backend: "heuristic",
 				reason: slot?.state === "failed" ? slot.reason : "lsp-unavailable",
@@ -639,14 +664,12 @@ export class LspManager {
 	 * to retry blind until luck landed. Waiting is what the caller meant.
 	 *
 	 * @param languageId - the registry id to warm and wait on.
-	 * @param workspaceRoot - passed to the warm-up.
 	 * @param timeoutMs - how long to hold before giving up (default 15s).
 	 * @param role - which slot to resolve (default primary; the format role is ADR-0038).
 	 * @returns the session, or `undefined` when it failed or timed out.
 	 */
 	async waitForSession(
 		languageId: string,
-		workspaceRoot: string,
 		timeoutMs: number = LspManager.START_TIMEOUT_MS,
 		role: LspSlotRole = "primary",
 	): Promise<LspSession | undefined> {
@@ -656,7 +679,7 @@ export class LspManager {
 			return slot.session;
 		}
 		if (this.#disposed) return undefined;
-		this.warm(languageId, workspaceRoot, role);
+		this.warm(languageId, role);
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
@@ -679,29 +702,27 @@ export class LspManager {
 	 * immediately and the outcome — either way — is reported (#318).
 	 *
 	 * @param languageId - the registry id to (re)start and wait on.
-	 * @param workspaceRoot - passed to the warm-up.
 	 * @param timeoutMs - how long to hold before giving up (default 15s).
 	 * @returns the session, or `undefined` when it failed or timed out.
 	 */
 	async forceWarm(
 		languageId: string,
-		workspaceRoot: string,
 		timeoutMs: number = LspManager.START_TIMEOUT_MS,
 		role: LspSlotRole = "primary",
 	): Promise<LspSession | undefined> {
 		if (this.#disposed) return undefined;
 		if (this.#slots.get(slotKey(languageId, role))?.state === "failed") this.#slots.delete(slotKey(languageId, role));
-		return this.waitForSession(languageId, workspaceRoot, timeoutMs, role);
+		return this.waitForSession(languageId, timeoutMs, role);
 	}
 
 	/** The live session for a language, warming it if this is the first ask. */
-	async sessionFor(languageId: string, workspaceRoot: string, role: LspSlotRole = "primary"): Promise<LspSession | undefined> {
+	async sessionFor(languageId: string, role: LspSlotRole = "primary"): Promise<LspSession | undefined> {
 		const slot = this.#slots.get(slotKey(languageId, role));
 		if (slot?.state === "ready") {
 			this.#touchIdle(slotKey(languageId, role));
 			return slot.session;
 		}
-		this.warm(languageId, workspaceRoot, role);
+		this.warm(languageId, role);
 		return undefined;
 	}
 

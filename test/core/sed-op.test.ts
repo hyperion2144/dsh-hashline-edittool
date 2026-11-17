@@ -18,7 +18,7 @@ import { sedReplacement, sedTransform } from "../../src/domain/edit/edit-engine.
 import { assertEditItem } from "../../src/contract/contract.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { withTempFile, makeExec } from "../support/fixtures.js";
 import { join } from "node:path";

@@ -150,6 +150,29 @@ describe("the grep row's counts (#386)", () => {
 			expect(Object.hasOwn(ZH_CARD_DICTIONARY, key)).toBe(true);
 		}
 	});
+	it("every key literal the host NAMES is in the gate and BOTH dictionaries (ADR-0040)", () => {
+		// The single source is src/wire/keys.ts; the client's gate is its build-
+		// time projection. What this test pins is the OTHER half: a host key
+		// literal missing from the list must fail HERE, loudly — the old
+		// scrape saw only wire-text.ts and patch-card.ts's three keys were
+		// invisible to it.
+		const named = [...HOST_WIRE_TEXT.matchAll(/key: "([a-z][A-Za-z0-9_.]+)"/g), ...HOST_PATCH_CARD.matchAll(/key: "([a-z][A-Za-z0-9_.]+)"/g)].map(
+			(match) => match[1]!,
+		);
+		expect(named.length).toBeGreaterThanOrEqual(20);
+		for (const key of named) {
+			expect(Object.hasOwn(WIRE_TEXT_KEYS, key)).toBe(true);
+			expect(Object.hasOwn(EN_CARD_DICTIONARY, key)).toBe(true);
+			expect(Object.hasOwn(ZH_CARD_DICTIONARY, key)).toBe(true);
+		}
+	});
+
+	it("the generated gate list matches its source byte for byte (ADR-0040)", () => {
+		const generatedPath = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "wire", "keys.generated.ts");
+		const sourcePath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "wire", "keys.ts");
+		const banner = "// GENERATED from src/wire/keys.ts by scripts/sync-wire.mjs — edit the SOURCE, never this file (ADR-0040).\n";
+		expect(readFileSync(generatedPath, "utf-8")).toBe(banner + readFileSync(sourcePath, "utf-8"));
+	});
 });
 
 describe("the settings card's labels", () => {
@@ -170,9 +193,13 @@ describe("the settings card's labels", () => {
 	});
 });
 
-/** The host's own source: the half that NAMES the keys (ADR-0024). */
+/** The host's own sources: the half that NAMES the keys (ADR-0024, ADR-0040). */
 const HOST_WIRE_TEXT = readFileSync(
 	join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "render", "wire-text.ts"),
+	"utf-8",
+);
+const HOST_PATCH_CARD = readFileSync(
+	join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "render", "patch-card.ts"),
 	"utf-8",
 );
 

@@ -258,3 +258,26 @@ _Avoid_: prompt section (that is a system-prompt unit), file header (that is the
 The whole-patch rejection that happens BEFORE a single byte is written: every check runs, every failure is collected, and one error value lists all problems (truncated after ten entries). Distinct from a stopped commit, which is a success-shaped value that reports the completed work truthfully and rolls nothing back.
 _Avoid_: preflight error (the refusal is ONE value listing every problem), validation error, dry run, rollback
 
+## Landing and probes
+
+**Commit**:
+One file's landing as ONE domain transaction — the undo snapshot, the atomic write, and the served-mirror settlement — under ONE failure policy: a write that landed is never un-landed by a settlement failure, and the lost mirror becomes a warning the caller reports (issue #136). `edit`, `ast_edit` and `apply_patch` all land files through it; what each tool keeps is its error vocabulary, never the policy.
+_Avoid_: persistUndoAndWrite (the engine helper it wraps), applyFileResultTo / writeFileResult (the two copies it absorbs), mutation.ts (the file, not the concept)
+
+**Anchor fold**:
+The ONE domain step that turns a raw model-supplied ref (an anchor, its optional line hint, the caller's declared line) into a prepared edit item — the salvage of pasted-row forms, the declared line, and the ref warnings. It lives in domain, so `edit`, `ast_edit` and `apply_patch`'s preflight fold one token the same way; the drift this prevents used to show up as edits landing on the wrong lines, for one tool only.
+_Avoid_: buildPreparedItem (the function name), itemsFor (the patch-side re-derivation it replaces)
+
+**Probe verdict**:
+The domain's ONE interpretation of a path probe: the shape found (symlink, directory, absent, occupied destination) mapped to its error code and message skeleton, with the calling tool's verb injected. Every prober obtains probes; only this module explains them.
+_Avoid_: typeFailure / probeFailure (the per-tool copies it absorbs)
+
+## Language-server slots
+
+**Slot root**:
+The workspace root a language's server slot is pinned to at its first warm. It is the manager's own fact — taken from the session's live working directory — never a per-call argument, so the root cannot depend on which caller warmed first.
+_Avoid_: workspaceRoot as a parameter (the seam leak it used to be)
+
+**Diagnostic policy**:
+The caller-declared parameters of ONE diagnostics projection: which severities, the cap, whether the suppression ledger is touched. The write path declares error+warning, capped, ledger-touched; the manual `lsp diagnostics` query declares every severity, uncapped, ledger-untouched — the COMPLETE view. The projection is shared; the differences are declared, never drifted.
+_Avoid_: severity filter / cap as hardcoded per-path facts, the two separate projection implementations

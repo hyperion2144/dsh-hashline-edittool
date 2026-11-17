@@ -130,9 +130,9 @@ const ctx = {
 exports_.apply(ctx);
 
 // Twelve toolview keys: read, edit, undo_last_edit, grep, write, delete,
-// rename, `apply_patch`, the AST tools (which register TWO entries under one
-// sub-plugin), `lsp`, `format`, and the settings card.
-if (ctx.plugins.length !== 10) throw new Error(`expected 10 sub-plugins, got ${ctx.plugins.length}`);
+// rename, `apply_patch`, ast_grep, ast_edit, `lsp`, `format` — ONE sub-plugin
+// iterates the TOOL_ROWS table, plus the settings card.
+if (ctx.plugins.length !== 2) throw new Error(`expected 2 sub-plugins, got ${ctx.plugins.length}`);
 const keys = ctx.slots.registeredEntries
 	.filter((entry) => entry?.options?.name === "tool.call.toolview")
 	.map((entry) => `${entry.options.key}:${entry.options.priority}:${entry.options.locale}`);

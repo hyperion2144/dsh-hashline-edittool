@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { applyEffective } from "../../src/config.js";
 import { parseReadCursor } from "../../src/domain/session/read-window.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { getWritableTempRoot, setupIntegrationTest, getText, makeExec, type Harness } from "../support/fixtures.js";
 
 let tmpHome: string;
