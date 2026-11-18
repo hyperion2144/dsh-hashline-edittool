@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { buildApplyPatchTool } from "../../src/tools/tool-apply-patch.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { hashStorePath } from "../../src/infra/paths.js";
 import { applyEffective } from "../../src/config.js";

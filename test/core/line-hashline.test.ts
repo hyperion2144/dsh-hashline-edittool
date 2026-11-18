@@ -149,7 +149,7 @@ describe("grep — line#hash output", () => {
 		await withTempFile("g.txt", "alpha\nbeta\nalpha-again\ngamma\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
 			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -178,7 +178,7 @@ describe("grep — line#hash output", () => {
 		await withTempFile("ctx.txt", "a\nb\nc\nd\ne\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
 			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({

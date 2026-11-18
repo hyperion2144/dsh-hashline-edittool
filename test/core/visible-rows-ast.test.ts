@@ -17,7 +17,7 @@ import { loadHashStore } from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";
 import { buildAstGrepTool } from "../../src/tools/tool-ast-grep.js";
 import { buildAstEditTool } from "../../src/tools/tool-ast-edit.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { applyEffective } from "../../src/config.js";
 import { setAstClient, type WorkerLike } from "../../src/ast/client.js";
 import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "../../src/ast/worker.js";

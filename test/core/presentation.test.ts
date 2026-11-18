@@ -28,7 +28,7 @@ beforeAll(async () => {
 describe("tool-read structured presentation", () => {
 	it("returns a structured canonical value with lines + hashlines", async () => {
 		await withTempFile("p.txt", "alpha\nbeta\ngamma\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const tool = buildReadTool(localIO());
 			const exec = (args: unknown) =>
@@ -61,7 +61,7 @@ describe("tool-read structured presentation", () => {
 
 	it("the model text starts with the hashline header and ends with the resume footer", async () => {
 		await withTempFile("p2.txt", "x\n".repeat(2500), async ({ cwd }) => {
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");
 			const tool = buildReadTool(localIO());
 			const exec = (args: unknown) =>
@@ -85,7 +85,7 @@ describe("tool-grep structured presentation", () => {
 		await withTempFile("g.txt", "alpha\nbeta\nalpha-again\ngamma\n", async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
 			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -131,7 +131,7 @@ describe("tool-grep structured presentation", () => {
 		await withTempFile("big.txt", content, async ({ cwd }) => {
 			const { ctx } = setupIntegrationTest(cwd);
 			const { buildGrepTool } = await import("../../src/tools/tool-grep.js");
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const tool = buildGrepTool(localIO());
 			const exec = (args: unknown) =>
 				({
@@ -155,7 +155,7 @@ describe("tool-grep structured presentation", () => {
 describe("edit / undo structured value shape", () => {
 	it("edit returns a value with path/before/after + modelText", async () => {
 		await withTempFile("e.txt", "a\nb\nc\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");
@@ -201,7 +201,7 @@ describe("edit / undo structured value shape", () => {
 			// Create the second file in the same cwd so a single edit call
 			// can target both via per-item `path` overrides.
 			await writeFile(join(cwd, "b2.txt"), "x\ny\nz\n", "utf8");
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");
@@ -288,7 +288,7 @@ describe("presentation-helpers — langFromPath", () => {
 describe("edit presentationMeta diffRows (issue #71 rendering channel)", () => {
 	it("persists structured diff rows with line numbers and anchors", async () => {
 		await withTempFile("dr.txt", "a\nb\nc\nd\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");
@@ -316,7 +316,7 @@ describe("edit presentationMeta diffRows (issue #71 rendering channel)", () => {
 
 	it("presentationMeta carries diffRows alongside diffs for the web gutter", async () => {
 		await withTempFile("dr2.txt", "one\ntwo\nthree\n", async ({ cwd }) => {
-			const { localIO } = await import("../../src/infra/fs-bridge.js");
+			const { localIO } = await import("../support/local-io.js");
 			const { FsSandboxController } = await import("../../src/infra/sandbox.js");
 			const { buildEditTool } = await import("../../src/tools/tool-edit.js");
 			const { buildReadTool } = await import("../../src/tools/tool-read.js");

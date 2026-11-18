@@ -18,7 +18,8 @@
 
 import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { FileIO, FileProbe } from "../../infra/fs-bridge.js";
-import { encodeText } from "../../hashline/anchor-pipeline.js";
+import { probeVerdict } from "../../infra/probe-verdict.js";
+import { buildPreparedItem } from "../edit/anchor-fold.js";
 import {
 	runFileEdits,
 	type FileEditResult,
@@ -188,34 +189,9 @@ function probeFailure(
 	path: string,
 	want: "file" | "absent" | "directory",
 ): { code: string; message: string } | undefined {
-	if (want === "absent") {
-		if (probe.kind === "absent") return undefined;
-		if (probe.kind === "file") {
-			return { code: "E_EXISTS", message: `Path already exists: ${path}` };
-		}
-		return { code: "E_EXISTS", message: `Path already exists (${probe.kind}): ${path}` };
-	}
-	if (want === "directory") {
-		if (probe.kind === "directory") return undefined;
-		if (probe.kind === "absent") {
-			return { code: "E_NOT_FOUND", message: `Parent directory does not exist: ${path}` };
-		}
-		return { code: "E_NOT_FILE", message: `Parent is not a directory: ${path}` };
-	}
-	if (probe.kind === "file") return undefined;
-	if (probe.kind === "absent") {
-		return { code: "E_NOT_FOUND", message: `File not found: ${path}` };
-	}
-	if (probe.kind === "symlink") {
-		return {
-			code: "E_SYMLINK",
-			message: `${path} is a symbolic link; a patch addresses regular files, and following the link would edit a different path than the one you named.`,
-		};
-	}
-	if (probe.kind === "directory") {
-		return { code: "E_NOT_FILE", message: `Path is a directory: ${path}` };
-	}
-	return { code: "E_NOT_FILE", message: `Path is not a regular file: ${path}` };
+	// ONE probe verdict (infra/probe-verdict.ts): the patch speaks the same
+	// vocabulary the delete/rename tools speak, from the same skeleton.
+	return probeVerdict({ probe, expect: want, verb: "edit", path });
 }
 
 /** The directory a path lives in, for the `new` section's parent check. */
@@ -234,16 +210,20 @@ function parentOf(path: string): string {
  * anchors, conflicts, drift, served migration and undo behave identically.
  */
 function itemsFor(operation: PatchOperation, absolutePath: string): PreparedItem[] {
-	return operation.section.hunks.map((hunk, index) => ({
-		index,
-		path: operation.path,
-		absolutePath,
-		remove_from: hunk.anchorStart,
-		remove_to: hunk.anchorEnd ?? hunk.anchorStart,
-		replacement_text:
-			hunk.kind === "delete" ? "" : encodeText(hunk.lines),
-		op: hunk.kind === "insert" ? "ins" : hunk.kind === "delete" ? "del" : "replace",
-	}));
+	// ONE anchor fold (domain/edit/anchor-fold.ts): a patch hunk's refs fold
+	// through the same salvage, declared-line and warning path an `edit` item
+	// does — one token, one meaning, for every tool that edits a file.
+	return operation.section.hunks.map((hunk, index) =>
+		buildPreparedItem(index, operation.path, {
+			op: hunk.kind === "insert" ? "ins" : hunk.kind === "delete" ? "del" : "replace",
+			// `ins` carries its anchor as `anchor_after`; the other two as `anchor_start`.
+			...(hunk.kind === "insert"
+				? { anchor_after: hunk.anchorStart }
+				: { anchor_start: hunk.anchorStart }),
+			...(hunk.anchorEnd !== undefined ? { anchor_end: hunk.anchorEnd } : {}),
+			lines: hunk.lines,
+		}, absolutePath),
+	);
 }
 
 /**

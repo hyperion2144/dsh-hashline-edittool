@@ -23,7 +23,7 @@ import { getWritableTempRoot, setupIntegrationTest, getText, makeExec, useNumber
 // file asserts numbered rows, so every test here pins it ON.
 useNumberedRows();
 import { buildReadTool } from "../../src/tools/tool-read.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 
 let tmpHome: string;
 beforeAll(async () => {

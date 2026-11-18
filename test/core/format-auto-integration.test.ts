@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { renderFormatSection } from "../../src/domain/edit/edit-response.js";
 import { FormatUnsupportedError } from "../../src/lsp/format/index.js";
 import { applyEffective } from "../../src/config.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";

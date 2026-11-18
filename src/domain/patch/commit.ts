@@ -150,7 +150,10 @@ async function writeFileResult(
 	displayPath: string,
 ): Promise<void> {
 	const { io, exec, sandbox, sandboxPolicy, signal, sessionKey } = input;
-	await commit({
+	// ONE landing transaction, shared with `edit`/`ast_edit`: the served
+	// settlement and its failure policy live inside the commit — a lost
+	// mirror is a WARNING (the write stands), never a failed operation.
+	const [outcome] = await commit({
 		io,
 		files:
 			file.appliedCount > 0
@@ -163,6 +166,7 @@ async function writeFileResult(
 						originalEnding: file.originalEnding,
 						originalHashes: file.originalHashes,
 						result: file.result,
+						servedRows: file.servedRows,
 					},
 				]
 				: [],
@@ -172,12 +176,9 @@ async function writeFileResult(
 		signal,
 		undoUnavailableMessage: undoUnavailable,
 		restoreUnwrittenUndos: true,
+		sessionKey,
 	});
-	if (file.appliedCount === 0 || !file.servedRows || file.servedRows.length === 0) {
-		return;
-	}
-	await recordServedAfterEdit(sessionKey, absolutePath, file.servedRows);
-	await reconcileServed(sessionKey, absolutePath, file.result);
+	if (outcome?.servedWarning !== undefined) input.warnings.push(outcome.servedWarning);
 }
 
 

@@ -49,6 +49,15 @@ import { getLspManager } from "./manager.js";
 import { diagnosticIdentity, diagnosticLabel } from "./diagnostics/identity.js";
 import { partitionPush, recordDelivered, suppressionBucketKey } from "./diagnostics/ledger.js";
 import type { LspSession } from "./session.js";
+import {
+	diagnosticRowsFromBuckets,
+	mintDiagnosticAnchors,
+	normalizeDiagnosticEntries,
+	projectDiagnosticLines,
+	type DiagnosticPolicy,
+	type DiagnosticRow as DiagRow,
+} from "./diagnostics/projection.js";
+export type { DiagRow };
 import { latestWriteFor, markAsyncInjection } from "./write-tracker.js";
 
 /**
@@ -77,22 +86,16 @@ export const MAX_REPORTED_DIAGNOSTICS = 50;
 /** The plugin identity on every injected message. */
 const PLUGIN_NAME = "dsh-hashline-edittool";
 
-/** One source line carrying its diagnostics BESIDE the text (never merged into it). */
-export type DiagRow = {
-	/** 1-based line number in the post-write file. */
-	number: number;
-	/** The line's anchor ("" when it could not be allocated). */
-	hash: string;
-	/** The line's verbatim text. */
-	text: string;
-	/** Labelled messages, one per diagnostic (`error(pyright/2322): …`). */
-	messages: string[];
-	/** The raw LSP severity codes beside the labels, so a card can count. */
-	severities: number[];
-	/** The server's `source` per diagnostic ("" when absent), aligned with `messages`. */
-	sources: string[];
-	/** The server's rule handle per diagnostic ("" when absent), aligned with `messages`. */
-	codes: string[];
+
+/**
+ * The write path's DECLARED projection policy (ADR-0039): error + warning
+ * only (per #130 Q5), capped at the report ceiling. The manual `lsp
+ * diagnostics` query declares the opposite — every severity, uncapped — and
+ * neither half lives in the shared projection (diagnostics/projection.ts).
+ */
+export const WRITE_DIAGNOSTIC_POLICY: DiagnosticPolicy = {
+	severities: [1, 2],
+	cap: MAX_REPORTED_DIAGNOSTICS,
 };
 
 /** One written file's report: error + warning only, capped, clean files absent. */
@@ -150,8 +153,6 @@ export interface WriteDiagContext {
 	/** Present when a server was READY at write time; undefined = cold start pending. */
 	readonly session?: LspSession;
 	readonly languageId: string;
-	/** The workspace root advertised to the server when warming. */
-	readonly workspaceRoot: string;
 	readonly uri: string;
 }
 
@@ -169,9 +170,8 @@ export interface WriteDiagContext {
  * never a wrong file's diagnostics (they are keyed by URI).
  *
  * @param absolutePath - the file about to be written.
- * @param workspaceRoot - advertised to the server when warming (the session cwd).
  */
-export function prepareWriteDiagnostics(absolutePath: string, workspaceRoot: string): WriteDiagContext | undefined {
+export function prepareWriteDiagnostics(absolutePath: string): WriteDiagContext | undefined {
 	if (!isAutoDiagnosticsEnabled()) return undefined;
 	const manager = getLspManager();
 	if (manager === undefined) return undefined;
@@ -183,15 +183,14 @@ export function prepareWriteDiagnostics(absolutePath: string, workspaceRoot: str
 		return {
 			session,
 			languageId: language.id,
-			workspaceRoot,
 			uri,
 			// The freshness guarantee no longer needs a revision baseline.
 		};
 	}
 	// Cold or starting: kick the warm and let the async path wait it out. A
 	// failed slot restarts here once its retry backoff has passed (#318).
-	manager.warm(language.id, workspaceRoot);
-	return { languageId: language.id, workspaceRoot, uri };
+	manager.warm(language.id);
+	return { languageId: language.id, uri };
 }
 
 /** Everything {@link deliverDiagnosticsAfterWrite} needs once the write is on disk. */
@@ -496,27 +495,7 @@ async function collectReport(
 	// Severity filter FIRST (error + warning only, per #130 Q5): an
 	// `information` or `hint` never consumes the cap, never enters the ledger,
 	// and never counts toward the unchanged summary.
-	const reported: Array<{ severity: number; source: string; code: string; message: string; line: number }> = [];
-	for (const entry of pushed) {
-		const d = entry as {
-			message?: unknown;
-			severity?: unknown;
-			source?: unknown;
-			code?: unknown;
-			range?: { start?: { line?: unknown } };
-		};
-		const severity = typeof d.severity === "number" ? d.severity : 0;
-		if (severity !== 1 && severity !== 2) continue;
-		const at = d.range?.start?.line;
-		if (typeof at !== "number" || at < 0) continue;
-		reported.push({
-			severity,
-			source: typeof d.source === "string" ? d.source : "",
-			code: typeof d.code === "string" || typeof d.code === "number" ? String(d.code) : "",
-			message: typeof d.message === "string" ? d.message : JSON.stringify(entry),
-			line: at + 1,
-		});
-	}
+	const reported = normalizeDiagnosticEntries(pushed, WRITE_DIAGNOSTIC_POLICY);
 	if (reported.length === 0) return undefined;
 	// #429: split against the suppression LEDGER — a pure view, no writes.
 	// The projection order the spec fixes: the identity filter runs FIRST, the
@@ -547,35 +526,17 @@ async function collectReport(
 	}
 	const lines = splitLines(text);
 	// NO dense read: every entry ever READ below belongs to a line in
-	// `diagLineNos`, and the mint fills exactly those in. Paying for a query
-	// over the file's whole anchor table to fill an array the next statement
-	// overwrites is the kind of cost nobody sees and nobody questions.
+	// `diagLineNos`, and the mint fills exactly those in.
 	const anchors: string[] = new Array(lines.length).fill("");
-	const byLine = new Map<number, { messages: string[]; severities: number[]; sources: string[]; codes: string[] }>();
-	let totalSeen = 0;
-	let truncated = false;
-	for (const entry of fresh) {
-		if (totalSeen >= MAX_REPORTED_DIAGNOSTICS) {
-			truncated = true;
-			break;
-		}
-		const label = diagnosticLabel(entry.severity, entry.source, entry.code, entry.message);
-		const bucket = byLine.get(entry.line) ?? { messages: [], severities: [], sources: [], codes: [] };
-		bucket.messages.push(label);
-		bucket.severities.push(entry.severity);
-		bucket.sources.push(entry.source);
-		bucket.codes.push(entry.code);
-		byLine.set(entry.line, bucket);
-		totalSeen += 1;
-	}
-	if (byLine.size === 0) return undefined;
+	const projection = projectDiagnosticLines(fresh, WRITE_DIAGNOSTIC_POLICY);
+	if (projection.byLine.size === 0) return undefined;
 	// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
-	const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
+	const diagLineNos = [...projection.byLine.keys()].sort((a, b) => a - b);
 	// #223: mint through the one entry point and record the served set in the
 	// same transaction. The callers are the write/edit tool bodies, already
 	// inside a `withWorkspace` scope; entering it again here is idempotent and
 	// means this call site cannot be the one that forgets to.
-	const diagAllocated = await anchorForInWorkspace({
+	const diagAllocated = await mintDiagnosticAnchors({
 		cwd: workspaceCwd() ?? "",
 		absolutePath: input.absolutePath,
 		content: text,
@@ -583,26 +544,16 @@ async function collectReport(
 		sessionKey: execSessionKey(input.exec),
 	});
 	for (let k = 0; k < diagLineNos.length; k++) {
-		anchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
+		anchors[diagLineNos[k]! - 1] = diagAllocated[k] ?? "";
 	}
-	const rows = [...byLine.entries()]
-		.sort((a, b) => a[0] - b[0])
-		.map(([number, bucket]) => ({
-			number,
-			hash: anchors[number - 1] ?? "",
-			text: lines[number - 1] ?? "",
-			messages: bucket.messages,
-			severities: bucket.severities,
-			sources: bucket.sources,
-			codes: bucket.codes,
-		}));
+	const rows = diagnosticRowsFromBuckets(projection.byLine, lines, anchors);
 	return {
 		path: input.displayPath,
 		absolutePath: input.absolutePath,
 		toolName: input.toolName,
 		rows,
-		totalSeen,
-		truncated,
+		totalSeen: projection.totalSeen,
+		truncated: projection.truncated,
 		suppressedCount: unchanged.length,
 		suppressedSeverities: unchanged.map((entry) => entry.severity),
 		deliveredIdentities: reported.map(diagnosticIdentity),
@@ -652,7 +603,7 @@ function startAsyncWait(
 				// the push, which is the honest outcome of a 3s cold start.
 				const manager = getLspManager();
 				const remaining = Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt));
-				session = (await manager?.waitForSession(input.languageId, input.workspaceRoot, remaining)) ?? undefined;
+				session = (await manager?.waitForSession(input.languageId, remaining)) ?? undefined;
 				if (session === undefined || signal.aborted) return;
 				// #388: a newer write landed while the server booted — ITS delivery
 				// owns the file now.

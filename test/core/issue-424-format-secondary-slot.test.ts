@@ -15,7 +15,7 @@ import { subprocessTransport, type SubprocessLike } from "../../src/lsp/transpor
 import { encodeMessage, MessageReader } from "../../src/lsp/framing.js";
 import { runAutoFormat } from "../../src/domain/format/auto-format.js";
 import { getText, setupIntegrationTest, withTempFile } from "../support/fixtures.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 
 // ---- the manager harness, mirrored from lsp-manager.test.ts ----
 
@@ -117,7 +117,7 @@ describe("the manager's format slot (#424 / ADR-0038)", () => {
 		const { manager } = managerWith([join("/bin", "pyright-langserver"), join("/bin", "ruff-lsp")], {
 			formatConfigured: () => [{ command: join("/bin", "ruff-lsp"), languages: ["python"] }],
 		});
-		const session = await manager.waitForSession("python", "/repo", 5_000, "format");
+		const session = await manager.waitForSession("python", 5_000, "format");
 		expect(session).toBeDefined();
 		// The primary slot never moved: no setting for it, no process, and the
 		// card-facing surfaces report neither.
@@ -131,8 +131,8 @@ describe("the manager's format slot (#424 / ADR-0038)", () => {
 		const { manager } = managerWith([join("/bin", "pyright-langserver"), join("/bin", "ruff-lsp")], {
 			formatConfigured: () => [{ command: join("/bin", "ruff-lsp"), languages: ["python"] }],
 		});
-		const primary = await manager.waitForSession("python", "/repo", 5_000);
-		const secondary = await manager.waitForSession("python", "/repo", 5_000, "format");
+		const primary = await manager.waitForSession("python", 5_000);
+		const secondary = await manager.waitForSession("python", 5_000, "format");
 		expect(primary).toBeDefined();
 		expect(secondary).toBeDefined();
 		expect(primary).not.toBe(secondary);
@@ -146,7 +146,7 @@ describe("the manager's format slot (#424 / ADR-0038)", () => {
 			retryBaseDelayMs: 1,
 			formatConfigured: () => [{ command: join("/bin", "missing-ruff"), languages: ["python"] }],
 		});
-		expect(await manager.waitForSession("python", "/repo", 1_000, "format")).toBeUndefined();
+		expect(await manager.waitForSession("python", 1_000, "format")).toBeUndefined();
 		const why = manager.unavailability("python", "format");
 		expect(why?.reason).toBe("server-missing");
 		expect(String(why?.message)).toContain("hashline.format.servers");
@@ -158,7 +158,7 @@ describe("the manager's format slot (#424 / ADR-0038)", () => {
 			retryBaseDelayMs: 60_000,
 			formatConfigured: () => [{ command: join("/bin", "missing-ruff"), languages: ["python"] }],
 		});
-		await manager.waitForSession("python", "/repo", 200, "format");
+		await manager.waitForSession("python", 200, "format");
 		expect(manager.unavailability("python", "format")?.reason).toBe("server-missing");
 		const cleared = manager.rescan();
 		expect(cleared).toContain("python");
@@ -177,7 +177,7 @@ describe("the manager's format slot (#424 / ADR-0038)", () => {
 			manager = harness.manager;
 			// The boot completes on MICROTASKS alone (settle): under fake timers a
 			// waitForSession poll would hang, and it is not what this test needs.
-			manager.warm("python", "/repo", "format");
+			manager.warm("python", "format");
 			await settle();
 			expect(manager.readySessionFor("python", "format")).toBeDefined();
 			vi.advanceTimersByTime(1_000);
@@ -196,7 +196,7 @@ describe("format routing through the secondary (#424)", () => {
 		await withTempFile("f.py", "x=1\n", async ({ cwd, path }) => {
 			const roles: Array<string | undefined> = [];
 			setLspManager({
-				waitForSession: (_lang: unknown, _root: unknown, _timeout: unknown, role?: string) => {
+				waitForSession: (_lang: unknown, _timeout: unknown, role?: string) => {
 					roles.push(role);
 					return undefined;
 				},

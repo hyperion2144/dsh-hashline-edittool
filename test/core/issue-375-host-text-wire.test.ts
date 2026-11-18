@@ -20,7 +20,7 @@
 import { describe, expect, it } from "vitest";
 import { LOSSY_NOTE_TEXT, rowTitle } from "../../src/render/wire-text.js";
 import { buildReadTool, readPresentationMeta } from "../../src/tools/tool-read.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import type { ReadPresentation } from "../../src/render/read-card.js";
 import { handleLspInstall, handleLspStatus } from "../../src/lsp/status-route.js";

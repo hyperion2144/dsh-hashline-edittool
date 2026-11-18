@@ -86,6 +86,10 @@ The fix also had to survive two host-side traps, both unreported before the spec
   projection reads `v.success` / `v.fail`, which is why `failures` is computed
   from the completions rather than re-derived from the meta it is writing.
 
+## 补充（2026-11-17，ADR-0040）
+
+**「写已成功」不因记账失败而反转。** 一份落盘事务（Commit）现在统一承接 undo 快照、原子写与 served 镜像结算，其失败策略只有一条：**镜像记账失败 = 一条警告**（`[E_SERVED_RECORD]`），落盘本身仍是成功。`apply_patch` 原先让该异常冒泡，把**已经写进盘里**的文件报成 `failed` 并停住整段——模型于是重试一个已经生效的改动。本次统一后：`edit` 与 `apply_patch` 的策略相同，各工具只保留自己的错误词汇（`fail[]` 的形状与文案不变，见本 ADR 决策 1）。
+
 ## Alternatives Considered
 
 - **Reuse `meta.error` with a "partial" flag.** Rejected: the row state derives

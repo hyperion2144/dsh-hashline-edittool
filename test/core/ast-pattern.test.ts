@@ -164,4 +164,24 @@ describe("ast pattern — a self-built matcher, no dependency", () => {
 		expect(hits[0]!.node.startPosition.row).toBe(0);
 	});
 
+	it("a `$$$` sentinel the grammar FLATTENED captures the whole level (PR #436 defect B)", () => {
+		// `$$$ARGS` in a parameter list parses as `required_parameter(SENTINEL)`:
+		// the grammar holds one item, so the list matched that single node and
+		// a two-parameter signature captured only its first parameter while the
+		// rest was silently absorbed.
+		const root = parse(
+			["export function add(a: number, b: number) {", "  return a + b;", "}"].join("\n"),
+			"typescript",
+		);
+		const hits = matchPattern(root, compilePattern("function add($$$ARGS) { $$$BODY }", "typescript")!);
+		expect(hits).toHaveLength(1);
+		const args = hits[0]!.captures.get("ARGS")!;
+		expect(args).toHaveLength(2);
+		expect(args[0]!.text).toBe("a: number");
+		expect(args[1]!.text).toBe("b: number");
+		const body = hits[0]!.captures.get("BODY")!;
+		expect(body).toHaveLength(1);
+		expect(body[0]!.text).toContain("return a + b;");
+	});
+
 });

@@ -27,7 +27,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { applyEffective } from "../../src/config.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { fmtMarker } from "../../src/hashline/hash-assign.js";
 import { loadHashStore } from "../../src/domain/session/hash-store.js";

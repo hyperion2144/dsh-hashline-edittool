@@ -19,7 +19,13 @@ import { defineTool, type ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { Context } from "@deepseek-ai/cordis";
 import { LANGUAGES, languageForPath } from "../ast/language.js";
 import { describeUnavailable, getLspManager, type LspManager } from "../lsp/manager.js";
-import { diagnosticLabel } from "../lsp/diagnostics/identity.js";
+import {
+	diagnosticRowsFromBuckets,
+	mintDiagnosticAnchors,
+	normalizeDiagnosticEntries,
+	projectDiagnosticLines,
+	type DiagnosticPolicy,
+} from "../lsp/diagnostics/projection.js";
 import { latestWriteFor } from "../lsp/write-tracker.js";
 import { E_LSP_NO_SERVER } from "../lsp/provider.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
@@ -465,7 +471,7 @@ export function buildLspTool(io: FileIO) {
 						`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
 					);
 				}
-				const session = await manager.forceWarm(languageId, process.cwd());
+				const session = await manager.forceWarm(languageId);
 				if (session === undefined) {
 					const why = manager.unavailability(languageId);
 					throw new Error(`${E_LSP_NO_SERVER} ${languageId} did not start: ${describeUnavailable(why)}.`);
@@ -490,7 +496,7 @@ export function buildLspTool(io: FileIO) {
 			// retry blind. This tool IS the protocol path: holding here for the boot
 			// is what the caller asked for, and the timeout turns a hang into an
 			// honest "did not start in time".
-			const session = await manager.waitForSession(language.id, process.cwd());
+			const session = await manager.waitForSession(language.id);
 			if (session === undefined) {
 				if (manager.disposed) {
 					throw new Error(
@@ -569,67 +575,26 @@ export function buildLspTool(io: FileIO) {
 				// The rows describe the content the server ANSWERED for — the probe may
 				// have verified a newer write than the snapshot this call read.
 				const verifiedText = verified?.text ?? text;
+				// ONE projection, declared policy (ADR-0039): the manual query is
+				// the COMPLETE view — every severity, uncapped, ledger untouched.
+				// ONE ROW PER LINE: the row IS the source line, its diagnostics are
+				// a SEPARATE field — three earlier shapes were wrong, and each one
+				// taught the same lesson from a different side: dedup-only parked
+				// the messages in `raw`; one-row-per-diagnostic printed the source
+				// line once per error; joining the messages INTO the row text made
+				// one string serve two readings. The row keeps the verbatim line
+				// (what `served` vouches for) and `messages` carries the data.
+				const entries = normalizeDiagnosticEntries(pushed, MANUAL_DIAGNOSTIC_POLICY);
+				// Collected in the SAME pass as the rows: deriving `raw` from the
+				// rendered row text afterwards would mean parsing a string this
+				// function just built.
+				const diagMessages = entries.map((entry) => `L${entry.line} ${entry.label}`);
 				const diagLines = splitLines(verifiedText);
-				// NO dense read: every entry ever READ below belongs to a line in
-				// `diagLineNos`, and those are exactly the lines the mint fills in.
-				// The array stays full length because the rows index it by LINE.
 				const diagAnchors: string[] = new Array(diagLines.length).fill("");
-				// ONE ROW PER LINE: the row IS the source line, its diagnostics are a
-				// SEPARATE field.
-				//
-				// Three shapes have now been wrong, and each one taught the same lesson
-				// from a different side: dedup-only parked the messages in `raw` (body and
-				// messages disagreed); one-row-per-diagnostic printed the source line once
-				// per error (the same text three times, in a channel the model pays for);
-				// and joining the messages INTO the row text made one string serve two
-				// readings — the card cannot style a diagnostic differently from the line
-				// it sits under if both are the same string.
-				//
-				// So the row keeps the verbatim line (which is also what `served` must
-				// vouch for, since anchors are content-derived) and `messages` carries the
-				// diagnostics as data. Both channels then read the same two fields: the
-				// model prints the messages indented under their line, and the card gives
-				// them a style of their own.
-				const byLine = new Map<number, string[]>();
-				const bySource = new Map<number, string[]>();
-				const byCode = new Map<number, string[]>();
-				const bySeverity = new Map<number, number[]>();
-				// Collected in the SAME pass as the rows: deriving `raw` from the rendered
-				// row text afterwards would mean parsing a string this function just built.
-				const diagMessages: string[] = [];
-				for (const entry of pushed) {
-					const d = entry as {
-						message?: unknown;
-						severity?: unknown;
-						source?: unknown;
-						code?: unknown;
-						range?: { start?: { line?: unknown } };
-					};
-					// #429: the server's own handles ride beside the message — no
-					// classification, just the raw facts the protocol carries.
-					const source = typeof d.source === "string" ? d.source : "";
-					const ruleCode = typeof d.code === "string" || typeof d.code === "number" ? String(d.code) : "";
-					const at = d.range?.start?.line;
-					if (typeof at !== "number" || at < 0) continue;
-					// The severity the protocol sent, as a word: a warning that reads like an
-					// error is worse than no label at all.
-					const code = typeof d.severity === "number" ? d.severity : 0;
-					const severity = DIAGNOSTIC_SEVERITY[code] ?? "diagnostic";
-					const message = typeof d.message === "string" ? d.message : JSON.stringify(entry);
-					const labelled = diagnosticLabel(code, source, ruleCode, message);
-					diagMessages.push(`L${at + 1} ${labelled}`);
-					const line = at + 1;
-					byLine.set(line, [...(byLine.get(line) ?? []), labelled]);
-					// The CODES ride beside the labels: the card counts errors and warnings
-					// for its title suffix, and counting them out of an "error: …" prefix
-					// would be the card parsing a string this same function just built.
-					bySeverity.set(line, [...(bySeverity.get(line) ?? []), code]);
-					bySource.set(line, [...(bySource.get(line) ?? []), source]);
-					byCode.set(line, [...(byCode.get(line) ?? []), ruleCode]);
-				}
+				const projection = projectDiagnosticLines(entries, MANUAL_DIAGNOSTIC_POLICY);
 				// LAZY (#169): allocate for exactly the diagnostic lines this report serves.
-				const diagLineNos = [...byLine.keys()].sort((a, b) => a - b);
-				const diagAllocated = await anchorForInWorkspace({
+				const diagLineNos = [...projection.byLine.keys()].sort((a, b) => a - b);
+				const diagAllocated = await mintDiagnosticAnchors({
 					cwd,
 					absolutePath,
 					content: verifiedText,
@@ -637,19 +602,9 @@ export function buildLspTool(io: FileIO) {
 					sessionKey: execSessionKey(exec),
 				});
 				for (let k = 0; k < diagLineNos.length; k++) {
-					diagAnchors[diagLineNos[k]! - 1] = diagAllocated[k]!;
+					diagAnchors[diagLineNos[k]! - 1] = diagAllocated[k] ?? "";
 				}
-				const diagRows = [...byLine.entries()]
-					.sort((a, b) => a[0] - b[0])
-					.map(([line, messages]) => ({
-						number: line,
-						hash: diagAnchors[line - 1] ?? "",
-						text: diagLines[line - 1] ?? "",
-						messages,
-						severities: bySeverity.get(line) ?? [],
-						sources: bySource.get(line) ?? [],
-						codes: byCode.get(line) ?? [],
-					}));
+				const diagRows = diagnosticRowsFromBuckets(projection.byLine, diagLines, diagAnchors);
 				// Served and observed like a read's rows, with the VERBATIM line as the
 				// content: the anchors are content-derived, so serving the row TEXT (which
 				// now carries a message) would vouch for a line that does not exist.
@@ -1495,18 +1450,11 @@ export { E_LSP_NO_SERVER };
 const DIAGNOSTIC_WAIT_MS = 5_000;
 
 /**
- * LSP `DiagnosticSeverity` as a word, so a message says what it is.
- *
- * A warning labelled like an error is worse than no label at all: the reader has
- * to be able to tell "this will not compile" from "you could write this
- * better".
+ * The manual query's DECLARED projection policy (ADR-0039): the COMPLETE
+ * view — every severity, uncapped, and the suppression ledger untouched.
+ * The write path declares the opposite in auto-diag.ts.
  */
-const DIAGNOSTIC_SEVERITY: Record<number, string> = {
-	1: "error",
-	2: "warning",
-	3: "information",
-	4: "hint",
-};
+const MANUAL_DIAGNOSTIC_POLICY: DiagnosticPolicy = {};
 
 /** The registered `lsp` definition and the disposer that unregisters it. */
 export interface LspRegistration {

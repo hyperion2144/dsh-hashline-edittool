@@ -98,7 +98,7 @@ async function readyManager(): Promise<{ notifications: Notification[] }> {
 		spawn: () => ({ transport }),
 	});
 	setLspManager(manager);
-	manager.decide("typescript", dir, 10); // starts the warm
+	manager.decide("typescript", 10); // starts the warm
 	// A microtask drain with room to spare, for the same reason and in the same
 	// shape as `lsp-manager.test.ts`'s `settle`: the previous twenty-tick budget
 	// was outnumbered the moment discovery grew a search location, because each

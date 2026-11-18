@@ -25,6 +25,7 @@ import { fileSnap } from "./file-snap.js";
 import { resolveTarget, toCwd } from "./paths.js";
 import { TOLERANT_READ_MAX_BYTES } from "./constants.js";
 import { errCode } from "./utils.js";
+import { probeVerdict } from "./probe-verdict.js";
 
 /**
  * How a tolerant read's text was obtained — the fact every tool needs to
@@ -529,24 +530,32 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 
 		async renameFile(fromPath, toPath, cwd, expected, signal, sandboxPolicy) {
 			const before = await probe(fromPath, cwd, signal);
-			if (before.kind === "absent") {
-				domainError("E_NOT_FOUND", `File not found: ${fromPath}.`);
-			}
-			if (before.kind === "symlink") {
-				domainError("E_SYMLINK", `Refusing to rename a symbolic link: ${fromPath}. Rename the link with bash if that is what you mean.`);
-			}
 			if (before.kind !== "file") {
-				domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}. Directories and special files are not renamable here; use bash for directories.`);
+				const refused = probeVerdict({ probe: before, expect: "file", verb: "rename", path: fromPath });
+				if (refused === undefined) domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}.`);
+				domainError(refused.code, refused.message);
 			}
 			if (expected.kind !== "file" || expected.version !== before.version) {
 				domainError("E_RENAME_STALE", `The file changed after it was probed: ${fromPath}. Re-check before renaming.`);
 			}
 			const dest = await probe(toPath, cwd, signal);
-			if (dest.kind === "symlink" || dest.kind === "directory" || dest.kind === "other") {
-				domainError("E_EXISTS", `Destination already exists: ${toPath}. Remove it first or pick another name.`);
+			if (dest.kind !== "absent" && (dest.kind !== "file" || dest.version !== before.version)) {
+				const destVerdict = probeVerdict({ probe: dest, expect: "unoccupied", verb: "rename", path: toPath });
+				if (destVerdict === undefined) domainError("E_NOT_FILE", `Destination is not a regular file: ${toPath}.`);
+				domainError(destVerdict.code, destVerdict.message);
 			}
-			if (dest.kind === "file" && dest.version !== before.version) {
-				domainError("E_EXISTS", `Destination already exists: ${toPath}. Remove it first or pick another name.`);
+			if (dest.kind === "file") {
+				// Same inode under another spelling is a case-only rename; anything
+				// else is a real overwrite and is refused.
+				const [a, b] = await Promise.all([
+					stat(before.path, { bigint: true }),
+					stat(dest.path, { bigint: true }),
+				]);
+				if (a.dev !== b.dev || a.ino !== b.ino) {
+					const verdict = probeVerdict({ probe: dest, expect: "unoccupied", verb: "rename", path: toPath });
+					if (verdict === undefined) domainError("E_NOT_FILE", `Destination is not a regular file: ${toPath}.`);
+					domainError(verdict.code, verdict.message);
+				}
 			}
 			const fromTarget = await fs.resolve(fromPath, {
 				cwd,
@@ -613,7 +622,9 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 				destAgain.kind !== "absent" &&
 				!(destAgain.kind === "file" && destAgain.version === before.version)
 			) {
-				domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
+				const verdict = probeVerdict({ probe: destAgain, expect: "unoccupied", verb: "rename", path: toPath });
+				if (verdict === undefined) domainError("E_NOT_FILE", `Destination is not a regular file: ${toPath}.`);
+				domainError(verdict.code, verdict.message);
 			}
 			try {
 				await rename(fromProc, toProc);
@@ -643,11 +654,10 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 			if (before.kind === "absent") {
 				return { kind: "absent", path: before.path };
 			}
-			if (before.kind === "symlink") {
-				domainError("E_SYMLINK", `Refusing to delete a symbolic link: ${requestedPath}. Delete the link itself with bash if that is what you mean.`);
-			}
-			if (before.kind === "directory" || before.kind === "other") {
-				domainError("E_NOT_FILE", `Path is not a regular file: ${requestedPath}. Directories and special files are not deletable here; use bash for directories.`);
+			if (before.kind !== "file") {
+				const refused = probeVerdict({ probe: before, expect: "file", verb: "delete", path: requestedPath });
+				if (refused === undefined) domainError("E_NOT_FILE", `Path is not a regular file: ${requestedPath}.`);
+				domainError(refused.code, refused.message);
 			}
 			if (expected.kind === "absent") {
 				domainError("E_DELETE_STALE", `The path was absent when it was probed and a file now exists: ${requestedPath}. Re-check before deleting.`);
@@ -712,180 +722,6 @@ export function ctxFsIO(fs: FileSystem, ctx: Context): FileIO {
 				throw error;
 			}
 			return { kind: "deleted", path: proc };
-		},
-	};
-}
-
-/** FileIO over the host filesystem directly (tests, previews, fallback). */
-export function localIO(): FileIO {
-	// Node's own decode never refuses a file for its content: `readText` is
-	// the plain string read, and `readTextTolerant` re-reads as bytes to
-	// classify (native vs lossy) without changing what comes back.
-	const readLocal = async (absolutePath: string, signal?: AbortSignal): Promise<string> => {
-		signal?.throwIfAborted();
-		return readFile(absolutePath, "utf-8");
-	};
-
-	/** Local probe: same contract as the dsh backend, no policy. */
-	const localProbe = async (
-		requestedPath: string,
-		cwd: string,
-	): Promise<FileProbe> => {
-		const absolute = toCwd(requestedPath, cwd ?? process.cwd());
-		let info: Awaited<ReturnType<typeof lstat>>;
-		try {
-			info = await lstat(absolute);
-		} catch (error) {
-			if (errCode(error) !== "ENOENT") throw error;
-			info = undefined as never;
-		}
-		if (info === undefined) return { kind: "absent", path: await resolveTarget(absolute) };
-		if (info.isSymbolicLink()) return { kind: "symlink" };
-		if (info.isDirectory()) return { kind: "directory" };
-		if (!info.isFile()) return { kind: "other" };
-		const path = await resolveTarget(absolute);
-		return { kind: "file", path, version: (await fileSnap(path)).snapshotId };
-	};
-	return {
-		async resolve(path, cwd) {
-			return resolveTarget(toCwd(path, cwd ?? process.cwd()));
-		},
-		async readText(absolutePath, signal) {
-			return readLocal(absolutePath, signal);
-		},
-		async readTextTolerant(absolutePath, signal) {
-			// The local deployment never refuses a file for its content, so a
-			// byte-exact decode IS the native answer; only undecodable bytes
-			// downgrade the classification to lossy (#273).
-			signal?.throwIfAborted();
-			const bytes = await readFile(absolutePath);
-			const text = bytes.toString("utf-8");
-			return {
-				text,
-				fidelity: Buffer.from(text, "utf-8").equals(bytes) ? "native" : "lossy",
-			};
-		},
-		async writeText(absolutePath, content, signal, _exec, _sandboxPolicy) {
-			signal?.throwIfAborted();
-			await writeAtomic(absolutePath, content);
-		},
-		async emitObserved() {
-			// No policy event gate on the host filesystem; nothing to record.
-		},
-		async emitAbsent() {
-			// No policy event gate on the host filesystem; nothing to record.
-			return false;
-		},
-		async statVersion(absolutePath) {
-			try {
-				return (await fileSnap(absolutePath)).snapshotId;
-			} catch {
-				return undefined;
-			}
-		},
-		async statSize(absolutePath) {
-			try {
-				const st = await stat(absolutePath);
-				return st.isFile() ? st.size : undefined;
-			} catch {
-				return undefined;
-			}
-		},
-
-		probeFile: localProbe,
-		async deleteFile(requestedPath, cwd, expected) {
-			const before = await localProbe(requestedPath, cwd);
-			if (before.kind === "absent") return { kind: "absent", path: before.path };
-			if (before.kind === "symlink") {
-				domainError("E_SYMLINK", `Refusing to delete a symbolic link: ${requestedPath}.`);
-			}
-			if (before.kind === "directory" || before.kind === "other") {
-				domainError("E_NOT_FILE", `Path is not a regular file: ${requestedPath}.`);
-			}
-			if (expected.kind === "absent") {
-				domainError("E_DELETE_STALE", `The path was absent when it was probed and a file now exists: ${requestedPath}.`);
-			}
-			if (expected.kind !== "file") {
-				domainError("E_DELETE_STALE", `The file changed after it was probed: ${requestedPath}.`);
-			}
-			if (expected.version !== before.version) {
-				domainError("E_DELETE_STALE", `The file changed after it was probed: ${requestedPath}.`);
-			}
-			const after = await localProbe(requestedPath, cwd);
-			if (after.kind === "absent") return { kind: "absent", path: after.path };
-			if (after.kind !== "file") {
-				domainError(after.kind === "symlink" ? "E_SYMLINK" : "E_NOT_FILE", `The path changed type while deleting: ${requestedPath}.`);
-			}
-			if (after.version !== before.version) {
-				domainError("E_DELETE_STALE", `The file changed immediately before deletion: ${requestedPath}.`);
-			}
-			try {
-				await unlink(before.path);
-			} catch (error) {
-				const code = errCode(error);
-				if (code === "ENOENT") return { kind: "absent", path: before.path };
-				if (code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EROFS") {
-					domainError("E_ACCESS", `Cannot delete ${requestedPath} (${code}).`);
-				}
-				if (code === "EISDIR") domainError("E_NOT_FILE", `Path became a directory while deleting: ${requestedPath}.`);
-				throw error;
-			}
-			return { kind: "deleted", path: before.path };
-		},
-
-		async renameFile(fromPath, toPath, cwd, expected) {
-			const before = await localProbe(fromPath, cwd);
-			if (before.kind === "absent") domainError("E_NOT_FOUND", `File not found: ${fromPath}.`);
-			if (before.kind === "symlink") {
-				domainError("E_SYMLINK", `Refusing to rename a symbolic link: ${fromPath}.`);
-			}
-			if (before.kind !== "file") {
-				domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}.`);
-			}
-			if (expected.kind !== "file" || expected.version !== before.version) {
-				domainError("E_RENAME_STALE", `The file changed after it was probed: ${fromPath}.`);
-			}
-			const dest = await localProbe(toPath, cwd);
-			if (dest.kind === "symlink" || dest.kind === "directory" || dest.kind === "other") {
-				domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
-			}
-			if (dest.kind === "file") {
-				// Same inode under another spelling is a case-only rename; anything
-				// else is a real overwrite and is refused.
-				const [a, b] = await Promise.all([
-					stat(before.path, { bigint: true }),
-					stat(dest.path, { bigint: true }),
-				]);
-				if (a.dev !== b.dev || a.ino !== b.ino) {
-					domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
-				}
-			}
-			const after = await localProbe(fromPath, cwd);
-			if (after.kind !== "file" || after.version !== before.version) {
-				domainError("E_RENAME_STALE", `The file changed immediately before renaming: ${fromPath}.`);
-			}
-			try {
-				await rename(before.path, dest.path);
-			} catch (error) {
-				const code = errCode(error);
-				if (code === "EXDEV") {
-					domainError("E_CROSS_DEVICE", `Cannot rename across filesystems: ${fromPath} to ${toPath}.`);
-				}
-				if (code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EROFS") {
-					domainError("E_ACCESS", `Cannot rename ${fromPath} to ${toPath} (${code}).`);
-				}
-				if (code === "ENOENT") {
-					domainError("E_NOT_FOUND", `Path not found: ${fromPath} or its destination directory.`);
-				}
-				if (code === "EISDIR" || code === "ENOTEMPTY") {
-					domainError("E_NOT_FILE", `Path is not a regular file: ${fromPath}.`);
-				}
-				if (code === "EEXIST") {
-					domainError("E_EXISTS", `Destination already exists: ${toPath}.`);
-				}
-				throw error;
-			}
-			return { from: before.path, to: dest.path };
 		},
 	};
 }

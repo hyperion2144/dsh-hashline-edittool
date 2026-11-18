@@ -18,7 +18,7 @@ import { withTempFile, makeExec, useNumberedRows } from "../support/fixtures.js"
 // #244: the line-number switch belongs to the user now and defaults OFF; this
 // file asserts numbered rows, so every test here pins it ON.
 useNumberedRows();
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 
 afterEach(() => {
 	applyEffective({});

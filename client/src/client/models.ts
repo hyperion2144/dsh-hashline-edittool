@@ -149,26 +149,40 @@ function pickString(args: Record<string, unknown>, keys: string[]): string | und
 }
 
 /**
- * The row's own label per variant — the FALLBACK title, for a call whose meta
- * carries no host row title (#375: a running call, an old log).
+ * ONE declaration per tool: the card shape (variant), the row's own title,
+ * the candidate summary keys, and whether the row derives a leading file
+ * path. This table REPLACES the four parallel lists the row used to keep in
+ * sync (per-variant title keys, per-variant summary keys, a per-tool title
+ * map nested inside the model builder, and a hardcoded variant list inside
+ * `deriveFilePath`) — adding a tool used to require editing all four in
+ * agreement; now it is one row here.
+ *
+ * A tool that WEARS another card (format, lsp, ast_grep, ast_edit and
+ * undo_last_edit all wear the read card) declares the variant it wears AND
+ * its own title — the variant keeps driving the card shape and the summary,
+ * the title resolves from the tool's own key (#375, #427).
  */
-const VARIANT_TITLE_KEYS: Record<string, CardLocaleKey> = {
-	read: "row.title.read",
-	grep: "row.title.grep",
-	edit: "row.title.edit",
-	write: "row.title.write",
-	apply_patch: "row.title.apply_patch",
-};
+interface ToolCardDeclaration {
+	variant: "read" | "edit" | "write" | "grep" | "apply_patch";
+	titleKey: CardLocaleKey;
+	summaryKeys: string[];
+	filePath: boolean;
+}
 
-const SUMMARY_KEYS: Record<string, string[]> = {
-	read: ["path", "file_path", "url"],
+const TOOL_CARDS: Record<string, ToolCardDeclaration> = {
+	read: { variant: "read", titleKey: "row.title.read", summaryKeys: ["path", "file_path", "url"], filePath: true },
+	edit: { variant: "edit", titleKey: "row.title.edit", summaryKeys: ["path", "file_path"], filePath: true },
+	write: { variant: "write", titleKey: "row.title.write", summaryKeys: ["file_path", "path"], filePath: true },
 	// Mirrors the shipped search row: the pattern is the grep summary.
-	grep: ["query", "pattern", "url"],
-	edit: ["path", "file_path"],
-	write: ["file_path", "path"],
+	grep: { variant: "grep", titleKey: "row.title.grep", summaryKeys: ["query", "pattern", "url"], filePath: false },
 	// A patch's summary is its section paths, derived from the patch text
-	// (see `collectPatchPaths`), never the raw blob.
-	apply_patch: ["patch"],
+	// (see `collectPatchSections`), never the raw blob.
+	apply_patch: { variant: "apply_patch", titleKey: "row.title.apply_patch", summaryKeys: ["patch"], filePath: false },
+	format: { variant: "read", titleKey: "row.title.format", summaryKeys: ["path", "file_path", "url"], filePath: true },
+	lsp: { variant: "read", titleKey: "row.title.lsp", summaryKeys: ["path", "file_path", "url"], filePath: true },
+	ast_grep: { variant: "read", titleKey: "row.title.ast_grep", summaryKeys: ["path", "file_path", "url"], filePath: true },
+	ast_edit: { variant: "read", titleKey: "row.title.ast_edit", summaryKeys: ["path", "file_path"], filePath: true },
+	undo_last_edit: { variant: "read", titleKey: "row.title.undo", summaryKeys: ["path", "file_path"], filePath: true },
 };
 
 const FILE_PATH_KEYS = ["path", "file_path"];
@@ -284,10 +298,10 @@ function patchSummary(
 }
 
 
-function deriveSummary(variant: string, argsRaw: string): string {
+function deriveSummary(card: ToolCardDeclaration, argsRaw: string): string {
 	const args = parseArgs(argsRaw);
 	if (args === undefined) return firstLine(argsRaw);
-	const picked = pickString(args, SUMMARY_KEYS[variant] ?? []);
+	const picked = pickString(args, card.summaryKeys);
 	if (picked !== undefined) return firstLine(picked);
 	for (const value of Object.values(args)) {
 		if (typeof value === "string" && value !== "") return firstLine(value);
@@ -295,14 +309,14 @@ function deriveSummary(variant: string, argsRaw: string): string {
 	return firstLine(argsRaw);
 }
 
-function deriveFilePath(variant: string, argsRaw: string): string | undefined {
-	if (variant !== "read" && variant !== "edit" && variant !== "write") return undefined;
+function deriveFilePath(card: ToolCardDeclaration, argsRaw: string): string | undefined {
+	if (!card.filePath) return undefined;
 	const args = parseArgs(argsRaw);
 	if (args === undefined) return undefined;
 	const picked = pickString(args, FILE_PATH_KEYS);
 	if (picked !== undefined) return firstLine(picked);
 	// issue #81: edit with no top-level path — use per-item path when exactly one file.
-	if (variant === "edit") {
+	if (card.variant === "edit") {
 		const editPaths = collectEditPaths(args);
 		if (editPaths.length === 1) return firstLine(editPaths[0]!);
 	}
@@ -327,23 +341,8 @@ export function toolRowModel(
 	// their own) must never have its TITLE fall back to 读取 just because its
 	// variant is not one of the five primitives. The variant keeps driving the
 	// CARD shape and the summary; the TITLE resolves from the tool's own name.
-	const TOOL_TITLE_KEYS: Record<string, string> = {
-		format: "row.title.format",
-		lsp: "row.title.lsp",
-		ast_grep: "row.title.ast_grep",
-		ast_edit: "row.title.ast_edit",
-		undo_last_edit: "row.title.undo",
-	};
-	const variant =
-		toolName === "edit"
-			? "edit"
-			: toolName === "write"
-				? "write"
-				: toolName === "grep"
-					? "grep"
-					: toolName === "apply_patch"
-						? "apply_patch"
-						: "read";
+	const card = TOOL_CARDS[toolName] ?? TOOL_CARDS.read!;
+	const variant = card.variant;
 	const done = "kind" in block;
 	const argsRaw = (done ? block.call?.argsRaw : block.argsRaw) ?? "";
 	const state = !done
@@ -357,7 +356,7 @@ export function toolRowModel(
 	if (argsRaw === "") {
 		base = block.callId;
 	} else {
-		base = abbreviateHomePath(relativizeToCwd(deriveSummary(variant, argsRaw), cwd), home);
+		base = abbreviateHomePath(relativizeToCwd(deriveSummary(card, argsRaw), cwd), home);
 		// issue #81: edit with no top-level path — relativize each per-item path individually.
 		// A PATCH is many files AND several outcomes: its summary lists every
 		// section, each wearing its marker (`+` created, `~` edited, `-` removed,
@@ -369,7 +368,7 @@ export function toolRowModel(
 		}
 		if (variant === "edit") {
 			const args = parseArgs(argsRaw);
-			if (args !== undefined && pickString(args, SUMMARY_KEYS.edit) === undefined) {
+			if (args !== undefined && pickString(args, card.summaryKeys) === undefined) {
 				const editPaths = collectEditPaths(args);
 				if (editPaths.length > 0) {
 					base = editPaths
@@ -383,9 +382,9 @@ export function toolRowModel(
 	const errorSummary = state === "error" && output !== null ? firstLine(output) : null;
 	return {
 		variant,
-		titleKey: VARIANT_TITLE_KEYS[variant] ?? TOOL_TITLE_KEYS[toolName] ?? "row.title.generic",
+		titleKey: card.titleKey,
 		summary: base,
-		filePath: deriveFilePath(variant, argsRaw),
+		filePath: deriveFilePath(card, argsRaw),
 		bodyRaw: argsRaw === "" ? null : argsRaw,
 		output,
 		errorSummary,
@@ -1027,6 +1026,27 @@ export function metaFormatSections(meta: unknown): FormatSectionMeta[] {
 		});
 	}
 	return out;
+
+}
+
+/**
+ * The row groups the FORMAT card draws: the host's own when the meta carries
+ * them, else the LEGACY synthesis from the `formats` list.
+ *
+ * The host now carries `diffRowGroups` itself (ADR-0040), so a new call names
+ * its tab directly. A meta persisted before that change carries only `formats` —
+ * and it must still draw: logged history never stops rendering (ADR-0026
+ * decision 6 makes the same promise for the wire texts).
+ *
+ * @param meta - the persisted meta.
+ * @param fallbackPath - the path to name a section that carries none.
+ */
+export function formatRowGroups(meta: unknown, fallbackPath: string): DiffRowGroup[] {
+	if (typeof meta === "object" && meta !== null && !Array.isArray(meta)) {
+		const groups = (meta as Record<string, unknown>).diffRowGroups;
+		if (Array.isArray(groups)) return groups as DiffRowGroup[];
+	}
+	return metaFormatSections(meta).map((section) => ({ path: section.path ?? fallbackPath, rows: [] }));
 }
 /** A derived diff card: structured rows (gutter) and/or the official hunks. */
 export interface DiffCard {

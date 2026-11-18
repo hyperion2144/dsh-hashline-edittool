@@ -70,8 +70,8 @@ describe.skipIf(!TLS_ON_PATH)("the format pipeline against a REAL typescript-lan
 				console.error(`[smoke] server for ${languageId} failed to start: ${message}`);
 			},
 		});
-		manager.warm("typescript", root);
-		session = await manager.waitForSession("typescript", root, 30_000);
+		manager.warm("typescript");
+		session = await manager.waitForSession("typescript", 30_000);
 		uri = pathToFileURL(join(root, ".format-smoke.ts")).href;
 		// The production pipeline syncs (open-or-change) BEFORE requesting —
 		// the wire just proved why: an unopened document gets no edits.

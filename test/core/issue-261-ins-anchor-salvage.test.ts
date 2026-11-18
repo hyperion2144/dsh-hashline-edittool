@@ -15,8 +15,10 @@ import { describe, it, expect } from "vitest";
 import { readFile } from "node:fs/promises";
 import { withTempFile, makeExec } from "../support/fixtures.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
-import { buildEditTool, buildPreparedItem } from "../../src/tools/tool-edit.js";
-import { localIO, type FileIO } from "../../src/infra/fs-bridge.js";
+import { buildEditTool } from "../../src/tools/tool-edit.js";
+import { buildPreparedItem } from "../../src/domain/edit/anchor-fold.js";
+import { type FileIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 
 const THREE = "one\ntwo\nthree\n";

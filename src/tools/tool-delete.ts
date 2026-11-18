@@ -34,6 +34,7 @@ import type { FsSandboxController, FsEscalationArgs } from "../infra/sandbox.js"
 import { withLiveWorkspace } from "../domain/session/live-cwd.js";
 import { loadHashStore, type HashStore, type PurgeReport } from "../domain/session/hash-store.js";
 import { removeFile, type RemoveFileResult } from "../domain/delete/remove-file.js";
+import { probeVerdict } from "../infra/probe-verdict.js";
 import { DELETE_DESCRIPTION } from "../domain/edit/prompts.js";
 
 /**
@@ -107,21 +108,11 @@ function failureFromError(error: unknown, path: string): FileFailureMeta {
 
 /** A pre-approval probe that already says "not a regular file" is a per-path failure. */
 function typeFailure(path: string, probe: FileProbe): FileFailureMeta | undefined {
-	if (probe.kind === "symlink") {
-		return {
-			path,
-			code: "E_SYMLINK",
-			message: `Refusing to delete a symbolic link: ${path}. The delete tool handles regular files only; use bash if you mean to remove the link itself.`,
-		};
-	}
-	if (probe.kind === "directory" || probe.kind === "other") {
-		return {
-			path,
-			code: "E_NOT_FILE",
-			message: `Path is not a regular file: ${path}. Directories and special files are not deletable here; use bash for directories.`,
-		};
-	}
-	return undefined;
+	if (probe.kind === "absent") return undefined; // the backend decides: already-absent is success
+	// ONE probe verdict (infra/probe-verdict.ts): the delete verb in, the
+	// domain's code + skeleton out. No second hand-copied table here.
+	const verdict = probeVerdict({ probe, expect: "file", verb: "delete", path });
+	return verdict === undefined ? undefined : { path, ...verdict };
 }
 
 /** Small, local byte formatter for the model-facing summary. */

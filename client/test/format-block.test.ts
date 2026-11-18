@@ -15,6 +15,21 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { toolRowModel } from "../src/client/models.js";
+import type { ToolCallBlock } from "../src/client/types.js";
+
+/** A running call fixture — the shape the row model reads. */
+function running(argsRaw: string, name: string): ToolCallBlock {
+	return {
+		callId: "c1",
+		name,
+		argsRaw,
+		turn: 1,
+		step: 1,
+		time: 0,
+		subCalls: [],
+	};
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const clientRoot = join(here, "..");
@@ -43,10 +58,16 @@ describe("a borrowed-card tool keeps its own TITLE (#427 review)", () => {
 	});
 
 	it("the row model resolves a borrowed tool's title from its OWN name, never the read title", () => {
-		const modelsSource = readFileSync(join(clientRoot, "src", "client", "models.ts"), "utf8");
-		expect(modelsSource).toContain('TOOL_TITLE_KEYS[toolName] ?? "row.title.generic"');
-		expect(modelsSource).toContain('format: "row.title.format"');
-		expect(modelsSource).toContain('lsp: "row.title.lsp"');
+		// The BEHAVIOUR, not the source text: a tool that borrows the read
+		// card still announces ITSELF. (The old pin read models.ts's source and
+		// broke on any refactor — the shape ADR-0040 replaced.)
+		const format = toolRowModel("format", running(JSON.stringify({ path: "/w/a.ts" }), "format"), "/w", undefined);
+		expect(format.variant).toBe("read");
+		expect(format.titleKey).toBe("row.title.format");
+		const lsp = toolRowModel("lsp", running(JSON.stringify({ path: "/w/a.ts" }), "lsp"), "/w", undefined);
+		expect(lsp.titleKey).toBe("row.title.lsp");
+		const read = toolRowModel("read", running(JSON.stringify({ path: "/w/a.ts" }), "read"), "/w", undefined);
+		expect(read.titleKey).toBe("row.title.read");
 	});
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll } from "vitest";
 import { readAndServe } from "../../src/read-and-serve.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import {
 	loadServed,
 	markDriftReported,

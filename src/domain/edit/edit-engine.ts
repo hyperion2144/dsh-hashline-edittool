@@ -181,22 +181,6 @@ export interface PreparedItem {
 	expectedStart?: string;
 	/** Declared line content for anchor_end (only when explicitly passed). */
 	expectedEnd?: string;
-	/**
-	 * Whether the caller actually supplied `anchor_end` (rather than it being
-	 * folded from `anchor_start`). A block op treats a supplied `anchor_end` as
-	 * a **range assertion**, so "omitted" and "asserted equal to the opener"
-	 * must not be confused.
-	 */
-	anchorEndAsserted?: boolean;
-	/**
-	 * The `<line>` hint the caller wrote in `anchor_start` / `anchor_end`.
-	 *
-	 * Normalization strips it (the anchor is authoritative), but a block op
-	 * needs it: the extent is resolved by finding which construct STARTS at
-	 * that line, and an anchor string alone cannot answer that.
-	 */
-	lineStart?: number;
-	lineEnd?: number;
 }
 
 /**
@@ -470,22 +454,6 @@ export interface ApplyOneInput {
 	expectedStart?: string;
 	/** Declared line content for anchor_end (only when explicitly passed). */
 	expectedEnd?: string;
-	/**
-	 * Whether the caller actually supplied `anchor_end` (rather than it being
-	 * folded from `anchor_start`). A block op treats a supplied `anchor_end` as
-	 * a **range assertion**, so "omitted" and "asserted equal to the opener"
-	 * must not be confused.
-	 */
-	anchorEndAsserted?: boolean;
-	/**
-	 * The `<line>` hint the caller wrote in `anchor_start` / `anchor_end`.
-	 *
-	 * Normalization strips it (the anchor is authoritative), but a block op
-	 * needs it: the extent is resolved by finding which construct STARTS at
-	 * that line, and an anchor string alone cannot answer that.
-	 */
-	lineStart?: number;
-	lineEnd?: number;
 }
 
 export interface ApplyOneResult {

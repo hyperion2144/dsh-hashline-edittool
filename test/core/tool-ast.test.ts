@@ -16,7 +16,7 @@ import { setAstClient, type WorkerLike } from "../../src/ast/client.js";
 import { handleRequest, type AstWorkerRequest, type AstWorkerResponse } from "../../src/ast/worker.js";
 import { buildAstGrepTool } from "../../src/tools/tool-ast-grep.js";
 import { buildAstEditTool } from "../../src/tools/tool-ast-edit.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { outputSchemaOf, schemaViolations } from "../support/schema-check.js";
 import { applyEffective } from "../../src/config.js";
 import { NUMBERED } from "../support/fixtures.js";
@@ -223,14 +223,17 @@ describe("ast_edit", () => {
 		expect(after).toContain('import Default from "./d";');
 	});
 
-	it("a leaf pattern edits only the line that spells the text (#255)", async () => {
+	it("a leaf pattern edits only ITS OWN SPAN — the line around it survives (#255, PR #436 defect A)", async () => {
 		// The two-line field report: `beta` never contains `alpha`, yet the
 		// type-only match rewrote its line too — silently, with `ok: true`.
 		await writeFile(file, "const alpha = 1;\nconst beta = 2;\n", "utf-8");
 		const value = await run({ pat: "alpha", out: "alpha2" });
 		expect(value.ok).toBe(true);
 		expect(value.count).toBe(1);
-		expect(await readFile(file, "utf-8")).toBe("alpha2\nconst beta = 2;\n");
+		// The match is the IDENTIFIER, so only it is replaced: `const ` and
+		// ` = 1;` belong to the caller. (The old whole-line replacement ate
+		// both — the defect the PR review filed as defect A.)
+		expect(await readFile(file, "utf-8")).toBe("const alpha2 = 1;\nconst beta = 2;\n");
 	});
 
 	it("a `$$$` capture expands to the source it spanned (#255)", async () => {

@@ -178,7 +178,7 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 	// formatting secondary (`format.servers.<id>`, ADR-0038) formats through
 	// THAT slot; without one the primary path is byte-for-byte today's.
 	const role = formatConfiguredServers().has(language.id) ? ("format" as const) : ("primary" as const);
-	const session = await manager.waitForSession(language.id, input.cwd, LspManager.START_TIMEOUT_MS, role);
+	const session = await manager.waitForSession(language.id, LspManager.START_TIMEOUT_MS, role);
 	if (session === undefined) {
 		if (manager.disposed) {
 			throw new Error(

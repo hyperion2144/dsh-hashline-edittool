@@ -79,11 +79,22 @@ function workingDirectoryOf(agent: Agent): WorkingDirectoryLike | undefined {
  *   that has no working-directory service.
  */
 export async function liveCwd(exec: ToolExecution): Promise<string> {
-	const agent = exec.agent;
-	if (agent === undefined) return process.cwd();
-	const service = workingDirectoryOf(agent);
-	if (service === undefined) return agent.session.header.cwd ?? process.cwd();
-	return service.ensure(agent, exec.signal);
+  const agent = exec.agent;
+  if (agent === undefined) return process.cwd();
+  return agentCwd(agent);
+}
+
+/**
+ * The session's live working directory, taken from the AGENT — for callers
+ * that hold no execution (the LSP manager's slot-root resolver, ADR-0031).
+ *
+ * Same answer as {@link liveCwd}: the host's validated directory, or the
+ * header's frozen cwd when this host has no working-directory service.
+ */
+export async function agentCwd(agent: Agent): Promise<string> {
+  const service = workingDirectoryOf(agent);
+  if (service === undefined) return agent.session.header.cwd ?? process.cwd();
+  return service.ensure(agent);
 }
 
 /**

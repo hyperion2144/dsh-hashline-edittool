@@ -32,7 +32,7 @@ import { applyEffective, getEffectiveConfig, isAutoDiagnosticsEnabled } from "..
 import { setLspManager } from "../../src/lsp/manager.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildReadTool } from "../../src/tools/tool-read.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { NUMBERED, useNumberedRows, withTempDir } from "../support/fixtures.js";
 // #244: the line-number switch belongs to the user now and defaults OFF; this
@@ -183,7 +183,6 @@ function makeInput(overrides: Partial<AfterWriteInput> & { cwd: string }): After
 	return {
 		session,
 		languageId: "typescript",
-		workspaceRoot: cwd,
 		uri: pathToFileURL(join(cwd, "a.ts")).href,
 		toolName: "edit",
 		text: SOURCE,
@@ -199,12 +198,12 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 	it("skips entirely when the switch is off", () => {
 		applyEffective({ lsp: { auto_diagnostics: false } });
 		expect(isAutoDiagnosticsEnabled()).toBe(false);
-		expect(prepareWriteDiagnostics("/repo/a.ts", "/repo")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
 	});
 
 	it("skips when no manager is installed", () => {
 		setLspManager(undefined);
-		expect(prepareWriteDiagnostics("/repo/a.ts", "/repo")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
 	});
 
 	it("returns a PENDING context for a cold language and fires the warm", () => {
@@ -213,22 +212,21 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 		// fired (fire-and-forget) and the async path waits the boot out.
 		const warm = vi.fn();
 		setLspManager({ readySessionFor: () => undefined, warm } as never);
-		const context = prepareWriteDiagnostics("/repo/a.ts", "/repo");
+		const context = prepareWriteDiagnostics("/repo/a.ts");
 		expect(context).toBeDefined();
 		expect(context!.session).toBeUndefined();
 		expect(context!.languageId).toBe("typescript");
-		expect(context!.workspaceRoot).toBe("/repo");
-		expect(warm).toHaveBeenCalledWith("typescript", "/repo");
+		expect(warm).toHaveBeenCalledWith("typescript");
 	});
 
 	it("skips files with no language at all", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
-		expect(prepareWriteDiagnostics("/repo/a.definitely-not-a-language", "/repo")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.definitely-not-a-language")).toBeUndefined();
 	});
 
 	it("snapshots a revision baseline when a session is ready", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
-		const context = prepareWriteDiagnostics("/repo/a.ts", "/repo");
+		const context = prepareWriteDiagnostics("/repo/a.ts");
 		expect(context).toBeDefined();
 		expect(context!.uri).toBe(pathToFileURL("/repo/a.ts").href);
 	});

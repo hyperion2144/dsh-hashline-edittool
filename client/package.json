@@ -47,10 +47,11 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs && node scripts/verify-bundle.mjs",
+    "build": "npm run sync-wire && tsc -p tsconfig.json && node scripts/build-client.mjs && node scripts/verify-bundle.mjs",
     "verify": "node scripts/verify-bundle.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "vitest run"
+    "typecheck": "npm run sync-wire && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "npm run sync-wire && vitest run",
+    "sync-wire": "node scripts/sync-wire.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

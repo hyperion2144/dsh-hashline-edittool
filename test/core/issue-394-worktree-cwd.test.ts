@@ -27,7 +27,7 @@ import { DatabaseSync } from "node:sqlite";
 import { buildReadTool } from "../../src/tools/tool-read.js";
 import { buildEditTool } from "../../src/tools/tool-edit.js";
 import { buildWriteShadowTool } from "../../src/tools/tool-write-shadow.js";
-import { localIO } from "../../src/infra/fs-bridge.js";
+import { localIO } from "../support/local-io.js";
 import { FsSandboxController } from "../../src/infra/sandbox.js";
 import { shutdownHashStore } from "../../src/domain/session/hash-store.js";
 import { hashStorePath } from "../../src/infra/paths.js";

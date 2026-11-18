@@ -120,6 +120,10 @@ export function buildFormatTool(io: FileIO, sandbox: FsSandboxController) {
 							rows: v.rows,
 						},
 					],
+					// The card draws the format section under the edit row's tab strip
+					// (ADR-0040): the host carries the row-group shape ITSELF, so the
+					// client renders the section without reshaping the wire.
+					diffRowGroups: [{ path: v.path, rows: [] }],
 				} as never;
 			},
 		},
