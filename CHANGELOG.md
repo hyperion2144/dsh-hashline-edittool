@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-18
+
 ### Added
 - 架构深化一票八项：落盘事务收口为唯一入口（镜像记账失败不再把已写盘的文件报成失败）、语言服务器 slot root 由 manager 自取、诊断投影合一（差异改为声明）、锚点折叠下沉到 domain（`apply_patch` 与 `edit` 同源）、probe 错误码词表收敛为一张表、wire key 词表单一源（client 改为构建期投影）、client 卡片声明与注册表各收为一张表、本地 fs 实现迁入测试夹具（#435，ADR-0040）。
 - `ast_edit` 修复两个静默改坏代码的缺陷：匹配节点只覆盖行内一段时不再整行替换丢前后文；参数列表与函数体里的 `$$$` 捕获不再被语法包装层吞掉（#435，随 ADR-0040 一并修复）。
