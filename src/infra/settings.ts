@@ -138,6 +138,13 @@ export interface EffectiveHashlineConfig {
 	 */
 	lspIdleTimeoutMs: number;
 	/**
+	 * How long a write tool's result WAITS inline for a diagnostics push
+	 * before moving it to the async channel (#439, `lsp.auto_diagnostics.
+	 * inline_wait_ms`). 0–1000 ms; default 1000 (the original window), so an
+	 * absent setting is byte-identical behavior. 0 = always asynchronous.
+	 */
+	autoDiagInlineWaitMs: number;
+	/**
 	 * HOW write/edit/ast_edit offer the final content to a running language
 	 * server for formatting before it is written (#315, amending map #275's
 	 * G3 boolean). Default OFF — an edit must never surprise the model with
@@ -165,6 +172,13 @@ export interface EffectiveHashlineConfig {
 	 * part of the surface; an explicit `false` removes the tool AND the section.
 	 */
 	applyPatchEnabled: boolean;
+	/**
+	 * Whether `writeAtomic` fsyncs the temp file and its directory before the
+	 * rename (#439, `write.fsync`). Default ON — the shipped durability
+	 * semantics; an explicit false trades the sync cost for latency (off =
+	 * a power loss may lose the last batch of writes).
+	 */
+	writeFsync: boolean;
 }
 
 const DEFAULT_CONFIG: EffectiveHashlineConfig = {
@@ -179,6 +193,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	formatServers: new Map<string, string>(),
 	autoDiagnostics: true,
 	lspIdleTimeoutMs: DEFAULT_LSP_IDLE_TIMEOUT_MS,
+	autoDiagInlineWaitMs: 1000,
 	autoFormatMode: "off",
 	formatFallbackFullFile: false,
 	editorconfig: true,
@@ -188,6 +203,7 @@ const DEFAULT_CONFIG: EffectiveHashlineConfig = {
 	// Default ON: the `apply_patch` tool and its guidance section are always
 	// offered; only an explicit `apply_patch.enabled: false` turns them off.
 	applyPatchEnabled: true,
+	writeFsync: true,
 };
 
 let effective: EffectiveHashlineConfig = { ...DEFAULT_CONFIG };
@@ -285,6 +301,30 @@ export function lspIdleTimeoutMs(): number {
 		return clamped;
 	}
 	return v;
+}
+
+/**
+ * The inline diagnostics wait (#439; `lsp.auto_diagnostics.inline_wait_ms`).
+ * Re-clamped defensively like the idle timeout; the default is the original
+ * 1s window, so an absent setting is byte-identical behavior.
+ */
+export function autoDiagInlineWaitMs(): number {
+	const v = effective.autoDiagInlineWaitMs;
+	if (!Number.isFinite(v) || v < 0 || v > 1000) {
+		const clamped = Number.isFinite(v) ? Math.min(1000, Math.max(0, v)) : 1000;
+		console.warn(
+			`[hashline] lsp.auto_diagnostics.inline_wait_ms ${v} out of range [0, 1000]; clamped to ${clamped}.`,
+		);
+		return clamped;
+	}
+	return v;
+}
+
+/**
+ * Whether writes fsync before the rename (#439; `write.fsync`). Default ON.
+ */
+export function writeFsyncEnabled(): boolean {
+	return effective.writeFsync;
 }
 
 /**

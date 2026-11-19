@@ -20,7 +20,7 @@
  * @module dsh-hashline-edittool/domain/session/anchor-state
  */
 import { splitLines } from "../../infra/utils.js";
-import { allocateInto, contentKey, type AnchorEntry, type SparseState } from "../../hashline/alloc.js";
+import { allocateInto, allocateIntoRows, contentKey, invalidateSlotSpace, type AnchorEntry, type SparseState } from "../../hashline/alloc.js";
 import { contentChecksum } from "../../hashline/hash-assign.js";
 import { alignPreservedBounded } from "../../hashline/align-bounded.js";
 // ---- types -----------------------------------------------------------------
@@ -232,6 +232,8 @@ function ensureStateAt(
 			realigned.set(newIdx + 1, ordered[oldIdx]![1]);
 		}
 		state.entries = realigned;
+		// #446: entries were rebuilt — the cached slot space is stale.
+		invalidateSlotSpace(state);
 		state.checksum = checksum;
 		state.lineCount = lineCount;
 		persistProjection(path, state);
@@ -523,6 +525,9 @@ export function updateAnchorsAfterEdit(args: {
 		return anchorsFor(args.path, newContent);
 	}
 	const state = ensureState(args.path, oldContent);
+	// #446: the seed below can add anchors the cached slot space has not
+	// marked — drop it and let the next allocateIntoRows rebuild lazily.
+	invalidateSlotSpace(state);
 	const oldLines = splitLines(oldContent);
 	const newLines = splitLines(newContent);
 	// Seed from `oldAnchors` — the caller's pre-edit materialization. Fills a
@@ -603,6 +608,8 @@ export function updateAnchorsAfterEdit(args: {
 		}
 	}
 	state.entries = shifted;
+	// #446: entries were reassigned — the cached slot space is stale.
+	invalidateSlotSpace(state);
 	state.checksum = newChecksum;
 	state.lineCount = newLineCount;
 	// The edit response serves the changed region: the hunk new lines that
@@ -625,7 +632,13 @@ export function updateAnchorsAfterEdit(args: {
 	}
 	const mintable =
 		args.mint === undefined ? freshLines : freshLines.filter((line) => args.mint!(line));
-	allocateInto(state, newContent, mintable, avoid);
+	// #446 review: the adapter would split the whole content AGAIN — this
+	// caller already holds `newLines`; hand the kernel the rows directly.
+	const mintRows = new Map<number, string>();
+	for (const line of mintable) {
+		if (line >= 1 && line <= newLines.length) mintRows.set(line, newLines[line - 1]!);
+	}
+	allocateIntoRows(state, mintRows, newLines.length, avoid);
 	persistProjection(args.path, state);
 	return anchorsFor(args.path, newContent);
 }

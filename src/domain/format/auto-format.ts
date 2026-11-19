@@ -240,7 +240,8 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 						lineDelta += splitLines(content).length - splitLines(before).length;
 						// Each round's map speaks in the round's OWN coordinates; the
 						// chain composes so the caller sees ONE map: final → model.
-						const round = lineMapFromTextEdits(splitLines(before).length, edits);
+						const beforeLines = splitLines(before);
+						const round = lineMapFromTextEdits(beforeLines.length, edits, beforeLines);
 						lineage = lineage === undefined ? round : composeProvenance(round, lineage);
 						// The next request must be answered from the text this one
 						// produced, or its coordinates describe a version the
@@ -264,7 +265,7 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 		return finish(
 			input,
 			content,
-			lineMapFromTextEdits(modelLines.length, edits),
+			lineMapFromTextEdits(modelLines.length, edits, modelLines),
 			"full-file",
 			1,
 			edits.length,

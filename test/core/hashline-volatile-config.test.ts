@@ -107,12 +107,14 @@ describe("installHashlineSettings × 0.1.7 Config seam", () => {
 			formatServers: new Map<string, string>(),
 			autoDiagnostics: true,
 			lspIdleTimeoutMs: 300000,
+			autoDiagInlineWaitMs: 1000,
 			grepRespectGitignore: true,
 			autoFormatMode: "off",
 			formatFallbackFullFile: false,
 			editorconfig: true,
 			maxResponseChars: 48000,
 			writePreview: "diff",
+			writeFsync: true,
 			applyPatchEnabled: true,
 		});
 	});

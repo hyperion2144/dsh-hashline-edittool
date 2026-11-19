@@ -36,7 +36,7 @@ import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { UserMessage } from "@deepseek-ai/dsh-session";
 import { languageForPath } from "../ast/language.js";
-import { isAutoDiagnosticsEnabled } from "../infra/settings.js";
+import { autoDiagInlineWaitMs, isAutoDiagnosticsEnabled } from "../infra/settings.js";
 import { splitLines } from "../infra/utils.js";
 import {
 	anchorWidth,
@@ -234,7 +234,7 @@ export async function deliverDiagnosticsAfterWrite(
 				const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
 				open?.(next);
 			},
-			budgetMs: INLINE_WINDOW_MS,
+			budgetMs: autoDiagInlineWaitMs(),
 			signal: input.exec.signal,
 		});
 		if (verified === undefined) {

@@ -342,6 +342,72 @@ export function readLspIdleMs(snapshot: ConfigFormSnapshot): number | undefined 
 	return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
 
+/**
+ * The inline diagnostics wait (#439, `lsp.inline_wait_ms` — a SIBLING of
+ * `auto_diagnostics`, the spelling the schema owns), with the same range the
+ * schema enforces on the wire. 0 is legal and means "always async".
+ */
+export interface LspInlineWaitSpec {
+	readonly path: readonly ["lsp", "inline_wait_ms"];
+	readonly min: number;
+	readonly max: number;
+	/** The host-side default, in milliseconds. */
+	readonly defaultMs: number;
+}
+
+export const LSP_INLINE_WAIT_SPEC: LspInlineWaitSpec = {
+	path: ["lsp", "inline_wait_ms"],
+	min: 0,
+	max: 1_000,
+	defaultMs: 1_000,
+};
+
+export type LspInlineWaitDraftResult =
+	| { readonly kind: "unset" }
+	| { readonly kind: "valid"; readonly value: number }
+	| { readonly kind: "error"; readonly error: SettingsDraftError };
+
+/** Classify one inline-wait draft against the spec (same shape as the idle one). */
+export function validateLspInlineWaitDraft(raw: string): LspInlineWaitDraftResult {
+	const text = raw.trim();
+	if (text === "") return { kind: "unset" };
+	const parsed = Number.parseInt(text, 10);
+	if (!Number.isInteger(parsed) || parsed.toString() !== text) {
+		return {
+			kind: "error",
+			error: {
+				key: "settings.error.waitInteger",
+				params: { min: LSP_INLINE_WAIT_SPEC.min, max: LSP_INLINE_WAIT_SPEC.max },
+			},
+		};
+	}
+	if (parsed < LSP_INLINE_WAIT_SPEC.min || parsed > LSP_INLINE_WAIT_SPEC.max) {
+		return {
+			kind: "error",
+			error: {
+				key: "settings.error.waitRange",
+				params: { min: LSP_INLINE_WAIT_SPEC.min, max: LSP_INLINE_WAIT_SPEC.max },
+			},
+		};
+	}
+	return { kind: "valid", value: parsed };
+}
+
+/** The effective inline wait, in ms; absent means the host default (1000). */
+export function readLspInlineWaitMs(snapshot: ConfigFormSnapshot): number | undefined {
+	const lsp = snapshot.value?.lsp;
+	if (typeof lsp !== "object" || lsp === null) return undefined;
+	const raw = (lsp as { inline_wait_ms?: unknown }).inline_wait_ms;
+	return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+}
+
+/** `write.fsync` (#439): absent means ON — the shipped durability semantics. */
+export function readWriteFsync(snapshot: ConfigFormSnapshot): boolean {
+	const write = snapshot.value?.write;
+	if (typeof write !== "object" || write === null) return true;
+	return (write as { fsync?: unknown }).fsync !== false;
+}
+
 /** `write.preview` (map #354): how much of a successful write the model sees. */
 export type WritePreviewMode = "full" | "diff" | "confirmation";
 

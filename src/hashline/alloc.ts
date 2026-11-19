@@ -7,6 +7,13 @@
  * uniqueness (identical content is a "conflict" like any hash collision — the
  * second occurrence probes onward).
  *
+ * #441: probing is INTEGER-ONLY against a batch-built slot space (a Uint8Array
+ * bitset per layer ≤ 4, a Set<number> above) — encodeAnchor runs once, on the
+ * hit; the digits-only exclusion is a digit-box check (every base-62 digit
+ * < 10), and a layer with no free slot left is skipped outright. The probe
+ * order and every skip predicate are byte-identical to the string era, so
+ * the same inputs pick the same anchors they always did.
+ *
  * The module is a pure function of (used-set, canonical content). It owns the
  * allocator AND the per-file sparse state it walks (`SparseState` /
  * `allocateInto`): both take values and return values, with no state of their
@@ -98,6 +105,117 @@ export function probeStep(hash: number, total: number): number {
 	return gcd(step, total) === 1 ? step : 1;
 }
 
+/**
+ * The occupancy structure probing runs against (#441). Layers ≤
+ * `BITSET_MAX_DEPTH` get a lazily allocated `Uint8Array` bitset (62⁴/8 =
+ * 1.85 MB is the cutoff); sparser high layers get a `Set<number>`. Built once
+ * per batch from the used-set's decoded anchors, then marked per mint.
+ */
+const BITSET_MAX_DEPTH = 4;
+
+class SlotSpace {
+	private readonly bitsets = new Map<number, Uint8Array>();
+	private readonly sparse = new Map<number, Set<number>>();
+	private readonly marked = new Map<number, number>();
+
+	static from(used: ReadonlySet<string>): SlotSpace {
+		const space = new SlotSpace();
+		for (const anchor of used) space.markAnchor(anchor);
+		return space;
+	}
+
+	/** Build from a state's own live anchors (the #446 cached spelling). */
+	static fromEntries(entries: Iterable<[number, AnchorEntry]> | Iterable<AnchorEntry>): SlotSpace {
+		const space = new SlotSpace();
+		for (const entry of entries) space.markAnchor(entry instanceof Array ? entry[1].anchor : entry.anchor);
+		return space;
+	}
+
+	markAnchor(anchor: string): void {
+		const decoded = decodeAnchorIndex(anchor);
+		// A digits-only string is never an allocated anchor; marking its slot
+		// anyway would inflate the saturation count and skip a live layer.
+		if (decoded !== undefined && !isNumericIdx(decoded.idx, decoded.depth)) {
+			this.markIdx(decoded.depth, decoded.idx);
+		}
+	}
+
+	markIdx(depth: number, idx: number): void {
+		this.marked.set(depth, (this.marked.get(depth) ?? 0) + 1);
+		if (depth <= BITSET_MAX_DEPTH) {
+			let bits = this.bitsets.get(depth);
+			if (bits === undefined) {
+				bits = new Uint8Array(Math.ceil(62 ** depth / 8));
+				this.bitsets.set(depth, bits);
+			}
+			bits[idx >> 3] |= 1 << (idx & 7);
+			return;
+		}
+		let taken = this.sparse.get(depth);
+		if (taken === undefined) {
+			taken = new Set<number>();
+			this.sparse.set(depth, taken);
+		}
+		taken.add(idx);
+	}
+
+	has(depth: number, idx: number): boolean {
+		if (depth <= BITSET_MAX_DEPTH) {
+			const bits = this.bitsets.get(depth);
+			if (bits === undefined) return false;
+			return (bits[idx >> 3] & (1 << (idx & 7))) !== 0;
+		}
+		return this.sparse.get(depth)?.has(idx) === true;
+	}
+
+	/**
+	 * #441 item 3: a layer with every usable slot marked has nothing a probe
+	 * can find — skipping it is byte-identical to burning PROBE_LIMIT failed
+	 * probes (marks only grow, so saturated stays saturated). `usable` = total
+	 * − 10^depth: exactly 10^depth of the layer's slots encode digits-only.
+	 */
+	saturated(depth: number, usable: number): boolean {
+		return (this.marked.get(depth) ?? 0) >= usable;
+	}
+}
+
+/**
+ * Drop a state's cached slot space (#446). Every mutation of `entries` that
+ * is NOT a mint-through-the-space (realign reassign, edit shift, release,
+ * out-of-band seed) must call this — a stale cache could hand out an anchor
+ * that is no longer live, or miss one that became live.
+ */
+export function invalidateSlotSpace(state: SparseState): void {
+	state.slotSpace = undefined;
+}
+
+/**
+ * Whether an index encodes to digits only (an unusable anchor): every
+ * base-62 digit must be < 10 — a digit BOX, not an interval ("36" is
+ * idx 3·62+6 = 192 > 10², yet digits-only). Exact integer analogue of
+ * `isNumericAnchor(encodeAnchor(idx, depth))` (#441).
+ */
+function isNumericIdx(idx: number, depth: number): boolean {
+	for (let i = 0; i < depth; i++) {
+		if (idx % 62 >= 10) return false;
+		idx = Math.floor(idx / 62);
+	}
+	return true;
+}
+
+/** Decode an anchor string back to (depth, idx); `undefined` when it is not one. */
+function decodeAnchorIndex(anchor: string): { depth: number; idx: number } | undefined {
+	const depth = anchor.length;
+	if (depth < MIN_ANCHOR_DEPTH || depth > MAX_ANCHOR_DEPTH) return undefined;
+	let idx = 0;
+	for (let i = 0; i < depth; i++) {
+		const digit = ALPH_O.indexOf(anchor[i]!);
+		if (digit < 0) return undefined;
+		idx = idx * 62 + digit;
+	}
+	return { depth, idx };
+}
+
 /** Canonical content key (cyrb53 of the whitespace-folded line) — the slot-space identity of a line. */
 export function contentKey(content: string): number {
 	return cyrb53(canon(content));
@@ -127,31 +245,58 @@ export function allocateAnchor(
 	content: string,
 	groupCursor?: { offsets: Record<number, number> },
 ): { anchor: string; stats: AllocStats } {
+	// #441: one transient slot space per call — the batch callers
+	// (`assignAnchors`, `allocateIntoRows`, `anchorsPure`) build theirs once
+	// and mark as they go; this path serves single-shot callers (tests, v2
+	// support), where decoding the used-set once beats a string probe per slot.
+	return allocateInSpace(SlotSpace.from(used), content, groupCursor);
+}
+
+/**
+ * The allocation kernel over a prebuilt slot space (#441). Identical probe
+ * order and skip predicates to the string-era `allocateAnchor` — the same
+ * inputs pick the same anchors — but every probe is integer arithmetic and
+ * one occupancy check; `encodeAnchor` runs once, on the hit.
+ */
+function allocateInSpace(
+	space: SlotSpace,
+	content: string,
+	groupCursor?: { offsets: Record<number, number> },
+	/** Per-call extras (the caller's `used` — live ∪ release pool), checked
+	 * only on a slot the cached space says is FREE: a few encodes per mint at
+	 * most, never per probe (#446). */
+	extras?: ReadonlySet<string>,
+): { anchor: string; stats: AllocStats } {
 	const h = contentKey(content);
 	for (let depth = MIN_ANCHOR_DEPTH; depth <= MAX_ANCHOR_DEPTH; depth++) {
 		const total = 62 ** depth;
+		// #441: "encodes to digits only" ⟺ every base-62 digit < 10 — checked
+		// with integer digit extraction, replacing the per-probe regex (and the
+		// encode that fed it). Why digits are skipped at all: a row is
+		// `<line>:<anchor>` and the marker may come back without its line part,
+		// so `36` alone is ambiguous with line 36 — a wrong edit rather than a
+		// rejected one.
+		const usable = total - 10 ** depth;
 		const start = h % total;
 		const step = probeStep(h, total);
 		// Per-layer cursor: spills must NOT reset it, or a repeated-content
 		// stream would re-probe the already-consumed head of each layer and
 		// stall at PROBE_LIMIT collisions (~64 rows per layer).
 		const beginOffset = (groupCursor?.offsets[depth] ?? 0) % total;
+		if (space.saturated(depth, usable)) continue;
 		for (let probe = 0; probe < PROBE_LIMIT; probe++) {
 			const offset = (beginOffset + probe) % total;
 			const idx = (start + offset * step) % total;
-			// Skip anything that encodes to digits only. The alphabet leads with
-			// `0`-`9`, so a small index IS a number like `36` — and a row reads
-			// `<line>:<anchor>`, where the marker may be passed back WITH or
-			// WITHOUT its line part. `36` alone is then indistinguishable from line
-			// 36, which is a wrong edit rather than a rejected one.
-			const candidate = encodeAnchor(idx, depth);
 			// The cursor advances FIRST, whatever happens next. Skipping before it
 			// left `beginOffset` untouched, so every following line of the same
 			// content re-probed from the same place and burned the whole PROBE_LIMIT
 			// before reaching a slot that was free anyway.
 			if (groupCursor) groupCursor.offsets[depth] = (offset + 1) % total;
-			if (isNumericAnchor(candidate)) continue;
-			if (!used.has(candidate)) {
+			if (isNumericIdx(idx, depth)) continue;
+			if (!space.has(depth, idx)) {
+				const candidate = encodeAnchor(idx, depth);
+				if (extras !== undefined && extras.has(candidate)) continue;
+				space.markIdx(depth, idx);
 				return { anchor: candidate, stats: { depth, probes: probe + 1 } };
 			}
 		}
@@ -170,7 +315,7 @@ export function allocateAnchor(
  * tests in anchor-lifecycle-invariants pin that contract.
  */
 export function assignAnchors(lines: string[]): string[] {
-	const used = new Set<string>();
+	const space = new SlotSpace();
 	const cursorByKey = new Map<number, { offsets: Record<number, number> }>();
 	const anchors = new Array<string>(lines.length);
 	for (let i = 0; i < lines.length; i++) {
@@ -180,8 +325,7 @@ export function assignAnchors(lines: string[]): string[] {
 			cursor = { offsets: {} };
 			cursorByKey.set(key, cursor);
 		}
-		const { anchor } = allocateAnchor(used, lines[i]!, cursor);
-		used.add(anchor);
+		const { anchor } = allocateInSpace(space, lines[i]!, cursor);
 		anchors[i] = anchor;
 	}
 	return anchors;
@@ -211,6 +355,13 @@ export interface SparseState {
 	lineCount: number;
 	/** line (1-based) → {anchor, contentKey} for every ALLOCATED line. */
 	entries: Map<number, AnchorEntry>;
+	/**
+	 * The cached slot occupancy for THIS state's live anchors (#446) — built
+	 * lazily by `allocateIntoRows`, marked per mint, invalidated by every
+	 * non-mint mutation of `entries` (realign, shift, release, out-of-band
+	 * seed) via `invalidateSlotSpace`. `undefined` = not built / stale.
+	 */
+	slotSpace?: SlotSpace;
 }
 
 /**
@@ -269,6 +420,13 @@ export function allocateIntoRows(
 	if (used === undefined) {
 		for (const [, entry] of state.entries) avoid.add(entry.anchor);
 	}
+	// #446: the slot space follows the state — built once from its live
+	// anchors, marked per mint, reused by the next call. The caller's `used`
+	// (live ∪ this call's release pool) rides as `extras`, checked only on
+	// candidate slots, so the skip-set is exactly entries ∪ used — the same
+	// set the per-call rebuild avoided, at O(1) build instead of O(live).
+	const space = state.slotSpace ?? SlotSpace.fromEntries(state.entries);
+	state.slotSpace = space;
 	// Per-content probe continuity (same design as assignAnchors): a run of
 	// identical lines probes CONTIGUOUSLY instead of re-walking the used set
 	// for every copy — without the cursor, a long duplicate run degenerates to
@@ -299,7 +457,7 @@ export function allocateIntoRows(
 			gc = { offsets: {} };
 			cursorByKey.set(key, gc);
 		}
-		const { anchor } = allocateAnchor(avoid, text, gc);
+		const { anchor } = allocateInSpace(space, text, gc, used);
 		avoid.add(anchor);
 		state.entries.set(line, { anchor, contentKey: key });
 		out.push(anchor);
@@ -313,11 +471,10 @@ export function allocateIntoRows(
  */
 export function anchorsPure(content: string): string[] {
 	const lines = splitLines(content);
-	const used = new Set<string>();
+	const space = new SlotSpace();
 	const out: string[] = [];
 	for (const text of lines) {
-		const { anchor } = allocateAnchor(used, text);
-		used.add(anchor);
+		const { anchor } = allocateInSpace(space, text);
 		out.push(anchor);
 	}
 	return out;

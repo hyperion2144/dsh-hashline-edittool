@@ -29,8 +29,10 @@ import type { FormatCluster, FormatRow, FormatSection, FormatStatus } from "./ty
  * Which final lines the formatter changed, and how they read.
  *
  * A final line changed when its provenance entry is missing (inserted), maps
- * from more than one model line (a merge — the text cannot be one line's
- * continuation), or its text differs from the single model line it maps to.
+ * from more than one model line AND matches none of them (a merge — or a
+ * formatter edit whose inheritance range spans many lines with identical
+ * text, which is NOT a change, #445), or its text differs from the single
+ * model line it maps to.
  *
  * @param modelLines - the pre-format (post-model) lines.
  * @param finalLines - the post-format lines.
@@ -45,8 +47,30 @@ export function formatterChangedLines(
 	const changed = new Set<number>();
 	for (let line = 1; line <= finalLines.length; line++) {
 		const sources = finalToModel.get(line);
-		if (sources === undefined || sources.size !== 1) {
+		if (sources === undefined) {
+			// #445 review: normally formatter-invented (changed). But a wide
+			// rewrite whose text is identical can leave the walk without an
+			// entry; when the index is in range and the text matches the model
+			// line at that index, it is NOT a change.
+			const text = finalLines[line - 1];
+			if (line <= modelLines.length && modelLines[line - 1] === text) continue;
 			changed.add(line);
+			continue;
+		}
+		if (sources.size !== 1) {
+			// #445: a multi-source line (split/merge, or a formatter edit whose
+			// newText inherits a whole touched range) is only changed when its
+			// text matches NO source — identical text surviving a rewrite is not
+			// a change, whatever the inheritance range spans.
+			const text = finalLines[line - 1];
+			let matched = false;
+			for (const modelLine of sources) {
+				if (modelLines[modelLine - 1] === text) {
+					matched = true;
+					break;
+				}
+			}
+			if (!matched) changed.add(line);
 			continue;
 		}
 		const [modelLine] = sources;

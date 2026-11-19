@@ -111,6 +111,12 @@ export function lineMapFromTextEdits(
 		};
 		newText: string;
 	}[],
+	/** The model text, when the caller has it (#445 review): an edit whose
+	 * newText is LINE-IDENTICAL to the range it replaced maps 1:1 instead of
+	 * inheriting the whole range — identical text is the same line, and the
+	 * whole-range inheritance made every line of a wide no-op rewrite look
+	 * changed (and eligible off one served line). */
+	modelLines?: readonly string[],
 ): Map<number, ReadonlySet<number>> {
 	const ordered = [...edits].sort(
 		(a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character,
@@ -121,6 +127,13 @@ export function lineMapFromTextEdits(
 	for (const edit of ordered) {
 		const startLine = edit.range.start.line + 1; // 1-based, inclusive
 		const endLine = edit.range.end.line + 1; // 1-based, inclusive
+		// #445 review: a SUB-LINE edit (same line, no newline in newText) only
+		// changes text WITHIN the line — it must not advance the line pointers.
+		// Advancing per edit made three same-line edits produce three map
+		// entries, shifting every following final line by two and misaligning
+		// the whole map (the runtime's 5001-changed shape). The line keeps its
+		// identity: the untouched/trailing walks map it 1:1.
+		if (startLine === endLine && !edit.newText.includes("\n")) continue;
 		// Untouched model lines before the edit.
 		for (let line = modelLine; line < startLine; line++) {
 			map.set(finalLine, new Set([line]));
@@ -133,9 +146,22 @@ export function lineMapFromTextEdits(
 			edit.newText.length === 0
 				? []
 				: (edit.newText.endsWith("\n") ? edit.newText.slice(0, -1) : edit.newText).split("\n");
+		// #445 review: identical text keeps identity. A formatter edit that
+		// rewrites a range with the same lines (a wide no-op re-indent pass) is
+		// not a change — map each produced line to its own source instead of
+		// the whole touched range.
+		const rangeCount = endLine - startLine + 1;
+		const identical =
+			modelLines !== undefined &&
+			produced.length === rangeCount &&
+			produced.every((text, i) => modelLines[startLine - 1 + i] === text);
 		for (let i = 0; i < produced.length; i++) {
 			const sources = new Set<number>();
-			for (let line = startLine; line <= endLine; line++) sources.add(line);
+			if (identical) {
+				sources.add(startLine + i);
+			} else {
+				for (let line = startLine; line <= endLine; line++) sources.add(line);
+			}
 			map.set(finalLine, sources);
 			finalLine += 1;
 		}

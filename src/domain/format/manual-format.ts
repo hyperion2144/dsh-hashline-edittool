@@ -258,7 +258,7 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 						);
 						applied = edits.length;
 						finalContent = applyTextEdits(normalized, edits, LF_SHAPE);
-						lineage = lineMapFromTextEdits(modelLines.length, edits);
+						lineage = lineMapFromTextEdits(modelLines.length, edits, modelLines);
 						mode = "range";
 						return true;
 					} catch (error) {
@@ -283,7 +283,7 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 		const edits = await requestFormatting(session, uri, options, MANUAL_FORMAT_TIMEOUT_MS);
 		applied = edits.length;
 		finalContent = applyTextEdits(normalized, edits, LF_SHAPE);
-		lineage = lineMapFromTextEdits(modelLines.length, edits);
+		lineage = lineMapFromTextEdits(modelLines.length, edits, modelLines);
 	}
 
 	if (finalContent === normalized) {

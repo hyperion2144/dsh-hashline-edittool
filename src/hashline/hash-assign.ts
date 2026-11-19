@@ -238,9 +238,36 @@ export function hashOf(canonLine: string): string {
  * platform — never a hand-written fold. 64 hex. The store's schema version is
  * bumped with it, so rows written under the old 53-bit spelling are wiped
  * instead of being compared against a value they can never match.
+ *
+ * #440 (P5): one read used to pay this 2–3× for the SAME text — the mint
+ * path's `ensureState`, the read-dedup verdict, and the probe's identity
+ * each hashed independently. A single-entry memo keyed by content equality
+ * (identical reference = O(1); equal bytes = one memcmp, still ≫ cheaper
+ * than the digest) collapses them. The memo pins the last text — the
+ * working file, which the caller holds anyway — and any content change is a
+ * different string, so invalidation is inherent.
  */
+// #440 review: ONE slot was evictable — the served per-line fingerprints
+// (contentChecksum(canon(line))) churn through the same entry and push
+// the whole-file text out before its next ask. Partition by SIZE: whole-
+// file texts (>= CHECKSUM_BIG_MIN) live in the big slot, per-line
+// fingerprints in the small one; neither evicts the other.
+const CHECKSUM_BIG_MIN = 4096;
+let checksumBigText: string | undefined;
+let checksumBigValue: string;
+let checksumSmallText: string | undefined;
+let checksumSmallValue: string;
 export function contentChecksum(content: string): string {
-	return createHash("sha256").update(content, "utf8").digest("hex");
+	if (content.length >= CHECKSUM_BIG_MIN) {
+		if (content === checksumBigText) return checksumBigValue;
+		checksumBigText = content;
+		checksumBigValue = createHash("sha256").update(content, "utf8").digest("hex");
+		return checksumBigValue;
+	}
+	if (content === checksumSmallText) return checksumSmallValue;
+	checksumSmallText = content;
+	checksumSmallValue = createHash("sha256").update(content, "utf8").digest("hex");
+	return checksumSmallValue;
 }
 
 /**

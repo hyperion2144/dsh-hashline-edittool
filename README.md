@@ -382,6 +382,7 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
     lsp:
       servers: {}            # named servers: { <languageId>: <command> }
       auto_diagnostics: true # deliver server diagnostics inline after writes
+      inline_wait_ms: 1000    # how long a write result waits inline for diagnostics, 0-1000 ms (0 = always async)
       idle_timeout_ms: 300000 # reclaim an idle language server after 5 min (0 = never)
     format:
       auto: off              # format mode after write/edit/ast_edit: off | full | range (legacy true→full, false→off)
@@ -390,6 +391,7 @@ the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`); all keys are o
       servers: {}            # per-language formatting-only secondary servers (ADR-0038), e.g. { python: ruff-lsp }
     write:
       preview: diff          # post-write echo: full | diff | confirmation (default diff)
+      fsync: true             # fsync temp file + dir before rename (off = a power loss may lose the last writes)
     apply_patch:
       enabled: true          # offer the apply_patch tool + its guidance section (default on)
 ```

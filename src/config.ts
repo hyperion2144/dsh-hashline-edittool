@@ -95,7 +95,14 @@ lsp?: {
 		 * at the next natural model step. A write never starts a server and never
 		 * fails because of diagnostics — this switch only governs the delivery.
 		 */
-		auto_diagnostics?: boolean;
+	auto_diagnostics?: boolean;
+	/**
+		 * #439 (P3): how long a write's tool result WAITS inline for the
+		 * language server's diagnostics push, 0–1000 ms. Default 1000 — the
+		 * original window, so an absent setting is byte-identical; 0 delivers
+		 * everything asynchronously (the async channel stays the backstop).
+		 */
+	inline_wait_ms?: number;
 		/**
 		 * How long a language server may sit unused before it is reclaimed
 		 * (issue #306), in milliseconds. 0 means "never reclaim"; the default
@@ -137,6 +144,13 @@ lsp?: {
 	 */
 	write?: {
 		preview?: "full" | "diff" | "confirmation";
+		/**
+			 * #439 (P4): whether writes fsync the temp file and its directory
+			 * before the rename. Default true — the shipped durability semantics;
+			 * false trades the sync cost for latency (off = a power loss may
+			 * lose the last batch of writes).
+			 */
+		fsync?: boolean;
 	};
 	/**
 	 * The `apply_patch` capability's namespace entry (map #401).
@@ -202,6 +216,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 			.object({
 				servers: z.dict(z.string()),
 				auto_diagnostics: z.boolean(),
+				inline_wait_ms: z.number().min(0).max(1000),
 				idle_timeout_ms: z.number().min(LSP_IDLE_TIMEOUT_MIN_MS).max(LSP_IDLE_TIMEOUT_MAX_MS),
 			})
 			.volatile(),
@@ -227,6 +242,7 @@ export const HashlineSettingsSchema: z<HashlineSettings> = z
 	write: z
 		.object({
 			preview: z.union(["full", "diff", "confirmation"]),
+			fsync: z.boolean(),
 		})
 		.volatile(),
 		// `apply_patch.enabled` (map #401). Volatile on the OUTERMOST node only —
@@ -388,9 +404,11 @@ export {
 	lspConfiguredServers,
 	formatConfiguredServers,
 	lspIdleTimeoutMs,
+	autoDiagInlineWaitMs,
 	isAutoDiagnosticsEnabled,
 	autoFormatMode,
 	writePreviewMode,
+	writeFsyncEnabled,
 	formatFallbackFullFile,
 	isEditorconfigEnabled,
 	isJsonOutput,
@@ -524,6 +542,11 @@ const sep =
 		typeof settings?.lsp?.auto_diagnostics === "boolean"
 			? settings.lsp.auto_diagnostics
 			: defaults.autoDiagnostics;
+	// #439 (P3): the inline diagnostics wait. Absent = the original 1s window.
+	const autoDiagInlineWait =
+		typeof settings?.lsp?.inline_wait_ms === "number" && Number.isFinite(settings.lsp.inline_wait_ms)
+			? settings.lsp.inline_wait_ms
+			: defaults.autoDiagInlineWaitMs;
 	// The idle window before a language server is reclaimed (#306). Absent means
 	// the default; the schema refuses an out-of-range value, and the getter
 	// re-clamps defensively, so a number that survives both is taken as given.
@@ -549,6 +572,9 @@ const sep =
 		settings?.write?.preview,
 		defaults.writePreview,
 	);
+	// #439 (P4): `write.fsync` — absent = ON (the shipped durability).
+	const writeFsyncOn =
+		typeof settings?.write?.fsync === "boolean" ? settings.write.fsync : defaults.writeFsync;
 	// `apply_patch.enabled` (map #401): the tool and its guidance section are
 	// offered unless the user says otherwise. Default ON — only an explicit
 	// `false` turns the capability off.
@@ -576,6 +602,8 @@ const sep =
 		formatServers: formatServers,
 		autoDiagnostics: autoDiag,
 		lspIdleTimeoutMs: lspIdleTimeout,
+		autoDiagInlineWaitMs: autoDiagInlineWait,
+		writeFsync: writeFsyncOn,
 		autoFormatMode,
 		formatFallbackFullFile: fallbackFullFile,
 		editorconfig: editorconfigCfg,
