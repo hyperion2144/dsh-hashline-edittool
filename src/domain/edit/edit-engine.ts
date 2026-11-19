@@ -59,7 +59,8 @@ import { anchorForInWorkspace, withWorkspace, workspaceCwd } from "../session/se
 import { probeLines } from "../session/anchor-entry.js";
 import type { ServedVerdict } from "../../hashline/anchor-pipeline.js";
 import { updateAnchorsAfterEdit, takeAlignmentNotice, type EditHunk } from "../session/anchor-state.js";
-import { contextLinesCfg, lineHashesPure } from "../../hashline/hash-assign.js";
+import { contextLinesCfg } from "../../hashline/hash-assign.js";
+import { diffLinesBoundedResult } from "../../render/line-diff.js";
 import { autoFormatMode } from "../../infra/settings.js";
 import { runAutoFormat } from "../format/auto-format.js";
 import { computeRowEligibility } from "../format/eligibility.js";
@@ -293,6 +294,60 @@ export function toAnchorHunk(args: {
 		finalStart1: args.finalStart1 + 1,
 		finalEnd1: args.finalEnd1,
 	};
+}
+
+/**
+ * The hunks between two texts — the format step's mapping (post-edit →
+ * post-format), in `EditHunk` coordinates for `updateAnchorsAfterEdit`.
+ *
+ * Bounded Myers (#192), the same producer `genDiff` uses, so a whole-file
+ * rewrite cannot blow it up. Boundaries are EXACT (no context padding):
+ * every line outside a hunk is untouched by the formatter and shifts by
+ * pure arithmetic inside the anchor update.
+ */
+export function hunksBetween(before: string, after: string): EditHunk[] {
+	const { parts } = diffLinesBoundedResult(before, after);
+	const countLines = (value: string): number => {
+		if (value === "") return 0;
+		let breaks = 0;
+		for (let at = 0; at < value.length; at++) {
+			if (value.charCodeAt(at) === 10) breaks += 1;
+		}
+		return value.endsWith("\n") ? breaks : breaks + 1;
+	};
+	const hunks: EditHunk[] = [];
+	let oldLine = 1;
+	let newLine = 1;
+	let removed = 0;
+	let added = 0;
+	const flush = (): void => {
+		if (removed === 0 && added === 0) return;
+		// An empty side is a pure insertion/deletion: start > end is the
+		// `EditHunk` convention (`oldEnd1 < oldStart1`), which keeps the anchor
+		// line OUTSIDE the hunk so it never releases.
+		hunks.push({
+			oldStart1: oldLine,
+			oldEnd1: oldLine + removed - 1,
+			finalStart1: newLine,
+			finalEnd1: newLine + added - 1,
+		});
+		oldLine += removed;
+		newLine += added;
+		removed = 0;
+		added = 0;
+	};
+	for (const part of parts) {
+		if (part.added === true) added += countLines(part.value);
+		else if (part.removed === true) removed += countLines(part.value);
+		else {
+			const lines = countLines(part.value);
+			flush();
+			oldLine += lines;
+			newLine += lines;
+		}
+	}
+	flush();
+	return hunks;
 }
 
 export interface FileEditResult {
@@ -1646,18 +1701,65 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 			});
 			const formatterChanged = formatterChangedLines(modelLines, finalLines, finalToModel);
 			finalResult = outcome.content;
-			// Content-derived hashes everywhere: unchanged lines keep their
-			// pre-call anchors by construction; the mint below upgrades the
-			// served window in place.
-			finalHashes = lineHashesPure(finalResult);
+			// The format step is an EDIT of the file (ADR-0041): advance the
+			// persisted state through the SAME hunk-aware transform the batch
+			// used above — old = the post-edit text, new = the formatter's
+			// output — and take finalHashes from the store. The whole-file
+			// recompute this replaces (a) cost 275–392 ms at 10k lines on every
+			// formatting edit (#437 P1) and (b) returned a SECOND allocation
+			// family whose values the served-window mint had to overwrite to
+			// stay correct — inheritance by masking, not by construction.
 			// The gate exists for text the FORMATTER introduced. A row the
 			// formatter did not touch keeps the engine's normal window behavior
-			// (context stays served — the follow-up edit contract, #171).
+			// (context stays served — the follow-up edit contract, #171), and
+			// an ineligible fresh line is left `""`: not minted, never served.
 			const eligible = (position: number): boolean => {
 				const line = position + 1;
 				if (!formatterChanged.has(line)) return true;
 				return eligibility.get(line) === true;
 			};
+			const formatReleased: number[] = [];
+			const formatReleasedAnchors: string[] = [];
+			await withStoreAsync(async () => {
+				finalHashes = updateAnchorsAfterEdit({
+					path: absolutePath,
+					oldContent: result,
+					newContent: finalResult,
+					oldAnchors: resultHashes,
+					// Same avoid-set discipline as the batch: live rows ∪ the
+					// session's release pool (§2.1 item 3, §4.1).
+					used: allocationUsedSet(absolutePath),
+					// The formatter's own change, as hunks: every line outside
+					// them is pure shift arithmetic, exact.
+					hunks: hunksBetween(result, finalResult),
+					// Formatter-invented lines the model never saw stay
+					// unallocated — the eligibility gate decides (#442).
+					mint: (line) => eligible(line - 1),
+					released: formatReleased,
+					releasedAnchors: formatReleasedAnchors,
+				});
+				if (formatReleased.length > 0) {
+					await releaseLines({
+						path: absolutePath,
+						// RESULT coordinates: the release addresses rows the
+						// pre-format content actually has.
+						lines: formatReleased,
+						content: result,
+						sessionKey: opts.sessionKey,
+					});
+				}
+				await releaseAnchors({
+					path: absolutePath,
+					anchors: formatReleasedAnchors,
+					sessionKey: opts.sessionKey,
+				});
+			});
+			// A degraded in-hunk pairing during the format transform must speak in
+			// THIS response: `applyOne`'s drain (the only other one) already ran,
+			// so an undrained notice would leak to the NEXT call on this path
+			// (#442 review).
+			const formatNotice = takeAlignmentNotice(absolutePath);
+			if (formatNotice !== undefined) warnings.push(formatNotice);
 			const formatServed = await buildServedRowsFromDiff({
 				before: originalNormalized,
 				after: finalResult,

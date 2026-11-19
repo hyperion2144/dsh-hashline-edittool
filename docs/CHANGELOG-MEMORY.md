@@ -1338,3 +1338,29 @@ store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先�
 - `AGENTS.md`（l0 decisions 行：范围号更正 0001–0036 → 0001–0038（0037 落地时未更），补 0038 一句）
 - 拆票 #424 / #425 / #426（wayfinder:task，未排队）
 - `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-19 — 格式化的锚点继承定案：格式化步按 edit 处理（#442 → ADR-0041）
+
+**Type:** decision + implementation（bug 修复已实施，PR 待合入）
+**Confidence:** High（#442 triage 运行时复现 + 引擎级探针 E1–E5 + 根套件 2090 绿 / client 336 绿）
+**Evidence:** [#442](https://github.com/hyperion2144/dsh-hashline-edittool/issues/442)；#437（审计与 P1/P1b 定义）；`src/domain/edit/edit-engine.ts`（格式化分支改造 + `hunksBetween`）；`src/domain/session/anchor-state.ts`（`updateAnchorsAfterEdit` 的 `mint` 门）；`src/domain/format/write-section.ts`（`preCallHashes`）；`test/core/issue-442-format-anchor-inheritance.test.ts`
+
+### Why
+
+#437 审计 + #442 triage 复现：格式化分支的整文件 `lineHashesPure` 是第二分配族（文件顺序取槽 ≠ 存储到达历史，重复内容行上分歧——`2t` 机制），响应没坏只是因为 served 窗口 mint 原地覆写了重算值（靠掩码的继承）；无位置差异的格式化输出（完全回滚）连 mint 都跳过，store 滞留在 pre-format 内容直到下次访问 realign。同时它是热路径固定开销（10k 行 63 ms/次，碰撞密集内容 275–392 ms）。
+
+### What was decided
+
+- 新 **ADR-0041**：格式化步是一次 edit——`updateAnchorsAfterEdit`（old=编辑后文本、new=格式化输出、hunks=bounded Myers 差异）推进持久化状态，完整三段释放纪律；`mint` 门保持「formatter 发明且未 serve 的行不铸锚」（ADR-0019 规则不变）。
+- 每文件只有一个锚点族：持久化存储；`lineHashesPure` 只服务瞬态 preview，不上已持有 served 锚点的热路径。
+- write 资格门读 preview 实际服务的锚点（无 preview 才回退全文件分配）。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0041-format-inherits-anchors.md`（新）
+- `AGENTS.md`（l0 decisions 行：范围号 0001–0038 → 0001–0041，补 0039/0040/0041 三句）
+- `CHANGELOG.md` `[Unreleased]` Fixed 一行（#442）
+- `test/core/issue-442-format-anchor-inheritance.test.ts`（新）
+- `docs/CHANGELOG-MEMORY.md`（本条）

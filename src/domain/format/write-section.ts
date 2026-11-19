@@ -56,6 +56,26 @@ export interface WriteSectionInput {
 }
 
 /**
+ * The gate's pre-call anchors (#442 P1b): the preview's served anchors where
+ * they cover the model content — the family the model actually received. A
+ * TRUNCATED preview (a resume window, not the whole file) pads the uncovered
+ * lines with `""` (never eligible — the model was never shown an anchor for
+ * them), and only a caller with NO preview at all falls back to the pure
+ * whole-file assignment (direct/standalone use).
+ */
+function previewPreCallHashes(
+	servedHashes: readonly string[] | undefined,
+	lineCount: number,
+	modelContent: string,
+): readonly string[] {
+	if (servedHashes === undefined) return lineHashesPure(modelContent);
+	if (servedHashes.length === lineCount) return servedHashes;
+	const padded = servedHashes.slice(0, lineCount);
+	while (padded.length < lineCount) padded.push("");
+	return padded;
+}
+
+/**
  * Build the write tool's format section for a successful pass. Must run AFTER
  * the preview: the eligible rows quote the preview's fresh anchors.
  */
@@ -63,17 +83,12 @@ export function buildWriteFormatSection(input: WriteSectionInput): FormatSection
 	const modelLines = splitLines(input.modelContent);
 	const finalLines = splitLines(input.outcome.content);
 	const provenance = input.outcome.finalToModel ?? new Map<number, ReadonlySet<number>>();
-	// G3: authorship does NOT qualify on write — only a pre-call served line
-	const eligibility = computeRowEligibility({
-		finalLineCount: finalLines.length,
-		provenance,
-		modelTouched: new Set<number>(),
-		preCallHashes: lineHashesPure(input.modelContent),
-		served: input.preCallServed,
-	});
 	const changed = formatterChangedLines(modelLines, finalLines, provenance);
 	if (input.rowless === true) {
-		// No echo ⟹ no anchors to quote: header + counters only (#354).
+		// No echo ⟹ no anchors to quote: header + counters only (#354). The
+		// early return also skips building the eligibility gate's input —
+		// computing it here would run the very whole-file assignment this
+		// module just abolished (#442 review).
 		return buildFormatSection({
 			status: "formatted",
 			...(input.outcome.server !== undefined ? { server: input.outcome.server } : {}),
@@ -87,6 +102,14 @@ export function buildWriteFormatSection(input: WriteSectionInput): FormatSection
 			alsoInMain: new Set<number>(),
 		});
 	}
+	// G3: authorship does NOT qualify on write — only a pre-call served line
+	const eligibility = computeRowEligibility({
+		finalLineCount: finalLines.length,
+		provenance,
+		modelTouched: new Set<number>(),
+		preCallHashes: previewPreCallHashes(input.servedHashes, modelLines.length, input.modelContent),
+		served: input.preCallServed,
+	});
 	// #312 (spec review): an update withholds a changed row ONLY when the
 	// preview provably shows it — the model rewrote the (single) pre-disk
 	// line the row came from, so the before→model hunks render that line. A

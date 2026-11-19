@@ -4,6 +4,10 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- edit/write 格式化路径的锚点改为 edit 式继承：格式化步不再整文件重算，write 资格门改读 preview 实际服务过的锚点，未改动行锚点稳定不再依赖 served 窗口覆写兜底（#442，ADR-0041）。
+
 ## [0.11.4] - 2026-11-18
 
 ### Added
