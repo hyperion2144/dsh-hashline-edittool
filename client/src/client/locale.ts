@@ -208,6 +208,8 @@ export const EN_CARD_DICTIONARY = {
 	"settings.label.astMaster": "Master switch",
 	"settings.label.lspAutoDiag": "Auto diagnostics",
 	"settings.label.lspIdle": "Idle reclaim",
+	"settings.label.lspInlineWait": "Inline wait",
+	"settings.label.writeFsync": "write fsync",
 	"settings.label.formatAuto": "Auto-format (after write / edit / ast_edit)",
 	"settings.label.formatFallback": "Fall back to the whole file",
 	"settings.label.formatEditorconfig": "Read .editorconfig",
@@ -239,6 +241,10 @@ export const EN_CARD_DICTIONARY = {
 		"After edit / write / undo lands on disk, the language server's diagnostics are sent back to the model automatically (on by default).",
 	"settings.hint.lspIdle":
 		"Milliseconds, 0–3600000; default 300000. A server idle for longer than this is reclaimed and started again on the next use; 0 means never reclaim.",
+	"settings.hint.lspInlineWait":
+		"Milliseconds a write result waits inline for diagnostics, 0–1000; default 1000. 0 = deliver everything asynchronously.",
+	"settings.hint.writeFsync":
+		"On = the shipped durability (fsync before rename). Off = faster writes, but a power loss may lose the last batch of writes.",
 	"settings.hint.formatAuto":
 		"Off = no formatting; whole file = the whole file; range = only the changed lines (off by default).",
 	"settings.hint.formatFallback":
@@ -321,6 +327,8 @@ export const EN_CARD_DICTIONARY = {
 	"settings.error.budgetRange": "Out of the allowed range {min}–{max} {unit}",
 	"settings.error.idleInteger": "Enter a whole number between {min} and {max}",
 	"settings.error.idleRange": "Out of the allowed range {min}–{max}",
+	"settings.error.waitInteger": "Enter a whole number between {min} and {max}",
+	"settings.error.waitRange": "Out of the allowed range {min}–{max}",
 	"settings.unit.mib": "MiB",
 	"settings.unit.paths": "paths",
 	"settings.unit.lines": "lines",
@@ -488,6 +496,8 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.label.astMaster": "总开关",
 	"settings.label.lspAutoDiag": "自动诊断回送",
 	"settings.label.lspIdle": "空闲回收",
+	"settings.label.lspInlineWait": "内联等待",
+	"settings.label.writeFsync": "write 落盘同步",
 	"settings.label.formatAuto": "自动格式化（write / edit / ast_edit 后）",
 	"settings.label.formatFallback": "范围不可用时回退全文",
 	"settings.label.formatEditorconfig": "读取 .editorconfig",
@@ -514,6 +524,10 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.hint.lspAutoDiag": "edit / write / undo 落盘后自动把语言服务器诊断回送模型（默认开）。",
 	"settings.hint.lspIdle":
 		"毫秒，0–3600000；默认 300000。空闲超过这个时间语言服务器会被回收，下次用到再拉起；填 0 表示永不回收。",
+	"settings.hint.lspInlineWait":
+		"毫秒，0–1000；默认 1000。写入结果内联等待诊断推送多久，填 0 表示全部走异步通道。",
+	"settings.hint.writeFsync":
+		"开 = 现行耐久语义（rename 前 fsync）。关 = 写入更快，但掉电可能丢最后一批写入。",
 	"settings.hint.formatAuto": "关 = 不格式化；全文 = 整文件；范围 = 只格式化被改的行（默认关）。",
 	"settings.hint.formatFallback":
 		"开 = 局部格式化不可用时用整文件代替；关 = 自动路径静默跳过、format 工具显式报错（默认关）。",
@@ -585,6 +599,8 @@ export const ZH_CARD_DICTIONARY = {
 	"settings.error.budgetRange": "超出允许范围 {min}–{max} {unit}",
 	"settings.error.idleInteger": "请输入 {min}–{max} 之间的整数",
 	"settings.error.idleRange": "超出允许范围 {min}–{max}",
+	"settings.error.waitInteger": "请输入 {min}–{max} 之间的整数",
+	"settings.error.waitRange": "超出允许范围 {min}–{max}",
 	"settings.unit.mib": "MiB",
 	"settings.unit.paths": "个",
 	"settings.unit.lines": "行",

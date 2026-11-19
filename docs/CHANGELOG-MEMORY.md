@@ -1364,3 +1364,38 @@ store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先�
 - `CHANGELOG.md` `[Unreleased]` Fixed 一行（#442）
 - `test/core/issue-442-format-anchor-inheritance.test.ts`（新）
 - `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-19 — 性能审计落地三张：分配器位集化、延迟设置、sha256 去重（#441 / #439 / #440 → 地图 #438）
+
+**Type:** implementation（三张实施票完成并同 PR 提交，等验收）
+**Confidence:** High（分配器与旧实现字节等价对照、根 2110 + client 336 全绿）
+**Evidence:** #441（探铆基准 10k 62→11 ms、50k 417→47 ms）；#439（8 例测试 + README 双语）；#440（createHash 计数测试）
+
+### #441 分配器位集化（字节等价加速）
+
+- `SlotSpace`：批级槽位空间（≤4 层 Uint8Array 位集，5+ 层 Set<number>），探测全整数、命中才 encodeAnchor。
+- 「数字锚点不可用」⟺ 每个 base-62 位 < 10——是**数字盒不是区间**（"36" = idx 3·62+6 = 192 > 10² 却是纯数字；首版区间判定被测试套住后修正）。
+- 饱和层跳过（#437 条目 3）：100% 饱和下字节等价（无槽可找 ⟺ 64 探测全败）；marks 只增，饱和单调。
+- 游标续探、探测序、跳过谓词与字符串时代完全一致：与主检出旧实现在 10k/50k/空行/混合四种形状上输出全等。
+
+### #439 延迟设置
+
+- `lsp.auto_diagnostics.inline_wait_ms`（0–1000，默认 1000 = INLINE_WINDOW_MS，缺省行为逐字节不变；0 = 全异步）。
+- `write.fsync`（默认 true；关闭跳过 tempHandle.sync + syncDir，README 双语写明掉电风险）。
+- 管道：schemastery zod（无 .int()，用 min/max + effective 侧 Number.isFinite）。
+
+### #440 sha256 去重
+
+- `contentChecksum` 单条目按内容相等的 memo：同引用 O(1)、同字节一次 memcmp（远廉于摘要）、内容变即失效（无 stat 键，无 Windows 时间戳精度问题）。实测 4MB 摘要 2.1 ms vs memo 命中 1.4 ms；审计口径 10MB 摘要 37 ms。
+
+### Path / Affected typed relationships
+
+- `src/hashline/alloc.ts`（SlotSpace/isNumericIdx/allocateInSpace，三批路径改走批级空间）
+- `src/config.ts` + `src/infra/settings.ts`（两设置的类型/schema/effective/getter）+ `src/lsp/auto-diag.ts`（budgetMs）+ `src/infra/fs-write.ts`（fsync 门）
+- `src/hashline/hash-assign.ts`（contentChecksum memo）
+- `README.md` / `README.zh.md`（yaml 双语两行）
+- `CHANGELOG.md` `[Unreleased]` Added 三行（#441/#439/#440）
+- 测试：`issue-441-alloc-bitset.test.ts`（4）、`issue-439-latency-settings.test.ts`（8）、`issue-440-checksum-dedup.test.ts`（4）；`ast-settings` / `hashline-volatile-config` 字面量补新字段
+- `docs/CHANGELOG-MEMORY.md`（本条）

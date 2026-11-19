@@ -4,6 +4,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- 锚点分配器探测内核改为整数位集探测：批级槽位空间（≤4 层位集，以上 Set<number>）+ 数字盒判定 + 饱和层跳过，分配结果与旧实现字节一致；10k 行 62→11 ms、50k 行 417→47 ms（#441）。
+- 新增两个延迟设置：`lsp.inline_wait_ms`（0–1000，默认 1000 行为不变，0 = 全异步，与 `auto_diagnostics` 同级）与 `write.fsync`（默认 true 行为不变，关闭 = 掉电可能丢最后一批写入），设置卡同步可读写（#439）。
+- `contentChecksum` 增单条目按内容去重 memo：同一次读/写中对同一文本的 2–3 次整文件 sha256 合并为一次（#440）。
+
 ### Fixed
 
 - edit/write 格式化路径的锚点改为 edit 式继承：格式化步不再整文件重算，write 资格门改读 preview 实际服务过的锚点，未改动行锚点稳定不再依赖 served 窗口覆写兜底（#442，ADR-0041）。

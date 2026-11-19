@@ -310,6 +310,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
     lsp:
       servers: {}            # 命名服务器：{ <languageId>: <command> }
       auto_diagnostics: true # 写入后内联投递服务器诊断
+      inline_wait_ms: 1000    # 写入结果内联等待诊断多久，0-1000 ms（0 = 全部走异步）
       idle_timeout_ms: 300000 # 空闲多久后回收语言服务器（0 = 永不）
     format:
       auto: off              # write/edit/ast_edit 后的格式化模式：off | full | range（存量 true→full、false→off）
@@ -318,6 +319,7 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
       servers: {}            # 按语言的仅格式化副 server（ADR-0038），如 { python: ruff-lsp }
     write:
       preview: diff          # 写后回显：full | diff | confirmation（默认 diff）
+      fsync: true             # rename 前 fsync 临时文件与目录（关闭 = 掉电可能丢最后一批写入）
     apply_patch:
       enabled: true          # 提供 apply_patch 工具与它的指引段（默认开）
 ```

@@ -37,7 +37,7 @@
  * @module dsh-hashline-edittool/domain/session/anchor-entry
  */
 
-import { contentKey } from "../../hashline/alloc.js";
+import { contentKey, invalidateSlotSpace } from "../../hashline/alloc.js";
 import { canon, contentChecksum, truncateServedKey } from "../../hashline/hash-assign.js";
 import { splitLines } from "../../infra/utils.js";
 import { allocateIntoRows, type SparseState } from "../../hashline/alloc.js";
@@ -417,6 +417,8 @@ async function anchorForInTransaction(input: AnchorForInput): Promise<AnchorForR
 			// Keep the working state in step with the row just reused, or the
 			// write-back at the end would persist a projection missing it.
 			state.entries.set(line, { anchor: existing.anchor, contentKey: key });
+			// #446: a store row the in-memory state lacked — keep its cache in step.
+			state.slotSpace?.markAnchor(existing.anchor);
 			continue;
 		}
 		const alreadyMinted = mintedByLine.get(line);
@@ -542,6 +544,8 @@ export async function releaseLines(input: {
 		// (1) out of the live set. Deleting from the in-memory map is what makes
 		// `persistAnchorState` drop the row: it diffs against the store.
 		state.entries.delete(line);
+		// #446: a live anchor left the set — the cached slot space over-marks.
+		invalidateSlotSpace(state);
 		released.push(entry.anchor);
 	}
 	if (released.length === 0) return released;

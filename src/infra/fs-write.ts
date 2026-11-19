@@ -11,6 +11,7 @@ import {
 import { dirname, join } from "node:path";
 import { errCode } from "./utils.js";
 import { resolveTarget } from "./paths.js";
+import { writeFsyncEnabled } from "./settings.js";
 
 
 const TEMP_PREFIX = ".tmp-";
@@ -74,6 +75,7 @@ export async function writeAtomic(
 
   const dir = dirname(targetPath);
   await sweepStaleTemps(dir);
+  const fsync = writeFsyncEnabled();
   const tempPath = join(dir, `${TEMP_PREFIX}${randomUUID()}`);
   await mkdir(dir, { recursive: true });
   const tempHandle = await open(tempPath, "wx", 0o600);
@@ -82,7 +84,7 @@ export async function writeAtomic(
     if (existingStats) {
       await tempHandle.chmod(existingStats.mode & 0o7777);
     }
-    await tempHandle.sync();
+    if (fsync) await tempHandle.sync();
   } catch (error: unknown) {
     await tempHandle.close();
     try { await rm(tempPath, { force: true }); } catch {}
@@ -91,7 +93,7 @@ export async function writeAtomic(
   try {
     await tempHandle.close();
     await rename(tempPath, targetPath);
-    await syncDir(dir);
+    if (fsync) await syncDir(dir);
   } catch (error: unknown) {
     if (process.platform === "win32" && errCode(error) === "EPERM") {
       try {

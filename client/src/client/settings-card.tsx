@@ -46,10 +46,14 @@ import {
 	settingsSummaryText,
 	validateStoreBudgetDraft,
 	LSP_IDLE_SPEC,
+	LSP_INLINE_WAIT_SPEC,
+	readLspInlineWaitMs,
+	readWriteFsync,
 	readLspIdleMs,
 	readWritePreview,
 	type WritePreviewMode,
 	validateLspIdleDraft,
+	validateLspInlineWaitDraft,
 	type SettingsCardView,
 	type SettingsControllerFace,
 	type StoreBudgetSpec,
@@ -805,6 +809,8 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 		const namedFormatServers = readFormatServers(snapshot);
 	const autoDiag = readAutoDiagnostics(snapshot);
 	const lspIdleMs = readLspIdleMs(snapshot);
+	const inlineWaitMs = readLspInlineWaitMs(snapshot);
+	const writeFsync = readWriteFsync(snapshot);
 	const formatFlags = readFormatFlags(snapshot);
 	const store = readStore(snapshot);
 	const storeOverridden = hasAnyStoreField(snapshot);
@@ -827,6 +833,9 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 	const [lspIdleDraft, setLspIdleDraft] = useState(lspIdleMs === undefined ? "" : String(lspIdleMs));
 	/** The idle window's failure, or undefined when it is fine. */
 	const [lspIdleError, setLspIdleError] = useState<SettingsDraftError | undefined>(undefined);
+	/** #439: the inline diagnostics wait, draft-on-blur like the idle window. */
+	const [inlineWaitDraft, setInlineWaitDraft] = useState(inlineWaitMs === undefined ? "" : String(inlineWaitMs));
+	const [inlineWaitError, setInlineWaitError] = useState<SettingsDraftError | undefined>(undefined);
 	/** Which of the card's two sections is showing. */
 	const [tab, setTab] = useState<"core" | "ast" | "lsp" | "store">("core");
 	/** Same draft-on-blur treatment for the store-budget fields (#179). */
@@ -1176,7 +1185,9 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 								disabled={!writable}
 								onClick={() =>
 									void write(`writePreview:${mode}`, () =>
-										writeField("write", { preview: mode }),
+										// #439 review: SEGMENTED write — a whole-subtree op here would
+										// wipe a sibling `write.fsync` the user had set in YAML.
+										writeField(["write", "preview"], mode),
 									)
 								}
 							>
@@ -1187,6 +1198,16 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 					<p className="dshl-mgr-hint">
 						{t("settings.hint.writePreview")}
 					</p>
+
+					{/* #439: write.fsync — absent means ON; the switch writes the explicit value either way. */}
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">{t("settings.label.writeFsync")}</span>
+						<span className="dshl-mgr-grow" />
+						{renderSwitch(writeFsync, !writable, "writeFsync", (checked) =>
+							void write("writeFsync", () => writeField(["write", "fsync"], checked)),
+						)}
+					</div>
+					<p className="dshl-mgr-hint">{t("settings.hint.writeFsync")}</p>
 
 					<h4 className="dshl-mgr-section">{t("settings.section.edit")}</h4>
 					<div className="dshl-mgr-master">
@@ -1520,10 +1541,45 @@ function HashlineSettingsPageView({ controller, t }: { readonly controller?: Set
 					/>{lspIdleError === undefined ? null : (
 						<span className="dshl-mgr-error">{draftErrorText(t, lspIdleError)}</span>
 					)}
-					<span className="dshl-mgr-hint">
-						{t("settings.hint.lspIdle")}
-					</span>
-				</div>
+						<span className="dshl-mgr-hint">
+							{t("settings.hint.lspIdle")}
+						</span>
+					</div>
+					{/* #439: the inline diagnostics wait — how long a write's tool result
+				 * holds for the push before moving it to the async channel. */}
+					<div className="dshl-mgr-master">
+						<span className="dshl-mgr-label">{t("settings.label.lspInlineWait")}</span>
+						<input
+							className="dshl-mgr-search"
+							style={{ maxWidth: "10ch" }}
+							type="number"
+							min={LSP_INLINE_WAIT_SPEC.min}
+							max={LSP_INLINE_WAIT_SPEC.max}
+							step={1}
+							placeholder={t("settings.placeholder.default", { value: String(LSP_INLINE_WAIT_SPEC.defaultMs) })}
+							value={inlineWaitDraft}
+							disabled={!writable}
+							onChange={(event) => setInlineWaitDraft(event.target.value)}
+							onBlur={() => {
+								const result = validateLspInlineWaitDraft(inlineWaitDraft);
+								if (result.kind === "error") {
+									setInlineWaitError(result.error);
+									return;
+								}
+								setInlineWaitError(undefined);
+								void write("lsp.inlineWait", () =>
+									result.kind === "valid"
+										? writeField(LSP_INLINE_WAIT_SPEC.path, result.value)
+										: writeField(LSP_INLINE_WAIT_SPEC.path),
+								);
+							}}
+						/>{inlineWaitError === undefined ? null : (
+							<span className="dshl-mgr-error">{draftErrorText(t, inlineWaitError)}</span>
+						)}
+						<span className="dshl-mgr-hint">
+							{t("settings.hint.lspInlineWait")}
+						</span>
+					</div>
 			{/* #275: the format group, beside the servers that power it. Both are
 				OPT-IN: absent means OFF — the opposite of auto-diagnostics above. */}
 			<h4 className="dshl-mgr-section">{t("settings.section.format")}</h4>
