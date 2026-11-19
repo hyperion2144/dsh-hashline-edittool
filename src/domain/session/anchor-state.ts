@@ -486,6 +486,13 @@ export function updateAnchorsAfterEdit(args: {
 	 * which is §9 invariant 5 (本轮不重发) and the window §4.2 exists to close.
 	 */
 	used?: Set<string>;
+	/**
+	 * Which hunk-new lines may be ALLOCATED anchors. Default: all of them (an
+	 * edit response serves every fresh line). The auto-format pass passes its
+	 * eligibility gate instead (#442): a formatter-invented line the model
+	 * never saw stays `""` — not minted, never served.
+	 */
+	mint?: (line: number) => boolean;
 }): string[] {
 	const newContent = normalizeContent(args.newContent);
 	const oldContent = normalizeContent(args.oldContent);
@@ -616,7 +623,9 @@ export function updateAnchorsAfterEdit(args: {
 	for (const [, entry] of state.entries) {
 		if (entry.anchor !== "") avoid.add(entry.anchor);
 	}
-	allocateInto(state, newContent, freshLines, avoid);
+	const mintable =
+		args.mint === undefined ? freshLines : freshLines.filter((line) => args.mint!(line));
+	allocateInto(state, newContent, mintable, avoid);
 	persistProjection(args.path, state);
 	return anchorsFor(args.path, newContent);
 }

@@ -7,10 +7,10 @@
  *    model's own hunks is always eligible: the main diff shows it, so the
  *    normal mint path serves it, and refusing it an anchor would break the
  *    echo contract the main diff already made; OR
- * 2. a pre-call line it descended from was SERVED this session — the anchor
- *    derivation is content-keyed, so the pre-call line's anchor equals the
- *    final line's anchor whenever the text is unchanged; "served" therefore
- *    transfers through the provenance map by CONTENT, not by position.
+ * 2. a pre-call line it descended from was SERVED this session — checked
+ *    against the caller's pre-call anchor family (the store-materialized
+ *    anchors on edit, the preview-served anchors on write; #442), so
+ *    "served" transfers through the provenance map by CONTENT, not by position.
  *
  * Everything else — formatter re-indentation of a line the model never saw,
  * formatter-invented text — is INELIGIBLE: it renders anchor-less (the card's
@@ -28,8 +28,10 @@
  * @param params.modelTouched - final lines the MODEL's hunks produced
  *   (the engine's own hunks walked through the same provenance walk — H2
  *   supplies the set).
- * @param params.preCallHashes - the content-derived anchors of the PRE-CALL
- *   lines (`lineHashesPure(preCallContent)`, index = line − 1).
+ * @param params.preCallHashes - the PRE-CALL lines' anchors, index = line − 1.
+ *   The caller's family decides (#442): edit passes the store-materialized
+ *   pre-call anchors, write passes the preview-served anchors — the pure
+ *   whole-file assignment survives only as write's no-preview fallback.
  * @param params.served - the session's served anchors for this path
  *   (`loadServed(sessionKey, path)`).
  * @returns final line (1-based) → eligible.
