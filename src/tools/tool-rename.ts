@@ -292,6 +292,7 @@ export function buildRenameTool(io: FileIO, sandbox: FsSandboxController) {
 					"Pairs to move (1-32, exact duplicates collapse). Relative paths resolve against the session cwd. Regular files only; an existing destination is refused unless it is the same file under another spelling.",
 				items: {
 					type: "object",
+					description: "One {from, to} pair.",
 						additionalProperties: false,
 					properties: {
 						from: {

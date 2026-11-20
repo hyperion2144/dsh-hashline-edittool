@@ -66,8 +66,16 @@ export function buildFormatTool(io: FileIO, sandbox: FsSandboxController) {
 				description:
 					"Format only the lines between two served anchors. `start` and `end` are anchors from a read/grep/diff row (`<line>:<anchor>` accepted); both must be served in this session, middle lines may not be.",
 				properties: {
-					start: { type: "string", required: true },
-					end: { type: "string", required: true },
+					start: {
+						type: "string",
+						required: true,
+						description: "Anchor of the first line of the range to format, from a read/grep/diff row.",
+					},
+					end: {
+						type: "string",
+						required: true,
+						description: "Anchor of the last line of the range to format.",
+					},
 				},
 			},
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),

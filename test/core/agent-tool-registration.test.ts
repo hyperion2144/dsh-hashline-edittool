@@ -21,6 +21,7 @@
  * @module dsh-hashline-edittool/agent-tool-registration
  */
 import { describe, expect, it, vi } from "vitest";
+import { renderSectionDefault } from "../../src/guidance/resolve.js";
 import { apply } from "../../src/index.js";
 
 type ToolDef = { name: string };
@@ -53,11 +54,20 @@ function makeRootCtx() {
 
 function makeAgent(options: { deferEffect?: boolean } = {}) {
 	const agentTools: string[] = [];
+	const sections: Array<{ name: string; text: string }> = [];
 	let deferred: (() => unknown) | undefined;
 	const agent = {
 		id: "agent-1",
 		ctx: {
-			get: (_name: string) => undefined,
+			get: (name: string) =>
+				name === "systemPrompt"
+					? {
+						section: (s: { name: string; text: string }) => {
+							sections.push({ name: s.name, text: s.text });
+							return () => undefined;
+						},
+					}
+					: undefined,
 			tools: {
 				register: (def: ToolDef) => {
 					agentTools.push(def.name);
@@ -78,6 +88,7 @@ function makeAgent(options: { deferEffect?: boolean } = {}) {
 	return {
 		agent,
 		agentTools,
+		sections,
 		/** Run the effect body the fake held back — the install's moment of truth. */
 		runEffect: (): void => {
 			const body = deferred;
@@ -225,5 +236,34 @@ describe("#398/#418 — a resumed session's first turn sees the whole tool surfa
 		await created.handler({ agent });
 		expect(agentTools).not.toContain("apply_patch");
 		expect(pluginTools).not.toContain("apply_patch");
+	});
+
+	it("registers every guidance section on the agent layer — not just edit's (#413 regression, #447)", async () => {
+		const { rootCtx, calls } = makeRootCtx();
+		apply(rootCtx);
+		const created = calls.find((c) => c.event === "agent/created")!;
+		const { agent, sections } = makeAgent();
+		await created.handler({ agent });
+		expect(sections.map((section) => section.name).sort()).toEqual(
+			[
+				"anchors",
+				"tool:apply_patch",
+				"tool:ast_edit",
+				"tool:ast_grep",
+				"tool:delete",
+				"tool:edit",
+				"tool:format",
+				"tool:grep",
+				"tool:lsp",
+				"tool:read",
+				"tool:rename",
+				"tool:undo_last_edit",
+				"tool:write",
+			].sort(),
+		);
+		// The injected text is the compiled default — no file layer (#447 review).
+		for (const section of sections) {
+			expect(section.text).toBe(renderSectionDefault(section.name));
+		}
 	});
 });

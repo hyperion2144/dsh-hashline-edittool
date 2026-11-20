@@ -34,26 +34,12 @@ import { AST_SUMMARY_MIN_BODY_LINES, AST_SUMMARY_MIN_COMMENT_LINES } from "../in
 import { splitLines } from "../infra/utils.js";
 import { toLF } from "../render/edit-diff.js";
 
-/** The description the model reads — it has to teach the pattern syntax. */
+/** The description the model reads: purpose plus one contract sentence (#447); the pattern rules live in the schema fields and the section. */
 function astGrepDescription(): string {
-	return [
-		"Structural code search: find places by SYNTAX SHAPE rather than by text.",
-		"",
-		"Use it when the shape matters (calls, declarations, imports, language constructs) and plain `grep` would match inside strings or comments.",
-		"",
-		"The pattern is ordinary source for the file's language, in which identifiers are metavariables:",
-		"- `$NAME` — one node, captured under NAME",
-		"- `$$$NAME` — zero or more nodes, captured as a list",
-		"- `$_` — one node, matched without capturing",
-		"",
-		"Rules that bite:",
-		"- A pattern must parse as ONE node. A fragment the grammar rejects is an error, not an empty result — wrap it (`class $_ { … }`).",
-		"- Some positions demand a specific token, so a metavariable cannot stand there as written: a module specifier is a string, so write `import $$$BODY from \"$MODULE\"`.",
-		"- Metavariable names are UPPERCASE and stand for a whole node: `pre$FIX` does not work.",
-		"- The same name twice must match the SAME code (`$A == $A` matches `x == x`, not `x == y`).",
-		"",
-		"The rows come back in the same `line:anchor:content` form `read` produces, so a match can be passed straight to `edit`.",
-	].join("\n");
+	return (
+		"Find code by syntax shape rather than by text — calls, declarations, imports, constructs — where a plain grep would also match inside strings or comments. " +
+		"The pattern is ordinary source for the file's language with $NAME, $$$NAME and $_ metavariables; omit it for the file's outline, and matches return in read's row form, ready for edit."
+	);
 }
 
 /** One matched span, as the worker reports it. */

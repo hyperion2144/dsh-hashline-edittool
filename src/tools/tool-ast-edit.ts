@@ -77,19 +77,12 @@ function fillTemplate(template: string, captures: Record<string, readonly string
 		.replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_m, name: string) => captures[name]?.[0] ?? "");
 }
 
-/** The description the model reads. */
+/** The description the model reads: purpose plus one contract sentence (#447). */
 function astEditDescription(): string {
-	return [
-		"Change code at places found by SYNTAX SHAPE — the write half of `ast_grep`.",
-		"",
-		"`pat` selects what to change; `out` is what it becomes, and may reference the pattern's metavariables (`out: \"logger.info($$$ARGS)\"`). An empty `out` deletes the match.",
-		"",
-		"Every match is applied as ONE atomic batch through the same engine `edit` uses: the anchors come from the hashline allocator, syntax is re-checked after the change, the diff comes back, and `undo_last_edit` can put it back. Nothing here writes a file directly.",
-		"",
-		"Pattern rules are `ast_grep`'s, and the same ones bite: a pattern must parse as ONE node, and some positions demand a specific token — a module specifier is a string, so write `from \"$MODULE\"`.",
-		"",
-		"If a change would break syntax the whole batch is refused and nothing is written; re-read the file, because anchors are scoped to the state they were served in.",
-	].join("\n");
+	return (
+		"Change code at the places a syntax pattern finds — the write half of `ast_grep`. " +
+		"`pat` selects the matches and `out` is the replacement, which may reference the pattern's metavariables (an empty `out` deletes the match); all matches apply as one atomic batch through the same engine `edit` uses."
+	);
 }
 
 /**

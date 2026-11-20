@@ -1,126 +1,88 @@
 /**
  * Model-facing prompt text for the hashline tools, embedded so the bundle
- * ships no external prompt files. Each tool's schema `description` is short;
- * the `tool:*` system-prompt sections carry the brief guidance the model
- * reads when the tools are presented. Guidance is uniform: a one-line opener
- * followed by tight bullets.
+ * ships no external prompt files. #447 splits the surface three ways: a
+ * tool-schema `description` states the purpose and at most one contract
+ * sentence; the schema's per-field descriptions carry the mechanical
+ * reference (op shapes, range rules, flags); and the `tool:*` system-prompt
+ * sections carry the behavioral discipline — one intro plus at most five
+ * bullets, no error-code tables, no format legends.
  *
  * v2.0: anchors are variable-length Base62 (`[A-Za-z0-9]{1,8}`, 2-char
- * first), unique per line, and the legacy `<line>#<hash>` form is REJECTED
- * (`E_BAD_REF`). Line numbers are the USER's switch, off by default: when on,
+ * first), unique per line, and the legacy `<line>#<hash>` form is rejected
+ * (`E_BAD_REF`). Line numbers are the user's switch, off by default: when on,
  * a row's marker carries its 1-indexed line as `<anchor>:<line>` — informational
  * only, never part of the anchor; when off, rows carry the bare anchor.
  * Stale references fail hard via the served-content check.
  * @module dsh-hashline-edittool/prompts
  */
 
-/**
- * One tool's guidance: a brief opener plus concise bullets. The `intro` is
- * shown above the bullets; it does not duplicate the tool-schema `description`
- * (that already reaches the model through the tool catalog).
- */
-export interface ToolGuidance {
-	/** One-line lead shown above the bullets. */
-	intro: string;
-	/** Concise bullets; each is self-contained within its section. */
-	lines: readonly string[];
-}
+import type { ToolGuidance } from "../../contract/tool-guidance.js";
+
+export type { ToolGuidance };
 
 import type { EffectiveHashlineConfig } from "../../infra/settings.js";
 
-/** Edit tool description, generated from the effective config (text/json, declaration mode). */
+/** Edit tool description: purpose first, one contract sentence — the mechanics live in the schema fields and the guidance section (#447). */
 export function editDescription(cfg: EffectiveHashlineConfig): string {
-	const base = cfg.requireLineContent
-		? "Apply one or more edits. Within one file the edits are one atomic batch — a failure there rejects that file's batch ([E_BATCH_ABORT]) and writes nothing for that file, while other files in the same call are unaffected and partial success is reported per file, each failure with its own code. Each item is `{op: ins|del|replace|sed, anchor_after?: {anchor, line}, anchor_start?: {anchor, line}, anchor_end?: {anchor, line}, lines?}` — `ins` takes `anchor_after` (the line to insert BELOW, which is KEPT, so `lines` holds only the new lines), `replace`/`del` take `anchor_start`; `sed` takes `anchor_start` plus `pattern`/`replacement`/`flags?` and rewrites each line of the range in place (no `lines`, no newline in `replacement`). Every anchor is a pair: the anchor PLUS the current full text of its line, verified before applying (mismatch = [E_CONTENT_MISMATCH]). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`)."
-		: "Apply one or more edits. Within one file the edits are one atomic batch — a failure there rejects that file's batch ([E_BATCH_ABORT]) and writes nothing for that file, while other files in the same call are unaffected and partial success is reported per file, each failure with its own code. Each item is `{op: ins|del|replace|sed, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags?}` — `op:\"ins\"` takes `anchor_after` ONLY (the line to insert BELOW; it is KEPT, so `lines` holds only what is NEW); `replace` and `del` take `anchor_start` and never `anchor_after`; `op:\"sed\"` takes `anchor_start` (+ optional `anchor_end`) plus `pattern`/`replacement`/`flags?` and rewrites every line of that range with the regular expression (no `lines`; the replacement must not contain a newline). Anchors are variable-length Base62 (`<anchor>` or `<line>:<anchor>`) copied from read/grep/diff rows, never line content. Items resolve against one file snapshot — overlapping ranges are rejected (`[E_BATCH_CONFLICT]`).";
-	if (cfg.outputFormat === "json") {
-		return base + " JSON output: `{ok, files:[{path, applied, finalLines, noop}], hints, warnings, errors}` — `finalLines` keys are fresh anchors for follow-up edits.";
-	}
-	return base;
+	const declaration = cfg.requireLineContent
+		? ", each anchor declared with its line's current text"
+		: "";
+	return (
+		"Apply anchored edits to one or more files: insert, delete, replace or rewrite lines by the anchors a read, grep or diff row of this session carries" +
+		declaration +
+		". Within one file the edits are one atomic batch — a failure writes nothing for that file, other files are unaffected, and per-item paths let one call span several files."
+	);
 }
 
 /**
  * Edit guidance, generated from the effective config. With
- * `require_line_content` ON the anchor bullets teach the `{ anchor, line }`
- * declaration form; OFF keeps the plain-anchor contract verbatim.
+ * `require_line_content` ON the first bullet teaches the `{ anchor, line }`
+ * declaration form; OFF keeps the plain-anchor contract.
  */
 export function editGuidance(cfg: EffectiveHashlineConfig): ToolGuidance {
 	if (cfg.requireLineContent) {
 		return {
 			intro:
-				"Edit one or more ranges via `edits:[{op, anchor_after?: {anchor, line}, anchor_start?: {anchor, line}, anchor_end?: {anchor, line}, lines?}]` — `ins` anchors on `anchor_after`, the others on `anchor_start`; every anchor carries a declaration of its line's current text.",
+				"Edit ranges of lines by the anchors — and declared line text — a read, grep or diff of this session returned.",
 			lines: [
-				"`edit`: each item is `{ op, anchor_after?: {anchor, line}, anchor_start?: {anchor, line}, anchor_end?: {anchor, line}, lines? }`. `op` is `ins` (insert BELOW `anchor_after` — that line is KEPT, so `lines` holds only the new lines), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), or `replace` (swap the `anchor_start..anchor_end` range with `lines`).",
-				"`edit`: the anchor field follows the OP, and mixing them is REFUSED. `ins` + `anchor_start` is `[E_BAD_SHAPE]` — it was the same field name once, and a caller who had just used `replace` carried that reading over, put the anchor's own line into `lines`, and duplicated it. `anchor_after` names a POSITION, not a range start.",
-				"`edit`: `line` is your declaration of the line's CURRENT full text, verbatim from your latest read — single line, no newlines; an empty string declares an empty line. Trailing whitespace may be omitted and a copied read-row marker prefix is tolerated; anything else must match exactly.",
-				"`edit`: every declared line is verified before the edit applies (after the stale-anchor check) — a mismatch rejects that file's batch with `[E_CONTENT_MISMATCH]`, echoing the actual line and where your declared content currently lives. Copy each declaration from the same read the anchors came from.",
-				"`edit`: all three ops require declarations; omitting `anchor_end` (single-line range) declares only `anchor_start`; `lines` may have any number of lines. `op:\"ins\"` takes `anchor_after` and ONLY that — the insert lands BELOW that line; do NOT include the anchor line in `lines`.",
-				"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. One element is ONE line — only an element that itself carries a newline becomes several. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
-				"`edit`: anchors are variable-length Base62 markers copied from the leftmost column of a read/grep/diff row; the legacy `<line>#<hash>` form is rejected (`E_BAD_REF`). Identical content lines get DISTINCT anchors — declare the line you mean.",
-				"`edit`: ALL anchors (and declarations) in one call come from the same ORIGINAL read. One file's edits are one atomic batch — any failure in that file rejects its batch ([E_BATCH_ABORT]) and writes nothing for that file; files are independent, and partial success is reported per file, each failure with its own code. Do not issue several `edit` calls in one message — one call, one `edits` array.",
-				"`edit`: the diff's `--- path` / `+++ path` file header and its `@@ -old,count +new,count @@ scope()` block header are STRUCTURE, not file content — never paste them into an edit and never treat them as lines.",
-				"`edit`: a block header may name SEVERAL scopes (`a() / b()`) — then the block changes more than one of them, not just the first.",
-				"`edit`: a `-` row's anchor belongs to the PRE-edit line and is marked `~` — that line is gone, so the anchor is DEAD: never use it in an edit.",
-				"`edit`: a `+` row and an unchanged row carry FRESH anchors for the post-edit code — copy those for the next edit.",
+				"`edit`: every anchor is `{anchor, line}` — the line's current text declared verbatim from the same read the anchor came from; a mismatch rejects that file's batch and writes nothing for that file.",
+				"`edit`: anchors and declarations come from one original read — the batch resolves against that snapshot, so never shift them to positions an earlier hunk would produce; re-read for fresh anchors after an edit.",
+				"`edit`: serve the whole range first — every line between the range's two anchors must have been read; when the middle is longer than one window, resume or offset through it, or split the edit into smaller ranges.",
+				"`edit`: in the returned diff, `+` and unchanged rows carry fresh anchors for the next edit; a `~` row's anchor is dead, and the file/hunk headers are structure, not lines; a `Classification: noop` result means that file was not written — re-read and retry with the fresh marker.",
+				"`edit`: one call, one `edits` array — each file's edits are atomic and files are independent; a rejection echoes the target line as a fresh serve, so retry from the echoed marker without re-reading.",
 			],
 		};
 	}
 	return {
-		intro:
-			"Edit one or more ranges via `edits:[{op, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags?}]` — `ins` anchors on `anchor_after`, the others on `anchor_start`; `sed` adds `pattern`/`replacement`.",
+		intro: "Edit ranges of lines by the anchors a read, grep or diff of this session returned.",
 		lines: [
-			"`edit`: each item is `{ op, anchor_after?, anchor_start?, anchor_end?, lines?, pattern?, replacement?, flags? }`. `op` is `ins` (insert BELOW `anchor_after` — that line is KEPT, so `lines` holds only the new lines), `del` (delete the `anchor_start..anchor_end` range — single line when `anchor_end` is omitted), `replace` (swap the `anchor_start..anchor_end` range with `lines`), or `sed` (rewrite every line of the `anchor_start..anchor_end` range with the regular expression in `pattern`, using `replacement` and optional `flags` — `g` replaces every match per line, `i` ignores case, `m` makes `^`/`$` match line boundaries, `s` lets `.` match a newline; without `g` only the FIRST match on each line is replaced, as command-line sed does).",
-			"`edit`: `op:\"sed\"` takes `pattern` + `replacement` (and optional `flags`), NOT `lines` — mixing them is `[E_BAD_SHAPE]`. `replacement` accepts both dialects: sed's `\\1` and `&` (whole match) and JavaScript's `$1` and `$&`; an empty `replacement` deletes what the pattern matched. It must not contain a newline: sed substitutes WITHIN a line, so the range's line count never changes — use `op:\"replace\"` when lines must be added or removed.",
-			"`edit`: the anchor field follows the OP, and mixing them is REFUSED. `ins` + `anchor_start` is `[E_BAD_SHAPE]` — it was the same field name once, and a caller who had just used `replace` carried that reading over, put the anchor's own line into `lines`, and duplicated it. `anchor_after` names a POSITION, not a range start.",
-			"`edit`: `replace` swaps the `anchor_start..anchor_end` range for `lines` (any length). Omit `anchor_end` for a single-line range (anchor_start only) — the replacement may still have multiple lines. `ins` anchors on one line only.",
-			"`edit`: op memory: `ins` KEEPS the `anchor_after` line and inserts `lines` below it — do NOT include that line's content in `lines` (it duplicates it); `del` only removes (lines is rejected); `replace` rewrites the range. A `Classification: noop` result means that file was not written — if you expected a change, the anchor or content is wrong: re-read and retry with the fresh marker.",
-			"`edit`: `anchor_start` is required for `replace` and `del` and anchors the FIRST line of the range; `anchor_end` anchors the LAST line and is OPTIONAL — omitting it defaults to a single-line range; `lines` may have any number of lines. `op:\"ins\"` takes `anchor_after` INSTEAD OF `anchor_start`, and `anchor_end` is rejected on it: one anchor, one position.",
-			"`edit`: `lines` is required (and must be non-empty) for `ins` and `replace`; forbidden for `del`. One element is ONE line — only an element that itself carries a newline becomes several. To clear a single line to empty, use `replace` with `lines: [\"\"]` — never `del` (which removes the line).",
-			"`edit`: anchors must be variable-length Base62 markers copied from the leftmost column of a read/grep/diff row — never hand-write or paste line content. The legacy `<line>#<hash>` form is rejected (`E_BAD_REF`).",
-			"`edit`: identical content lines get DISTINCT anchors — copy the exact marker of the line you mean.",
-			"`edit`: ALL anchors in one call come from the same ORIGINAL read — never shift them to positions a previous hunk would produce in sequence (there is no 'after the previous edit' coordinate; the batch applies against the original snapshot). The response's diff rows show the FINAL positions; there is no `Shift:` block — re-read for fresh anchors after an edit.",
-			"`edit`: a stale or never-served range is hard-rejected (`[E_STALE]` / `[E_RANGE_UNVERIFIED]`); the rejection echoes the target line in read format (±context lines) and counts as a fresh serve — copy the fresh marker from the echo and retry without reading.",
-			"`edit`: one file's edits are one atomic batch — any failure in that file rejects its batch ([E_BATCH_ABORT]) and writes nothing for that file (its already-resolved hunks are not applied, so there is nothing to roll back there); files are independent, and partial success is reported per file, each failure with its own code; a file that did commit keeps its own undo slot. Do not issue several `edit` calls in one message — one call, one `edits` array.",
-			"`edit`: the diff's `--- path` / `+++ path` file header and its `@@ -old,count +new,count @@ scope()` block header are STRUCTURE, not file content — never paste them into an edit and never treat them as lines.",
-			"`edit`: a block header may name SEVERAL scopes (`a() / b()`) — then the block changes more than one of them, not just the first.",
-			"`edit`: a `-` row's anchor belongs to the PRE-edit line and is marked `~` — that line is gone, so the anchor is DEAD: never use it in an edit.",
-			"`edit`: a `+` row and an unchanged row carry FRESH anchors for the post-edit code — copy those for the next edit.",
+			"`edit`: pick anchors from one original read — the batch resolves against that snapshot, so never shift them to positions an earlier hunk would produce; re-read for fresh anchors after an edit.",
+			"`edit`: serve the whole range first — every line between `anchor_start` and `anchor_end` must have been read; when the middle is longer than one window, resume or offset through it, or split the edit into smaller ranges.",
+			"`edit`: in the returned diff, `+` and unchanged rows carry fresh anchors for the next edit; a `~` row's anchor is dead, and the file/hunk headers are structure, not lines; a `Classification: noop` result means that file was not written — re-read and retry with the fresh marker.",
+			"`edit`: one call, one `edits` array — each file's edits are atomic and files are independent; a rejection echoes the target line as a fresh serve, so retry from the echoed marker without re-reading.",
 		],
 	};
 }
 
-/** Read tool description, generated from the effective config (text/json). */
-/**
- * What `read` deliberately does NOT do, said plainly.
- *
- * A model that has used the old AST selectors will reach for them; naming their
- * replacement is cheaper than letting it infer one from a rejection, and it is
- * the only way it learns that structure moved rather than disappeared.
- */
-const AST_MOVED_NOTE =
- " This tool reads LINES and nothing else. For structure — a symbol's block, an outline, cross-file references — use `ast_grep` (no pattern returns the outline) or `lsp`. Structural selectors here are rejected, not silently ignored.";
-
+/** Read tool description: purpose first, one contract sentence — the row-format legend lives in the guidance section (#447). */
 export function readDescription(cfg: EffectiveHashlineConfig): string {
-	if (cfg.outputFormat === "json") {
-		return (
-			"Read a file as pure JSON: pass `file_path`. Returns {path, offset, totalLines, lines: {marker: content}} inside a `<path>/<type>/<content>` envelope — each 'lines' key is the row's marker (`<anchor>`, or `<anchor>:<line>` while the user's line numbers are on); the value is the verbatim file content. Binary/directory rejected; pageable with offset/limit." +
-			AST_MOVED_NOTE
-		);
-	}
-	return ("Read a text file: pass `file_path`. Each row is `<anchor>:content` — the anchor FIRST; with the user's line numbers on, the marker also carries its 1-indexed line (`<anchor>:<line>:content`), informational only — under a header line that separates marker from content (`ANCHOR:LINE:CONTENT`, or `ANCHOR:CONTENT` while numbering is off) inside a `<path>/<type>/<content>` envelope; the anchor is the edit address and is authoritative — the line number is a positional hint only. Binary/directory rejected; pageable with offset/limit." +
-		AST_MOVED_NOTE);
+	const contract =
+		cfg.outputFormat === "json"
+			? "Each line is keyed by its row marker with the verbatim content as the value; binary and directory paths are refused, and long files page with offset and limit or a resume token."
+			: "Each row pairs its anchor with the verbatim line content; binary and directory paths are refused, and long files page with offset and limit or a resume token.";
+	return (
+		"Read a text file and obtain its lines with the hash anchors the editing tools address — this tool reads lines and nothing else, so for a symbol's block, an outline or cross-file references use ast_grep or lsp. " +
+		contract
+	);
 }
 
 export const READ_GUIDANCE: ToolGuidance = {
 	intro:
-		"Use read, not shell commands, to inspect text files and obtain the variable-length anchors the editing tools require.",
+		"Read a file's lines with their anchors — the one source of line content and anchors for every anchored tool.",
 	lines: [
-		"`read`: call it only for content the tools have not served — a page you never saw, or lines past the post-edit diff.",
-		"`read`: each row is `<anchor>:content` — copy the ANCHOR (the first token); with the user's line numbers on the marker reads `<anchor>:<line>` and that number is a hint only. Identical content lines get DISTINCT anchors. The header separates marker columns from file content.",
-		"`read`: the ANCHOR comes first; a line number, when present, is that line's number, informational only. Either half works as the anchor field (the whole `<anchor>:<line>` marker or the bare anchor both parse — and a bare line number alone is accepted too, resolved to that served line), but the anchor is authoritative.",
-		"`read`: rejection echoes return fresh read-format rows that count as serves — copy the fresh marker and retry without re-reading.",
-		"`read`: binary/directory rejects; page large files with offset/limit.",
-		'`read`: results over the per-response char budget (default 48,000) stop mid-file and end with ONE window sentence — `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` — pass the token back via `resume` to keep reading (a report token answers with a `[Continued report]` segment). `offset`/`limit` also still work.',
+		"`read`: a row is `anchor: content` — copy the anchor (the first token); with the user's line numbers on the marker reads `anchor:line:content` and the number is a hint only. Identical lines have distinct anchors — copy the exact marker of the line you mean.",
+		"`read`: call it for content no tool has served yet — a page never seen, or lines past the last post-edit diff — not to re-confirm what a return already showed.",
+		'`read`: results over the per-response budget stop mid-file with one window sentence — `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` — pass the token back via `resume` to continue; a report token answers with a `[Continued report]` segment, and offset/limit still work.',
 	],
 };
 
@@ -153,66 +115,57 @@ export const UNDO_GUIDANCE: ToolGuidance = {
 	],
 };
 
-/** Grep tool description, generated from the effective config (text/json). */
+/** Grep tool description: purpose first, one contract sentence (#447). */
 export function grepDescription(cfg: EffectiveHashlineConfig): string {
 	if (cfg.outputFormat === "json") {
-		return "Search files (ripgrep regular expression by default; `regex: false` for literal); `path` defaults to the session workspace, directories recurse the whole tree (hidden and node_modules skipped), optional `include` is a single positive glob. Returns pure JSON {total, files: [{path, matches: {marker: content}}]} — keys are the row markers (`<anchor>`, or `<anchor>:<line>` while the user's line numbers are on), values are verbatim file content; matches are served so they can be edited directly.";
+		return (
+			"Locate text across files and obtain the anchors of the matching lines in the same call — the anchored counterpart of a shell search. " +
+			"A regex by default (literal via regex false) with an optional include glob; matches are keyed by their row markers and served, so a hit can be edited directly."
+		);
 	}
-	return "Search files (ripgrep regular expression by default; `regex: false` for literal): `path` defaults to the session workspace and directories recurse the whole tree (hidden and node_modules skipped); optional `include` is a single positive glob filter. Output mirrors `read` (`<anchor>:content` rows, or `<anchor>:<line>:content` while the user's line numbers are on — anchor first); matches are served, so they can be edited directly.";
+	return (
+		"Locate text across files and obtain the anchors of the matching lines in the same call — the anchored counterpart of a shell search. " +
+		"A regex by default (literal via regex false) with an optional include glob; matches come back in read's row form and are served, so a hit can be edited directly."
+	);
 }
 
 export const GREP_GUIDANCE: ToolGuidance = {
-	intro: "Search files and obtain variable-length anchors in one step.",
+	intro: "Search file contents and obtain the anchors of the matching lines in one step.",
 	lines: [
-		"`grep`: defaults to a ripgrep regular expression; pass `regex: false` for literal substring matching. Only set the flag when a literal pattern would mis-parse as regex (e.g. it contains (, [, *, +, ?).",
-		"`grep`: `-C N` (or `--context N`) adds N marker rows above and below each match — use a small N to keep context cheap; the rows still carry markers, so a hit from the context window is editable.",
-		"`grep`: one section per file, separated by `--- <path> ---`. Each section opens with a header line and lists matches in file order.",
-		"`grep`: every file read is recorded as observed, so the matches can be edited without a separate `read` call.",
-		"`grep`: use `limit` to cap matches per file when probing a noisy file; the cap applies per file, not globally.",
-		'`grep`: results over the per-response char budget (default 48,000) spill to a resume file. The footer `(Omitted N lines (~C chars). Use grep {resume: "TOKEN"} to continue.)` tells you the token — pass it via `resume` to get the next segment.'
+		"`grep`: reach for it instead of a shell search — its rows are served, so a match (or a context row from a small `-C N`) can be edited directly.",
+		"`grep`: a regex by default; pass `regex: false` only when a literal would mis-parse as regex. Use `include` to filter by glob and `limit` to cap a noisy file.",
+		"`grep`: one section per file in file order, every match row carrying its anchor.",
+		'`grep`: results over the per-response budget spill to a resume file whose footer — `(Omitted N lines (~C chars). Use grep {resume: "TOKEN"} to continue.)` — names the token; pass it via `resume` for the next segment.',
 	],
 };
 
-/** Delete tool description. */
+/** Delete tool description: purpose first, one contract sentence (#447). */
 export const DELETE_DESCRIPTION =
-	"Delete regular files and reclaim their hashline state (anchors, served rows, undo history). " +
-	"Pass `paths` (1-32 entries). Only regular files: directories, symlinks, and special files are refused. " +
-	"A missing path is success (already absent) and still reclaims residue. Partial failures are reported per path. " +
-	"Deletion is permanent — there is no undelete. The store's logical space is freed immediately; physical space returns at store shutdown (VACUUM). " +
-	"Under workspace-write the target must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`.";
+	"Delete regular files and reclaim the hashline state they leave behind. " +
+	"Takes 1-32 explicit paths; deletion is permanent with no undelete, a missing path is success, and partial failures are reported per path.";
 
 export const DELETE_GUIDANCE: ToolGuidance = {
 	intro: "Delete regular files and reclaim the hashline rows they leave behind.",
 	lines: [
-		"`delete`: `paths` is an explicit list (1-32, duplicates collapse); relative paths resolve against the session cwd. There is no directory, glob, or recursive form.",
-		"`delete`: regular files only — a symlink, directory, or special file fails with its own code; use bash for those. Deletion is permanent: there is no undelete.",
-		"`delete`: a missing path is success (`already-absent`) and still reclaims any residue; a partial failure is reported per path and does not stop the others.",
-		"`delete`: under workspace-write the file must be inside the writable roots (workspace, /tmp, the platform temp dir); a wider mode needs `sandbox_permissions` + `justification`. Only use the escalation fields when the schema advertises them.",
-		"`delete`: on success the path's `anchor_meta` / `anchor_lines` / `served` (all sessions) / `undo` (all depths) rows are purged; the reply reports rows and logical bytes. Physical disk returns at store shutdown (VACUUM pending).",
-		"`delete`: afterwards only an absent observation is recorded — a later `write` recreates the file from scratch. Other sessions' old anchors are dead; they re-read.",
+		"`delete`: 1-32 explicit paths, duplicates collapsing, relative to the session cwd — no directory, glob or recursive form; use bash for anything not a regular file.",
+		"`delete`: permanent, no undelete; a missing path is success and still reclaims residue; one path's failure does not stop the others.",
+		"`delete`: on success the path's anchor, served and undo rows are purged — other sessions' old anchors for it are dead and they re-read.",
+		"`delete`: under workspace-write the target must sit inside the writable roots; the escalation fields apply only when the schema advertises them.",
 	],
 };
 
-/** Rename tool description. */
+/** Rename tool description: purpose first, one contract sentence (#447). */
 export const RENAME_DESCRIPTION =
-	"Rename or move regular files and carry their hashline state (anchors, served rows, undo history) to the new path. " +
-	"Pass `renames` (1-32 `{from, to}` pairs, exact duplicates collapse); relative paths resolve against the session cwd. " +
-	"Only regular files: directories, symlinks, and special files are refused. " +
-	"An existing destination is refused unless it is the same file under another spelling; nothing is overwritten. " +
-	"Pairs run in request order, so chains work; partial failures are reported per pair. " +
-	"Afterwards the old path's anchors are gone and the new path keeps them - do not use `bash mv`, which leaves a second batch. " +
-	"Under workspace-write both sides must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`.";
+	"Rename or move regular files, carrying their hashline state — anchors, served rows, undo history — to the new path. " +
+	"Takes 1-32 {from, to} pairs run in request order; nothing is overwritten and partial failures are reported per pair.";
 
 export const RENAME_GUIDANCE: ToolGuidance = {
 	intro: "Rename or move regular files and keep their hashline anchors usable.",
 	lines: [
-		"`rename`: `renames` is an explicit list of 1-32 `{from, to}` pairs (exact duplicates collapse); relative paths resolve against the session cwd. There is no directory, glob, or recursive form.",
-		"`rename`: use it instead of `bash mv`. A shell move leaves the old path's `anchor_meta` / `anchor_lines` / `served` / `undo` behind and the new path grows a second batch; `rename` migrates them.",
-		"`rename`: regular files only - a symlink, directory, or special file fails with its own code; use bash for those.",
-		"`rename`: an existing destination is `[E_EXISTS]` unless it is the same file under another spelling (case-only rename). Nothing is overwritten; the destination parent must already exist.",
-		"`rename`: pairs run in request order, so chains (`a→b`, `b→c`) work; a pair's failure does not stop the others.",
-		"`rename`: afterwards the old path has only an absent observation and the new path a present one; the moved file's anchors, served rows (all sessions) and undo history are the SAME rows under the new path - no re-read needed.",
-		"`rename`: under workspace-write both source and destination must be inside the writable roots; a wider mode needs `sandbox_permissions` + `justification`. Only use the escalation fields when the schema advertises them.",
+		"`rename`: use it instead of `bash mv` — it moves the anchors, served rows and undo history as the same rows under the new path, so no re-read is needed afterwards.",
+		"`rename`: 1-32 `{from, to}` pairs run in request order (chains work), relative to the session cwd; no glob or directory form.",
+		"`rename`: regular files only and nothing is overwritten — an existing destination refuses unless it is the same file under another spelling, and the destination's parent must already exist.",
+		"`rename`: under workspace-write both sides must sit inside the writable roots; the escalation fields apply only when the schema advertises them.",
 	],
 };
 
@@ -240,10 +193,9 @@ export const APPLY_PATCH_GUIDANCE: ToolGuidance = {
 /**
  * `apply_patch` tool description (map #401).
  *
- * The grammar is short enough to state in full here — a tool that makes the
- * model guess its own input format spends its first call learning it — and the
- * rest of the text is the two facts the schema cannot carry: the whole patch is
- * preflighted, and a commit that stops is not rolled back.
+ * #447: purpose and one contract sentence here; the full grammar lives
+ * on the `patch` field's description, and the failure model on the
+ * guidance section. The disable notice stays cfg-driven.
  *
  * @param cfg - the effective settings (only the disable notice reads them).
  * @returns the model-facing schema description.
@@ -253,10 +205,8 @@ export function applyPatchDescription(cfg: EffectiveHashlineConfig): string {
 		? ""
 		: " (Disabled by settings: this tool should not be offered at all.)";
 	return (
-		"Apply one change set across several files in a single call. The patch is text: a sequence of file sections, each with anchor-addressed hunks. Section headers (un-prefixed, keyword at column 0): `file <path>` (update an existing file), `new <path>` (create it; the `+` lines are its whole content), `move <from> -> <to>` (optionally with hunks), `remove <path>` (delete it). Hunk headers inside `file`/`move`: `replace <anchor>` (replace that line with the `+` lines), `replace <start>..<end>` (replace the range), `insert <anchor>` (put the `+` lines after that line), `delete <anchor>` / `delete <start>..<end>` (delete; no content lines follow). Every content line starts with `+` at column 0; a bare `+` is an empty line; content may contain any word because it is always behind `+`. Anchors come from this session's read/grep/diff rows - the patch NEVER repeats the old file content, and a `line:anchor` hint is accepted. Hunks in one section apply against the file's pre-patch snapshot; overlapping ranges are refused. " +
-		"The WHOLE patch is checked before anything is written (syntax, shape, paths, anchors): every problem is reported at once and a refused patch changes nothing. Once applying starts, operations run in patch order, stop at the first failure and are NOT rolled back - the completed work is reported truthfully. " +
-		"A completed update/move returns fresh anchors for the changed lines; a `new` file returns anchors for its own rows, so it can be edited right away. " +
-		"Paths resolve against the session cwd." +
+		"Apply one change set across several files in a single call — update, create, move or delete files with anchor-addressed hunks. " +
+		"The patch is text (file sections with `+`-prefixed content lines; the full grammar lives on the `patch` field); the whole patch is checked before anything is written, and a refused patch changes nothing." +
 		disabled
 	);
 }

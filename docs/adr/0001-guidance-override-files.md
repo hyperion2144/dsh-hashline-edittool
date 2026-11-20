@@ -1,4 +1,5 @@
 # ADR-0001 — Per-preset guidance via override files in the plugin home
+> Status: Superseded by [ADR-0042](0042-prompt-surface-layering.md) — the per-preset guidance document layer was removed (#447 review); the sections come only from the compiled defaults.
 
 The five `tool:*` guidance sections are configured with plain-markdown override files in the plugin's shared home, keyed by agent preset id — not through the plugin's Cordis row `config`, and not through preset-composition rows. Override files win by content, not by scope layering: the plugin reads them itself at `agent/session-start`.
 

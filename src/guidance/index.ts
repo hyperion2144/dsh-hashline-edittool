@@ -1,8 +1,7 @@
 /**
- * Barrel for guidance sub-seams — parse (pure), resolve (IO-light), materialize (IO-heavy).
+ * Barrel for the guidance seam — the compiled sections only (#447 review:
+ * the per-preset document layer was removed).
  * Re-exported via `src/guidance.ts` so existing `from "./guidance.js"` imports keep working.
  * @module dsh-hashline-edittool/guidance/index
  */
-export * from "./parse.js";
 export * from "./resolve.js";
-export * from "./materialize.js";

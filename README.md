@@ -283,10 +283,10 @@ or an invocation fails — `grep` never fails because ripgrep did.
 
 | Tool | What it does |
 | --- | --- |
-| `read` | File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers, or the bare `<anchor>` — that shape is the user's `line_numbers` setting (off by default), no longer a tool parameter, and a call still carrying it is `[E_BAD_SHAPE]`. `offset` takes a 1-based line **or an anchor** (inclusive start; a bare digit string is that number serialized as text and parses as one); `limit` takes a row count **or an anchor** (inclusive end) — with numbering off, the anchor is the only cursor you can see. Every text-mode window ends with one sentence: `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` when the body was truncated, otherwise `[Lines X-Y of N. Use offset="ANCHOR" to continue.]` (`offset=N` for a plain line cursor), and `[Lines X-Y of N. End of file.]` at the end of the file. Oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. A file whose bytes are not valid UTF-8 still reads: decoded lossily (`U+FFFD`), rendered as unserved `[line N] content` rows, not editable — but showing is observing: a lossy read still tells the host the file was seen, so `write` may overwrite it (`edit` still refuses). |
+| `read` | Reads a text file's lines with the hash anchors the editing tools address — the one source of anchored content. File as served rows: `ANCHOR:FILELINE` header + `<anchor>:<line>` markers, or the bare `<anchor>` — that shape is the user's `line_numbers` setting (off by default), no longer a tool parameter, and a call still carrying it is `[E_BAD_SHAPE]`. `offset` takes a 1-based line **or an anchor** (inclusive start; a bare digit string is that number serialized as text and parses as one); `limit` takes a row count **or an anchor** (inclusive end) — with numbering off, the anchor is the only cursor you can see. Every text-mode window ends with one sentence: `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]` when the body was truncated, otherwise `[Lines X-Y of N. Use offset="ANCHOR" to continue.]` (`offset=N` for a plain line cursor), and `[Lines X-Y of N. End of file.]` at the end of the file. Oversize lines (>200 KB) become a marker + `sed` hint — anchors need full lines. A file whose bytes are not valid UTF-8 still reads: decoded lossily (`U+FFFD`), rendered as unserved `[line N] content` rows, not editable — but showing is observing: a lossy read still tells the host the file was seen, so `write` may overwrite it (`edit` still refuses). |
 | `edit` | One or more range edits via `{ path?, edits: [{ op, … }, …] }` — the full contract is [above](#the-anchor-contract). Replaces the legacy `batch_edit`. A lossy file (not valid UTF-8) is refused (`[E_LOSSY_BYTES]`); a lossless one (NUL bytes in valid UTF-8) edits through byte-exactly. |
 | `write` | Fully shadowed: creates/overwrites a file and returns the write **plus a post-write echo**, whose shape is the user's `write.preview` (map #354). **diff** (default) renders an overwrite as the same unified diff `edit` uses — the next edit needs no separate read — while a create has no before side and stays read-style; **full** keeps the whole-file auto-read preview with fresh anchors; **confirmation** returns one line (`Wrote <path> (create\|update).`) and serves nothing, so read before editing what it wrote. |
-| `grep` | Ripgrep regular-expression search (or `regex: false` for literal) across a path tree, one section per file under the same header, full lines only. **One `rg` invocation walks the path** with ripgrep's own ignore rules (#414): a build directory a parent `.gitignore` excludes is never walked, and ripgrep produces the rows (`match` + `context`). The anchors, the section budget and the spill are the plugin's own; a row is anchorable only when its text is the real line — a preview cut at 2000 bytes or a non-UTF-8 line is shown unserved. The search stops at a 20 MB raw-output ceiling (a loud failure, never a second engine), and a named path under an ignored ancestor gets ONE wide retry when the first search found nothing. Every section ends with that file's own count line, and `truncatedBy` names the cut. |
+| `grep` | Locates text across files and returns the matching lines with their anchors — one ripgrep regex pass (or `regex: false` for literal) across a path tree, one section per file under the same header, full lines only. **One `rg` invocation walks the path** with ripgrep's own ignore rules (#414): a build directory a parent `.gitignore` excludes is never walked, and ripgrep produces the rows (`match` + `context`). The anchors, the section budget and the spill are the plugin's own; a row is anchorable only when its text is the real line — a preview cut at 2000 bytes or a non-UTF-8 line is shown unserved. The search stops at a 20 MB raw-output ceiling (a loud failure, never a second engine), and a named path under an ignored ancestor gets ONE wide retry when the first search found nothing. Every section ends with that file's own count line, and `truncatedBy` names the cut. |
 | `undo_last_edit` | `{ path }` reverts the file's last hashline edit — only while the file still matches the stored post-edit content; survives restarts. |
 | `ast_grep` | Structural search by syntax shape (`pat` with `$NAME` / `$$$ARGS` / `$_` metavariables). Refuses instead of guessing when a pattern does not parse as one node. Long files come back as a folded, editable outline. |
 | `ast_edit` | Structural rewrite: finds places by shape and hands the change to the **same engine** `edit` uses — served-state check, undo entry, diff and syntax gate all apply. |
@@ -401,13 +401,15 @@ during the upgrade. The plugin no longer reads, migrates, or writes any settings
 the entry configuration on this page is the only source of truth. If an old `hashline:`
 key did not carry over, set it in the form above.
 
-### Per-preset guidance
+### Guidance text
 
-The `tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` /
-`tool:rename` / `tool:apply_patch` guidance sections are plain-markdown override files in the
-plugin's shared home, keyed by preset id — see
-[`docs/adr/0001`](docs/adr/0001-guidance-override-files.md). Emptying a file resets to the
-compiled default; a broken front-matter fence is fast-failed with a warning.
+The `anchors` / `tool:*` guidance sections come **only from the compiled
+defaults** in the plugin bundle. The per-preset document layer was removed
+(#447 review): the plugin no longer reads or writes
+`~/.dsh/plugins/dsh-hashline-edittool/<preset>/*.md`. Files from older
+versions are left on disk (they may hold user edits) and are ignored; remove
+the directory for a clean tree. A future customization surface would be an
+explicit config option, not a document the plugin creates and reads back.
 
 ## Error Codes
 
@@ -506,7 +508,7 @@ src/
 ├── infra/                # fs bridge, sandbox, paths, settings snapshot, workspace scope
 ├── lsp/                  # language-server sessions, auto-diagnostics
 ├── ast/                  # tree-sitter worker, grammar registry
-└── guidance/             # per-preset override resolution + materialization
+└── guidance/             # the compiled guidance sections (no disk overrides)
 client/                   # the web card plugin (same package)
 test/                     # 1,330 tests
 ```
