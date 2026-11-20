@@ -123,25 +123,12 @@ function flattenSymbols(nodes: unknown, depth = 0): FlatSymbol[] {
 	return out;
 }
 
-/** The description the model reads. */
+/** The description the model reads: purpose plus one contract sentence (#447). */
 function lspDescription(): string {
-	return [
-		"Semantic code intelligence from a language server.",
-		"",
-		"Prefer this over `ast_grep` and text search for work that is about MEANING: definitions, references, symbols, renames, diagnostics. A server follows shadowing, re-exports and cross-file usage that a syntax tree cannot see; the AST tools answer questions about SHAPE.",
-		"",
-		"Operations:",
-		"- `goToDefinition` / `findReferences` / `goToImplementation` — where a symbol is declared, used, or implemented. Every line it names is served as an editable row, so a hit can be handed straight to `edit`. Needs `line`, plus a column: name the text with `symbol`, or give `character`.",
-		"- `hover` — the server's documentation for the symbol at the cursor. Same cursor rule.",
-		"- `symbols` — the symbols of one file, as the server reports them.",
-		"- `code_actions` — what the server offers at a position (`line`, and `symbol` for the token). Listed, not applied.",
-		"- `diagnostics` — what the server has REPORTED for the file. Waits briefly for its first push; \"no answer yet\" and \"no problems\" are reported as the different things they are.",
-		"- `request` — any LSP method, for anything not yet wrapped (see `query` and `payload`).",
-		"- `status` — every language's server state (or one `language`'s) WITHOUT starting anything: ready / starting / failed, with reason and attempt count when failed.",
-		"- `warm` — start (or restart) one `language`'s server NOW, skipping the retry backoff, and wait for the outcome.",
-		"",
-		"This REFUSES rather than returning nothing when no server can be started, and says why: \"no server\" and \"no symbols\" are different facts.",
-	].join("\n");
+	return (
+		"Semantic code intelligence from a language server: definitions, references, implementations, hover, symbols, diagnostics. " +
+		"The `operation` field selects the request, and every line an answer names is served as an editable row; the tool refuses rather than returning nothing when no server can be started."
+	);
 }
 
 /**

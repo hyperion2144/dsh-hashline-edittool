@@ -223,10 +223,10 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 
 | 工具 | 功能 |
 | --- | --- |
-| `read` | 文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset` 收 1 起的行号**或锚点**（含该行；纯数字字符串即该行号的文本形态，按行号解析，limit 的行数同理）；`limit` 收行数**或锚点**（含该行）—— 关掉行号后，锚点是你唯一能看到的游标。text 模式的每个窗口都以一句话收尾：正文被截断时是 `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]`，否则 `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`（纯行号游标则是 `offset=N`），读到底则 `[Lines X-Y of N. End of file.]`。超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。字节不是合法 UTF-8 的文件照样可读：有损解码（`U+FFFD`），渲染为不 served 的 `[line N] content` 行，不可编辑 —— 但展示即观测：有损读同样告知宿主已读过该文件，`write` 仍可整体覆盖（`edit` 拒绝）。 |
+| `read` | 读文本文件并取得带哈希锚点的行——锚点内容唯一来源。文件即 served 行：`ANCHOR:FILELINE` 头 + `<anchor>:<line>` 标记，或裸 `<anchor>` —— 形态由用户的 `line_numbers` 设置决定（默认关），不再是工具参数，仍带该参数即 `[E_BAD_SHAPE]`。`offset` 收 1 起的行号**或锚点**（含该行；纯数字字符串即该行号的文本形态，按行号解析，limit 的行数同理）；`limit` 收行数**或锚点**（含该行）—— 关掉行号后，锚点是你唯一能看到的游标。text 模式的每个窗口都以一句话收尾：正文被截断时是 `[Lines X-Y of N. Omitted K lines. Use read {resume: "TOKEN"} to continue.]`，否则 `[Lines X-Y of N. Use offset="ANCHOR" to continue.]`（纯行号游标则是 `offset=N`），读到底则 `[Lines X-Y of N. End of file.]`。超长行（>200KB）变成标记 + `sed` 提示 —— 锚点需要完整行。字节不是合法 UTF-8 的文件照样可读：有损解码（`U+FFFD`），渲染为不 served 的 `[line N] content` 行，不可编辑 —— 但展示即观测：有损读同样告知宿主已读过该文件，`write` 仍可整体覆盖（`edit` 拒绝）。 |
 | `edit` | 通过 `{ path?, edits: [{ op, … }, …] }` 应用一或多条范围编辑 —— 完整契约见[上节](#锚点契约)。取代旧的 `batch_edit`。有损文件（非合法 UTF-8）被拒绝（`[E_LOSSY_BYTES]`）；无损文件（含 NUL 的合法 UTF-8）照常编辑、写回字节一致。 |
 | `write` | 完全影子化：创建/覆盖文件，返回写入结果**外加写后回显**，形态由用户的 `write.preview` 决定（#354）。**diff**（默认）把覆盖渲染成与 `edit` 同一套统一 diff——下一次编辑无需单独 read——而新建没有 before 侧，仍走回读式全文；**full** 保留带新鲜锚点的整文件自动回读；**confirmation** 只回一行（`Wrote <path> (create\|update).`）且不 serve 任何东西，要改先 read。 |
-| `grep` | ripgrep 正则搜索（`regex: false` 为字面量），跨路径树逐文件一节、同一表头，只输出完整行。**一次 `rg` 调用自己走 path**，吃 ripgrep 的默认 ignore 规则（#414）：父级 `.gitignore` 排除的构建目录根本不会被走；命中行与上下文行都由 ripgrep 产出（`match` + `context`）。锚点、响应预算与 spill 仍由插件接上；只有「文本就是该行」的行才可锚定——被 2000 字节预览帽截断的行、非 UTF-8 行只展示不 serve。整场搜索受 20 MB 原始输出帽约束（超限是响亮失败，绝不换引擎）；点名一个被祖先 ignore 的路径时，首轮 0 命中会宽规则重跑一次。每节末尾带该文件自己的统计行，`truncatedBy` 写明是哪一刀截的。 |
+| `grep` | 跨文件定位文本并取得命中行及其锚点——一次 ripgrep 正则（`regex: false` 为字面量）扫过路径树，逐文件一节、同一表头，只输出完整行。**一次 `rg` 调用自己走 path**，吃 ripgrep 的默认 ignore 规则（#414）：父级 `.gitignore` 排除的构建目录根本不会被走；命中行与上下文行都由 ripgrep 产出（`match` + `context`）。锚点、响应预算与 spill 仍由插件接上；只有「文本就是该行」的行才可锚定——被 2000 字节预览帽截断的行、非 UTF-8 行只展示不 serve。整场搜索受 20 MB 原始输出帽约束（超限是响亮失败，绝不换引擎）；点名一个被祖先 ignore 的路径时，首轮 0 命中会宽规则重跑一次。每节末尾带该文件自己的统计行，`truncatedBy` 写明是哪一刀截的。 |
 | `undo_last_edit` | `{ path }` 撤销该文件最后一次 hashline 编辑 —— 仅当文件仍与存储的编辑后内容一致时；可跨重启。 |
 | `ast_grep` | 按语法形状结构搜索（`pat` 使用 `$NAME` / `$$$ARGS` / `$_` 元变量）。模式无法解析为单一节点时拒绝而不是猜测。长文件返回可编辑的折叠大纲。 |
 | `ast_edit` | 结构改写：按形状找到位置，把变更交给 `edit` **同一引擎** —— served 校验、undo 记录、diff 与语法门全部生效。 |
@@ -326,13 +326,12 @@ web 卡片不受影响 —— 它们从 `presentationMeta` 渲染，永远结构
 
 从 0.1.6 迁移？旧 `~/.dsh/settings.yaml` 的导入由 **dsh 自己**在升级时完成；本插件不再读取、迁移或写入任何设置文件——本页的条目配置是唯一真相源。旧的 `hashline:` 键若没带过来，在上面的表单里补上即可。
 
-### 按 preset 配置指引
+### 指引文本
 
-`tool:read` / `tool:edit` / `tool:grep` / `tool:undo_last_edit` / `tool:delete` /
-`tool:rename` / `tool:apply_patch` 指引段是插件共享目录里按 preset id 存放的纯 markdown
-覆盖文件 —— 见
-[`docs/adr/0001`](docs/adr/0001-guidance-override-files.md)。清空文件即重置为编译默认；
-front-matter 围栏损坏会快速失败并告警。
+`anchors` / `tool:*` 指引段**只来自插件包内的编译默认值**。按 preset 的文档层已移除
+（#447 评审）：插件不再读写 `~/.dsh/plugins/dsh-hashline-edittool/<preset>/*.md`。
+旧版本留下的文件保留在磁盘上（可能含用户改动）但不再被读取；想要干净目录可自行删除。
+未来的定制入口应是显式配置项，而不是「插件造文档再读回」。
 
 ## 错误码
 
@@ -426,7 +425,7 @@ src/
 ├── infra/                # fs 桥、沙箱、路径、设置快照、工作区作用域
 ├── lsp/                  # 语言服务器会话、自动诊断
 ├── ast/                  # tree-sitter worker、语法注册表
-└── guidance/             # 按 preset 的指引解析 + 物化
+└── guidance/             # 编译内置的指引段（不再读磁盘覆盖）
 client/                   # web 卡片插件（同一包）
 test/                     # 1,330 个测试
 ```

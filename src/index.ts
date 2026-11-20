@@ -30,9 +30,10 @@
  * session's queued input until every listener has returned, so an early
  * return hands the model a half-installed tool surface on the first turn.
  *
- * The six `tool:*` guidance sections resolve per agent preset from override
- * files in the shared home (see `src/guidance.ts`); deployments without the
- * `agentPresets` service keep the compiled defaults unchanged.
+ * The guidance sections — the cross-tool anchor discipline plus one per
+ * tool — come only from the compiled defaults (#447 review: the per-preset
+ * document layer was removed; the plugin no longer reads or writes
+ * guidance files).
  * @module dsh-hashline-edittool
  */
 
@@ -84,12 +85,7 @@ import { registerLspRoutes } from "./lsp/status-route.js";
 /** How long to wait for a web server before giving up on the routes. */
 const ROUTE_WAIT_MS = 15_000;
 
-import {
-	composeSections,
-	ensurePresetGuidance,
-	GUIDANCE_SECTIONS,
-	type SectionOverride,
-} from "./guidance.js";
+import { GUIDANCE_SECTIONS, type SectionOverride } from "./guidance.js";
 import { configDir } from "./infra/paths.js";
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -115,23 +111,15 @@ interface AgentTools {
 	dispose(): void;
 }
 
-/**
- * Minimal shape of the optional `agentPresets` service (dsh-agent-presets).
- * Read via `ctx.get` — never injected — so a deployment composed without the
- * service keeps the compiled defaults and never touches the filesystem here.
- */
-interface AgentPresetsService {
-	composedPreset(agentCtx: Context): string | undefined;
-}
-
-/** The four sections as compiled, byte-identical to the pre-guidance install. */
-function compiledDefaultSections(): SectionOverride[] {
+/** The compiled sections, in default-order sequence — the only guidance source. */
+export function compiledDefaultSections(): SectionOverride[] {
 	return GUIDANCE_SECTIONS.map((section) => ({
 		name: section.name,
 		order: section.defaultOrder,
 		text: section.renderDefault(),
 	}));
 }
+
 
 /**
  * Resolve the agent scope's `systemPrompt` service (dsh ≥ 0.1.6 moved it from
@@ -156,39 +144,12 @@ function resolveAgentSystemPrompt(rootCtx: Context, agent: Agent): {
 }
 
 /**
- * Resolve the four guidance sections for one agent. Without the `agentPresets`
- * service the fast path returns the compiled defaults untouched. With it, the
- * agent's preset id drives `composeSections` against the shared home; any
- * resolution failure degrades to compiled defaults so a bad override file can
- * never fail the install.
+ * The guidance sections for one agent: the compiled defaults, always.
+ * The per-preset document layer was removed (#447 review) — the plugin no
+ * longer reads or writes guidance files, so there is nothing to resolve.
  */
-async function resolveAgentSections(
-	rootCtx: Context,
-	agent: Agent,
-): Promise<SectionOverride[]> {
-	const agentPresets = rootCtx.get("agentPresets") as
-		| AgentPresetsService
-		| undefined;
-	if (!agentPresets) return compiledDefaultSections();
-	try {
-		const presetId = agentPresets.composedPreset(agent.ctx);
-		const sections = await composeSections(presetId, configDir());
-		// Warn once per agent install (this runs once per agent, under the
-		// WeakSet guard) about any malformed override we had to ignore.
-		for (const section of sections) {
-			if (section.malformed) {
-				rootCtx.logger.warn(
-					`dsh-hashline-edittool: ignoring malformed guidance override ${section.malformed.file}: ${section.malformed.reason}; using compiled default`,
-				);
-			}
-		}
-		return sections;
-	} catch (error) {
-		rootCtx.logger.warn(
-			`dsh-hashline-edittool: guidance resolution failed for agent ${agent.id}, using compiled defaults: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		return compiledDefaultSections();
-	}
+function resolveAgentSections(): SectionOverride[] {
+	return compiledDefaultSections();
 }
 
 /**
@@ -234,11 +195,10 @@ function installAgentTools(rootCtx: Context, agent: Agent): Promise<void> {
 /**
  * The agent-scoped half: every tool that lives on the agent's own layer —
  * the four shadowing tools, plus `lsp` / `apply_patch` (#418) — plus the
- * per-preset guidance sections.
+ * compiled guidance sections.
  *
- * The tool registrations happen BEFORE the first await (the guidance
- * override read), so the tool surface is complete the moment the agent
- * exists; only the guidance text lands a tick later.
+ * The tool registrations happen before the first await, so the tool
+ * surface is complete the moment the agent exists.
  */
 async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<() => void> {
 	// `fs` is host-plane: use the plugin's own context (covered by
@@ -261,8 +221,8 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 	};
 	const installEditSection = async (): Promise<void> => {
 		// Re-resolve per install so a rebuilt surface picks up fresh
-		// flag-aware default text (user overrides stay authoritative).
-		const sections = await resolveAgentSections(rootCtx, agent);
+		// flag-aware default text.
+		const sections = resolveAgentSections();
 		for (const section of sections) {
 			if (section.name !== "tool:edit") continue;
 			editSectionDispose = systemPrompt.section(section);
@@ -294,7 +254,7 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 		applyPatchSectionDispose?.();
 		applyPatchSectionDispose = undefined;
 		if (!isApplyPatchEnabled()) return;
-		const sections = await resolveAgentSections(rootCtx, agent);
+		const sections = resolveAgentSections();
 		for (const section of sections) {
 			if (section.name !== "tool:apply_patch") continue;
 			applyPatchSectionDispose = systemPrompt.section(section);
@@ -382,14 +342,15 @@ async function installAgentScopedTools(rootCtx: Context, agent: Agent): Promise<
 
 	// Shadow the preset's built-in tool guidance with the hashline
 	// contract. Same section names on the agent's own layer win over the
-	// preset's; text and order come from the per-preset resolution.
-	const sections = await resolveAgentSections(rootCtx, agent);
+	// preset's; text and order come from the compiled defaults.
+	const sections = resolveAgentSections();
 	for (const section of sections) {
 		if (section.name === "tool:edit") {
 			editSectionDispose = systemPrompt.section(section);
 			continue;
 		}
 		if (section.name === "tool:apply_patch") continue; // installed with its switch
+		disposers.push(systemPrompt.section(section));
 	}
 	// The patch section follows `apply_patch.enabled`, so it is installed by the
 	// same routine a hot flip runs — never by the loop above.
@@ -451,15 +412,12 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	// each workspace (there is no shared store to prune at boot anymore);
 	// hashing is synchronous and dependency-free, so no warm-up is needed.
 
-	// Seed each shipped preset's guidance directory once, so users have
-	// editable per-preset overrides (idempotent: never rewrites existing
-	// files). A failure must never fail the boot.
-	ensurePresetGuidance(configDir()).catch((error) => {
-		rootCtx.logger.warn(
-			`dsh-hashline-edittool: guidance materialization failed: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	});
-
+	// The per-preset guidance document layer is gone (#447 review): the
+	// sections come only from the compiled defaults. Old files are left on
+	// disk (they may hold user edits) and are no longer read.
+	rootCtx.logger.info(
+		`dsh-hashline-edittool: guidance docs are no longer read; remove ${configDir()}/<preset>/ for a clean tree`,
+	);
 	// dsh 0.1.6 renamed the agent-start event `agent/session-start` →
 	// `agent/created` (#134). Register BOTH names: whichever the running
 	// harness emits wins, the other is a silent no-op (unknown events are

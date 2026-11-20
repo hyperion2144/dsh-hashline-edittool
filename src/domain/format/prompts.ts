@@ -6,22 +6,7 @@
  * @module dsh-hashline-edittool/domain/format/prompts
  */
 
-/** `format`'s tool description — what it does, what it costs, what it refuses. */
-export const FORMAT_DESCRIPTION = [
-	"Format a file through its language server (LSP textDocument/formatting).",
-	"Pass `range: { start, end }` to format only the lines between two SERVED anchors",
-	"(both bounds must be anchors this session served; middle lines may be unserved) —",
-	"omit `range` for the whole file. The write lands once and is undo-able via",
-	"`undo_last_edit`; no diagnostics push is triggered. The server may cold-start",
-	"(up to 15 s) and the request budget is 10 s. Refuses honestly instead of",
-	"guessing: `[E_LSP_NO_SERVER]` when no server is running or startable for the",
-	"file's language, `[E_FORMAT_UNSUPPORTED]` when the server has no formatting",
-	"provider — including an explicit `range` request on a server without range",
-	"formatting while `format.fallback_full_file` is off (the fallback is never",
-	"assumed; turn the setting on to allow it); `[E_RANGE_UNVERIFIED]`/`[E_STALE]`",
-	"when a bound anchor is not served.",
-	"The reply lists the formatter-changed rows with fresh anchors (rows whose",
-	"pre-format lines were never served show a blank anchor). Indentation follows",
-	"the project's `.editorconfig` when present (`format.editorconfig`, on by default),",
-	"and otherwise the file's own indent steps.",
-].join(" ");
+/** `format`'s tool description: purpose plus one contract sentence (#447); the refusal honesty lives in the guidance section. */
+export const FORMAT_DESCRIPTION =
+  "Format a file through its language server, keeping the anchors of unchanged lines stable. " +
+  "Pass `range` to format only the lines between two served anchors, or omit it for the whole file; the write lands once and is undo-able via `undo_last_edit`.";

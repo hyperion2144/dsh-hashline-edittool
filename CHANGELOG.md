@@ -13,6 +13,9 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 ### Fixed
 
 - edit/write 格式化路径的锚点改为 edit 式继承：格式化步不再整文件重算，write 资格门改读 preview 实际服务过的锚点，未改动行锚点稳定不再依赖 served 窗口覆写兜底（#442，ADR-0041）。
+- 系统提示词与工具描述整体重写为三层口径：工具描述首句用途+一句契约、schema 字段描述补齐去重、注入段补齐 12 工具并新增集中锚点纪律段（每段 intro+≤5 条），显式教「shell 输出不算 served」「锚点不可编造」「多行区间先读全」（#447，ADR-0042）。
+- 修复 #413 起的段落注册回归：除 `tool:edit`/`tool:apply_patch` 外其余注入段从未注册到 agent 层，模型实际看不到插件版 read/grep 等指引（#447）。
+- 指引文本只来自编译默认值：移除 per-preset 文档播种/读取层（materialize/parse/legacy 迁移表），启动不再读写 guidance 目录，旧文件保留但不读（#447）。
 
 ## [0.11.4] - 2026-11-18
 

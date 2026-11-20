@@ -1399,3 +1399,90 @@ store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先�
 - `CHANGELOG.md` `[Unreleased]` Added 三行（#441/#439/#440）
 - 测试：`issue-441-alloc-bitset.test.ts`（4）、`issue-439-latency-settings.test.ts`（8）、`issue-440-checksum-dedup.test.ts`（4）；`ast-settings` / `hashline-volatile-config` 字面量补新字段
 - `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-20 — 提示词面三层分层定案 + #413 注册回归修复（#447 → ADR-0042）
+
+**Type:** decision + implementation（bug 修复已实施，PR 待合入）
+**Confidence:** High（根套件 2130 绿 / typecheck 双绿；端到端两条按 2026-11-20 拍板为人工验证口径）
+**Evidence:** [#447](https://github.com/hyperion2144/dsh-hashline-edittool/issues/447)（triage 记录 + agent brief）；`src/index.ts`（#413 前后对照：`git show 152a350^`）；`src/guidance/resolve.ts`、`src/domain/edit/prompts.ts`、`src/contract/tool-guidance.ts`；`test/core/prompt-contract.test.ts`
+
+### Why
+
+#447 报告：装了插件后模型仍用 bash 查文件、编锚点、半读区间就提交。诊断出两层根因：提示词教错重点（描述以机制/错误码开头，锚点纪律只有一句埋在 tool:edit 中段，5 个工具无注入段）；更严重的是 #413（map #401）把 agent 安装循环里非 edit 段的默认注册分支弄丢——除 `tool:edit`/`tool:apply_patch` 外其余 5 段解析、播种后直接丢弃，模型从未看到插件版 read/grep 指引，且无任何测试钉住注册。
+
+### What was decided
+
+- 新 **ADR-0042**：提示词面三层分层——工具描述（首句用途+至多一句契约）/ schema 字段描述（机械参考，每字段一句、含 items 节点）/ 注入段（行为纪律，每段 intro+≤5 条）；跨工具 `anchors` 段是锚点纪律唯一所在（只来自工具返回 / shell 不算 observed / 编造被拒 / grep→read→edit 工作流 / 多行区间先读全）。
+- 恢复默认注册分支：所有解析出的段都注册到 agent 层；`agent-tool-registration.test.ts` 钉住 13 段清单防回归。
+- `ToolGuidance` 下沉 contract 层（`contract/tool-guidance.ts`）；write/format/ast/lsp 各自领域模块 + `guidance/anchors.ts` 持文，resolve 接 13 段（order 129–141）。
+- 端到端两条为人工/真会话验证；CI 只做静态断言（`prompt-contract.test.ts`：描述形态、字段遍历、段落覆盖、关键词检索）。
+
+### Path / Affected typed relationships
+
+- `docs/adr/0042-prompt-surface-layering.md`（新）
+- `AGENTS.md`（l0 decisions 行：范围号 0001–0041 → 0001–0042，补 0042 一句）
+- `CHANGELOG.md` `[Unreleased]` Fixed 两行（#447）
+- `test/core/prompt-contract.test.ts`（新）、`agent-tool-registration.test.ts`（+1 段落注册断言）、`guidance.test.ts` / `ast-settings.test.ts`（口径跟随：13 段清单、reads lines 小写化）
+- `src/index.ts`（默认注册分支回归修复）、`src/guidance/materialize.ts`（双语 README 列 13 文件）
+- `README.md` / `README.zh.md`（工具表 read/grep 两行改用途开头）
+- `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-20 — PR #448 评审：播种文件 seed 指纹刷新（#447）
+
+**Type:** implementation（评审意见落地，同 PR 覆盖提交）
+**Confidence:** High（根套件 2137 绿 / typecheck 双绿；新增 7 例覆盖刷新矩阵与注入通道）
+**Evidence:** [#448 评审评论](https://github.com/hyperion2144/dsh-hashline-edittool/pull/448)；`src/guidance/materialize.ts`（`seedHash` / `refreshSeededOverride`）；`src/guidance/legacy-defaults.ts`（从 origin/main 旧代码程序化生成）；`src/guidance/parse.ts`（接受 `seed` 键）
+
+### Why
+
+评审实测：工具 schema 描述已是新版，但注入的 section 文本来自 materialize 的磁盘文件——09-24 播种的 read/edit/grep 等旧文件永远压过编译默认值（materialize 只创建不更新，healBlankOverride 只治空白）。#448 的新文案对旧文件完全不可见。评审同时更正：段没丢，只是与 DSH 内建 `tool:*` 同名被重排（另开票）。
+
+### What was decided
+
+- 播种文件 front-matter 带 `seed: <正文 sha256 前 12 位>`；启动时按「正文哈希 == seed」判定未改动：未改动且默认文案变了 → 刷新；用户改过 → 保留正文、只推进 seed。
+- 无指纹旧文件：正文命中 pre-#447 默认哈希表（`legacy-defaults.ts`，由旧代码生成）→ 一次性刷新；否则保留并补写 seed。
+- 空白重播、malformed 与故意留空（合法 fence 空正文）一律不动。
+- 验收：播种带指纹 / 未改动刷新 / 用户编辑保留 / 无指纹迁移 / 注入通道（composeSections 读到刷新后文本）共 7 例。
+
+### Path / Affected typed relationships
+
+- `src/guidance/materialize.ts`（seedHash / seededContent / withSeed / refreshSeededOverride；双语 README 说明 seed）
+- `src/guidance/legacy-defaults.ts`（新，生成）
+- `src/guidance/parse.ts`（`seed` 键 + ParsedSection.seed）
+- `test/guidance.test.ts`（刷新矩阵 6 例 + 既有播种断言带 seed）、`test/core/prompt-contract.test.ts`（注入通道 1 例）
+- `CHANGELOG.md` / `docs/adr/0042-prompt-surface-layering.md`（后果段改写）
+- `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-20 — PR #448 评审二轮：砍掉 guidance 文档层（#447）
+
+**Type:** decision + implementation（同 PR 覆盖提交）
+**Confidence:** High（根套件 2085 绿 / typecheck 双绿；删掉的 52 例为文档层用例）
+**Evidence:** [#448 评审评论](https://github.com/hyperion2144/dsh-hashline-edittool/pull/448)；`src/guidance/resolve.ts`（精简后）；`src/index.ts`（`compiledDefaultSections` 唯一注入源 + 迁移日志）
+
+### Why
+
+评审实测 seed 指纹方案失败：09-24 播种的 `read.md` 正文（1119 字符）与 legacy 表里的 `tool:read` 正文（1383 字符）不相等（第 4 行 `<anchor>:<line>:content` vs `<anchor>:content`），走了「用户改过」分支 → 盖章即冻结，重启后注入仍是旧文案。根因是「插件自己 materialize 文档、再读回来当覆盖源」这一设计本身，不是刷新策略能补救的。
+
+### What was decided
+
+- 删除 `src/guidance/materialize.ts`、`parse.ts`、`legacy-defaults.ts` 及其调用；
+- `resolve.ts` 只保留 `GUIDANCE_SECTIONS` / `renderSectionDefault` / `SectionOverride`（去掉 `file` 字段与全部文件读取）；
+- `index.ts`：`compiledDefaultSections()` 成为唯一注入源（导出供测试），启动不再读写 guidance 目录，打一行迁移日志；
+- 旧文件不自动删除（可能含用户改动），启动日志提示可手动清理；
+- 测试：`guidance.test.ts` 只留段顺序/渲染/flag 用例；`prompt-contract.test.ts` 加「注入段 == 编译默认值」；`agent-tool-registration.test.ts` 断言注册文本 == `renderSectionDefault`；
+- 文档：ADR-0001 标记 superseded、ADR-0042 改写、README 双语「指引文本」节、CHANGELOG 一行。
+
+### Path / Affected typed relationships
+
+- `src/guidance/materialize.ts` / `parse.ts` / `legacy-defaults.ts`（删除）
+- `src/guidance/resolve.ts`（精简）、`src/guidance.ts` / `src/guidance/index.ts`（barrel 只导出 resolve）
+- `src/index.ts`（`compiledDefaultSections` 导出 + 迁移日志 + 去掉 agentPresets/composeSections）
+- `test/guidance.test.ts`（60 行）、`test/core/prompt-contract.test.ts`、`test/core/agent-tool-registration.test.ts`
+- `docs/adr/0001-guidance-override-files.md`（superseded）、`docs/adr/0042-prompt-surface-layering.md`、`README.md` / `README.zh.md`、`CHANGELOG.md`
+- `docs/CHANGELOG-MEMORY.md`（本条）

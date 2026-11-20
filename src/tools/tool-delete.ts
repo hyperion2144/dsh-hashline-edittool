@@ -250,7 +250,10 @@ export function buildDeleteTool(io: FileIO, sandbox: FsSandboxController) {
 				required: true,
 				description:
 					"Explicit paths to delete (1-32, duplicates collapse). Relative paths resolve against the session cwd. Regular files only; directories, symlinks and special files are refused.",
-				items: { type: "string" },
+				items: {
+					type: "string",
+					description: "One path to delete.",
+				},
 			},
 			...(sandbox.escalationModes.length > 0 ? sandbox.schemaFields() : {}),
 		},

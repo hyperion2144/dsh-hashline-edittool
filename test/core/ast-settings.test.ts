@@ -89,7 +89,9 @@ describe("the read description no longer moves with the switch", () => {
 		for (const text of [describe_(false, "text"), describe_(true, "text"), describe_(false, "json")]) {
 			expect(text).toContain("ast_grep");
 			expect(text).toContain("lsp");
-			expect(text).toContain("reads LINES");
+			// #447 bans all-caps emphasis in descriptions — the scope claim stays,
+			// lowercase and identical in meaning.
+			expect(text).toContain("reads lines and nothing else");
 		}
 	});
 
