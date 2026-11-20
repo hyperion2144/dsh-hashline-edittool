@@ -4,6 +4,8 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-11-20
+
 ### Added
 
 - 锚点分配器探测内核改为整数位集探测：批级槽位空间（≤4 层位集，以上 Set<number>）+ 数字盒判定 + 饱和层跳过，分配结果与旧实现字节一致；10k 行 62→11 ms、50k 行 417→47 ms（#441）。
