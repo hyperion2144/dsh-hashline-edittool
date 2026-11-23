@@ -178,14 +178,14 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 	// formatting secondary (`format.servers.<id>`, ADR-0038) formats through
 	// THAT slot; without one the primary path is byte-for-byte today's.
 	const role = formatConfiguredServers().has(language.id) ? ("format" as const) : ("primary" as const);
-	const session = await manager.waitForSession(language.id, LspManager.START_TIMEOUT_MS, role);
+	const session = await manager.waitForSession(input.cwd, language.id, LspManager.START_TIMEOUT_MS, role);
 	if (session === undefined) {
 		if (manager.disposed) {
 			throw new Error(
 				`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
 			);
 		}
-		const why = manager.unavailability(language.id, role);
+		const why = manager.unavailability(input.cwd, language.id, role);
 		const where = role === "format" ? "hashline.format.servers" : "hashline.lsp.servers";
 		throw new Error(
 			`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${describeUnavailable(why)}. ` +
@@ -229,7 +229,7 @@ export async function runManualFormat(input: ManualFormatInput): Promise<ManualF
 	syncDocumentContent(input.absolutePath, normalized);
 	// The pre-write sync above reaches the PRIMARY slot only; a run routed to
 	// the formatting secondary must bring THAT server in step too (ADR-0038).
-	if (role === "format") manager.openDocumentFor(language.id, uri, "format")?.(normalized);
+	if (role === "format") manager.openDocumentFor(input.cwd, language.id, uri, "format")?.(normalized);
 
 	// The pass works in the read line space (LF, BOM-less); the disk form is
 	// restored once, at the write.

@@ -18,6 +18,14 @@ import { buildPreparedItem } from "../../src/domain/edit/anchor-fold.js";
 import { LspManager } from "../../src/lsp/manager.js";
 import { subprocessTransport, type SubprocessLike } from "../../src/lsp/transport.js";
 
+/**
+ * The workspace root every slot is keyed by (#450). One constant, because the
+ * tests are about slot BEHAVIOUR, not about which directory they name — the
+ * root-keyed tests below pass a second one explicitly.
+ */
+const ROOT = "/repo";
+
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 describe("probe verdict — one table, every prober (C7)", () => {
@@ -108,10 +116,11 @@ describe("anchor fold — one fold for every tool (C6)", () => {
 	});
 });
 
-describe("slot root — the manager's own fact (C2)", () => {
-	it("advertises the ROOT IT RESOLVES, not a caller's process cwd", async () => {
-		// The root is resolved by the manager (ADR-0031): a caller cannot
-		// disagree about it, because no caller passes one.
+describe("slot root — a per-call fact, never a manager-held agent (C2 / #450)", () => {
+	it("advertises the root the CALLER passed, and holds no agent reference", async () => {
+		// #450 / ADR-0043: the root is an argument, not a resolver. The manager
+		// cannot hold an agent, so a disposed one can never be consulted — the
+		// crash this replaced was an unhandled rejection from exactly that.
 		const spawns: string[] = [];
 		// A server that never answers: the spawn ALREADY happened by then, which
 		// is the fact under test — the ROOT the manager advertised.
@@ -130,13 +139,12 @@ describe("slot root — the manager's own fact (C2)", () => {
 			pathDirs: ["/bin"],
 			isExecutable: async () => true,
 			initializeTimeoutMs: 200,
-			rootResolver: async () => "/the/session/root",
 			spawn: (_server, cwd) => {
 				spawns.push(cwd);
 				return { transport: subprocessTransport(handle) };
 			},
 		});
-		manager.warm("typescript");
+		manager.warm("/the/session/root", "typescript");
 		for (let i = 0; i < 50; i++) await Promise.resolve();
 		expect(spawns[0]).toBe("/the/session/root");
 		await manager.dispose();

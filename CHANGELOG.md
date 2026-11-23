@@ -4,6 +4,12 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Fixed
+
+- 语言服务器 slot 改按工作目录归属：root 从进程级全局 resolver 改为每次调用的参数，manager 不再持有任何 Agent 引用，归档子 Agent 后父会话 `edit` 不再因 `INACTIVE_EFFECT` 让宿主退出；`#start` 整体包 try 给 fire-and-forget 形状上锁（#450，ADR-0043）。
+- 语言服务器 discovery 的项目本地 `node_modules/.bin` 搜索跟随调用目录，worktree 里能找到自己的 server（#450）。
+- `lsp` 的 status 卡片按 root 分组显示，同一语言在多个目录就绪时不再看起来像重复行（#450）。
+
 ## [0.11.5] - 2026-11-20
 
 ### Added

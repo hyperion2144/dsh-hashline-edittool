@@ -61,6 +61,7 @@ function makeInput(cwd: string, items: unknown[] | undefined): AfterWriteInput {
 	return {
 		session,
 		languageId: "typescript",
+		root: cwd,
 		uri: pathToFileURL(join(cwd, "a.ts")).href,
 		toolName: "edit",
 		text: SOURCE,

@@ -121,8 +121,11 @@ directory, asked of the HOST — never inferred from the disk.**
   to follow).
 
 ## 补充（2026-11-17，ADR-0040）
+> **Status: Superseded by [ADR-0043](0043-lsp-slot-keyed-by-workspace-root.md)** (2026-11-23, #450) — the global `rootResolver` this section introduced let a disposed subagent's context kill the host; the slot root is a per-call argument again, keyed by workspace directory.
 
-**server slot 的 root 也是 live cwd。** 语言服务器的 slot 在首次 warm 时固定一个 workspace root；该 root 现在由 `LspManager` 自己从会话 live working directory 解析（`rootResolver`，插件在 agent 创建时装上），**不再是调用方传的参数**。理由与本 ADR 相同：调用方传 root 就会有一个调用方漏传或传错——先前手动 `lsp` 传的是 `process.cwd()`，而 slot 按 languageId 唯一，于是「root 是哪个」取决于谁先 warm。root 归 manager 所有后，这个顺序依赖消失。
+**server slot 的 root 也是 live cwd。** 语言服务器的 slot 在首次 warm 时固定一个 workspace root；该 root 由 `LspManager` 从会话 live working directory 解析，**不是调用方传的参数**。理由与本 ADR 相同：调用方传 root 就会有一个调用方漏传或传错——先前手动 `lsp` 传的是 `process.cwd()`，而 slot 按 languageId 唯一，于是「root 是哪个」取决于谁先 warm。
+
+> **2026-11-23 修订（#450 / ADR-0043）**：上面这段的「root 归 manager 所有」被推翻了。manager 自取 root 的实现方式是进程级全局 resolver，绑的却是单个 Agent——最后创建的子 Agent 归档后，父会话的 `edit` 会踩到已失效的 Cordis context，宿主因 `INACTIVE_EFFECT` 退出。root 现在重新成为**每次调用的参数**，slot 按 `(工作目录, 语言, 角色)` 归属。顺序依赖确实消失了，但代价是 manager 不再持有任何 Agent 引用。
 
 ## Evidence
 

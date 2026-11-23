@@ -153,6 +153,8 @@ export interface WriteDiagContext {
 	/** Present when a server was READY at write time; undefined = cold start pending. */
 	readonly session?: LspSession;
 	readonly languageId: string;
+	/** The workspace directory the file belongs to — the slot's other half (#450). */
+	readonly root: string;
 	readonly uri: string;
 }
 
@@ -170,27 +172,32 @@ export interface WriteDiagContext {
  * never a wrong file's diagnostics (they are keyed by URI).
  *
  * @param absolutePath - the file about to be written.
+ * @param root - the workspace directory the file belongs to (#450). The
+ *   slot is keyed by it, so a worktree's write must reach the worktree's
+ *   server — and a disposed agent's directory is never consulted, because
+ *   the caller passes a plain string it already resolved.
  */
-export function prepareWriteDiagnostics(absolutePath: string): WriteDiagContext | undefined {
+export function prepareWriteDiagnostics(absolutePath: string, root: string): WriteDiagContext | undefined {
 	if (!isAutoDiagnosticsEnabled()) return undefined;
 	const manager = getLspManager();
 	if (manager === undefined) return undefined;
 	const language = languageForPath(absolutePath);
 	if (language === undefined) return undefined;
 	const uri = pathToFileURL(absolutePath).href;
-	const session = manager.readySessionFor(language.id);
+	const session = manager.readySessionFor(root, language.id);
 	if (session !== undefined) {
 		return {
 			session,
 			languageId: language.id,
+			root,
 			uri,
 			// The freshness guarantee no longer needs a revision baseline.
 		};
 	}
 	// Cold or starting: kick the warm and let the async path wait it out. A
 	// failed slot restarts here once its retry backoff has passed (#318).
-	manager.warm(language.id);
-	return { languageId: language.id, uri };
+	manager.warm(root, language.id);
+	return { languageId: language.id, root, uri };
 }
 
 /** Everything {@link deliverDiagnosticsAfterWrite} needs once the write is on disk. */
@@ -231,7 +238,7 @@ export async function deliverDiagnosticsAfterWrite(
 		}
 		const verified = await verifiedReport(input.session, input.uri, () => currentText(input), {
 			open: (next) => {
-				const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
+				const open = getLspManager()?.openDocumentFor(input.root, input.languageId, input.uri);
 				open?.(next);
 			},
 			budgetMs: autoDiagInlineWaitMs(),
@@ -603,7 +610,7 @@ function startAsyncWait(
 				// the push, which is the honest outcome of a 3s cold start.
 				const manager = getLspManager();
 				const remaining = Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt));
-				session = (await manager?.waitForSession(input.languageId, remaining)) ?? undefined;
+				session = (await manager?.waitForSession(input.root, input.languageId, remaining)) ?? undefined;
 				if (session === undefined || signal.aborted) return;
 				// #388: a newer write landed while the server booted — ITS delivery
 				// owns the file now.
@@ -612,7 +619,7 @@ function startAsyncWait(
 				// server has no disk watcher — left alone it would never learn
 				// the file changed. Tell it now: the fresh session has surely
 				// never seen this document, so this is a `didOpen`.
-				const openDocument = manager?.openDocumentFor(input.languageId, input.uri);
+				const openDocument = manager?.openDocumentFor(input.root, input.languageId, input.uri);
 				openDocument?.(currentText(input));
 			}
 			// #388: the probe PUSHES text into the server. An old text would roll
@@ -622,7 +629,7 @@ function startAsyncWait(
 			if (!stillCurrent(input.uri, generation)) return;
 			const verified = await verifiedReport(session, input.uri, () => currentText(input), {
 				open: (next) => {
-					const open = getLspManager()?.openDocumentFor(input.languageId, input.uri);
+					const open = getLspManager()?.openDocumentFor(input.root, input.languageId, input.uri);
 					open?.(next);
 				},
 				budgetMs: Math.max(0, ASYNC_TIMEOUT_MS - (Date.now() - startedAt)),

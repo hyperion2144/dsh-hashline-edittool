@@ -20,6 +20,7 @@ import { autoFormatMode } from "../../config.js";
 import { detectEnding, restoreEndings, stripBOM } from "../../render/edit-diff.js";
 import { notifyDocumentWritten } from "../../lsp/sync.js";
 import { runAutoFormat, type AutoFormatOutcome } from "../format/auto-format.js";
+import { workspaceCwd } from "../../infra/workspace.js";
 
 /** What one create needs. */
 export interface CreateFileInput {
@@ -65,6 +66,7 @@ export async function createFile(input: CreateFileInput): Promise<CreateFileResu
 		const outcome = await runAutoFormat({
 			io,
 			absolutePath,
+			cwd: workspaceCwd() ?? "",
 			modelContent: shape.text,
 		});
 		if (outcome.status === "formatted") {

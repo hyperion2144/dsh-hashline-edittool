@@ -426,9 +426,10 @@ export function apply(rootCtx: Context, config?: unknown): void {
 	const onAgentStart = async ({ agent }: { agent: Agent }): Promise<void> => {
 		if (registered.has(agent)) return;
 		registered.add(agent);
-		// The slot root follows the LIVE session (ADR-0031): the manager
-		// resolves it itself at each start, from this agent's working directory.
-		getLspManager()?.setRootResolver(async () => agentCwd(agent));
+		// #450 / ADR-0043: the manager holds NO agent reference. The slot root
+		// is a per-call argument resolved from the session's live working
+		// directory at the call site, so a disposed subagent can never be
+		// consulted — and archiving one cannot kill the host.
 		try {
 			await installAgentTools(rootCtx, agent);
 		} catch (error) {
@@ -547,7 +548,9 @@ function installLspIntegration(rootCtx: Context): void {
 			});
 			return { transport: subprocessTransport(handle as never) };
 		},
-		projectRoot: process.cwd(),
+		// #450: `projectRoot` is NOT a constructor option any more — discovery's
+		// project-local `node_modules/.bin` search follows the CALLING directory
+		// (a worktree must find its own bins, not the parent checkout's).
 		//
 		// Servers the user NAMED, as discovery's `configured` origin. Grouped by
 		// command because that is the shape discovery wants: two languages served
@@ -576,7 +579,12 @@ function installLspIntegration(rootCtx: Context): void {
 
 	// Registering makes US the implementation the official `lsp` tool uses, so
 	// the same server process serves both (ADR-0008 D2).
-	const dispose = registerLspProvider(get("lsp"), (languageId) => manager.readySessionFor(languageId));
+	// #450: the host already hands the provider the CALLING workspace root —
+	// it used to be discarded, which was harmless while one slot served every
+	// directory and is a wrong-server bug now that slots are keyed by root.
+	const dispose = registerLspProvider(get("lsp"), (languageId, _filePath, workspaceRoot) =>
+		manager.readySessionFor(workspaceRoot, languageId),
+	);
 
 	try {
 		rootCtx.effect(() => () => {

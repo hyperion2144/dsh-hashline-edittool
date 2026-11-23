@@ -41,6 +41,14 @@ useNumberedRows();
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import type { LspSession } from "../../src/lsp/session.js";
 
+/**
+ * The workspace root every slot is keyed by (#450). One constant, because the
+ * tests are about slot BEHAVIOUR, not about which directory they name — the
+ * root-keyed tests below pass a second one explicitly.
+ */
+const ROOT = "/repo";
+
+
 const SOURCE = "export const alpha = 1;\nexport const beta = 2;\n";
 
 afterEach(() => {
@@ -183,6 +191,7 @@ function makeInput(overrides: Partial<AfterWriteInput> & { cwd: string }): After
 	return {
 		session,
 		languageId: "typescript",
+		root: cwd,
 		uri: pathToFileURL(join(cwd, "a.ts")).href,
 		toolName: "edit",
 		text: SOURCE,
@@ -198,12 +207,12 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 	it("skips entirely when the switch is off", () => {
 		applyEffective({ lsp: { auto_diagnostics: false } });
 		expect(isAutoDiagnosticsEnabled()).toBe(false);
-		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.ts", ROOT)).toBeUndefined();
 	});
 
 	it("skips when no manager is installed", () => {
 		setLspManager(undefined);
-		expect(prepareWriteDiagnostics("/repo/a.ts")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.ts", ROOT)).toBeUndefined();
 	});
 
 	it("returns a PENDING context for a cold language and fires the warm", () => {
@@ -212,21 +221,21 @@ describe("prepareWriteDiagnostics — the skip rules", () => {
 		// fired (fire-and-forget) and the async path waits the boot out.
 		const warm = vi.fn();
 		setLspManager({ readySessionFor: () => undefined, warm } as never);
-		const context = prepareWriteDiagnostics("/repo/a.ts");
+		const context = prepareWriteDiagnostics("/repo/a.ts", ROOT);
 		expect(context).toBeDefined();
 		expect(context!.session).toBeUndefined();
 		expect(context!.languageId).toBe("typescript");
-		expect(warm).toHaveBeenCalledWith("typescript");
+		expect(warm).toHaveBeenCalledWith(ROOT, "typescript");
 	});
 
 	it("skips files with no language at all", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
-		expect(prepareWriteDiagnostics("/repo/a.definitely-not-a-language")).toBeUndefined();
+		expect(prepareWriteDiagnostics("/repo/a.definitely-not-a-language", ROOT)).toBeUndefined();
 	});
 
 	it("snapshots a revision baseline when a session is ready", () => {
 		installReady(fakeSession(DIAGNOSTICS).session);
-		const context = prepareWriteDiagnostics("/repo/a.ts");
+		const context = prepareWriteDiagnostics("/repo/a.ts", ROOT);
 		expect(context).toBeDefined();
 		expect(context!.uri).toBe(pathToFileURL("/repo/a.ts").href);
 	});
@@ -810,7 +819,7 @@ describe("BUG-1 regression — a cold start delivers through the async path", ()
 					// server is up but has NEVER seen this document.
 					return late.session;
 				},
-				openDocumentFor: (_languageId: string, uri: string) => (text: string) => {
+				openDocumentFor: (_root: string, _languageId: string, uri: string) => (text: string) => {
 					opened.push(`${uri} ${text.split("\n")[0]}`);
 					late.openText(text);
 				},

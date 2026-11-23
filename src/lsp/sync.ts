@@ -24,6 +24,7 @@ import { pathToFileURL } from "node:url";
 import { languageForPath } from "../ast/language.js";
 import { getLspManager } from "./manager.js";
 import { forgetDocumentWrite, noteDocumentWrite } from "./write-tracker.js";
+import { workspaceCwd } from "../infra/workspace.js";
 
 /** How a written document reaches the LSP layer. */
 export type DocumentSyncHook = (absolutePath: string, text: string) => void;
@@ -103,30 +104,43 @@ export function notifyDocumentClosed(absolutePath: string): void {
 	}
 }
 
-/** The default close wiring: use the process-wide manager, if one is installed. */
+/**
+ * The default close wiring: use the process-wide manager, if one is installed.
+ *
+ * #450: the workspace directory comes from the AMBIENT scope, not from a
+ * manager-held agent. Every write path already runs inside
+ * `withLiveWorkspace`, so the directory is a fact of the call — and a
+ * disposed agent can never be consulted, because nothing holds one.
+ */
 function defaultClose(absolutePath: string): void {
-	const manager = getLspManager();
-	if (manager === undefined) return;
-	const language = languageForPath(absolutePath);
-	if (language === undefined) return;
-	if (!manager.readyLanguages.includes(language.id)) return;
-	manager.closeDocumentFor(language.id, pathToFileURL(absolutePath).href);
+  const manager = getLspManager();
+  if (manager === undefined) return;
+  const root = workspaceCwd();
+  if (root === undefined) return;
+  const language = languageForPath(absolutePath);
+  if (language === undefined) return;
+  manager.closeDocumentFor(root, language.id, pathToFileURL(absolutePath).href);
 }
 
-/** The default wiring: use the process-wide manager, if one is installed. */
+/**
+ * The default wiring: use the process-wide manager, if one is installed.
+ *
+ * #450: the workspace directory comes from the AMBIENT scope (see
+ * {@linkcode defaultClose}). `openDocumentFor` already returns `undefined`
+ * for a slot that is not ready, so the old `readyLanguages` pre-check is
+ * gone — it was a second, root-blind copy of the same question.
+ */
 function defaultSync(absolutePath: string, text: string): void {
-	const manager = getLspManager();
-	if (manager === undefined) return;
-	const language = languageForPath(absolutePath);
-	if (language === undefined) return;
-	// `readyLanguages` is checked first so a write never triggers a warm: the
-	// manager's `decide` would start a server, which is exactly what an edit
-	// must not do.
-	if (!manager.readyLanguages.includes(language.id)) return;
-	const uri = pathToFileURL(absolutePath).href;
-	const open = manager.openDocumentFor(language.id, uri);
-	if (open === undefined) return;
-	open(text);
+  const manager = getLspManager();
+  if (manager === undefined) return;
+  const root = workspaceCwd();
+  if (root === undefined) return;
+  const language = languageForPath(absolutePath);
+  if (language === undefined) return;
+  const uri = pathToFileURL(absolutePath).href;
+  const open = manager.openDocumentFor(root, language.id, uri);
+  if (open === undefined) return;
+  open(text);
 }
 
 /**
