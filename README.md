@@ -260,7 +260,7 @@ just gave you, or re-read.
 | `del` | `anchor_start` (+ optional `anchor_end`) | delete the range (or the single `anchor_start` line); `lines` is ignored. |
 | `sed` | `anchor_start` (+ optional `anchor_end`) | rewrite the range **line by line** with `pattern` + `replacement` + optional `flags` (`gims`), no `lines`, no newline in `replacement`; sed's `\1`/`&` and JS's `$1`/`$&` both accepted. |
 
-Mixing anchor fields with the wrong op is `[E_BAD_SHAPE]`.
+`op` is the only authority: a known field belonging to a different op is **ignored** and named in the call's `warnings`, never refused. What stays `[E_BAD_SHAPE]` is a MISSING required field (`ins` without `anchor_after`), an unknown key, or an unknown `op`.
 
 ### `require_line_content` (optional hardening)
 
