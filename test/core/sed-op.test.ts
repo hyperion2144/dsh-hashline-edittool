@@ -102,8 +102,22 @@ describe("op:sed — the contract refuses what sed cannot mean", () => {
 		expect(() => assertEditItem(item({}), 0, true, false)).not.toThrow();
 	});
 
-	it("refuses `lines` next to `pattern` — the substitution is the replacement", () => {
-		expect(() => assertEditItem(item({ lines: ["x"] }), 0, true, false)).toThrow(/not "lines"/);
+	it("IGNORES `lines` next to `pattern` — the substitution is the replacement (ADR-0044)", () => {
+		// `op` is the only authority: `sed` says the new content comes from
+		// `pattern`/`replacement`, so a stray `lines` is dropped rather than
+		// refused. The tool reports it as a warning; the shape gate accepts it.
+		expect(() => assertEditItem(item({ lines: ["x"] }), 0, true, false)).not.toThrow();
+	});
+
+	it("IGNORES `anchor_after` — `sed` names a range, not a position (ADR-0044)", () => {
+		expect(() => assertEditItem(item({ anchor_after: "cd" }), 0, true, false)).not.toThrow();
+	});
+
+	it("IGNORES a stray field even when its VALUE is not a valid anchor", () => {
+		// A field belonging to another op is skipped entirely, so it is not held
+		// to the anchor format it never had to satisfy. `anchor_after` is not a
+		// `sed` field, so a non-anchor value there is never inspected.
+		expect(() => assertEditItem(item({ anchor_after: 42 }), 0, true, false)).not.toThrow();
 	});
 
 	it("refuses a newline in the replacement: sed never changes the line count", () => {

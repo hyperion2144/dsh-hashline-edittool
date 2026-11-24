@@ -11,9 +11,11 @@
  *
  * **0.4.0 contract change.** The `edit` tool now takes an `edits:[]` array
  * with named fields (`op` / `anchor_after?` / `anchor_start?` / `anchor_end?` / `lines?`) and an `op` semantic
- * distinguishing `ins` / `del` / `replace`. **Which anchor field is legal depends on the
- * op**: `ins` takes `anchor_after`, the other two take `anchor_start`, and a call that
- * mixes them is refused. See `EditItemParams.anchor_after` for why the names differ.
+ * distinguishing `ins` / `del` / `replace` / `sed`. **Which anchor field is LIVE depends on the
+ * op**: `ins` takes `anchor_after`, the other three take `anchor_start`. A field belonging
+ * to a different op is IGNORED and reported as a warning, never refused (ADR-0044: `op` is
+ * the only authority); what stays refused is a MISSING required field. See
+ * `EditItemParams.anchor_after` for why the names differ.
  * (An earlier revision of THIS line said `op` / `anchor_start` / `anchor_end?` / `lines?`).
  * is removed; its multi-file capability is preserved as a per-item
  * optional `path` that overrides the top-level `path`. `remove_from` /
@@ -59,31 +61,34 @@ export interface EditItemParams {
 	 * `{ anchor, line }` declaration pair when ON (see declaration.ts).
 	 */
 	/**
-	 * Required for `replace` and `del`, forbidden for `ins`. Anchor of the FIRST
-	 * line of the affected RANGE — and for `replace`, `lines` is what that range
-	 * BECOMES, so the range's own lines do belong there.
+	 * Required for `replace`, `del` and `sed`; IGNORED for `ins` (which takes
+	 * `anchor_after`). Anchor of the FIRST line of the affected RANGE — and for
+	 * `replace`, `lines` is what that range BECOMES, so the range's own lines do
+	 * belong there. For `sed` the range is what the regex runs over, line by
+	 * line; its new content comes from `pattern` / `replacement`, not `lines`.
 	 */
 	anchor_start?: AnchorRef;
 	/**
-	 * Required for `ins`, forbidden for the other two. The anchor whose line the
+	 * Required for `ins`, IGNORED for the other ops. The anchor whose line the
 	 * new lines are placed BELOW.
 	 *
 	 * NOT CALLED `anchor_start`, DELIBERATELY. Under a shared name, a caller that
 	 * had just used `replace` — where `anchor_start` begins a range whose content
 	 * `lines` CONSUMES — carried that reading into `ins`, wrote the anchor's own
-	 * line into `lines`, and got a duplicate. It was not carelessness: the field
-	 * was the same name, so the habit transferred. Here there is no range for
-	 * `lines` to consume and no `anchor_start` to misread, and a call that sends
-	 * one anyway is REFUSED rather than transliterated.
+	 * line into `lines`, and got a duplicate. Two names make that transit
+	 * impossible. A call that sends only `anchor_start` with `op:"ins"` is still
+	 * REFUSED (there is no `anchor_after` to use); a call that sends both is
+	 * accepted with `anchor_start` ignored and warned about (ADR-0044).
 	 */
 	anchor_after?: AnchorRef;
 	/**
 	 * Anchor of the LAST line. Optional for `replace` (omit = single-line
-	 * passes the same anchor twice); optional for `del` (omit = one line);
-	 * forbidden for `ins`. Same dual form as `anchor_start`.
+	 * passes the same anchor twice), for `del` (omit = one line) and for `sed`
+	 * (omit = the single `anchor_start` line); IGNORED for `ins`. Same dual
+	 * form as `anchor_start`.
 	 */
 	anchor_end?: AnchorRef;
-	/** Required for `ins` and `replace`; ignored for `del` (deletion is anchor-defined); FORBIDDEN for `sed` (its replacement comes from `pattern`/`replacement`). New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
+	/** Required for `ins` and `replace`; IGNORED for `del` (deletion is anchor-defined, #69) and for `sed` (its replacement comes from `pattern`/`replacement`). New content (for `ins`: lines to insert; for `replace`: lines to substitute). */
 	lines?: string[];
 	/**
 	 * `op: "sed"` only. Regular-expression SOURCE applied to every line of the
@@ -170,6 +175,40 @@ const EDIT_ITEM_KS = new Set(
 	Object.keys((buildEditItemSchema(false) as { properties?: Record<string, unknown> }).properties ?? {}),
 );
 
+/**
+ * The fields each `op` OWNS (ADR-0044). A known field outside this set
+ * belongs to a different op: it is IGNORED, and the caller reports it as a
+ * warning. `op` is the only authority — the field that was named decides
+ * which anchor and which content family are live.
+ *
+ * `del` owns `lines` even though it does nothing with it: #69 settled that
+ * case as a SILENT ignore (the model carries `lines` over from a copy-pasted
+ * `replace`), and re-opening it as a warning would undo that decision.
+ */
+const OP_OWNED_FIELDS: Record<EditOp, readonly string[]> = {
+	ins: ["op", "anchor_after", "lines", "path"],
+	del: ["op", "anchor_start", "anchor_end", "lines", "path"],
+	replace: ["op", "anchor_start", "anchor_end", "lines", "path"],
+	sed: ["op", "anchor_start", "anchor_end", "pattern", "replacement", "flags", "path"],
+};
+
+/**
+ * The known fields present on an edit item that belong to a DIFFERENT op.
+ *
+ * `rejectUnknownFields` has already refused anything that is not a field at
+ * all, so every name returned here is a real field the caller put on the
+ * wrong op. `undefined` values are not reported: an explicit `undefined` is
+ * absent, not a stray field.
+ *
+ * Exported because the warning is the caller's job (ADR-0044: ignoring is
+ * never silent) and the field-ownership table must have exactly one home.
+ */
+export function ignoredFieldsFor(item: Record<string, unknown>): string[] {
+	const op = item.op;
+	if (op !== "ins" && op !== "del" && op !== "replace" && op !== "sed") return [];
+	const owned = new Set(OP_OWNED_FIELDS[op]);
+	return Object.keys(item).filter((key) => !owned.has(key) && item[key] !== undefined);
+}
 /** Fields of the `{ anchor, line }` declaration form (require_line_content ON). */
 const ANCHOR_DECLARATION_KS = new Set(
 	Object.keys((anchorDeclarationSchema(true) as { properties?: Record<string, unknown> }).properties ?? {}),
@@ -271,14 +310,20 @@ function assertAnchorField(
 /**
  * Validate one edit item. Throws `[E_BAD_SHAPE]` with a path-qualified
  * message on the first violation. Validation rules:
- *   - `op` is required and one of `ins` / `del` / `replace`
+ *   - `op` is required and one of `ins` / `del` / `replace` / `sed`
  *   - `anchor_start` / `anchor_end` follow the dual form: plain anchor
  *     strings when `requireLineContent` is OFF; `{ anchor, line }`
  *     declaration pairs when ON (missing `line` = missing declaration,
  *     object form when OFF = shape error; see declaration.ts)
- *   - `anchor_end` is forbidden for `op: "ins"`, optional otherwise (required for `op: "replace"`)
+ *   - a known field belonging to a DIFFERENT op is IGNORED, never refused
+ *     (ADR-0044): `op` is the only authority. `ignoredFieldsFor` names them
+ *     and the tool reports each as a warning — ignoring is never silent.
+ *     What stays refused is a MISSING required field: `ins` without
+ *     `anchor_after` is still an error, and the message still points there.
+ *   - `anchor_end` is optional for `del` / `replace` / `sed`, and ignored on `ins`
  *   - `lines` is required and must be a non-empty string array for `ins` /
- *     `replace`; on `del` it is accepted and IGNORED (anchor-defined deletion)
+ *     `replace`; on `del` it is accepted and IGNORED (anchor-defined deletion,
+ *     #69); on `sed` it is IGNORED (the substitution is the content)
  *   - per-item `path`, if set, must be a non-empty string
  */
 export function assertEditItem(
@@ -303,38 +348,29 @@ export function assertEditItem(
 			`[E_BAD_SHAPE] edits[${index}].op must be one of "ins", "del", "replace", "sed". Structural changes go through \`ast_edit\`, which resolves a shape into exactly these.`,
 		);
 	}
-	// WHICH ANCHOR FIELD IS LEGAL DEPENDS ON THE OP, and the check is hard.
+	// WHICH ANCHOR FIELD IS LIVE DEPENDS ON THE OP — and `op` is the only
+	// authority (ADR-0044). A known field belonging to a different op is
+	// IGNORED, not refused: the caller named the op, so the op decides which
+	// anchor and which content family are read. What is still REFUSED is a
+	// MISSING required field — `{op:"ins", anchor_start, lines}` with no
+	// `anchor_after` keeps the message that breaks the `replace` habit.
 	//
-	// `ins` takes `anchor_after` and ONLY that; `replace` / `del` take
-	// `anchor_start` and only that. A call that mixes them is rejected rather than
-	// transliterated — accepting `anchor_start` on `ins` for compatibility would
-	// keep the very habit this change exists to break.
+	// Ignoring is never silent: `ignoredFieldsFor` names the dropped fields and
+	// the tool reports them as warnings. Validation skips them entirely, so a
+	// stray `anchor_end: "x"` is not held to the anchor format it never had to
+	// satisfy.
+	const ignored = new Set(ignoredFieldsFor(item));
 	if (item.op === "ins") {
-		if (item.anchor_start !== undefined) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"ins" takes "anchor_after", not "anchor_start". The anchor is a POSITION to insert below, not the start of a range: the line it names is kept, and \`lines\` holds only what is NEW.`,
-			);
-		}
-		if (item.anchor_end !== undefined) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"ins" has no "anchor_end": insert below "anchor_after" — one anchor, one position.`,
-			);
-		}
 		if (item.anchor_after === undefined) {
 			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"ins" requires "anchor_after" — the anchor whose line the new lines go BELOW.`,
+				`[E_BAD_SHAPE] edits[${index}].op:"ins" requires "anchor_after" — the anchor whose line the new lines go BELOW.`
 			);
 		}
 		assertAnchorField(item.anchor_after, "anchor_after", index, requireLineContent);
 	} else {
-		if (item.anchor_after !== undefined) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"${item.op}" takes "anchor_start", not "anchor_after" — it names a RANGE, and \`lines\` is what that range becomes.`,
-			);
-		}
 		assertAnchorField(item.anchor_start, "anchor_start", index, requireLineContent);
 	}
-	if (item.anchor_end !== undefined) {
+	if (item.anchor_end !== undefined && !ignored.has("anchor_end")) {
 		assertAnchorField(item.anchor_end, "anchor_end", index, requireLineContent);
 	}
 	if (item.op === "replace" && item.anchor_end === undefined) {
@@ -358,13 +394,8 @@ export function assertEditItem(
 		}
 	}
 	if (item.op === "sed") {
-		// sed IS the replacement, so `lines` is a contradiction, not a spare
-		// field: accepting both would leave the caller guessing which one won.
-		if (item.lines !== undefined) {
-			throw new Error(
-				`[E_BAD_SHAPE] edits[${index}].op:"sed" takes "pattern" + "replacement", not "lines" — the substitution IS the new content.`,
-			);
-		}
+	// `lines` on `sed` is IGNORED (ADR-0044): the substitution IS the new
+	// content, and `op` says so. The caller is warned, not refused.
 		if (typeof item.pattern !== "string" || item.pattern.length === 0) {
 			throw new Error(
 				`[E_BAD_SHAPE] edits[${index}].op:"sed" requires a non-empty "pattern" (regular-expression source, applied line by line over the anchor range).`,
@@ -595,21 +626,21 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 				: {
 						type: "string",
 						description:
-							'REQUIRED FOR `op:"ins"`, forbidden otherwise. The anchor whose line the new lines go BELOW. It is a POSITION — the line it names is kept, and `lines` holds ONLY the new lines. Deliberately not named `anchor_start`: under that name a caller who had just used `replace` wrote the anchor\'s own line into `lines` and duplicated it. Sending `anchor_start` with `op:"ins"` is refused.',
+						'REQUIRED FOR `op:"ins"`, IGNORED for the other ops. The anchor whose line the new lines go BELOW. It is a POSITION — the line it names is kept, and `lines` holds ONLY the new lines. Deliberately not named `anchor_start`: under that name a caller who had just used `replace` wrote the anchor\'s own line into `lines` and duplicated it. Sending ONLY `anchor_start` with `op:"ins"` is still refused — there is no `anchor_after` to use.',
 					},
 			anchor_start: requireLineContent
 				? anchorDeclarationSchema(false)
 				: {
 						type: "string",
 						description:
-							'Required for `op:"replace"` and `op:"del"`, forbidden for `op:"ins"` (which takes `anchor_after`). Anchor of the FIRST line of the RANGE — and `lines` is what that range BECOMES, so for `replace` the range\'s own lines DO belong in `lines`.',
+						'Required for `op:"replace"`, `op:"del"` and `op:"sed"`; IGNORED for `op:"ins"` (which takes `anchor_after`). Anchor of the FIRST line of the RANGE — and `lines` is what that range BECOMES, so for `replace` the range\'s own lines DO belong in `lines`. For `sed` the range is what the regex runs over line by line; its new content comes from `pattern` / `replacement`, not `lines`.',
 					},
 			anchor_end: requireLineContent
 				? anchorDeclarationSchema(false)
 				: {
 					type: "string",
 					description:
-						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"` and `op:"del"` — omitting it defaults to a SINGLE-line range (anchor_start only); the replacement `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines. Forbidden for `op:"ins"`, which has one anchor and no range.'
+						'Anchor (variable-length Base62) of the LAST line of the range. Optional for `op:"replace"`, `op:"del"` and `op:"sed"` — omitting it defaults to a SINGLE-line range (anchor_start only); for `replace` the replacement `lines` may have any number of lines (replacing one line with many is fine). Pass `anchor_end` when the RANGE spans multiple original lines. IGNORED for `op:"ins"`, which has one anchor and no range.'
 				},
 			lines: {
 				type: "array",
@@ -618,7 +649,7 @@ export function buildEditItemSchema(requireLineContent: boolean): ParameterPrope
 					description: "One line of new content; an element that itself carries a newline becomes several.",
 				},
 				description:
-					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. On `op:"del"` it is accepted and IGNORED — deletion is defined by the anchors alone. FORBIDDEN on `op:"sed"`, whose replacement is `pattern`/`replacement`. For `ins`: ONLY the new lines that go BELOW `anchor_after` — the anchor\'s own line is kept, and putting it here duplicates it. For `replace`: the lines that SUBSTITUTE the anchor_start..anchor_end range, so the range\'s original lines do not belong here either. One element is ONE line — only an element that itself carries a newline becomes several, never a silent change of the line count. Pass `[""]` to clear a single line (still a replace, not a del).'
+					'Required and must be non-empty for `op:"ins"` and `op:"replace"`. IGNORED on `op:"del"` (deletion is defined by the anchors alone) and on `op:"sed"` (whose replacement is `pattern`/`replacement`). For `ins`: ONLY the new lines that go BELOW `anchor_after` — the anchor\'s own line is kept, and putting it here duplicates it. For `replace`: the lines that SUBSTITUTE the anchor_start..anchor_end range, so the range\'s original lines do not belong here either. One element is ONE line — only an element that itself carries a newline becomes several, never a silent change of the line count. Pass `[""]` to clear a single line (still a replace, not a del).'
 			},
 			pattern: {
 				type: "string",

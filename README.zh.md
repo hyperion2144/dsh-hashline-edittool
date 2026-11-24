@@ -203,7 +203,7 @@ Diff rows: <+|-><anchor>:<content> — a unified diff: `@@ -old,count +new,count
 | `del` | `anchor_start`（+ 可选 `anchor_end`） | 删除范围（或单个 `anchor_start` 行）；`lines` 被忽略。 |
 | `sed` | `anchor_start`（+ 可选 `anchor_end`） | 用 `pattern` + `replacement` + 可选 `flags`（`gims`）**逐行**重写范围；不放 `lines`，`replacement` 不得含换行；sed 的 `\1`/`&` 与 JS 的 `$1`/`$&` 都接受。 |
 
-锚点字段与 op 不匹配是 `[E_BAD_SHAPE]`。
+`op` 是唯一权威：属于别的 op 的已知字段会被**忽略**并在本次调用的 `warnings` 里点名，不再硬拒。仍报 `[E_BAD_SHAPE]` 的是：缺必需字段（如 `ins` 无 `anchor_after`）、未知键、未知 `op`。
 
 ### `require_line_content`（可选加固）
 

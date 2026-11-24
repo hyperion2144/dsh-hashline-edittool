@@ -287,29 +287,28 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 			}
 		});
 
-		it("ins with anchor_end: REFUSED at the contract, and the file is untouched", async () => {
+		it("ins with anchor_end: IGNORED and warned, the edit applies (ADR-0044)", async () => {
 			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 				const harness = setupIntegrationTest(cwd);
 				const a1 = await readAnchors(harness, "b1.txt");
 
 				// `ins` has ONE anchor and no range, so `anchor_end` is not a field it
-				// can carry. This used to be accepted with a warning and the field
-				// dropped — which meant a caller could believe it had named a range
-				// and be told, in a warning it may not read, that it had not.
-				await expect(
-					harness.editTool.execute("edit", {
-						path: "b1.txt",
-						edits: [
-							{ op: "ins", anchor_after: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
-						],
-					}),
-				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE.*has no "anchor_end"/) }] });
-				// And nothing reached the disk: a refused call is refused whole.
-				expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
+				// reads. `op` is the only authority (ADR-0044): the field is dropped
+				// and named in the warnings, rather than refused.
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [
+						{ op: "ins", anchor_after: a1[0]!.hash, anchor_end: a1[0]!.hash, lines: ["X"] },
+					],
+				});
+				const text = getText(res);
+				expect(text).toContain('"anchor_end" is ignored');
+				// The edit applies as written — a warning, not a veto.
+				expect(await readFile(p1, "utf-8")).toBe("a\nX\nb\nc\n");
 			});
 		});
 
-		it("ins with anchor_start: REFUSED — the field names differ so the replace habit cannot transfer", async () => {
+		it("ins with ONLY anchor_start: still REFUSED — there is no anchor_after to use", async () => {
 			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
 				const harness = setupIntegrationTest(cwd);
 				const a1 = await readAnchors(harness, "b1.txt");
@@ -318,16 +317,33 @@ describe("multi-file edit — ADR-0002 schema validation", () => {
 				// `anchor_start`; a caller who had just used `replace` — where the
 				// anchor begins a range whose content `lines` CONSUMES — carried that
 				// reading into `ins` and wrote the anchor's own line into `lines`,
-				// duplicating it. Under two names the habit has nowhere to land, and a
-				// call that sends the wrong one is told so instead of being
-				// transliterated into something it did not ask for.
+				// duplicating it. ADR-0044 keeps this refusal: `anchor_start` is not
+				// transliterated into the missing `anchor_after`.
 				await expect(
 					harness.editTool.execute("edit", {
 						path: "b1.txt",
 						edits: [{ op: "ins", anchor_start: a1[0]!.hash, lines: ["X"] }],
 					}),
-				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE.*ins.*anchor_after.*not "anchor_start"/) }] });
+				).resolves.toMatchObject({ content: [{ type: "text", text: expect.stringMatching(/E_BAD_SHAPE.*ins.*requires "anchor_after"/) }] });
 				expect(await readFile(p1, "utf-8")).toBe("a\nb\nc\n");
+			});
+		});
+
+		it("ins with BOTH anchors: anchor_start is IGNORED and warned (ADR-0044)", async () => {
+			await withTempFile("b1.txt", "a\nb\nc\n", async ({ cwd, path: p1 }) => {
+				const harness = setupIntegrationTest(cwd);
+				const a1 = await readAnchors(harness, "b1.txt");
+
+				// The correct field is present, so `op` has what it needs; the stray
+				// `anchor_start` is dropped and named. This is the case the old
+				// hard refusal turned into a retry loop.
+				const res = await harness.editTool.execute("edit", {
+					path: "b1.txt",
+					edits: [{ op: "ins", anchor_after: a1[0]!.hash, anchor_start: a1[0]!.hash, lines: ["X"] }],
+				});
+				const text = getText(res);
+				expect(text).toContain('"anchor_start" is ignored');
+				expect(await readFile(p1, "utf-8")).toBe("a\nX\nb\nc\n");
 			});
 		});
 

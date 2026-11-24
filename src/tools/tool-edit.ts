@@ -36,6 +36,7 @@ import {
 	buildEditsSchema,
 	declaredLineOf,
 	type EditOp,
+	ignoredFieldsFor,
 } from "../contract/contract.js";
 import { isJsonOutput, getEffectiveConfig, lineNumbersEnabled } from "../config.js";
 import { responseBudgetChars, spillModelTextOverflow } from "../infra/response-stream.js";
@@ -210,7 +211,8 @@ type FileGroupCall = {
 	canonical: { path?: string; edits: Array<unknown> };
 	sandbox: FsSandboxController;
 	sandboxPolicy: Awaited<ReturnType<FsSandboxController["resolvePolicy"]>>;
-	insAnchorEndWarningsByPath: Map<string, string[]>;
+	/** ADR-0044: per-file warnings for fields ignored because they belong to another op. */
+	ignoredFieldWarningsByPath: Map<string, string[]>;
 };
 
 type FileGroupOutcome =
@@ -241,7 +243,7 @@ async function applyFileGroup(
 			canonical,
 			displayPath,
 			resolutionWarning: (canonical as { _pathWarning?: string })._pathWarning,
-			extraWarnings: call.insAnchorEndWarningsByPath.get(displayPath),
+			extraWarnings: call.ignoredFieldWarningsByPath.get(displayPath),
 			sandbox,
 			sandboxPolicy,
 			exec,
@@ -458,20 +460,26 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					string,
 					Array<{ index: number; edit: (typeof canonical.edits)[number] }>
 				>();
-				// ins 传了 anchor_end: 不拒绝 (宽松), 提示用户不要传 — 按目标文件记录
-				const insAnchorEndWarningsByPath = new Map<string, string[]>();
+				// ADR-0044: a known field belonging to a DIFFERENT op is ignored, and the
+				// caller is told which field and which op owns it. `del` + `lines` is the
+				// one exception — #69 settled it as a silent ignore, so it is not
+				// reported here (the ownership table still lists `lines` under `del`).
+				const ignoredFieldWarningsByPath = new Map<string, string[]>();
 				for (let i = 0; i < canonical.edits.length; i++) {
 					const e = canonical.edits[i]!;
 					// ADR-0002 normalizer: item.path === topLevelPath 折叠为缺省（冗余声明不算多文件）
 					const itemPath =
 						e.path !== undefined && e.path === topLevelPath ? undefined : e.path;
 					const path = itemPath ?? (topLevelPath as string);
-					if (e.op === "ins" && e.anchor_end !== undefined) {
-						const list = insAnchorEndWarningsByPath.get(path) ?? [];
-						list.push(
-							`edits[${i}].op:"ins" ignores anchor_end — ins inserts after anchor_start; drop the field.`,
-						);
-						insAnchorEndWarningsByPath.set(path, list);
+					const ignored = ignoredFieldsFor(e as unknown as Record<string, unknown>);
+					if (ignored.length > 0) {
+						const list = ignoredFieldWarningsByPath.get(path) ?? [];
+						for (const field of ignored) {
+							list.push(
+								`[E_BAD_SHAPE] edits[${i}] "${field}" is ignored: op:"${e.op}" does not take it. Drop the field.`
+							);
+						}
+						ignoredFieldWarningsByPath.set(path, list);
 					}
 					const gList = groups.get(path) ?? [];
 					gList.push({ index: i, edit: e });
@@ -491,7 +499,7 @@ export function buildEditTool(io: FileIO, sandbox: FsSandboxController) {
 					canonical,
 					sandbox,
 					sandboxPolicy,
-					insAnchorEndWarningsByPath,
+					ignoredFieldWarningsByPath,
 				};
 				// ---- 单文件快捷路径 (0.4 兼容, ADR-0004 D4): 仅一组时维持旧形态 ----
 				if (groups.size === 1) {

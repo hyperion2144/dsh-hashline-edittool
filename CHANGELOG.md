@@ -4,6 +4,11 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ## [Unreleased]
 
+### Added
+
+- `edit` 的跨 op 多余字段改为忽略并告警：`op` 是唯一权威，属于别的 op 的已知字段不再 `[E_BAD_SHAPE]` 硬拒，而是在 `warnings` 里点名后照常执行；缺必需字段（如 `ins` 无 `anchor_after`）仍拒绝，未知键仍报错（#452，ADR-0044）。
+- `sed` 的 `anchor_start` / `anchor_end` 字段说明补上 `sed`，并修正 `anchor_start` 描述里「`lines` 是该范围的替换内容」对 `sed` 不成立的说法（#452）。
+
 ### Fixed
 
 - 语言服务器 slot 改按工作目录归属：root 从进程级全局 resolver 改为每次调用的参数，manager 不再持有任何 Agent 引用，归档子 Agent 后父会话 `edit` 不再因 `INACTIVE_EFFECT` 让宿主退出；`#start` 整体包 try 给 fire-and-forget 形状上锁（#450，ADR-0043）。

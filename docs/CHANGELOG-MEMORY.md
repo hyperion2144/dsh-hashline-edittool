@@ -1486,3 +1486,44 @@ store 里该路径 `anchor_lines: 0 / served: 0`，模型想接着改就得先�
 - `test/guidance.test.ts`（60 行）、`test/core/prompt-contract.test.ts`、`test/core/agent-tool-registration.test.ts`
 - `docs/adr/0001-guidance-override-files.md`（superseded）、`docs/adr/0042-prompt-surface-layering.md`、`README.md` / `README.zh.md`、`CHANGELOG.md`
 - `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-24 — ADR-0044: `op` is the only authority
+
+**Type:** decision + contract change
+**Confidence:** High
+**Evidence:** issue #452, `src/contract/contract.ts` (`ignoredFieldsFor` / `OP_OWNED_FIELDS` / `assertEditItem`), `src/tools/tool-edit.ts` (`ignoredFieldWarningsByPath`), `test/core/sed-op.test.ts`, `test/core/multi-file-atomicity-contract.test.ts`, `npm run typecheck` + `npm test` (2088 passed) + client suite (336 passed)
+
+### Why
+
+The `op` × field matrix carried four different verdicts, and only three were
+deliberate. `pattern` / `replacement` / `flags` on a non-`sed` op were silently
+ignored — never decided by anyone, just a side effect of the engine reading
+them only when `op === "sed"`. That made the contract inverted: the more
+dangerous silent drop (a caller believing it asked for a regex substitution and
+getting a literal one) said nothing, while the safer mistake (`lines` on `sed`)
+was refused.
+
+### What was decided
+
+- `op` is the only authority: a known field belonging to a different op is
+  IGNORED, then the item is validated completely against the named op.
+- Ignoring is never silent — every dropped field is named in the file's
+  `warnings` (`[E_BAD_SHAPE] edits[N] "<field>" is ignored: op:"<op>" does not
+  take it.`).
+- A MISSING required field is still refused (`ins` without `anchor_after` keeps
+  its message); unknown keys, unknown ops and invalid targets stay errors.
+- `del` + `lines` keeps its #69 silent ignore — re-opening it as a warning
+  would undo a settled decision.
+- Field ownership lives in one table (`OP_OWNED_FIELDS`), and the caller-facing
+  name list in one function (`ignoredFieldsFor`).
+
+### Path / Affected typed relationships
+
+- `docs/adr/0044-op-is-the-only-authority.md`（新建）
+- `src/contract/contract.ts`（`OP_OWNED_FIELDS` / `ignoredFieldsFor` / `assertEditItem` / 字段注释 / schema 描述 / 模块头）
+- `src/tools/tool-edit.ts`（`ignoredFieldWarningsByPath` 取代 `insAnchorEndWarningsByPath`）
+- `test/core/sed-op.test.ts`、`test/core/multi-file-atomicity-contract.test.ts`
+- `README.md` / `README.zh.md`（op 表后的那句）、`CONTEXT.md`（`op` 词条）、`AGENTS.md`（l0_domains）、`CHANGELOG.md`
+- `docs/CHANGELOG-MEMORY.md`（本条）
