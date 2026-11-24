@@ -1221,11 +1221,13 @@ export function lspStatusCardModel(block: ToolCallBlock): LspStatusModel | null 
 		if (slot.reason !== undefined && typeof slot.reason !== "string") return null;
 		if (slot.message !== undefined && typeof slot.message !== "string") return null;
 		if (slot.attempts !== undefined && typeof slot.attempts !== "number") return null;
+		if (slot.root !== undefined && typeof slot.root !== "string") return null;
 		for (const key of Object.keys(slot)) {
-			if (key !== "languageId" && key !== "state" && key !== "reason" && key !== "message" && key !== "attempts") return null;
+			if (key !== "languageId" && key !== "root" && key !== "state" && key !== "reason" && key !== "message" && key !== "attempts") return null;
 		}
 		slots.push({
 			languageId: slot.languageId,
+			...(slot.root !== undefined ? { root: slot.root } : {}),
 			state: slot.state,
 			...(slot.reason !== undefined ? { reason: slot.reason } : {}),
 			...(slot.message !== undefined ? { message: slot.message } : {}),

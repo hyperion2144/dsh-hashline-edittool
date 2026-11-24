@@ -21,6 +21,14 @@ import { withWorkspace } from "../../src/infra/workspace.js";
 import { splitLines } from "../../src/infra/utils.js";
 import { canon, contentChecksum } from "../../src/hashline/hash-assign.js";
 
+/**
+ * The workspace root every slot is keyed by (#450). One constant, because the
+ * tests are about slot BEHAVIOUR, not about which directory they name — the
+ * root-keyed tests below pass a second one explicitly.
+ */
+const ROOT = "/repo";
+
+
 const SOURCE = "export const alpha = 1;\nexport const beta = 2;\n";
 let dir: string;
 let file: string;
@@ -98,7 +106,7 @@ async function readyManager(): Promise<{ notifications: Notification[] }> {
 		spawn: () => ({ transport }),
 	});
 	setLspManager(manager);
-	manager.decide("typescript", 10); // starts the warm
+	manager.decide(ROOT, "typescript", 10); // starts the warm
 	// A microtask drain with room to spare, for the same reason and in the same
 	// shape as `lsp-manager.test.ts`'s `settle`: the previous twenty-tick budget
 	// was outnumbered the moment discovery grew a search location, because each
@@ -141,7 +149,7 @@ describe("open-or-change semantics", () => {
 		});
 		setLspManager(manager);
 		const uri = pathToFileURL("/repo/a.ts").href;
-		expect(manager.openDocumentFor("typescript", uri)).toBeUndefined();
+		expect(manager.openDocumentFor(ROOT, "typescript", uri)).toBeUndefined();
 		// And nothing was started: an edit must not spawn a language server.
 		expect(manager.readyLanguages).toEqual([]);
 	});
@@ -149,7 +157,7 @@ describe("open-or-change semantics", () => {
 	it("opens on the first sync and changes on the next", async () => {
 		const { notifications } = await readyManager();
 		const uri = pathToFileURL("/repo/a.ts").href;
-		const sync = getLspManager()!.openDocumentFor("typescript", uri);
+		const sync = getLspManager()!.openDocumentFor(ROOT, "typescript", uri);
 		expect(sync).toBeDefined();
 		sync!("const a = 1;");
 		sync!("const a = 2;");
@@ -166,7 +174,7 @@ describe("open-or-change semantics", () => {
 	it("does not re-open a document the session already has", async () => {
 		const { notifications } = await readyManager();
 		const uri = pathToFileURL("/repo/a.ts").href;
-		const sync = getLspManager()!.openDocumentFor("typescript", uri)!;
+		const sync = getLspManager()!.openDocumentFor(ROOT, "typescript", uri)!;
 		sync("one");
 		sync("two");
 		sync("three");
@@ -276,7 +284,13 @@ describe("the pre-write sync (syncDocumentContent)", () => {
 
 	it("reaches a READY server without warming one", async () => {
 		const { notifications } = await readyManager();
-		syncDocumentContent(file, "const formatted = true;");
+		// #450: the slot is keyed by the workspace directory, and the default
+		// wiring reads it from the AMBIENT scope — the same scope every write
+		// path already runs inside. Outside one there is no directory to name,
+		// so the sync is a no-op by design.
+		await withWorkspace(ROOT, async () => {
+			syncDocumentContent(file, "const formatted = true;");
+		});
 		const syncs = notifications.filter((n) => n.method === "textDocument/didOpen");
 		expect(syncs).toHaveLength(1);
 		expect(syncs[0]!.params.textDocument?.text).toBe("const formatted = true;");

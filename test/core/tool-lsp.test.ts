@@ -370,7 +370,7 @@ describe("lsp — status and warm (#318)", () => {
 	/** A manager fake with the STATUS surface: slots, forceWarm, and spies. */
 	function statusFake(
 		opts: {
-			snapshot?: Array<{ languageId: string; state: string; reason?: string; message?: string; attempts?: number }>;
+			snapshot?: Array<{ languageId: string; root: string; state: string; reason?: string; message?: string; attempts?: number }>;
 			forceWarm?: "ready" | "failed" | "throws";
 			unavailable?: { reason?: string; message: string };
 		} = {},
@@ -403,14 +403,14 @@ describe("lsp — status and warm (#318)", () => {
 	it("status lists every slot and starts NOTHING", async () => {
 		const calls = statusFake({
 			snapshot: [
-				{ languageId: "typescript", state: "ready" },
-				{ languageId: "python", state: "failed", reason: "lsp-timeout", message: "did not answer within 10s", attempts: 2 },
+				{ languageId: "typescript", root: "/repo", state: "ready" },
+				{ languageId: "python", root: "/repo", state: "failed", reason: "lsp-timeout", message: "did not answer within 10s", attempts: 2 },
 			],
 		});
 		const value = await execute({ operation: "status" });
 		const raw = String(value.raw);
-		expect(raw).toContain("typescript: ready");
-		expect(raw).toContain("python: failed — lsp-timeout: did not answer within 10s (attempt 2)");
+		expect(raw).toContain("typescript @ /repo: ready");
+		expect(raw).toContain("python @ /repo: failed — lsp-timeout: did not answer within 10s (attempt 2)");
 		// A status question must not have side effects: no boot, no document sync.
 		expect(calls.waitForSession).toBe(0);
 		expect(calls.openDocumentFor).toBe(0);
@@ -419,8 +419,8 @@ describe("lsp — status and warm (#318)", () => {
 		expect(schemaViolations(outputSchemaOf(buildLspTool(io)), value)).toEqual([]);
 		// The structured slots ride beside the prose: the status card's data.
 		expect(value.slots).toEqual([
-			{ languageId: "typescript", state: "ready" },
-			{ languageId: "python", state: "failed", reason: "lsp-timeout", message: "did not answer within 10s", attempts: 2 },
+			{ languageId: "typescript", root: "/repo", state: "ready" },
+			{ languageId: "python", root: "/repo", state: "failed", reason: "lsp-timeout", message: "did not answer within 10s", attempts: 2 },
 		]);
 	});
 

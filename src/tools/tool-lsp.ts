@@ -344,6 +344,9 @@ export function buildLspTool(io: FileIO) {
 							additionalProperties: false,
 							properties: {
 								languageId: { type: "string", required: true },
+								// #450: the workspace directory the slot indexes. A language
+								// can be ready in several at once, and the card groups by it.
+								root: { type: "string", required: true },
 								state: { type: "string", required: true },
 								reason: { type: "string" },
 								message: { type: "string" },
@@ -458,13 +461,13 @@ export function buildLspTool(io: FileIO) {
 						`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
 					);
 				}
-				const session = await manager.forceWarm(languageId);
+				const session = await manager.forceWarm(cwd, languageId);
 				if (session === undefined) {
-					const why = manager.unavailability(languageId);
+					const why = manager.unavailability(cwd, languageId);
 					throw new Error(`${E_LSP_NO_SERVER} ${languageId} did not start: ${describeUnavailable(why)}.`);
 				}
 				const displayName = entry?.displayName ?? languageId;
-				return { operation: "warm", server: displayName, symbols: [], hashlines: [], totalLines: 0, slots: [{ languageId, state: "ready" }], raw: `${displayName} is ready.` };
+				return { operation: "warm", server: displayName, symbols: [], hashlines: [], totalLines: 0, slots: [{ languageId, root: cwd, state: "ready" }], raw: `${displayName} is ready.` };
 			}
 			if (args.path === undefined) {
 				throw new Error(`[E_LSP_BAD_OPERATION] \`${args.operation}\` needs \`path\` — the file to work on.`);
@@ -483,14 +486,14 @@ export function buildLspTool(io: FileIO) {
 			// retry blind. This tool IS the protocol path: holding here for the boot
 			// is what the caller asked for, and the timeout turns a hang into an
 			// honest "did not start in time".
-			const session = await manager.waitForSession(language.id);
+			const session = await manager.waitForSession(cwd, language.id);
 			if (session === undefined) {
 				if (manager.disposed) {
 					throw new Error(
 						`${E_LSP_NO_SERVER} the language-server client was shut down (the plugin re-mounted); restart the session.`,
 					);
 				}
-				const why = manager.unavailability(language.id);
+				const why = manager.unavailability(cwd, language.id);
 				throw new Error(
 					`${E_LSP_NO_SERVER} no server is usable for ${language.id}: ${describeUnavailable(why)}. ` +
 					(why?.reason === "server-missing"
@@ -500,7 +503,7 @@ export function buildLspTool(io: FileIO) {
 				);
 			}
 			const uri = pathToFileURL(absolutePath).href;
-			const sync = manager.openDocumentFor(language.id, uri);
+			const sync = manager.openDocumentFor(cwd, language.id, uri);
 			if (sync === undefined) {
 				throw new Error(`${E_LSP_NO_SERVER} the server for ${language.id} is not ready to open a document.`);
 			}
@@ -841,11 +844,14 @@ export function buildLspTool(io: FileIO) {
  */
 function statusValue(manager: LspManager, languageId: string | undefined): Record<string, unknown> {
 	const wanted = manager.snapshot().filter((row) => languageId === undefined || row.languageId === languageId);
+	// #450: a language can be ready in SEVERAL workspaces at once (a parent in
+	// the repo, a child in a worktree). The row names its directory, because
+	// "typescript: ready" twice with no way to tell them apart is not an answer.
 	const described = wanted.map((row) => {
 		if (row.state === "failed") {
-			return `  ${row.languageId}: failed — ${row.reason}: ${row.message} (attempt ${row.attempts ?? 1})`;
+			return `  ${row.languageId} @ ${row.root}: failed — ${row.reason}: ${row.message} (attempt ${row.attempts ?? 1})`;
 		}
-		return `  ${row.languageId}: ${row.state}`;
+		return `  ${row.languageId} @ ${row.root}: ${row.state}`;
 	});
 	const raw =
 		described.length === 0

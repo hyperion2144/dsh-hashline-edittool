@@ -55,6 +55,12 @@ export interface AutoFormatRange {
 export interface AutoFormatInput {
 	io: FileIO;
 	absolutePath: string;
+	/**
+	 * The workspace directory the file belongs to (#450). The format slot is
+	 * keyed by it, so a worktree's format pass must reach the worktree's
+	 * server — and a disposed agent's directory is never consulted.
+	 */
+	cwd: string;
 	/** The post-model, pre-format content (what the server must see). */
 	modelContent: string;
 	/**
@@ -145,7 +151,7 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 	// secondary (`format.servers.<id>`, ADR-0038) formats through THAT slot;
 	// without one the primary path is byte-for-byte today's.
 	const role = formatConfiguredServers().has(language.id) ? ("format" as const) : ("primary" as const);
-	const session = manager?.readySessionFor(language.id, role);
+	const session = manager?.readySessionFor(input.cwd, language.id, role);
 	if (manager === undefined || session === undefined) {
 		return { ...SILENT, content: input.modelContent };
 	}
@@ -182,7 +188,7 @@ export async function runAutoFormat(input: AutoFormatInput): Promise<AutoFormatO
 	// formatting secondary brings THAT server in step as well (ADR-0038).
 	const syncForRun = (content: string): void => {
 		syncDocumentContent(input.absolutePath, content);
-		if (role === "format") manager.openDocumentFor(language.id, uri, "format")?.(content);
+		if (role === "format") manager.openDocumentFor(input.cwd, language.id, uri, "format")?.(content);
 	};
 
 	// The server's view is stale by one edit: bring it to the MODEL content

@@ -29,6 +29,14 @@ import { inferIndentOptions } from "../../src/lsp/format/indent.js";
 import type { LspSession } from "../../src/lsp/session.js";
 import type { DiscoveredServer } from "../../src/lsp/discovery.js";
 
+/**
+ * The workspace root every slot is keyed by (#450). These tests spawn a REAL
+ * language server with this directory as its cwd, so it has to exist — the
+ * checkout the suite runs in.
+ */
+const ROOT = process.cwd();
+
+
 const TLS_ON_PATH =
 	spawnSync("typescript-language-server", ["--version"], { encoding: "utf8" }).status === 0;
 
@@ -65,13 +73,12 @@ describe.skipIf(!TLS_ON_PATH)("the format pipeline against a REAL typescript-lan
 				};
 				return { transport: subprocessTransport(handle as never) };
 			},
-			projectRoot: root,
 			onFailure: (languageId: string, message: string) => {
 				console.error(`[smoke] server for ${languageId} failed to start: ${message}`);
 			},
 		});
-		manager.warm("typescript");
-		session = await manager.waitForSession("typescript", 30_000);
+		manager.warm(ROOT, "typescript");
+		session = await manager.waitForSession(ROOT, "typescript", 30_000);
 		uri = pathToFileURL(join(root, ".format-smoke.ts")).href;
 		// The production pipeline syncs (open-or-change) BEFORE requesting —
 		// the wire just proved why: an unopened document gets no edits.

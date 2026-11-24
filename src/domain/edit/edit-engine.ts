@@ -1648,6 +1648,7 @@ const hunkDelta = applied.totalAddedLines - applied.totalRemovedLines;
 		const outcome = await runAutoFormat({
 			io,
 			absolutePath,
+			cwd: opts.cwd ?? workspaceCwd() ?? "",
 			modelContent: result,
 			ranges: modelHunks.map((h) => ({
 				startLine: h.newStartLine,

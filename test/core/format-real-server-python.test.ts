@@ -29,6 +29,14 @@ import { applyTextEdits } from "../../src/lsp/format/text-edits.js";
 import type { DiscoveredServer } from "../../src/lsp/discovery.js";
 import type { LspSession } from "../../src/lsp/session.js";
 
+/**
+ * The workspace root every slot is keyed by (#450). These tests spawn a REAL
+ * language server with this directory as its cwd, so it has to exist — the
+ * checkout the suite runs in.
+ */
+const ROOT = process.cwd();
+
+
 // "Is the binary THERE", not "does it like --version": language servers
 // disagree about the flag, and a non-zero exit still proves the spawn found
 // an executable.
@@ -79,14 +87,13 @@ describe.skipIf(!PYRIGHT_READY || RUFF_COMMAND === undefined)(
 					};
 					return { transport: subprocessTransport(handle as never) };
 				},
-				projectRoot: root,
 				formatConfigured: () => [{ command: ruffCommand, languages: ["python"] }],
 				onFailure: (languageId: string, message: string) => {
 					console.error(`[smoke] server for ${languageId} failed to start: ${message}`);
 				},
 			});
-			primary = await manager.waitForSession("python", 30_000);
-			format = await manager.waitForSession("python", 30_000, "format");
+			primary = await manager.waitForSession(ROOT, "python", 30_000);
+			format = await manager.waitForSession(ROOT, "python", 30_000, "format");
 			pyUri = pathToFileURL(join(root, "smoke.py")).href;
 			primary?.didOpen(pyUri, "python", UGLY);
 			format?.didOpen(pyUri, "python", UGLY);
@@ -140,13 +147,12 @@ describe.skipIf(!PYRIGHT_READY || RUFF_COMMAND === undefined)(
 					};
 					return { transport: subprocessTransport(handle as never) };
 				},
-				projectRoot: root,
 				formatConfigured: () => [{ command: join(root, "no-such-ruff"), languages: ["python"] }],
 			});
 			try {
-				const session = await dangling.waitForSession("python", 30_000, "format");
+				const session = await dangling.waitForSession(ROOT, "python", 30_000, "format");
 				if (session === undefined) {
-					expect(dangling.unavailability("python", "format")?.reason).toBe("server-missing");
+					expect(dangling.unavailability(ROOT, "python", "format")?.reason).toBe("server-missing");
 					return;
 				}
 				expect(detectFormattingCapability(session.serverCapabilities).full).toBe(true);
@@ -165,7 +171,7 @@ describe.skipIf(!PYRIGHT_READY || RUFF_COMMAND === undefined)(
 		it("typescript keeps the primary-only shape (regression surface)", () => {
 			// No format slot for typescript: it was never started, and the
 			// format-role lookup is cold even after python's slots are up.
-			expect(manager.readySessionFor("typescript", "format")).toBeUndefined();
+			expect(manager.readySessionFor(ROOT, "typescript", "format")).toBeUndefined();
 		});
 	},
 );

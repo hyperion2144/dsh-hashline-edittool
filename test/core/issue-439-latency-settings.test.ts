@@ -16,6 +16,14 @@ import { writeAtomic } from "../../src/infra/fs-write.js";
 import { makeExec, withTempFile } from "../support/fixtures.js";
 import { localIO } from "../support/local-io.js";
 
+/**
+ * The workspace root every slot is keyed by (#450). One constant, because the
+ * tests are about slot BEHAVIOUR, not about which directory they name — the
+ * root-keyed tests below pass a second one explicitly.
+ */
+const ROOT = "/repo";
+
+
 afterEach(() => {
 	setLspManager(undefined);
 	applyEffective({});
@@ -54,7 +62,7 @@ describe("#439 lsp.auto_diagnostics.inline_wait_ms (P3)", () => {
 		applyEffective({ lsp: { auto_diagnostics: true, inline_wait_ms: 30 } });
 		silentManager();
 		await withTempFile("slow.ts", "const a = 1;\n", async ({ cwd, path }) => {
-			const ctx = prepareWriteDiagnostics(path);
+			const ctx = prepareWriteDiagnostics(path, ROOT);
 			expect(ctx).toBeDefined();
 			const started = Date.now();
 			const report = await deliverDiagnosticsAfterWrite({
@@ -75,7 +83,7 @@ describe("#439 lsp.auto_diagnostics.inline_wait_ms (P3)", () => {
 		applyEffective({ lsp: { auto_diagnostics: true, inline_wait_ms: 0 } });
 		silentManager();
 		await withTempFile("zero.ts", "const a = 1;\n", async ({ cwd, path }) => {
-			const ctx = prepareWriteDiagnostics(path);
+			const ctx = prepareWriteDiagnostics(path, ROOT);
 			expect(ctx).toBeDefined();
 			const started = Date.now();
 			const report = await deliverDiagnosticsAfterWrite({

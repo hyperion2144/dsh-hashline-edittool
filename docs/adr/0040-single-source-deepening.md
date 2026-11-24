@@ -33,7 +33,7 @@ supersedes: ""
 八个候选由同一次 grilling 决定，**不拆成八票、不分先后**（用户 2026-11-17 决定）。每个候选的落地形态：
 
 - **Commit**：`domain/edit/mutation.ts` 收缩为「一次落盘」的唯一入口（undo 快照 → 原子写 → served 镜像结算 → 失败策略）。删掉 225 行零调用的 `execPipeline` 与 18 个透传再导出；**镜像记账失败一律是警告，「写已成功」永不反转**（`apply_patch` 原先会因此把已写盘的文件报成 failed）。
-- **Slot root**：`LspManager` 的 interface 不再收 `workspaceRoot`；root 由 manager 自己从会话 live cwd 解析（ADR-0031），四个调用点各少一份语义。
+- **Slot root**：`LspManager` 的 interface 不再收 `workspaceRoot`；root 由 manager 自己从会话 live cwd 解析（ADR-0031），四个调用点各少一份语义。**（2026-11-23 被 [ADR-0043](0043-lsp-slot-keyed-by-workspace-root.md) 推翻，#450：全局 resolver 绑单个 Agent，子 Agent 归档后父会话 `edit` 踩到失效 context，宿主因 `INACTIVE_EFFECT` 退出。root 重新成为每次调用的参数，slot 按 `(工作目录, 语言, 角色)` 归属。）**
 - **Diagnostic policy**：投影下沉到 `lsp/diagnostics/projection.ts` 一份；写路径声明 `{severities:[1,2], cap:50, ledger:true}`，手动查询声明 `{全部 severity, 不限, 不记账}`——差异是**声明**，不是第二份实现。
 - **Anchor fold**：`buildPreparedItem` 从 tools 层下沉到 `domain/edit/anchor-fold.ts`，`apply_patch` 的 preflight 改调同一份；顺带删掉 `PreparedItem` 三个只写不读的死字段（`anchorEndAsserted` / `lineStart` / `lineEnd`，block op 删除后遗留）。
 - **Probe verdict**：`infra/probe-verdict.ts` 一张表，delete / rename / patch / fs-bridge 两后端共用；措辞按工具动词注入。

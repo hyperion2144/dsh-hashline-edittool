@@ -304,6 +304,14 @@ export interface LspCardModel {
  */
 export interface LspSlotMeta {
 	readonly languageId: string;
+	/**
+	 * The workspace directory this slot indexes (#450).
+	 *
+	 * A language can be ready in several workspaces at once — a parent in the
+	 * repo, a child in a worktree — so the card names the directory rather
+	 * than implying there is only one.
+	 */
+	readonly root?: string;
 	readonly state: string;
 	/** Why the slot is unavailable (`lsp-timeout`, `server-missing`, …). */
 	readonly reason?: string;

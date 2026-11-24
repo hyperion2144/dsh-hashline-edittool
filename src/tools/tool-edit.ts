@@ -227,7 +227,7 @@ async function applyFileGroup(
 		const absolutePath = await io.resolve(displayPath, cwd, signal);
 		// #131: captured BEFORE anything is written, so the diagnostics wait
 		// measures pushes against a pre-write baseline. undefined = skip.
-		const diagCtx = prepareWriteDiagnostics(absolutePath);
+		const diagCtx = prepareWriteDiagnostics(absolutePath, cwd);
 		const items = group.map(({ index, edit }) =>
 			buildPreparedItem(index, displayPath, edit as never, absolutePath),
 		);

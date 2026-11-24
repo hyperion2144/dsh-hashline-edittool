@@ -331,12 +331,16 @@ export function LspStatusBlock({ model }: LspStatusBlockProps): ReactNode {
 					.filter((part) => part !== "" && part !== undefined)
 					.join(" — ");
 				return jsx_("div", {
-					key: `${slot.languageId}:${index}`,
+					key: `${slot.root ?? ""}:${slot.languageId}:${index}`,
 					className: css.slot,
 					"data-state": slot.state,
 					children: [
 						jsx_("span", { className: css.dot, "aria-hidden": true }),
 						jsx_("span", { className: css.slotLang, children: slot.languageId }),
+						// #450: the directory the slot indexes. Two rows for one language
+						// are two DIFFERENT servers (a parent in the repo, a child in a
+						// worktree), and without this they read as a duplicate.
+						slot.root !== undefined && jsx_("span", { className: css.slotNote, children: slot.root }),
 						jsx_("span", { className: css.slotState, children: slot.state }),
 						note !== "" && jsx_("span", { className: css.slotNote, children: note }),
 					],
