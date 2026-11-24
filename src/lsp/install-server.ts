@@ -37,6 +37,25 @@ import {
 	type LocalizedText,
 } from "../render/wire-text.js";
 
+/**
+ * The npm PROGRAM, spelled the way every platform spells it: bare.
+ *
+ * NOT `npm.cmd` on Windows, and that is the whole of #453. npm reaches a
+ * machine as one of several shims — `npm.cmd` under a standard Node install,
+ * `npm.exe` under Scoop, nvm-windows and Chocolatey — and only ONE of them is
+ * on PATH. Spelling an extension picks a shim for every machine, so the
+ * machines that installed the other one get "'npm.cmd' is not recognized".
+ *
+ * A bare name is not a guess: `needsCommandShell` sends it through `cmd.exe`
+ * (no extension, no separator), and cmd's PATHEXT lookup is the one component
+ * that knows which shim this machine actually has. Off Windows the same token
+ * is the plain program name.
+ *
+ * ONE constant, because the catalog ANSWERS this command and the install RUNS
+ * it: two spellings of it is how the bug got in.
+ */
+const NPM_COMMAND = "npm";
+
 /** How a spawn is performed; structurally the platform's `subprocess.spawn`. */
 export type SpawnLike = (spec: {
 	readonly argv: readonly string[];
@@ -94,7 +113,7 @@ export function formatInstallCommand(
 	if (plan.via === "platform") return plan.by[platform];
 	// An npm-shaped plan needs the plugin's prefix, so it is built later —
 	// the same rule `installCommandFor` follows.
-	return ["npm"];
+	return [NPM_COMMAND];
 }
 
 /**
@@ -118,7 +137,7 @@ export function installCommandFor(
 	if (plan.via === "argv") return plan.argv;
 	if (plan.via === "platform") return plan.by[platform];
 	// npm is the one that needs the plugin's prefix, so it is built later.
-	return ["npm"];
+	return [NPM_COMMAND];
 }
 
 /** Whether this language's server can be installed here at all. */
@@ -192,23 +211,24 @@ export async function installLspServer(
 	const argv =
 		plan.via === "npm"
 			? [
-					process.platform === "win32" ? "npm.cmd" : "npm",
-					"install",
-					"--prefix",
-					prefix,
-					// An audit of a server we chose is noise, and npm's progress output is not
-					// the progress we show.
-					"--no-audit",
-					"--no-fund",
-					"--loglevel=error",
-					plan.package,
-				]
+				NPM_COMMAND,
+				"install",
+				"--prefix",
+				prefix,
+				// An audit of a server we chose is noise, and npm's progress output is not
+				// the progress we show.
+				"--no-audit",
+				"--no-fund",
+				"--loglevel=error",
+				plan.package,
+			]
 			: [...(plan.via === "argv" ? plan.argv : (platformArgv ?? []))].map((token) =>
 					token.replace("{requirements}", requirementsPath),
 				);
-	// Windows: `npm` is `npm.cmd`, and a `.cmd` shim is not executable — it needs
+	// Windows: the npm program is a shim, and a shim is not executable — it needs
 	// the command interpreter. The SAME translation the server launch uses, so
 	// both paths work or fail together instead of one being the odd one out.
+	// The name handed to it is bare on purpose; `NPM_COMMAND` carries the why.
 	const spawnArgv = platformSpawnArgv(argv);
 	let handle: SubprocessLike;
 	try {

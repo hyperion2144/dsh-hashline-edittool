@@ -281,3 +281,7 @@ _Avoid_: workspaceRoot as a parameter (the seam leak it used to be)
 **Diagnostic policy**:
 The caller-declared parameters of ONE diagnostics projection: which severities, the cap, whether the suppression ledger is touched. The write path declares error+warning, capped, ledger-touched; the manual `lsp diagnostics` query declares every severity, uncapped, ledger-untouched — the COMPLETE view. The projection is shared; the differences are declared, never drifted.
 _Avoid_: severity filter / cap as hardcoded per-path facts, the two separate projection implementations
+
+**Program name**:
+The bare name a spawned command is spelled with — `npm`, never `npm.cmd` or `npm.exe` (ADR-0045). One shim of a program is on PATH and which one depends on the installer (standard Node, Scoop, nvm-windows, Chocolatey), so the plugin names the PROGRAM and lets the interpreter's PATHEXT lookup pick the shim. The same token is what the settings card advertises and what the install spawns.
+_Avoid_: executable name (that is the resolved file), shim (that is one of the candidates), npm.cmd / npm.exe (the bug)

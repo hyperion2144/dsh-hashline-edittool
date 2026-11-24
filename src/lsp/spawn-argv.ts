@@ -3,7 +3,9 @@
  *
  * Every language server this plugin launches is installed the npm way, and npm
  * puts a shell shim on PATH next to the real script: `typescript-language-server`
- * is `typescript-language-server.cmd` on Windows, `npm` is `npm.cmd`. Node
+ * is `typescript-language-server.cmd` on Windows, and `npm` is whichever shim
+ * the machine's installer chose — `npm.cmd` under a standard Node install,
+ * `npm.exe` under Scoop/nvm/Chocolatey (#453). Node
  * refuses to spawn those with `shell: false` — `spawn` reports `EINVAL`, which
  * reaches the caller as "the language server did not start" with no clue why —
  * and the shim's own contents are batch, not a PE image, so there is nothing to

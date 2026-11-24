@@ -1527,3 +1527,46 @@ was refused.
 - `test/core/sed-op.test.ts`、`test/core/multi-file-atomicity-contract.test.ts`
 - `README.md` / `README.zh.md`（op 表后的那句）、`CONTEXT.md`（`op` 词条）、`AGENTS.md`（l0_domains）、`CHANGELOG.md`
 - `docs/CHANGELOG-MEMORY.md`（本条）
+
+---
+
+## 2026-11-24 — ADR-0045: a command is named by its PROGRAM, never by a shim
+
+**Type:** decision + bug fix
+**Confidence:** High
+**Evidence:** issue #453, `src/lsp/install-server.ts` (`NPM_COMMAND` / `installLspServer` argv), `src/lsp/spawn-argv.ts` (`needsCommandShell` / `platformSpawnArgv`), `test/core/issue-453-lsp-npm-bare-name.test.ts`, `npm run typecheck` + `npm test` (2099 passed / 1 skipped) + client suite (336 passed)
+
+### Why
+
+The settings card's install button hard-coded `npm.cmd` on Windows. On a
+machine where npm arrives as an `npm.exe` shim (Scoop, some nvm-windows
+installs, Chocolatey) that file is not on PATH, so `cmd.exe /d /s /c npm.cmd
+install …` answered "'npm.cmd' is not recognized" and the install could never
+succeed. A standard Node install — the machine that develops the plugin — is
+unaffected, which is why the bug survived.
+
+The structural half: `installCommandFor` / `formatInstallCommand` already
+answered `["npm"]` while the spawn path substituted `npm.cmd`. Neither
+function reaches the card (`canInstallServer` is the only thing that does, as
+a boolean), so no user saw the disagreement — but the module said `npm` in
+one place and ran `npm.cmd` in another, and nothing checked they agreed.
+
+### What was decided
+
+- A spawned command is named by its PROGRAM, never by one of its shims: the
+  install argv's first token is the bare `npm` on every platform.
+- The lookup belongs to the component that owns it — a bare name has no
+  extension and no separator, so `needsCommandShell` sends it through
+  `cmd.exe`, and cmd's PATHEXT resolution picks `npm.exe` or `npm.cmd` for
+  this machine. No PATH probing, no `which`.
+- One constant (`NPM_COMMAND`) feeds both the catalog's answer and the
+  spawn, so the two cannot drift again.
+
+### Path / Affected typed relationships
+
+- `docs/adr/0045-name-the-program-not-the-shim.md`（新建）
+- `src/lsp/install-server.ts`（`NPM_COMMAND` 常量 / `installLspServer` 的 argv / 模块注释）
+- `src/lsp/spawn-argv.ts`（模块头对 npm shim 的描述）
+- `test/core/issue-453-lsp-npm-bare-name.test.ts`（新建）
+- `CONTEXT.md`（`Program name` 词条）、`AGENTS.md`（l0_domains）、`CHANGELOG.md`
+- `docs/CHANGELOG-MEMORY.md`（本条）
