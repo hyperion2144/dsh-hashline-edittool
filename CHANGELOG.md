@@ -6,8 +6,7 @@ All notable changes to the `dsh-hashline-edittool` plugin will be documented in 
 
 ### Added
 
-- `edit` 的跨 op 多余字段改为忽略并告警：`op` 是唯一权威，属于别的 op 的已知字段不再 `[E_BAD_SHAPE]` 硬拒，而是在 `warnings` 里点名后照常执行；缺必需字段（如 `ins` 无 `anchor_after`）仍拒绝，未知键仍报错（#452，ADR-0044）。
-- `sed` 的 `anchor_start` / `anchor_end` 字段说明补上 `sed`，并修正 `anchor_start` 描述里「`lines` 是该范围的替换内容」对 `sed` 不成立的说法（#452）。
+- `edit` 的跨 op 多余字段改为忽略并告警：`op` 是唯一权威，属于别的 op 的已知字段不再 `[E_BAD_SHAPE]` 硬拒，而是在 `warnings` 里点名后照常执行；缺必需字段（如 `ins` 无 `anchor_after`）仍拒绝，未知键仍报错。`anchor_start` / `anchor_end` 的字段说明同步补上 `sed`（#452，ADR-0044）。
 
 ### Fixed
 
